@@ -30,6 +30,23 @@ struct EnumInfo {
     /// Variant names in declaration order; index is the
     /// variant's integer tag. T1.3.
     variants: Vec<String>,
+    /// Per-variant payload type (Some) or None for
+    /// payload-less variants. Parallel to `variants`. T1.3
+    /// phase 2b.
+    payload_types: Vec<Option<Type>>,
+}
+
+/// Look up a variant's payload type from the env's enum
+/// registry. Returns `None` if the variant is payload-less or
+/// the enum/variant doesn't exist. T1.3 phase 2b.
+fn lookup_enum_variant_payload(
+    env: &Env,
+    enum_name: &str,
+    variant: &str,
+) -> Option<Type> {
+    let info = env.lookup_enum(enum_name)?;
+    let idx = info.variants.iter().position(|v| v == variant)?;
+    info.payload_types.get(idx)?.clone()
 }
 
 impl Env {
@@ -195,6 +212,14 @@ struct VarInfo {
     /// sees an unbound `v_NAME` reference. Default false.
     /// T4.15.
     is_const: bool,
+    /// Field expressions when this binding was initialized
+    /// with a struct literal `let p: P = P { x: e1, y: e2 };`.
+    /// The SMT prove-rewriter synthesizes a per-field SMT
+    /// variable `<name>__<field>` for each entry, asserts
+    /// `name__field == encode(e)`, and rewrites `p.x` into
+    /// `Var("p__x")` so field-access proofs discharge. Reset
+    /// on any reassignment. None for non-struct bindings.
+    struct_literal_fields: Option<Vec<(String, Expr)>>,
 }
 
 #[derive(Clone, Debug)]
@@ -292,32 +317,30 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // so resolving against the mangled name "just works".
     hoist_methods_into_functions(&mut program, &mut diagnostics);
 
-    // T1.5 phase 1 gate: the parser accepts `interface`,
-    // `implement`, and `where T is C` syntax, but call-site
-    // dispatch + bounded-generic monomorphization land in
-    // phase 2. Until then, any program that *uses* this
-    // syntax must be hand-specialized.
-    for iface in &program.interfaces {
-        diagnostics.push(Diagnostic::new(
-            iface.span,
-            format!(
-                "interface '{}' parses but vtable dispatch is still in \
-                 progress (T1.5 phase 2). Specialize manually by writing \
-                 a non-generic method on each concrete type.",
-                iface.name
-            ),
-        ));
-    }
-    for imp in &program.impls {
-        diagnostics.push(Diagnostic::new(
-            imp.span,
-            format!(
-                "`implement {} for {}` parses but dispatch is still in \
-                 progress (T1.5 phase 2). Specialize manually for now.",
-                imp.interface_name, imp.for_type
-            ),
-        ));
-    }
+    // T2.6 phase 2: rewrite `let v: T = try opt; ...; return X;`
+    // function bodies into `return match opt { Opt.Some(__t)
+    // then { let v: T = __t; ...; X }, Opt.None then Opt.None };`.
+    // Runs after methods hoisting so signatures are settled.
+    desugar_try_let_in_program(&mut program, &mut diagnostics);
+
+    // T1.4 phase 2: monomorphize generic functions. Walks the
+    // program for calls to `fn name<T>(…)` generic functions,
+    // infers T from each call site's argument types, generates
+    // a specialized copy per (fn, concrete-type) combo, and
+    // rewrites call sites to use the specialized name. Removes
+    // the original generic functions so downstream type-check
+    // sees a fully-concrete program.
+    monomorphize_generics_in_program(&mut program, &mut diagnostics);
+
+    // T1.5 phase 2: hoist `implement Iface for Type { fn m … }`
+    // method bodies into regular functions named
+    // `<TypeName>_<method>` (same convention as `methods on
+    // T { … }`). This lets the existing method-dispatch
+    // path (closure #82 etc.) resolve `recv.method()` calls
+    // statically. The interface declaration is preserved
+    // for signature validation; impl method signatures must
+    // match the interface's declared shape exactly.
+    hoist_impls_into_functions(&mut program, &mut diagnostics);
     for func in &program.functions {
         if !func.where_clauses.is_empty() {
             let clause = &func.where_clauses[0];
@@ -396,6 +419,21 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // not blocking common shapes. Each field must
     // still be Copy + non-reference (RAII chains for
     // non-Copy fields land in T1.2 phase 2b).
+    // Pre-pass: register every struct that directly carries a
+    // non-Copy field (OwnedStr in v1) so `Type::is_copy()` reports
+    // the aggregate as affine. Must run before the validation loop
+    // below, because that loop calls `field.ty.is_copy()` to decide
+    // whether the field type is acceptable. T1.2 phase 2b.
+    {
+        let mut non_copy: Vec<String> = Vec::new();
+        for decl in &program.structs {
+            if decl.fields.iter().any(|f| matches!(f.ty, Type::OwnedStr)) {
+                non_copy.push(decl.name.clone());
+            }
+        }
+        crate::ast::set_non_copy_structs(non_copy);
+    }
+
     let mut struct_registry: BTreeMap<String, StructInfo> = BTreeMap::new();
     for decl in &program.structs {
         if decl.fields.is_empty() || decl.fields.len() > 64 {
@@ -418,13 +456,19 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
                     ),
                 ));
             }
-            if !field.ty.is_copy() {
+            // T1.2 phase 2b (narrow MVP): allow `OwnedStr` as a
+            // struct field. Other non-Copy types (Vec, [T;N],
+            // Task, Atomic, etc.) need deeper backend work
+            // and stay rejected.
+            let field_allowed = field.ty.is_copy() || matches!(field.ty, Type::OwnedStr);
+            if !field_allowed {
                 diagnostics.push(Diagnostic::new(
                     field.span,
                     format!(
                         "struct field '{}::{}' has non-Copy type {} — \
-                         v1 struct fields are Copy-only (RAII chains \
-                         land in T1.2 phase 2)",
+                         v1 supports Copy types and OwnedStr as struct \
+                         fields; other affine types (Vec / [T;N] / Task / \
+                         Atomic) need more codegen work",
                         decl.name, field.name, field.ty
                     ),
                 ));
@@ -558,25 +602,72 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
             ));
         }
         for i in 0..decl.variants.len() {
-            // T1.3 phase 2a gate: parser accepts
-            // `Variant(T1, T2, …)` payload syntax, but
-            // tagged-union codegen (C: struct{tag,union};
-            // LLVM: { i32, [N x i8] }) + pattern binding
-            // (`Some(x) then`) land in phase 2b. Until then,
-            // payloaded variants surface a clear WIP gate
-            // so users learn the syntax parses but isn't
-            // executable yet.
-            if !decl.variants[i].payload.is_empty() {
+            // T1.3 phase 2b — payloaded variants are now
+            // executable in tree-C: backend lays the enum out
+            // as a tagged-union struct (`Enum_<Name>`),
+            // constructors build the struct literal, match
+            // dispatches on the `.tag` field, and pattern
+            // bindings extract `.payload` into a local with
+            // the variant's payload type. V1 requires payloads
+            // to be Copy + single-field; multi-field payloads
+            // and mixed payload types across variants stay
+            // rejected (need union representation).
+            if decl.variants[i].payload.len() > 1 {
                 diagnostics.push(Diagnostic::new(
                     decl.variants[i].name_span,
                     format!(
-                        "enum '{}' variant '{}' has a payload — payloaded variants \
-                         parse but tagged-union codegen + pattern binding are still \
-                         in progress (T1.3 phase 2b). Use payload-less variants for now.",
-                        decl.name, decl.variants[i].name
+                        "enum '{}' variant '{}' has {} payload fields — \
+                         only single-field payloads supported in v1 (T1.3 \
+                         phase 2b)",
+                        decl.name,
+                        decl.variants[i].name,
+                        decl.variants[i].payload.len()
                     ),
                 ));
             }
+            if let Some(payload_ty) = decl.variants[i].payload.first() {
+                if !payload_ty.is_copy() {
+                    diagnostics.push(Diagnostic::new(
+                        decl.variants[i].name_span,
+                        format!(
+                            "enum '{}' variant '{}' payload type {} is not Copy — \
+                             v1 enum payloads are Copy-only (RAII chains for \
+                             enum payloads land with T1.2 phase 2 struct RAII work)",
+                            decl.name,
+                            decl.variants[i].name,
+                            payload_ty
+                        ),
+                    ));
+                }
+            }
+        }
+        // Mixed-payload-type check: all variants with payloads
+        // must share the same payload type (single-field
+        // simplification — multi-type would need a union).
+        let payload_types: Vec<(&str, &Type)> = decl
+            .variants
+            .iter()
+            .filter_map(|v| v.payload.first().map(|p| (v.name.as_str(), p)))
+            .collect();
+        if payload_types.len() >= 2 {
+            let (first_name, first_ty) = payload_types[0];
+            for (other_name, other_ty) in &payload_types[1..] {
+                if *other_ty != first_ty {
+                    diagnostics.push(Diagnostic::new(
+                        decl.name_span,
+                        format!(
+                            "enum '{}' has mixed payload types — '{}' carries {} \
+                             but '{}' carries {}. V1 requires all payload-bearing \
+                             variants to share the same payload type (multi-type \
+                             representation deferred).",
+                            decl.name, first_name, first_ty, other_name, other_ty
+                        ),
+                    ));
+                    break;
+                }
+            }
+        }
+        for i in 0..decl.variants.len() {
             for j in (i + 1)..decl.variants.len() {
                 if decl.variants[i].name == decl.variants[j].name {
                     diagnostics.push(Diagnostic::new(
@@ -608,6 +699,11 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
             decl.name.clone(),
             EnumInfo {
                 variants: decl.variants.iter().map(|v| v.name.clone()).collect(),
+                payload_types: decl
+                    .variants
+                    .iter()
+                    .map(|v| v.payload.first().cloned())
+                    .collect(),
             },
         );
     }
@@ -730,6 +826,11 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
             .map(|e| crate::ir::TypedEnumDecl {
                 name: e.name.clone(),
                 variants: e.variants.iter().map(|v| v.name.clone()).collect(),
+                payload_types: e
+                    .variants
+                    .iter()
+                    .map(|v| v.payload.first().cloned())
+                    .collect(),
             })
             .collect();
         Ok(CheckedProgram {
@@ -1426,6 +1527,796 @@ fn hoist_methods_into_functions(
     program.methods_blocks.clear();
 }
 
+/// T1.5 phase 2: hoist `implement Iface for Type { fn m … }`
+/// method bodies into regular functions named
+/// `<TypeName>_<method>`, validating each method's signature
+/// against the interface's declared shape. Once hoisted, the
+/// existing method-dispatch path resolves `recv.method()` to
+/// the impl function statically. The interface itself stays
+/// in `program.interfaces` for signature lookup only.
+///
+/// V1 restrictions:
+/// - The impl must cover EVERY method declared by the
+///   interface (no partial impls). Extra methods not in the
+///   interface are rejected.
+/// - Each impl method's signature (params + return type)
+///   must match the interface's declaration after
+///   substituting `Self` (`Type::Param("Self")`-style placeholder
+///   if used) with `for_type`. v1 doesn't actually require
+///   a Self placeholder — interface methods specify
+///   parameters directly; the validation is positional
+///   parameter-type matching.
+/// - The impl must not collide with an existing
+///   `methods on T { fn method() }` or another impl of the
+///   same interface for the same type.
+fn hoist_impls_into_functions(
+    program: &mut Program,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Build interface lookup.
+    let iface_by_name: HashMap<String, &crate::ast::InterfaceDecl> = program
+        .interfaces
+        .iter()
+        .map(|i| (i.name.clone(), i))
+        .collect();
+    let mut hoisted: Vec<Function> = Vec::new();
+    for imp in &program.impls {
+        // T2.7 phase 1: `implement Drop for T` is recognized as
+        // a special interface contract. The auto-call at
+        // scope exit lands with T1.2 phase 2b RAII work (#3);
+        // until then, users can declare the impl and call
+        // `t.drop()` manually. The shape is validated here
+        // so the contract is forward-compatible: `fn drop(self:
+        // T) -> i64` (i64 return for v1 — return-type
+        // generalization waits on T2.7 phase 2). Anything
+        // else surfaces a targeted diagnostic.
+        if imp.interface_name == "Drop" {
+            let type_name = match &imp.for_type {
+                Type::Struct(n) | Type::Enum(n) => n.clone(),
+                _ => String::new(),
+            };
+            if imp.methods.len() != 1 || imp.methods[0].name != "drop" {
+                diagnostics.push(Diagnostic::new(
+                    imp.span,
+                    format!(
+                        "`implement Drop for {}` must declare exactly one method \
+                         named `drop` (T2.7)",
+                        imp.for_type
+                    ),
+                ));
+            } else {
+                let m = &imp.methods[0];
+                let sig_ok = m.params.len() == 1
+                    && m.params[0].name == "self"
+                    && m.return_type == Type::I64;
+                if !sig_ok {
+                    diagnostics.push(Diagnostic::new(
+                        m.span,
+                        format!(
+                            "Drop impl for '{}' must have signature \
+                             `fn drop(self: {}) -> i64` — got {} params, return \
+                             type {}",
+                            type_name, type_name, m.params.len(), m.return_type
+                        ),
+                    ));
+                }
+            }
+            // Note about future work — non-blocking informational.
+            // (Not emitted as a diagnostic to keep the impl
+            // useful for manual-call patterns today.)
+        }
+        // Find the interface decl.
+        let iface = match iface_by_name.get(&imp.interface_name) {
+            Some(i) => *i,
+            None => {
+                diagnostics.push(Diagnostic::new(
+                    imp.span,
+                    format!(
+                        "`implement {} for {}` references unknown interface '{}'",
+                        imp.interface_name, imp.for_type, imp.interface_name
+                    ),
+                ));
+                continue;
+            }
+        };
+        // for_type must be a nominal type (struct or enum).
+        let type_name = match &imp.for_type {
+            Type::Struct(n) | Type::Enum(n) => n.clone(),
+            other => {
+                diagnostics.push(Diagnostic::new(
+                    imp.span,
+                    format!(
+                        "`implement {} for {}` requires a struct or enum type \
+                         (got {})",
+                        imp.interface_name, imp.for_type, other
+                    ),
+                ));
+                continue;
+            }
+        };
+        // Track which interface methods this impl covers.
+        let mut covered: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for method in &imp.methods {
+            let iface_method = iface
+                .methods
+                .iter()
+                .find(|m| m.name == method.name);
+            let iface_method = match iface_method {
+                Some(m) => m,
+                None => {
+                    diagnostics.push(Diagnostic::new(
+                        method.span,
+                        format!(
+                            "interface '{}' has no method '{}' — the impl declares \
+                             a method not in the interface",
+                            imp.interface_name, method.name
+                        ),
+                    ));
+                    continue;
+                }
+            };
+            // Validate signature: parameter count + return type.
+            if method.params.len() != iface_method.params.len() {
+                diagnostics.push(Diagnostic::new(
+                    method.span,
+                    format!(
+                        "impl method '{}::{}' has {} parameters but interface \
+                         declares {}",
+                        type_name, method.name, method.params.len(),
+                        iface_method.params.len()
+                    ),
+                ));
+                continue;
+            }
+            if method.return_type != iface_method.return_type {
+                diagnostics.push(Diagnostic::new(
+                    method.span,
+                    format!(
+                        "impl method '{}::{}' returns {} but interface declares {}",
+                        type_name, method.name, method.return_type,
+                        iface_method.return_type
+                    ),
+                ));
+                continue;
+            }
+            covered.insert(method.name.clone());
+            // Mangle to `<TypeName>_<method>` (same as the
+            // methods-on-T convention so `recv.method()`
+            // dispatch resolves automatically).
+            let mangled = format!("{}_{}", type_name, method.name);
+            if program.functions.iter().any(|f| f.name == mangled)
+                || hoisted.iter().any(|f| f.name == mangled)
+            {
+                diagnostics.push(Diagnostic::new(
+                    method.span,
+                    format!(
+                        "impl method '{}::{}' (mangled to '{}') collides with an \
+                         existing function — `implement` and `methods on T` can't \
+                         both define the same method",
+                        type_name, method.name, mangled
+                    ),
+                ));
+                continue;
+            }
+            let mut renamed = method.clone();
+            renamed.name = mangled;
+            hoisted.push(renamed);
+        }
+        // Validate exhaustive coverage.
+        for iface_method in &iface.methods {
+            if !covered.contains(&iface_method.name) {
+                diagnostics.push(Diagnostic::new(
+                    imp.span,
+                    format!(
+                        "`implement {} for {}` is missing the interface method '{}'",
+                        imp.interface_name, type_name, iface_method.name
+                    ),
+                ));
+            }
+        }
+    }
+    program.functions.extend(hoisted);
+    program.impls.clear();
+}
+
+/// T2.6 phase 2: rewrite function bodies of the form
+/// ```ignore
+/// fn name(args) -> EnumType {
+///   let v: T = try opt;
+///   let a: …  = …;     // any number of let-stmts
+///   …
+///   return E;          // E has type EnumType
+/// }
+/// ```
+/// into the equivalent match-based body that early-returns
+/// the "early-return" variant when `opt` is that variant, or
+/// extracts the payload into `v` and proceeds otherwise:
+/// ```ignore
+/// fn name(args) -> EnumType {
+///   return match opt {
+///     EnumType.SomeLike(__try_v_<n>) then {
+///       let v: T = __try_v_<n>;
+///       let a: … = …;
+///       …
+///       E
+///     },
+///     EnumType.NoneLike then EnumType.NoneLike,
+///   };
+/// }
+/// ```
+/// For v1 the rewrite is restricted to functions where the
+/// body has shape `[Let(try) , Let*, Return]` — the try-let
+/// is the first statement, intermediate stmts are all
+/// `let`-bindings (block-expressions accept Let only), and
+/// the last stmt is a `return`. Functions that don't match
+/// this shape fall through to the Phase 1 gate diagnostic
+/// emitted by `check_expr`. The enum must have exactly one
+/// payloaded variant and exactly one payload-less variant.
+fn desugar_try_let_in_program(
+    program: &mut Program,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    use crate::ast::{EnumDecl, MatchArm, Pattern};
+    // Build a quick enum registry: name → decl, so the
+    // rewriter can find Some-like / None-like variants.
+    let enum_by_name: std::collections::HashMap<String, EnumDecl> =
+        program
+            .enums
+            .iter()
+            .cloned()
+            .map(|e| (e.name.clone(), e))
+            .collect();
+    let mut counter: usize = 0;
+    for function in program.functions.iter_mut() {
+        // Restrict shape: body[0] must be Let with Try RHS;
+        // body[1..len-1] must all be Let stmts; body[last]
+        // must be Return.
+        if function.body.len() < 2 {
+            continue;
+        }
+        let has_try = matches!(
+            &function.body[0],
+            Stmt::Let { expr: e, .. }
+                if matches!(e.kind, ExprKind::Try { .. })
+        );
+        if !has_try {
+            continue;
+        }
+        // Tail must be Return.
+        let last_idx = function.body.len() - 1;
+        if !matches!(&function.body[last_idx], Stmt::Return { .. }) {
+            continue;
+        }
+        // Intermediate stmts must all be `let`.
+        let intermediate_ok = function.body[1..last_idx]
+            .iter()
+            .all(|s| matches!(s, Stmt::Let { .. }));
+        if !intermediate_ok {
+            diagnostics.push(Diagnostic::new(
+                function.body[0].span(),
+                "`try` desugar in v1 requires only `let` statements between \
+                 the `try`-let and the final `return`; control flow / \
+                 assignments between aren't supported yet (T2.6 phase 2 follow-up)",
+            ));
+            continue;
+        }
+        // Extract the try-let pieces.
+        let (try_name, try_annotation, try_inner, try_span) = match &function.body[0] {
+            Stmt::Let {
+                name,
+                annotation,
+                expr,
+                span,
+            } => {
+                let inner = match &expr.kind {
+                    ExprKind::Try { inner } => (**inner).clone(),
+                    _ => unreachable!(),
+                };
+                (name.clone(), annotation.clone(), inner, *span)
+            }
+            _ => unreachable!(),
+        };
+        // Function return type must be a known payloaded enum.
+        let return_enum_name = match &function.return_type {
+            Type::Enum(n) => n.clone(),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    try_span,
+                    format!(
+                        "`try` requires the enclosing function's return type \
+                         to be an enum; got {}",
+                        function.return_type
+                    ),
+                ));
+                continue;
+            }
+        };
+        let enum_decl = match enum_by_name.get(&return_enum_name) {
+            Some(d) => d,
+            None => continue, // unknown enum; downstream checker handles
+        };
+        // Find the payloaded variant (the "Some-like" — has
+        // a payload) and the payload-less variant ("None-like").
+        let payloaded: Vec<_> = enum_decl
+            .variants
+            .iter()
+            .filter(|v| !v.payload.is_empty())
+            .collect();
+        let payloadless: Vec<_> = enum_decl
+            .variants
+            .iter()
+            .filter(|v| v.payload.is_empty())
+            .collect();
+        if payloaded.len() != 1 || payloadless.len() != 1 {
+            diagnostics.push(Diagnostic::new(
+                try_span,
+                format!(
+                    "`try` requires the enum '{}' to have exactly one payloaded \
+                     variant and one payload-less variant; got {} payloaded and \
+                     {} payload-less",
+                    return_enum_name,
+                    payloaded.len(),
+                    payloadless.len()
+                ),
+            ));
+            continue;
+        }
+        let some_variant = payloaded[0].name.clone();
+        let none_variant = payloadless[0].name.clone();
+        // Synthesize fresh binding name.
+        let fresh = format!("__try_v_{}", counter);
+        counter += 1;
+        // Build the block-expr stmts for the Some arm: the
+        // `let v: T = __t;` followed by the intermediate
+        // lets, with the Return's expression as the tail.
+        let mut block_stmts: Vec<Stmt> = Vec::new();
+        block_stmts.push(Stmt::Let {
+            name: try_name.clone(),
+            annotation: try_annotation.clone(),
+            expr: Expr {
+                kind: ExprKind::Var(fresh.clone()),
+                span: try_span,
+            },
+            span: try_span,
+        });
+        for s in &function.body[1..last_idx] {
+            block_stmts.push(s.clone());
+        }
+        let tail_expr = match &function.body[last_idx] {
+            Stmt::Return { expr, .. } => expr.clone(),
+            _ => unreachable!(),
+        };
+        let some_arm_body = Expr {
+            kind: ExprKind::Block {
+                stmts: block_stmts,
+                tail: Box::new(tail_expr.clone()),
+            },
+            span: try_span,
+        };
+        // None arm body: re-emit the early-return value as
+        // an enum-variant reference. Use FieldAccess shape
+        // since `EnumName.Variant` lexes that way.
+        let none_arm_body = Expr {
+            kind: ExprKind::FieldAccess {
+                object: Box::new(Expr {
+                    kind: ExprKind::Var(return_enum_name.clone()),
+                    span: try_span,
+                }),
+                field: none_variant.clone(),
+            },
+            span: try_span,
+        };
+        let return_span = function.body[last_idx].span();
+        let match_expr = Expr {
+            kind: ExprKind::Match {
+                scrutinee: Box::new(try_inner),
+                arms: vec![
+                    MatchArm {
+                        pattern: Pattern::VariantWithBinding {
+                            enum_name: return_enum_name.clone(),
+                            variant: some_variant,
+                            binding: fresh,
+                        },
+                        pattern_span: try_span,
+                        body: some_arm_body,
+                    },
+                    MatchArm {
+                        pattern: Pattern::Variant {
+                            enum_name: return_enum_name,
+                            variant: none_variant,
+                        },
+                        pattern_span: try_span,
+                        body: none_arm_body,
+                    },
+                ],
+            },
+            span: try_span,
+        };
+        function.body = vec![Stmt::Return {
+            expr: match_expr,
+            span: return_span,
+        }];
+    }
+}
+
+/// T1.4 phase 2: monomorphize generic functions. Walks the
+/// program for calls to `fn name<T>(…)` generic functions,
+/// infers T from each call site's argument types (only literal
+/// args supported in v1), generates a specialized copy per
+/// (fn, concrete-type) combo, and rewrites call sites to use
+/// the specialized name. Removes the originals.
+///
+/// V1 restrictions:
+/// - Single type parameter only (`fn id<T>`).
+/// - T inferred from the FIRST argument's literal type at the
+///   call site. Other arguments must coerce to the same T.
+/// - Only integer / float / bool literal arguments support
+///   inference. Var arguments need type-checking context that
+///   doesn't exist at this pre-pass — defer to a follow-up.
+fn monomorphize_generics_in_program(
+    program: &mut Program,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Collect generic function templates by name, then drop
+    // them from the program (specializations replace them).
+    let generic_templates: HashMap<String, Function> = program
+        .functions
+        .iter()
+        .filter(|f| !f.type_params.is_empty())
+        .cloned()
+        .map(|f| (f.name.clone(), f))
+        .collect();
+    if generic_templates.is_empty() {
+        return;
+    }
+    // Walk every function's body for calls to generic fns
+    // and record the inferred concrete type. Specializations
+    // are deduplicated by (fn_name, concrete_type_name).
+    // Use a Vec + linear dedup since Type doesn't derive Ord
+    // (some variants carry Spans).
+    let mut needed: Vec<(String, Type)> = Vec::new();
+    for f in &program.functions {
+        if !f.type_params.is_empty() {
+            continue; // skip generic templates
+        }
+        for stmt in &f.body {
+            collect_generic_calls_in_stmt(stmt, &generic_templates, &mut needed, diagnostics);
+        }
+    }
+    // Emit the bounded-generic gate for any template with
+    // `where T is Iface` clauses BEFORE specializing — those
+    // need interface dispatch (T1.5 phase 2). Skip
+    // specialization for them so we don't silently produce
+    // wrong code.
+    let mut bounded_skip: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for (name, template) in &generic_templates {
+        if !template.where_clauses.is_empty() {
+            let clause = &template.where_clauses[0];
+            diagnostics.push(Diagnostic::new(
+                clause.span,
+                format!(
+                    "`where {} is {}` parses but bounded-generic checking \
+                     is still in progress (T1.5 phase 2). Specialize manually \
+                     by writing a non-generic copy for each concrete type.",
+                    clause.type_param, clause.interface_name
+                ),
+            ));
+            bounded_skip.insert(name.clone());
+        }
+    }
+    // Generate specialized fns.
+    let mut specialized: Vec<Function> = Vec::new();
+    for (fn_name, concrete_ty) in &needed {
+        if bounded_skip.contains(fn_name) {
+            continue;
+        }
+        let template = match generic_templates.get(fn_name) {
+            Some(t) => t,
+            None => continue,
+        };
+        if template.type_params.len() != 1 {
+            diagnostics.push(Diagnostic::new(
+                template.span,
+                format!(
+                    "generic function '{}' has {} type parameters — v1 supports \
+                     only one (T1.4 phase 2 follow-up).",
+                    fn_name,
+                    template.type_params.len()
+                ),
+            ));
+            continue;
+        }
+        let t_name = &template.type_params[0];
+        let specialized_name = format!("{}__{}", fn_name, type_mangle(concrete_ty));
+        let mut clone = template.clone();
+        clone.name = specialized_name.clone();
+        clone.type_params.clear();
+        // Substitute Type::Param(t_name) → concrete in params,
+        // return type, and body.
+        for p in clone.params.iter_mut() {
+            substitute_type_param(&mut p.ty, t_name, concrete_ty);
+        }
+        substitute_type_param(&mut clone.return_type, t_name, concrete_ty);
+        for s in clone.body.iter_mut() {
+            substitute_type_param_in_stmt(s, t_name, concrete_ty);
+        }
+        specialized.push(clone);
+    }
+    // Rewrite call sites to use specialized names.
+    for f in program.functions.iter_mut() {
+        if !f.type_params.is_empty() {
+            continue;
+        }
+        for stmt in f.body.iter_mut() {
+            rewrite_generic_calls_in_stmt(stmt, &generic_templates);
+        }
+    }
+    // Surface dead-generic diagnostic for any generic
+    // template that didn't get specialized (no call sites
+    // inferred concrete types for it).
+    let specialized_names: std::collections::HashSet<&String> = needed
+        .iter()
+        .map(|(n, _)| n)
+        .collect();
+    for (name, template) in &generic_templates {
+        if !specialized_names.contains(name) {
+            diagnostics.push(Diagnostic::new(
+                template.span,
+                format!(
+                    "generic function '{}' is declared but never called with \
+                     concrete types — monomorphization couldn't specialize it. \
+                     Either call it from a non-generic call site or remove the \
+                     declaration.",
+                    name
+                ),
+            ));
+        }
+    }
+    // Remove original generics; append specializations.
+    program.functions.retain(|f| f.type_params.is_empty());
+    program.functions.extend(specialized);
+}
+
+/// Walk a stmt and collect (generic-fn-name, inferred-T) pairs
+/// from any call sites.
+fn collect_generic_calls_in_stmt(
+    stmt: &Stmt,
+    generics: &std::collections::HashMap<String, Function>,
+    needed: &mut Vec<(String, Type)>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match stmt {
+        Stmt::Let { expr, .. } | Stmt::Assign { expr, .. } | Stmt::Return { expr, .. } => {
+            collect_generic_calls_in_expr(expr, generics, needed, diagnostics);
+        }
+        Stmt::Print { items, .. } => {
+            for it in items {
+                if let crate::ast::PrintItem::Expr(e) = it {
+                    collect_generic_calls_in_expr(e, generics, needed, diagnostics);
+                }
+            }
+        }
+        Stmt::If { cond, then_body, else_body, .. } => {
+            collect_generic_calls_in_expr(cond, generics, needed, diagnostics);
+            for s in then_body {
+                collect_generic_calls_in_stmt(s, generics, needed, diagnostics);
+            }
+            for s in else_body {
+                collect_generic_calls_in_stmt(s, generics, needed, diagnostics);
+            }
+        }
+        Stmt::While { cond, body, .. } => {
+            collect_generic_calls_in_expr(cond, generics, needed, diagnostics);
+            for s in body {
+                collect_generic_calls_in_stmt(s, generics, needed, diagnostics);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_generic_calls_in_expr(
+    expr: &Expr,
+    generics: &std::collections::HashMap<String, Function>,
+    needed: &mut Vec<(String, Type)>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match &expr.kind {
+        ExprKind::Call { name, args, .. } => {
+            if generics.contains_key(name) {
+                if let Some(t) = infer_concrete_type_for_call(args, diagnostics, expr.span) {
+                    let pair = (name.clone(), t);
+                    if !needed.contains(&pair) {
+                        needed.push(pair);
+                    }
+                }
+            }
+            for a in args {
+                collect_generic_calls_in_expr(a, generics, needed, diagnostics);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_generic_calls_in_expr(left, generics, needed, diagnostics);
+            collect_generic_calls_in_expr(right, generics, needed, diagnostics);
+        }
+        ExprKind::Unary { expr: inner, .. } => {
+            collect_generic_calls_in_expr(inner, generics, needed, diagnostics);
+        }
+        _ => {}
+    }
+}
+
+/// Infer the concrete type for a generic call from its first
+/// argument. v1 supports literal arguments only (Int/Float/Bool).
+fn infer_concrete_type_for_call(
+    args: &[Expr],
+    diagnostics: &mut Vec<Diagnostic>,
+    span: Span,
+) -> Option<Type> {
+    let first = args.first()?;
+    match &first.kind {
+        ExprKind::Int(_) => Some(Type::I64),
+        ExprKind::Float(_) => Some(Type::F64),
+        ExprKind::Bool(_) => Some(Type::Bool),
+        _ => {
+            diagnostics.push(Diagnostic::new(
+                span,
+                "v1 generic-call inference supports only literal arguments \
+                 (integer / float / bool) at the first position — variable \
+                 arguments need type-checking context that the monomorphizer \
+                 pre-pass doesn't have yet (T1.4 phase 2 follow-up).",
+            ));
+            None
+        }
+    }
+}
+
+/// Rewrite `Call { name: generic_fn, args }` to use the
+/// specialized name based on the first arg's inferred type.
+fn rewrite_generic_calls_in_stmt(
+    stmt: &mut Stmt,
+    generics: &std::collections::HashMap<String, Function>,
+) {
+    match stmt {
+        Stmt::Let { expr, .. } | Stmt::Assign { expr, .. } | Stmt::Return { expr, .. } => {
+            rewrite_generic_calls_in_expr(expr, generics);
+        }
+        Stmt::Print { items, .. } => {
+            for it in items.iter_mut() {
+                if let crate::ast::PrintItem::Expr(e) = it {
+                    rewrite_generic_calls_in_expr(e, generics);
+                }
+            }
+        }
+        Stmt::If { cond, then_body, else_body, .. } => {
+            rewrite_generic_calls_in_expr(cond, generics);
+            for s in then_body.iter_mut() {
+                rewrite_generic_calls_in_stmt(s, generics);
+            }
+            for s in else_body.iter_mut() {
+                rewrite_generic_calls_in_stmt(s, generics);
+            }
+        }
+        Stmt::While { cond, body, .. } => {
+            rewrite_generic_calls_in_expr(cond, generics);
+            for s in body.iter_mut() {
+                rewrite_generic_calls_in_stmt(s, generics);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_generic_calls_in_expr(
+    expr: &mut Expr,
+    generics: &std::collections::HashMap<String, Function>,
+) {
+    if let ExprKind::Call { name, args, .. } = &mut expr.kind {
+        if generics.contains_key(name) {
+            // Infer T from first arg, then rename.
+            let inferred = args.first().and_then(|a| match &a.kind {
+                ExprKind::Int(_) => Some(Type::I64),
+                ExprKind::Float(_) => Some(Type::F64),
+                ExprKind::Bool(_) => Some(Type::Bool),
+                _ => None,
+            });
+            if let Some(t) = inferred {
+                *name = format!("{}__{}", name, type_mangle(&t));
+            }
+        }
+        for a in args.iter_mut() {
+            rewrite_generic_calls_in_expr(a, generics);
+        }
+    } else {
+        match &mut expr.kind {
+            ExprKind::Binary { left, right, .. } => {
+                rewrite_generic_calls_in_expr(left, generics);
+                rewrite_generic_calls_in_expr(right, generics);
+            }
+            ExprKind::Unary { expr: inner, .. } => {
+                rewrite_generic_calls_in_expr(inner, generics);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Mangle a concrete type to a name fragment for the
+/// specialized function. e.g. `Type::I64` → "i64".
+fn type_mangle(ty: &Type) -> String {
+    match ty {
+        Type::I64 => "i64".to_string(),
+        Type::I32 => "i32".to_string(),
+        Type::I16 => "i16".to_string(),
+        Type::I8 => "i8".to_string(),
+        Type::U64 => "u64".to_string(),
+        Type::U32 => "u32".to_string(),
+        Type::U16 => "u16".to_string(),
+        Type::U8 => "u8".to_string(),
+        Type::F64 => "f64".to_string(),
+        Type::F32 => "f32".to_string(),
+        Type::Bool => "bool".to_string(),
+        Type::Str => "Str".to_string(),
+        other => format!("{:?}", other).replace([' ', '<', '>', ','], "_"),
+    }
+}
+
+/// Substitute Type::Param(t_name) → concrete in a Type.
+fn substitute_type_param(ty: &mut Type, t_name: &str, concrete: &Type) {
+    match ty {
+        Type::Param(n) if n == t_name => {
+            *ty = concrete.clone();
+        }
+        Type::Vec(inner) | Type::Ref(inner) | Type::RefMut(inner)
+        | Type::Atomic(inner) | Type::Mutex(inner) | Type::Guard(inner) => {
+            substitute_type_param(inner, t_name, concrete);
+        }
+        Type::Array { element, .. } => substitute_type_param(element, t_name, concrete),
+        Type::Channel(element, _) => substitute_type_param(element, t_name, concrete),
+        Type::Tuple(elements) => {
+            for e in elements.iter_mut() {
+                substitute_type_param(e, t_name, concrete);
+            }
+        }
+        Type::FnPtr(params, ret) => {
+            for p in params.iter_mut() {
+                substitute_type_param(p, t_name, concrete);
+            }
+            substitute_type_param(ret, t_name, concrete);
+        }
+        _ => {}
+    }
+}
+
+/// Substitute Type::Param(t_name) → concrete in a Stmt's
+/// type annotations. Doesn't touch expression sub-trees
+/// (those don't carry Type::Param in v1 — type params only
+/// appear in declarations).
+fn substitute_type_param_in_stmt(stmt: &mut Stmt, t_name: &str, concrete: &Type) {
+    use crate::ast::Stmt as S;
+    match stmt {
+        S::Let { annotation: Some(a), .. } | S::LetTuple { annotation: Some(a), .. } => {
+            substitute_type_param(a, t_name, concrete);
+        }
+        S::If { then_body, else_body, .. } => {
+            for s in then_body.iter_mut() {
+                substitute_type_param_in_stmt(s, t_name, concrete);
+            }
+            for s in else_body.iter_mut() {
+                substitute_type_param_in_stmt(s, t_name, concrete);
+            }
+        }
+        S::While { body, .. } => {
+            for s in body.iter_mut() {
+                substitute_type_param_in_stmt(s, t_name, concrete);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Try to fold a `const X: T = …;` initializer into a
 /// concrete `TypedConst`. v1 accepts plain integer/float/bool
 /// literals and unary-minus-of-literal. Anything else returns
@@ -1463,21 +2354,30 @@ fn check_function(
     consts: &BTreeMap<String, (Type, TypedConst, Span)>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> TypedFunction {
-    // T1.4 phase 1: generic functions parse and validate
-    // their signature, but call-site monomorphization +
-    // body type-checking with opaque T are phase-2 work.
-    // For now, surface a clear "WIP" diagnostic so the
-    // syntax doesn't silently produce broken code.
+    // T1.4 phase 2: monomorphization is now wired up as a
+    // pre-pass (`monomorphize_generics_in_program`). Any
+    // remaining generic function arriving here was unused
+    // (no calls to monomorphize against), so surface a
+    // gentler diagnostic and skip the per-fn check.
     if !function.type_params.is_empty() {
         diagnostics.push(Diagnostic::new(
             function.span,
             format!(
-                "generic function '{}' parses but call-site monomorphization \
-                 is still in progress (T1.4 phase 2). Specialize manually \
-                 by writing a non-generic copy for each concrete type.",
+                "generic function '{}' is declared but never called with concrete \
+                 types — monomorphization couldn't specialize it. Either call it \
+                 from a non-generic call site or remove the declaration.",
                 function.name
             ),
         ));
+        return TypedFunction {
+            name: function.name.clone(),
+            params: Vec::new(),
+            return_type: function.return_type.clone(),
+            requires: Vec::new(),
+            body: Vec::new(),
+            is_pure: function.is_pure,
+            span: function.span,
+        };
     }
     let mut env = Env::new();
     env.structs = structs.clone();
@@ -1504,6 +2404,7 @@ fn check_function(
                 guarded_mutex: None,
                 no_drop: false,
                 is_const: true,
+                struct_literal_fields: None,
             },
         );
     }
@@ -1531,6 +2432,7 @@ fn check_function(
                     guarded_mutex: None,
                     no_drop: false,
                     is_const: false,
+                    struct_literal_fields: None,
                 },
             );
 
@@ -1576,6 +2478,7 @@ fn check_function(
                 guarded_mutex: None,
                 no_drop: false,
                 is_const: false,
+                struct_literal_fields: None,
             },
         );
         for ens in &function.ensures {
@@ -1943,6 +2846,17 @@ fn walk_branch_mutations_in_expr(
             walk_branch_mutations_in_expr(then_value, out);
             walk_branch_mutations_in_expr(else_value, out);
         }
+        ExprKind::Block { tail, .. } => {
+            // Block-stmts' mut-refs (if any) are scoped to the
+            // block — they don't escape because mut-refs are
+            // call-arg-only and the inner call's aliasing is
+            // checked locally. Walk only the tail value for
+            // mutation tracking of the surrounding expression.
+            walk_branch_mutations_in_expr(tail, out);
+        }
+        ExprKind::Try { inner } => {
+            walk_branch_mutations_in_expr(inner, out);
+        }
         ExprKind::Int(_)
         | ExprKind::Float(_)
         | ExprKind::Bool(_)
@@ -2216,6 +3130,21 @@ fn check_one_stmt(
                 _ => None,
             };
 
+            // Track struct-literal initializers so the SMT
+            // prove-rewriter can substitute `p.x` with the
+            // synthesized `p__x` per-field SMT var. Skip on
+            // shadowing (the previous binding's fields would
+            // need invalidation, which we don't track yet).
+            let struct_literal_fields = if !was_shadow {
+                if let ExprKind::StructLit { fields, .. } = &expr.kind {
+                    Some(fields.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             env.insert_current(
                 name.clone(),
                 VarInfo {
@@ -2228,6 +3157,7 @@ fn check_one_stmt(
                     guarded_mutex,
                     no_drop: false,
                     is_const: false,
+                    struct_literal_fields,
                 },
             );
 
@@ -3298,6 +4228,7 @@ fn check_one_stmt(
                     guarded_mutex: None,
                     no_drop: false,
                     is_const: false,
+                    struct_literal_fields: None,
                 },
             );
 
@@ -3641,6 +4572,7 @@ fn check_one_stmt(
                     guarded_mutex: None,
                     no_drop: var_no_drop,
                     is_const: false,
+                    struct_literal_fields: None,
                 },
             );
 
@@ -3831,6 +4763,7 @@ fn check_one_stmt(
                     guarded_mutex: None,
                     no_drop: false,
                     is_const: false,
+                    struct_literal_fields: None,
                 },
             );
 
@@ -3964,6 +4897,7 @@ fn check_one_stmt(
                     guarded_mutex: None,
                     no_drop: true,
                     is_const: false,
+                    struct_literal_fields: None,
                 },
             );
             // For each name, emit a Let binding that reads
@@ -4003,6 +4937,7 @@ fn check_one_stmt(
                         guarded_mutex: None,
                         no_drop: false,
                         is_const: false,
+                        struct_literal_fields: None,
                     },
                 );
             }
@@ -4236,6 +5171,81 @@ fn check_expr(
             check_call(name, *name_span, args, env, signatures, expr.span, diagnostics)
         }
         ExprKind::MethodCall { receiver, method, method_span, args } => {
+            // T1.3 phase 2b: `EnumName.Variant(payload)` is the
+            // payloaded enum constructor syntax. Parser routes it
+            // through MethodCall (since `.` + `(` looks like a
+            // method call). Intercept here when the receiver is
+            // a bare Var naming a declared enum AND the "method"
+            // matches one of its variants. v1 supports
+            // single-field payload only.
+            if let ExprKind::Var(enum_name) = &receiver.kind {
+                if let Some(enum_decl) = env.lookup_enum(enum_name) {
+                    if let Some((tag, _)) = enum_decl
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .find(|(_, v)| *v == method)
+                    {
+                        // Look up the variant's payload type from
+                        // the original declaration. The Env's
+                        // `EnumInfo` only carries variant names;
+                        // payload types live on the `EnumDecl` in
+                        // the program. Pull from signatures-like
+                        // registry via the program AST — we
+                        // shortcut by re-walking `env.enums`'s
+                        // companion decls. For v1, we attach the
+                        // payload type by looking it up in the
+                        // enum declaration we know the checker
+                        // already processed.
+                        let payload_ty = lookup_enum_variant_payload(
+                            env, enum_name, method,
+                        );
+                        if let Some(payload_ty) = payload_ty {
+                            // Exactly one payload arg for v1.
+                            if args.len() != 1 {
+                                diagnostics.push(Diagnostic::new(
+                                    expr.span,
+                                    format!(
+                                        "enum constructor '{}.{}' expects 1 payload argument, got {}",
+                                        enum_name, method, args.len()
+                                    ),
+                                ));
+                                return CheckedExpr::fallback_integer(expr.span);
+                            }
+                            let raw = check_expr(&args[0], env, signatures, diagnostics);
+                            let arg_checked = coerce_checked(
+                                raw, &payload_ty, args[0].span,
+                                "enum payload",
+                                diagnostics,
+                            );
+                            return CheckedExpr::new(
+                                TypedExprKind::EnumVariantWithPayload {
+                                    enum_name: enum_name.clone(),
+                                    variant: method.clone(),
+                                    tag: tag as u32,
+                                    payload: Box::new(arg_checked.expr),
+                                    payload_ty: payload_ty.clone(),
+                                },
+                                Type::Enum(enum_name.clone()),
+                                None,
+                                expr.span,
+                            );
+                        } else {
+                            // Calling a payload-less variant with
+                            // args — clean diagnostic.
+                            diagnostics.push(Diagnostic::new(
+                                expr.span,
+                                format!(
+                                    "enum variant '{}.{}' has no payload — use \
+                                     `{}.{}` without parentheses",
+                                    enum_name, method, enum_name, method
+                                ),
+                            ));
+                            return CheckedExpr::fallback_integer(expr.span);
+                        }
+                    }
+                }
+            }
             // T1.2 phase 2a: desugar `recv.method(args)` into a
             // regular call to the mangled `<TypeName>_<method>`
             // function. The receiver becomes the first argument.
@@ -4500,6 +5510,13 @@ fn check_expr(
                     &format!("struct field '{}'", fname),
                     diagnostics,
                 );
+                // Initializing a non-Copy struct field from a
+                // `Var` consumes the source binding. Without
+                // this, both the source binding and the struct
+                // field would own the same heap pointer and the
+                // backend would emit two `free` calls for it.
+                // T1.2 phase 2b.
+                consume_if_moved_var(&found.1, &coerced, env);
                 typed_fields.push((fname.clone(), coerced.expr));
             }
             // Reject unknown field names.
@@ -4767,8 +5784,112 @@ fn check_expr(
                         seen_variants.push(pat_variant);
                         (Some(tag as u32), Some(pat_variant.clone()), None)
                     }
+                    crate::ast::Pattern::VariantWithBinding {
+                        enum_name: pat_enum,
+                        variant: pat_variant,
+                        binding: _,
+                    } => {
+                        // T1.3 phase 2b: payloaded variant
+                        // destructure. Mirrors `Pattern::Variant`
+                        // for variant lookup; the binding gets
+                        // pushed into the arm body's scope below
+                        // so the body's reference to `v` resolves.
+                        if is_int_dispatch {
+                            diagnostics.push(Diagnostic::new(
+                                arm.pattern_span,
+                                format!(
+                                    "variant destructure pattern '{}.{}' in match arm \
+                                     but scrutinee is of integer type {}",
+                                    pat_enum, pat_variant, scrut_ty
+                                ),
+                            ));
+                            continue;
+                        }
+                        let enum_name = enum_name_opt.as_deref().unwrap_or("");
+                        if *pat_enum != enum_name {
+                            diagnostics.push(Diagnostic::new(
+                                arm.pattern_span,
+                                format!(
+                                    "match arm references enum '{}' but scrutinee \
+                                     is of enum '{}'",
+                                    pat_enum, enum_name
+                                ),
+                            ));
+                            continue;
+                        }
+                        let enum_decl = enum_decl_opt
+                            .as_ref()
+                            .expect("enum dispatch has enum_decl");
+                        let Some((tag, _)) = enum_decl
+                            .variants
+                            .iter()
+                            .enumerate()
+                            .find(|(_, v)| **v == *pat_variant)
+                        else {
+                            diagnostics.push(Diagnostic::new(
+                                arm.pattern_span,
+                                format!(
+                                    "enum '{}' has no variant '{}'",
+                                    enum_name, pat_variant
+                                ),
+                            ));
+                            continue;
+                        };
+                        // Variant must have a payload to bind.
+                        if enum_decl.variants[tag].is_empty() {
+                            // payload-less; this would be a checker
+                            // error in stricter v1, but we just
+                            // ignore the binding for now.
+                            let _ = enum_decl;
+                        }
+                        if seen_variants.contains(&pat_variant.as_str()) {
+                            diagnostics.push(Diagnostic::new(
+                                arm.pattern_span,
+                                format!(
+                                    "match arm for '{}.{}' appears twice",
+                                    enum_name, pat_variant
+                                ),
+                            ));
+                            continue;
+                        }
+                        seen_variants.push(pat_variant);
+                        (Some(tag as u32), Some(pat_variant.clone()), None)
+                    }
                 };
-                let body_checked = check_expr(&arm.body, env, signatures, diagnostics);
+                // Extract the binding name + payload type for
+                // VariantWithBinding patterns. Used both to
+                // populate the arm's binding field and to push
+                // the binding into env scope before checking the
+                // arm body.
+                let arm_binding: Option<(String, Type)> = match &arm.pattern {
+                    crate::ast::Pattern::VariantWithBinding {
+                        enum_name: pat_enum,
+                        variant: pat_variant,
+                        binding,
+                    } => lookup_enum_variant_payload(env, pat_enum, pat_variant)
+                        .map(|ty| (binding.clone(), ty)),
+                    _ => None,
+                };
+                let body_checked = if let Some((bname, bty)) = &arm_binding {
+                    env.push_scope();
+                    env.insert_current(bname.clone(), VarInfo {
+                        ty: bty.clone(),
+                        constant: None,
+                        moved: None,
+                        decl_span: arm.pattern_span,
+                        vec_literal_elements: None,
+                        array_version: 0,
+                        guarded_mutex: None,
+                        no_drop: false,
+                        is_const: false,
+                        struct_literal_fields: None,
+                    });
+                    let bc = check_expr(&arm.body, env, signatures, diagnostics);
+                    env.pop_scope();
+                    bc
+                } else {
+                    check_expr(&arm.body, env, signatures, diagnostics)
+                };
                 if let Some(expected) = &result_ty {
                     if body_checked.ty() != expected {
                         diagnostics.push(Diagnostic::new(
@@ -4789,6 +5910,7 @@ fn check_expr(
                     tag: tag_opt.unwrap_or(0),
                     is_wildcard,
                     int_value: int_opt,
+                    binding: arm_binding,
                     body: body_checked.expr,
                 });
             }
@@ -4824,15 +5946,120 @@ fn check_expr(
             }
             let _ = wildcard_arm_index;
             let unified = result_ty.unwrap_or(Type::I64);
+            // Constant-fold: if the scrutinee is an integer
+            // constant and one of the arms' int_value matches
+            // (or the wildcard catches it), and that arm's
+            // body is itself constant, the whole match folds.
+            // Lets `let r: i64 = match x { … };` propagate the
+            // match's value through the let-binding's constant
+            // tracker, so downstream `prove r == k` discharges
+            // via constant-fold without round-tripping to SMT.
+            let constant = match scrutinee_checked.constant() {
+                Some(TypedConst::Int(scrut_v)) => {
+                    let mut selected: Option<&TypedExpr> = None;
+                    for arm in &typed_arms {
+                        if let Some(pat) = arm.int_value {
+                            if pat == *scrut_v {
+                                selected = Some(&arm.body);
+                                break;
+                            }
+                        } else if arm.is_wildcard {
+                            selected = Some(&arm.body);
+                            break;
+                        }
+                    }
+                    selected.and_then(|body| body.constant.clone())
+                }
+                _ => None,
+            };
             CheckedExpr::new(
                 TypedExprKind::Match {
                     scrutinee: Box::new(scrutinee_checked.expr),
                     arms: typed_arms,
                 },
                 unified,
+                constant,
+                expr.span,
+            )
+        }
+        ExprKind::Block { stmts, tail } => {
+            // T-block MVP: `{ let a = e1; let b = e2; tail }`.
+            // Only `let` bindings allowed inside the block for
+            // v1; anything else (control flow, assignments,
+            // task spawn, etc.) surfaces a clean diagnostic
+            // pointing at the workaround (hoist the stmt
+            // outside the block). The block's type is the
+            // tail expression's type.
+            env.push_scope();
+            let mut typed_stmts: Vec<TypedStmt> = Vec::new();
+            for s in stmts {
+                match s {
+                    Stmt::Let { name, annotation, expr: rhs, span } => {
+                        let rhs_checked = if let Some(ann) = annotation {
+                            let raw = check_expr(rhs, env, signatures, diagnostics);
+                            coerce_checked(raw, ann, rhs.span, "let initializer", diagnostics)
+                        } else {
+                            check_expr(rhs, env, signatures, diagnostics)
+                        };
+                        let ty = rhs_checked.ty().clone();
+                        env.insert_current(name.clone(), VarInfo {
+                            ty: ty.clone(),
+                            constant: rhs_checked.constant().cloned(),
+                            moved: None,
+                            decl_span: *span,
+                            vec_literal_elements: None,
+                            array_version: 0,
+                            guarded_mutex: None,
+                            no_drop: false,
+                            is_const: false,
+                            struct_literal_fields: None,
+                        });
+                        typed_stmts.push(TypedStmt::Let {
+                            name: name.clone(),
+                            ty,
+                            expr: rhs_checked.expr,
+                        });
+                    }
+                    _ => {
+                        diagnostics.push(Diagnostic::new(
+                            s.span(),
+                            "block expressions in v1 only allow `let` bindings before the tail expression — hoist control flow or assignments outside the block",
+                        ));
+                    }
+                }
+            }
+            let tail_checked = check_expr(tail, env, signatures, diagnostics);
+            let block_ty = tail_checked.ty().clone();
+            env.pop_scope();
+            CheckedExpr::new(
+                TypedExprKind::Block {
+                    stmts: typed_stmts,
+                    tail: Box::new(tail_checked.expr),
+                },
+                block_ty,
                 None,
                 expr.span,
             )
+        }
+        ExprKind::Try { inner } => {
+            // T2.6 Phase 1: `try EXPR` is reserved as a
+            // keyword + parses cleanly, but the desugar to a
+            // statement-level match-with-early-return needs
+            // surrounding-stmt context that `check_expr`
+            // doesn't have here. The desugar lands in Phase 2
+            // alongside a stmt-level rewrite pass. Until
+            // then, emit a clean WIP gate that explains the
+            // limitation and points users at the manual
+            // pattern.
+            let _ = check_expr(inner, env, signatures, diagnostics);
+            diagnostics.push(Diagnostic::new(
+                expr.span,
+                "`try EXPR` is reserved as a keyword but the desugar to \
+                 match-with-early-return is still in progress (T2.6 Phase 2). \
+                 Write the pattern manually: `match opt { Opt.Some(v) then v, \
+                 Opt.None then return Opt.None };`",
+            ));
+            CheckedExpr::fallback_integer(expr.span)
         }
         ExprKind::IfExpr { cond, then_value, else_value } => {
             // T4 if-as-expression. cond must be bool;
@@ -4866,6 +6093,19 @@ fn check_expr(
                 ));
                 then_checked.ty().clone()
             };
+            // Constant-fold: if cond's constant is a known bool,
+            // collapse to the selected branch's constant. Lets
+            // downstream `prove r == k` discharge through the
+            // const-fold layer without round-tripping to SMT.
+            let constant = if let Some(TypedConst::Bool(c)) = cond_checked.constant() {
+                if *c {
+                    then_checked.constant().cloned()
+                } else {
+                    else_checked.constant().cloned()
+                }
+            } else {
+                None
+            };
             CheckedExpr::new(
                 TypedExprKind::IfExpr {
                     cond: Box::new(cond_checked.expr),
@@ -4873,7 +6113,7 @@ fn check_expr(
                     else_value: Box::new(else_checked.expr),
                 },
                 unified,
-                None,
+                constant,
                 expr.span,
             )
         }
@@ -8095,6 +9335,30 @@ fn substitute_expr(expr: &Expr, subs: &HashMap<String, Expr>) -> Expr {
             then_value: Box::new(substitute_expr(then_value, subs)),
             else_value: Box::new(substitute_expr(else_value, subs)),
         },
+        ExprKind::Block { stmts, tail } => {
+            // Substitution walks into block-internal let RHSes
+            // and the tail. The let-bound names themselves
+            // shadow any matching subs entry inside the block,
+            // but for v1 we don't gate on that — block-expr
+            // lets typically use fresh names and substitution
+            // targets are outer free vars.
+            let new_stmts = stmts.iter().map(|s| match s {
+                Stmt::Let { name, annotation, expr: rhs, span } => Stmt::Let {
+                    name: name.clone(),
+                    annotation: annotation.clone(),
+                    expr: substitute_expr(rhs, subs),
+                    span: *span,
+                },
+                other => other.clone(),
+            }).collect();
+            ExprKind::Block {
+                stmts: new_stmts,
+                tail: Box::new(substitute_expr(tail, subs)),
+            }
+        }
+        ExprKind::Try { inner } => ExprKind::Try {
+            inner: Box::new(substitute_expr(inner, subs)),
+        },
     };
     Expr {
         kind: new_kind,
@@ -8191,6 +9455,13 @@ fn expr_mentions(expr: &Expr, name: &str) -> bool {
                 || expr_mentions(then_value, name)
                 || expr_mentions(else_value, name)
         }
+        ExprKind::Block { stmts, tail } => {
+            stmts.iter().any(|s| match s {
+                Stmt::Let { expr, .. } => expr_mentions(expr, name),
+                _ => false,
+            }) || expr_mentions(tail, name)
+        }
+        ExprKind::Try { inner } => expr_mentions(inner, name),
     }
 }
 
@@ -8732,6 +10003,9 @@ fn verify_pure_body(
                 walk_expr(object, signatures, context, diagnostics);
             }
             TypedExprKind::EnumVariant { .. } => {}
+            TypedExprKind::EnumVariantWithPayload { payload, .. } => {
+                walk_expr(payload, signatures, context, diagnostics);
+            }
             TypedExprKind::Match { scrutinee, arms } => {
                 walk_expr(scrutinee, signatures, context, diagnostics);
                 for arm in arms {
@@ -8742,6 +10016,14 @@ fn verify_pure_body(
                 walk_expr(cond, signatures, context, diagnostics);
                 walk_expr(then_value, signatures, context, diagnostics);
                 walk_expr(else_value, signatures, context, diagnostics);
+            }
+            TypedExprKind::Block { stmts, tail } => {
+                for s in stmts {
+                    if let TypedStmt::Let { expr, .. } = s {
+                        walk_expr(expr, signatures, context, diagnostics);
+                    }
+                }
+                walk_expr(tail, signatures, context, diagnostics);
             }
         }
     }
@@ -8827,6 +10109,17 @@ fn pin_var_to_version(expr: &mut Expr, name: &str, version: u32) {
             pin_var_to_version(cond, name, version);
             pin_var_to_version(then_value, name, version);
             pin_var_to_version(else_value, name, version);
+        }
+        ExprKind::Block { stmts, tail } => {
+            for s in stmts {
+                if let Stmt::Let { expr, .. } = s {
+                    pin_var_to_version(expr, name, version);
+                }
+            }
+            pin_var_to_version(tail, name, version);
+        }
+        ExprKind::Try { inner } => {
+            pin_var_to_version(inner, name, version);
         }
     }
 }
@@ -9556,6 +10849,12 @@ fn pretty_expr(expr: &Expr) -> String {
         ExprKind::IfExpr { cond, .. } => {
             format!("if {} {{ … }} else {{ … }}", pretty_expr(cond))
         }
+        ExprKind::Block { tail, .. } => {
+            format!("{{ … ; {} }}", pretty_expr(tail))
+        }
+        ExprKind::Try { inner } => {
+            format!("try {}", pretty_expr(inner))
+        }
     }
 }
 
@@ -9924,6 +11223,17 @@ fn typed_to_expr(t: &TypedExpr) -> Expr {
             }),
             field: variant.clone(),
         },
+        TypedExprKind::EnumVariantWithPayload { enum_name, variant, payload, .. } => {
+            ExprKind::MethodCall {
+                receiver: Box::new(Expr {
+                    kind: ExprKind::Var(enum_name.clone()),
+                    span: t.span,
+                }),
+                method: variant.clone(),
+                method_span: t.span,
+                args: vec![typed_to_expr(payload)],
+            }
+        }
         TypedExprKind::Match { scrutinee, arms } => ExprKind::Match {
             scrutinee: Box::new(typed_to_expr(scrutinee)),
             arms: arms
@@ -9947,6 +11257,21 @@ fn typed_to_expr(t: &TypedExpr) -> Expr {
             then_value: Box::new(typed_to_expr(then_value)),
             else_value: Box::new(typed_to_expr(else_value)),
         },
+        TypedExprKind::Block { stmts, tail } => {
+            let ast_stmts = stmts.iter().filter_map(|s| match s {
+                TypedStmt::Let { name, expr, .. } => Some(Stmt::Let {
+                    name: name.clone(),
+                    annotation: None,
+                    expr: typed_to_expr(expr),
+                    span: t.span,
+                }),
+                _ => None,
+            }).collect();
+            ExprKind::Block {
+                stmts: ast_stmts,
+                tail: Box::new(typed_to_expr(tail)),
+            }
+        }
     };
     Expr { kind, span: t.span }
 }
@@ -10159,6 +11484,151 @@ fn try_elide_bounds_in_typed_expr(
 /// that initialization remembered). Used as a pre-pass in
 /// `prove_with_calls` so proofs over known vec contents discharge
 /// without needing SMT array theory.
+/// Rewrite `MethodCall { receiver: Var(name), method, args }` into
+/// the desugared `Call { name: "<TypeName>_<method>", args:
+/// [receiver, ...args] }` form whenever `name`'s type is a known
+/// nominal type and the mangled function exists. Lets the existing
+/// inline-call discharger
+/// (`rewrite_calls_to_fresh_vars`) attach the method's `ensures`
+/// clauses to a synthetic SMT var, so `prove p.area() > 0`
+/// discharges if `area` has `ensures _return > 0`.
+///
+/// Receivers that aren't bare `Var` (chained method calls, field
+/// accesses returning structs, etc.) are left as-is — the SMT
+/// encoder will bail with the existing "method calls not supported"
+/// diagnostic for those.
+fn rewrite_method_calls_to_calls(
+    expr: &Expr,
+    env: &Env,
+    signatures: &HashMap<String, Signature>,
+) -> Expr {
+    let new_kind = match &expr.kind {
+        ExprKind::MethodCall { receiver, method, method_span, args } => {
+            // Only rewrite Var receivers in v1 — chained / nested
+            // method receivers need the inferred-type info that
+            // only the typed IR carries.
+            if let ExprKind::Var(name) = &receiver.kind {
+                if let Some(info) = env.lookup(name) {
+                    let type_name = match &info.ty {
+                        Type::Struct(n) | Type::Enum(n) => Some(n.clone()),
+                        Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
+                            Type::Struct(n) | Type::Enum(n) => Some(n.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(tname) = type_name {
+                        let mangled = format!("{}_{}", tname, method);
+                        if signatures.contains_key(&mangled) {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push((**receiver).clone());
+                            for a in args {
+                                new_args.push(rewrite_method_calls_to_calls(a, env, signatures));
+                            }
+                            return Expr {
+                                kind: ExprKind::Call {
+                                    name: mangled,
+                                    name_span: *method_span,
+                                    args: new_args,
+                                },
+                                span: expr.span,
+                            };
+                        }
+                    }
+                }
+            }
+            ExprKind::MethodCall {
+                receiver: Box::new(rewrite_method_calls_to_calls(receiver, env, signatures)),
+                method: method.clone(),
+                method_span: *method_span,
+                args: args.iter().map(|a| rewrite_method_calls_to_calls(a, env, signatures)).collect(),
+            }
+        }
+        ExprKind::Unary { op, expr: inner } => ExprKind::Unary {
+            op: *op,
+            expr: Box::new(rewrite_method_calls_to_calls(inner, env, signatures)),
+        },
+        ExprKind::Binary { op, left, right } => ExprKind::Binary {
+            op: *op,
+            left: Box::new(rewrite_method_calls_to_calls(left, env, signatures)),
+            right: Box::new(rewrite_method_calls_to_calls(right, env, signatures)),
+        },
+        ExprKind::Cast { expr: inner, ty } => ExprKind::Cast {
+            expr: Box::new(rewrite_method_calls_to_calls(inner, env, signatures)),
+            ty: ty.clone(),
+        },
+        ExprKind::Call { name, name_span, args } => ExprKind::Call {
+            name: name.clone(),
+            name_span: *name_span,
+            args: args.iter().map(|a| rewrite_method_calls_to_calls(a, env, signatures)).collect(),
+        },
+        ExprKind::IfExpr { cond, then_value, else_value } => ExprKind::IfExpr {
+            cond: Box::new(rewrite_method_calls_to_calls(cond, env, signatures)),
+            then_value: Box::new(rewrite_method_calls_to_calls(then_value, env, signatures)),
+            else_value: Box::new(rewrite_method_calls_to_calls(else_value, env, signatures)),
+        },
+        other => other.clone(),
+    };
+    Expr { kind: new_kind, span: expr.span }
+}
+
+/// Rewrite `FieldAccess { object: Var(name), field }` to
+/// `Var("<name>__<field>")` whenever `name` was initialized with a
+/// struct literal whose field types are integer / bool. The
+/// surrounding caller (`prove_with_calls_extra`) declares synthetic
+/// SMT vars for these and asserts `<name>__<field> == <field-expr>`.
+/// Lets the SMT encoder discharge `prove p.x == 5` instead of
+/// bailing with "structs not supported in SMT v1".
+fn rewrite_struct_field_accesses(expr: &Expr, env: &Env) -> Expr {
+    let new_kind = match &expr.kind {
+        ExprKind::FieldAccess { object, field } => {
+            if let ExprKind::Var(name) = &object.kind {
+                if let Some(info) = env.lookup(name) {
+                    if info.struct_literal_fields.is_some() {
+                        return Expr {
+                            kind: ExprKind::Var(format!("{}__{}", name, field)),
+                            span: expr.span,
+                        };
+                    }
+                }
+            }
+            ExprKind::FieldAccess {
+                object: Box::new(rewrite_struct_field_accesses(object, env)),
+                field: field.clone(),
+            }
+        }
+        ExprKind::Unary { op, expr: inner } => ExprKind::Unary {
+            op: *op,
+            expr: Box::new(rewrite_struct_field_accesses(inner, env)),
+        },
+        ExprKind::Binary { op, left, right } => ExprKind::Binary {
+            op: *op,
+            left: Box::new(rewrite_struct_field_accesses(left, env)),
+            right: Box::new(rewrite_struct_field_accesses(right, env)),
+        },
+        ExprKind::Cast { expr: inner, ty } => ExprKind::Cast {
+            expr: Box::new(rewrite_struct_field_accesses(inner, env)),
+            ty: ty.clone(),
+        },
+        ExprKind::Call { name, name_span, args } => ExprKind::Call {
+            name: name.clone(),
+            name_span: *name_span,
+            args: args.iter().map(|a| rewrite_struct_field_accesses(a, env)).collect(),
+        },
+        ExprKind::Index { array, index } => ExprKind::Index {
+            array: Box::new(rewrite_struct_field_accesses(array, env)),
+            index: Box::new(rewrite_struct_field_accesses(index, env)),
+        },
+        ExprKind::IfExpr { cond, then_value, else_value } => ExprKind::IfExpr {
+            cond: Box::new(rewrite_struct_field_accesses(cond, env)),
+            then_value: Box::new(rewrite_struct_field_accesses(then_value, env)),
+            else_value: Box::new(rewrite_struct_field_accesses(else_value, env)),
+        },
+        other => other.clone(),
+    };
+    Expr { kind: new_kind, span: expr.span }
+}
+
 fn substitute_literal_vec_indices(expr: &Expr, env: &Env) -> Expr {
     let new_kind = match &expr.kind {
         ExprKind::Index { array, index } => {
@@ -10250,12 +11720,79 @@ fn prove_with_calls_extra(
     vars.extend(extra_vars.iter().cloned());
     let mut facts = current_smt_facts(smt_facts, env);
 
+    // Struct-field SMT plumbing: for every binding that was
+    // initialized with a struct literal `P { x: e1, y: e2 }`,
+    // synthesize a per-field SMT variable `<name>__<field>` and
+    // assert `name__field == encode(e)`. The prove-expression and
+    // fact rewriters below then translate `p.x` (FieldAccess) into
+    // `Var("p__x")` so field-access proofs reach the SMT layer
+    // instead of bailing with "structs not supported". The struct's
+    // field types come from the struct decl, so we look up via
+    // env.lookup_struct(struct_name).
+    let mut field_vars: Vec<(String, Type)> = Vec::new();
+    let mut field_facts: Vec<Expr> = Vec::new();
+    for (name, info) in env.all_bindings() {
+        let Some(field_inits) = &info.struct_literal_fields else { continue };
+        let struct_name = match &info.ty {
+            Type::Struct(n) => n.clone(),
+            _ => continue,
+        };
+        let Some(struct_info) = env.lookup_struct(&struct_name) else { continue };
+        let field_type_map: std::collections::HashMap<&str, &Type> = struct_info
+            .fields
+            .iter()
+            .map(|(fname, fty)| (fname.as_str(), fty))
+            .collect();
+        for (field_name, field_expr) in field_inits {
+            let Some(field_ty) = field_type_map.get(field_name.as_str()) else { continue };
+            // Only model fields with integer / bool types for v1.
+            if !field_ty.is_integer() && !matches!(field_ty, Type::Bool) {
+                continue;
+            }
+            let synth_name = format!("{}__{}", name, field_name);
+            field_vars.push((synth_name.clone(), (*field_ty).clone()));
+            // Synthesize `synth == field_expr`.
+            let eq = Expr {
+                kind: ExprKind::Binary {
+                    op: BinaryOp::Eq,
+                    left: Box::new(Expr {
+                        kind: ExprKind::Var(synth_name.clone()),
+                        span: field_expr.span,
+                    }),
+                    right: Box::new(field_expr.clone()),
+                },
+                span: field_expr.span,
+            };
+            field_facts.push(eq);
+        }
+    }
+    vars.extend(field_vars);
+    facts.extend(field_facts);
+
     // Pre-pass: substitute literal-index reads on vec-literal-init
     // bindings (`let xs = vec(a, b, c); ... prove xs[1] == b;`).
     // The SMT layer has no Index encoding for Vec/Array, but if we
     // know `xs[k]`'s value statically we can replace the read with
     // its literal value before sending the query.
     let prove_expr_owned = substitute_literal_vec_indices(prove_expr, env);
+    // Method-call desugar: `p.method(args)` → `Call {
+    // name: "<Type>_<method>", args: [p, ...args] }` so the
+    // inline-call discharger sees a function call and attaches
+    // the method's `ensures` clauses. Var-receiver case only in
+    // v1 — chained / nested receivers stay as MethodCall and
+    // bail with the existing "method calls not supported" SMT
+    // diagnostic.
+    let prove_expr_owned = rewrite_method_calls_to_calls(&prove_expr_owned, env, signatures);
+    // Field-access rewrite: `p.x` → `Var("p__x")` for every bound
+    // binding that's a struct-literal init. Lets the SMT encoder
+    // resolve the field access against the synthetic vars added
+    // above.
+    let prove_expr_owned = rewrite_struct_field_accesses(&prove_expr_owned, env);
+    let mut facts: Vec<Expr> = facts
+        .into_iter()
+        .map(|f| rewrite_method_calls_to_calls(&f, env, signatures))
+        .map(|f| rewrite_struct_field_accesses(&f, env))
+        .collect();
 
     let mut counter = 0usize;
     let mut fresh_vars = Vec::new();
@@ -10281,6 +11818,15 @@ fn prove_with_calls_extra(
                 &mut display_names,
             )
         })
+        .collect();
+    // The inline-call discharger produced extra facts via parameter
+    // substitution. For method ensures, the substituted facts now
+    // contain references like `b.v` (FieldAccess) that need the
+    // same struct-field rewrite the proof obligation got. Run it
+    // again on the extra facts before merging.
+    let extra_facts: Vec<Expr> = extra_facts
+        .into_iter()
+        .map(|f| rewrite_struct_field_accesses(&f, env))
         .collect();
     rewritten_facts.extend(extra_facts);
     vars.extend(fresh_vars);

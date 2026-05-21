@@ -1,0 +1,70 @@
+intent "Manual Option error-propagation pattern (workaround until `try` Phase 2)";
+
+// The `try EXPR` keyword is reserved (closure #91) but its desugar
+// to a statement-level match-with-early-return is still in progress
+// (T2.6 Phase 2). This example shows the manual pattern that works
+// today using closure #90's tagged-union codegen.
+//
+// Once Phase 2 ships, `try EXPR` will sugar this down to a one-liner.
+
+enum Opt { Some(i64), None }
+
+// Doubles the inner value, or short-circuits None.
+fn doubled(o: Opt) -> Opt {
+  // Manual pattern: match the input; for the payloaded variant
+  // build a new variant from the extracted value; for None, just
+  // re-return None as the propagated result.
+  return match o {
+    Opt.Some(v) then Opt.Some(v * 2),
+    Opt.None then Opt.None,
+  };
+}
+
+// Add `delta` to the inner value, or propagate None.
+fn add_delta(o: Opt, delta: i64) -> Opt {
+  return match o {
+    Opt.Some(v) then Opt.Some(v + delta),
+    Opt.None then Opt.None,
+  };
+}
+
+// Compose: doubled then add_delta, with None propagating through.
+fn double_and_add(o: Opt, delta: i64) -> Opt {
+  // Composition is verbose without `try`; this is two stacked
+  // match-with-return forms. Phase 2's sugar will collapse each
+  // intermediate value into a single `let` line.
+  let after_double: Opt = doubled(o);
+  return add_delta(after_double, delta);
+}
+
+// Extract the inner value or return a default. Doesn't propagate
+// the None — just folds it.
+fn unwrap_or(o: Opt, def: i64) -> i64 {
+  return match o {
+    Opt.Some(v) then v,
+    Opt.None then def,
+  };
+}
+
+fn main() -> i64 {
+  let some_v: Opt = Opt.Some(5);
+  let none_v: Opt = Opt.None;
+
+  // Doubled: Some(5) → Some(10); None → None.
+  let r1: Opt = doubled(some_v);
+  let r2: Opt = doubled(none_v);
+  assert unwrap_or(r1, 0) == 10;
+  assert unwrap_or(r2, 99) == 99;
+
+  // Composition: Some(5) → +10 → Some(20); None → None throughout.
+  let r3: Opt = double_and_add(Opt.Some(5), 10);
+  let r4: Opt = double_and_add(Opt.None, 10);
+  assert unwrap_or(r3, 0) == 20;
+  assert unwrap_or(r4, 99) == 99;
+
+  print "doubled(Some(5)) =", unwrap_or(r1, 0);
+  print "doubled(None) defaulted to", unwrap_or(r2, 99);
+  print "double_and_add(Some(5), 10) =", unwrap_or(r3, 0);
+  print "double_and_add(None, 10) defaulted to", unwrap_or(r4, 99);
+  return 0;
+}

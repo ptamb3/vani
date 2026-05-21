@@ -1,0 +1,47 @@
+intent "Demonstrate payloaded enums via Option<i64>";
+
+// T1.3 phase 2b: payloaded enums compile end-to-end via the
+// tree-C backend. The compiler lays the enum out as a
+// tagged-union struct (`typedef struct { i32 tag; i64 payload;
+// } Enum_Opt;`); `Opt.Some(x)` builds the struct literal,
+// `match` dispatches on `.tag`, and `Opt.Some(v) then …`
+// extracts `.payload` into the binding `v` for the arm body.
+//
+// V1 limits: single Copy payload field per variant; all
+// payload-bearing variants of an enum must share the same
+// payload type. LLVM tagged-union codegen ships in a
+// follow-up — for now run with `--backend=c`.
+
+enum Opt { Some(i64), None }
+
+fn unwrap_or(o: Opt, def: i64) -> i64 {
+  return match o {
+    Opt.Some(v) then v,
+    Opt.None then def,
+  };
+}
+
+fn is_some(o: Opt) -> i64 {
+  return match o {
+    Opt.Some(v) then 1,
+    Opt.None then 0,
+  };
+}
+
+fn main() -> i64 {
+  let a: Opt = Opt.Some(42);
+  let b: Opt = Opt.None;
+
+  // Pattern destructure pulls the payload out into `v`.
+  let x: i64 = unwrap_or(a, 0);
+  let y: i64 = unwrap_or(b, 100);
+
+  assert x == 42;
+  assert y == 100;
+  assert is_some(a) == 1;
+  assert is_some(b) == 0;
+
+  print "Some(42) unwrapped =", x;
+  print "None unwrapped with default 100 =", y;
+  return 0;
+}

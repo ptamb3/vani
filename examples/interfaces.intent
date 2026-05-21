@@ -1,0 +1,68 @@
+intent "T1.5 phase 2: interface dispatch (static)";
+
+// `interface Iface { fn m(...) -> R; }` declares an abstract
+// method contract. `implement Iface for Type { fn m(...) ... }`
+// binds the implementation to a concrete type. At call sites,
+// `recv.m()` dispatches statically to the impl based on the
+// receiver's compile-time type.
+//
+// V1 restrictions:
+// - Static dispatch only (compile-time resolution by type).
+//   Dynamic dispatch / vtables would need fat pointers and
+//   are out of scope for v1.
+// - Single-interface impls (no inheritance).
+// - The impl must cover EVERY interface method (no partial
+//   impls). Extra methods not in the interface are rejected.
+// - Each method's signature must match the interface
+//   declaration exactly.
+// - Mangled name `<Type>_<method>` collides if both
+//   `implement Iface for T` AND `methods on T { fn method }`
+//   define the same name.
+
+struct Point { x: i64, y: i64 }
+struct Rect { w: i64, h: i64 }
+
+interface Area {
+  fn area(self: Point) -> i64;
+}
+
+interface Bounds {
+  fn area(self: Rect) -> i64;
+  fn perimeter(self: Rect) -> i64;
+}
+
+implement Area for Point {
+  fn area(self: Point) -> i64 {
+    return self.x * self.y;
+  }
+}
+
+implement Bounds for Rect {
+  fn area(self: Rect) -> i64 {
+    return self.w * self.h;
+  }
+  fn perimeter(self: Rect) -> i64 {
+    return 2 * (self.w + self.h);
+  }
+}
+
+fn main() -> i64 {
+  let p: Point = Point { x: 4, y: 5 };
+  let r: Rect = Rect { w: 3, h: 7 };
+
+  // Method calls dispatch through the interface impl. Both
+  // `Point.area()` and `Rect.area()` exist (different impls
+  // of different interfaces) — static dispatch picks the
+  // right one based on the receiver's compile-time type.
+  let pa: i64 = p.area();
+  let ra: i64 = r.area();
+  let rp: i64 = r.perimeter();
+
+  assert pa == 20;
+  assert ra == 21;
+  assert rp == 20;
+
+  print "Point area =", pa;
+  print "Rect area =", ra, " perimeter =", rp;
+  return 0;
+}

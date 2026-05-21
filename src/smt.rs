@@ -928,6 +928,23 @@ fn infer_is_float(expr: &Expr, vars: &HashMap<String, Type>) -> bool {
     }
 }
 
+/// Infer the integer type of a `match` scrutinee for sizing literal
+/// patterns. Looks up bare variables in `vars`; returns None if the
+/// scrutinee's type can't be statically resolved here (more complex
+/// expressions fall back to i64-sized literal patterns).
+fn infer_scrutinee_int_type(
+    scrutinee: &Expr,
+    vars: &HashMap<String, Type>,
+) -> Option<Type> {
+    match &scrutinee.kind {
+        ExprKind::Var(name) => {
+            vars.get(name).cloned().filter(|t| int_bits(t).is_some())
+        }
+        ExprKind::Int(_) => Some(Type::I64),
+        _ => None,
+    }
+}
+
 fn encode_expr(
     expr: &Expr,
     vars: &HashMap<String, Type>,
@@ -1265,14 +1282,93 @@ fn encode_expr(
                 "structs not supported in SMT v1".into(),
             ))
         }
-        ExprKind::Match { .. } => Err(EncodeError::Unsupported(
-            "match expressions not supported in SMT v1".into(),
-        )),
+        ExprKind::Match { scrutinee, arms } => {
+            // Encode as a chain of `(ite (= scrutinee N) body
+            // …)` for integer patterns, with the trailing
+            // wildcard arm (or last specific arm if no
+            // wildcard) as the final else. Enum-variant
+            // patterns are deferred — they'd need the
+            // EnumInfo registry plumbed through to the SMT
+            // layer to translate variant names to tag values.
+            // For v1, an unsupported enum-variant pattern
+            // bails the whole encoding.
+            let scrutinee_str = encode_expr(scrutinee, vars, None, versions)?;
+            let scrutinee_ty = infer_scrutinee_int_type(scrutinee, vars);
+            // Build the chain from right to left: start with
+            // the last arm's body, then wrap each prior arm in
+            // an ite.
+            if arms.is_empty() {
+                return Err(EncodeError::Unsupported(
+                    "match with no arms cannot be encoded".into(),
+                ));
+            }
+            // Find the "default" tail body: a wildcard arm if
+            // present, else the last arm's body (which by
+            // checker rules covers the remaining variants).
+            let mut acc: Option<String> = None;
+            for arm in arms.iter().rev() {
+                let body_str = encode_expr(&arm.body, vars, target_int, versions)?;
+                match &arm.pattern {
+                    crate::ast::Pattern::Wildcard => {
+                        // Wildcard always evaluates to its body.
+                        acc = Some(body_str);
+                    }
+                    crate::ast::Pattern::Int(value) => {
+                        let lit_bv = match scrutinee_ty.as_ref() {
+                            Some(ty) => encode_int_literal_bv(
+                                *value,
+                                int_bits(ty).unwrap_or(64),
+                            ),
+                            None => encode_int_literal_bv(*value, 64),
+                        };
+                        let cond = format!("(= {} {})", scrutinee_str, lit_bv);
+                        acc = Some(match acc {
+                            Some(prev) => format!("(ite {} {} {})", cond, body_str, prev),
+                            // No fallthrough — last arm IS this
+                            // integer pattern. Per checker rules
+                            // the match was exhaustive only via a
+                            // wildcard above; reaching this with
+                            // no `acc` means a missing wildcard
+                            // and a non-total match. Bail.
+                            None => return Err(EncodeError::Unsupported(
+                                "match without a wildcard arm cannot be encoded in SMT (would be partial)".into(),
+                            )),
+                        });
+                    }
+                    crate::ast::Pattern::Variant { .. } => {
+                        return Err(EncodeError::Unsupported(
+                            "enum-variant match patterns not yet supported in SMT".into(),
+                        ));
+                    }
+                    crate::ast::Pattern::VariantWithBinding { .. } => {
+                        return Err(EncodeError::Unsupported(
+                            "payloaded variant destructure patterns not yet supported in SMT".into(),
+                        ));
+                    }
+                }
+            }
+            acc.ok_or_else(|| EncodeError::Unsupported(
+                "match arm chain ended up empty".into(),
+            ))
+        }
         ExprKind::MethodCall { .. } => Err(EncodeError::Unsupported(
             "method calls not supported in SMT v1".into(),
         )),
-        ExprKind::IfExpr { .. } => Err(EncodeError::Unsupported(
-            "if-expressions not supported in SMT v1".into(),
+        ExprKind::IfExpr { cond, then_value, else_value } => {
+            // Z3 encoding: `(ite cond-bool then else)`. The
+            // checker has already proven both branches unify
+            // to the same type, so target_int (if given)
+            // applies to both branches uniformly.
+            let cond_str = encode_expr(cond, vars, None, versions)?;
+            let then_str = encode_expr(then_value, vars, target_int, versions)?;
+            let else_str = encode_expr(else_value, vars, target_int, versions)?;
+            Ok(format!("(ite {} {} {})", cond_str, then_str, else_str))
+        }
+        ExprKind::Block { .. } => Err(EncodeError::Unsupported(
+            "block expressions not supported in SMT v1".into(),
+        )),
+        ExprKind::Try { .. } => Err(EncodeError::Unsupported(
+            "try expressions not supported in SMT v1".into(),
         )),
     }
 }

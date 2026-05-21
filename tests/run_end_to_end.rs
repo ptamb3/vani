@@ -407,6 +407,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "scopes.intent",
         "strings.intent",
         "strings_concat.intent",
+        "struct_owned_field.intent",
         "tasks.intent",
         "vec_invariants.intent",
         "vectors.intent",

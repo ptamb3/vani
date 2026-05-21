@@ -174,9 +174,47 @@ pub(crate) fn host_uses_win32_threading() -> bool {
     cfg!(target_os = "windows")
 }
 
+thread_local! {
+    /// Per-program registry of enum payload types. Populated
+    /// at the start of `emit_llvm` from `program.enums`.
+    /// Consulted by `llvm_type_string(Type::Enum)` to route
+    /// payloaded enums to their named struct (`%Enum_<Name>`)
+    /// instead of the bare `i32` tag. T1.3 phase 2b LLVM.
+    pub(crate) static LLVM_ENUM_PAYLOAD_REGISTRY:
+        std::cell::RefCell<std::collections::HashMap<String, Type>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Per-program registry of struct field lists. Populated at
+    /// the start of `emit_llvm` from `program.structs` and
+    /// consulted by the `TypedStmt::Drop` handler to emit a
+    /// per-field `@free` call for each owning (`OwnedStr`) field
+    /// when the struct binding goes out of scope. T1.2 phase 2b.
+    pub(crate) static LLVM_STRUCT_FIELDS_REGISTRY:
+        std::cell::RefCell<std::collections::HashMap<String, Vec<(String, Type)>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 pub fn emit_llvm(program: &TypedProgram) -> String {
     let mut out = String::new();
     out.push_str("; ModuleID = 'intent'\n");
+    // Populate the enum payload registry from the program's
+    // enum decls so `llvm_type_string(Type::Enum)` routes
+    // payloaded enums to their named struct typedef.
+    LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        reg.clear();
+        for decl in &program.enums {
+            if let Some(payload_ty) = decl.payload_types.iter().find_map(|p| p.clone()) {
+                reg.insert(decl.name.clone(), payload_ty);
+            }
+        }
+    });
+    LLVM_STRUCT_FIELDS_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        reg.clear();
+        for decl in &program.structs {
+            reg.insert(decl.name.clone(), decl.fields.clone());
+        }
+    });
     // No `target triple` line — `lli` and `llc` use the host triple
     // when it's omitted, which is what we want for a portable .ll
     // file. Backends targeting a specific triple can prepend it
@@ -412,6 +450,24 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         ));
     }
     if !program.structs.is_empty() {
+        out.push('\n');
+    }
+    // T1.3 phase 2b LLVM: emit `%Enum_<Name> = type { i32, T }`
+    // for each payloaded enum. The first field is the variant
+    // tag, the second is the shared payload type. Plain enums
+    // (no payload variants) stay as bare `i32`.
+    let mut any_enum_emitted = false;
+    for decl in &program.enums {
+        if let Some(payload_ty) = decl.payload_types.iter().find_map(|p| p.clone()) {
+            out.push_str(&format!(
+                "%Enum_{} = type {{ i32, {} }}\n",
+                decl.name,
+                llvm_type_string(&payload_ty)
+            ));
+            any_enum_emitted = true;
+        }
+    }
+    if any_enum_emitted {
         out.push('\n');
     }
     for elt in &vec_elements {
@@ -876,6 +932,34 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                     let ptr = ctx.fresh_tmp();
                     out.push_str(&format!("  {} = load i8*, i8** {}\n", ptr, addr));
                     out.push_str(&format!("  call void @free(i8* {})\n", ptr));
+                }
+            } else if let Type::Struct(struct_name) = ty {
+                // Free each owning field of the struct. v1 only
+                // permits OwnedStr as a non-Copy field. T1.2
+                // phase 2b.
+                let fields = LLVM_STRUCT_FIELDS_REGISTRY
+                    .with(|r| r.borrow().get(struct_name).cloned())
+                    .unwrap_or_default();
+                if let Some((_, addr)) = ctx.locals.get(name).cloned() {
+                    let s_ty = format!("%Struct_{}", struct_name);
+                    for (idx, (_, field_ty)) in fields.iter().enumerate() {
+                        if matches!(field_ty, Type::OwnedStr) {
+                            let fp = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
+                                fp, s_ty, s_ty, addr, idx
+                            ));
+                            let s_ptr = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = load i8*, i8** {}\n",
+                                s_ptr, fp
+                            ));
+                            out.push_str(&format!(
+                                "  call void @free(i8* {})\n",
+                                s_ptr
+                            ));
+                        }
+                    }
                 }
             } else if matches!(ty, Type::Guard(_)) {
                 // RAII unlock with futex wake. Drepper's
@@ -3014,39 +3098,95 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             }
             cur
         }
-        TypedExprKind::EnumVariant { tag, .. } => {
-            // Enums lower to a 32-bit tag. T1.3.
-            format!("{}", tag)
+        TypedExprKind::EnumVariant { enum_name, tag, .. } => {
+            // Plain (payload-less) variant: just the tag.
+            // Payloaded enum's payload-less variant: build a
+            // tagged-union struct via two insertvalues
+            // (tag, then zero-init payload). T1.3 phase 2b.
+            let payloaded = LLVM_ENUM_PAYLOAD_REGISTRY
+                .with(|r| r.borrow().contains_key(enum_name));
+            if !payloaded {
+                return format!("{}", tag);
+            }
+            let struct_ty = format!("%Enum_{}", enum_name);
+            let payload_ty = LLVM_ENUM_PAYLOAD_REGISTRY
+                .with(|r| r.borrow().get(enum_name).cloned())
+                .expect("registry insists this is payloaded");
+            let payload_ll = llvm_type_string(&payload_ty);
+            let payload_zero = match &payload_ty {
+                Type::F32 | Type::F64 => "0.0",
+                Type::Bool => "false",
+                _ => "0",
+            };
+            let s0 = ctx.fresh_tmp();
+            out.push_str(&format!(
+                "  {} = insertvalue {} undef, i32 {}, 0\n",
+                s0, struct_ty, tag
+            ));
+            let s1 = ctx.fresh_tmp();
+            out.push_str(&format!(
+                "  {} = insertvalue {} {}, {} {}, 1\n",
+                s1, struct_ty, s0, payload_ll, payload_zero
+            ));
+            s1
+        }
+        TypedExprKind::EnumVariantWithPayload { enum_name, tag, payload, payload_ty, .. } => {
+            // T1.3 phase 2b LLVM: build the tagged-union
+            // struct via two insertvalues (tag, then
+            // the payload's evaluated SSA value).
+            let struct_ty = format!("%Enum_{}", enum_name);
+            let payload_ll = llvm_type_string(payload_ty);
+            let payload_val = emit_expr(payload, ctx, out);
+            let s0 = ctx.fresh_tmp();
+            out.push_str(&format!(
+                "  {} = insertvalue {} undef, i32 {}, 0\n",
+                s0, struct_ty, tag
+            ));
+            let s1 = ctx.fresh_tmp();
+            out.push_str(&format!(
+                "  {} = insertvalue {} {}, {} {}, 1\n",
+                s1, struct_ty, s0, payload_ll, payload_val
+            ));
+            s1
         }
         TypedExprKind::Match { scrutinee, arms } => {
             // Switch on the scrutinee's tag with per-arm
             // basic blocks; phi the arm values back together
-            // at the merge. The checker has already enforced
-            // exhaustiveness. If a `_ then …` wildcard arm
-            // exists it becomes the switch's default label;
-            // otherwise the default jumps to an
-            // `unreachable` + `abort` block. T1.3 (wildcard).
+            // at the merge. T1.3 phase 2b LLVM: for payloaded
+            // enums the scrutinee is a struct `%Enum_X`, so
+            // we `extractvalue` field 0 for the switch and
+            // `extractvalue` field 1 for the binding in
+            // VariantWithBinding arms.
             let scr_v = emit_expr(scrutinee, ctx, out);
             let result_ty = llvm_type_string(&expr.ty);
             let merge_lbl = ctx.fresh_label("match_merge");
             let unreach_lbl = ctx.fresh_label("match_unreach");
-            // Pre-allocate per-arm labels so we can emit
-            // the switch first.
             let arm_lbls: Vec<String> = (0..arms.len())
                 .map(|i| ctx.fresh_label(&format!("match_arm_{}", i)))
                 .collect();
-            // Wildcard arm (if any) takes the default
-            // label; non-wildcard arms get a `case`.
             let wildcard_idx: Option<usize> =
                 arms.iter().position(|a| a.is_wildcard);
             let default_lbl = match wildcard_idx {
                 Some(i) => arm_lbls[i].clone(),
                 None => unreach_lbl.clone(),
             };
-            // Switch scrutinee type: i32 for enum tags,
-            // scrutinee's own type for integer dispatch.
-            // T1.3 integer pattern.
-            let scrut_llty = llvm_type_string(&scrutinee.ty);
+            // Detect payloaded-enum scrutinee.
+            let scrut_payloaded = match &scrutinee.ty {
+                Type::Enum(n) => LLVM_ENUM_PAYLOAD_REGISTRY
+                    .with(|r| r.borrow().contains_key(n)),
+                _ => false,
+            };
+            let (dispatch_v, dispatch_ty) = if scrut_payloaded {
+                let struct_ty = llvm_type_string(&scrutinee.ty);
+                let tag = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = extractvalue {} {}, 0\n",
+                    tag, struct_ty, scr_v
+                ));
+                (tag, "i32".to_string())
+            } else {
+                (scr_v.clone(), llvm_type_string(&scrutinee.ty))
+            };
             let case_lines: Vec<String> = arms
                 .iter()
                 .zip(arm_lbls.iter())
@@ -3054,28 +3194,50 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 .map(|(a, l)| {
                     let case_v = a.int_value.map(|v| v.to_string())
                         .unwrap_or_else(|| a.tag.to_string());
-                    format!("{} {}, label %{}", scrut_llty, case_v, l)
+                    format!("{} {}, label %{}", dispatch_ty, case_v, l)
                 })
                 .collect();
             out.push_str(&format!(
                 "  switch {} {}, label %{} [ {} ]\n",
-                scrut_llty, scr_v, default_lbl, case_lines.join(" ")
+                dispatch_ty, dispatch_v, default_lbl, case_lines.join(" ")
             ));
-            // Emit each arm body in its own block, jumping
-            // to merge with a recorded incoming value. The
-            // arm's body may itself introduce nested basic
-            // blocks (e.g. an if-expression in the arm
-            // body). Snapshot `ctx.current_block` after each
-            // body emission so the phi's predecessor label
-            // tracks the *actual* tail block, not the arm's
-            // opening label. Without this, lli rejected the
-            // IR as "Instruction does not dominate all uses".
-            // T4 follow-up (mirrors the IfExpr fix).
             let mut incoming: Vec<(String, String)> = Vec::new();
             for (arm, lbl) in arms.iter().zip(arm_lbls.iter()) {
                 out.push_str(&format!("{}:\n", lbl));
                 ctx.current_block = lbl.clone();
+                // T1.3 phase 2b LLVM: for VariantWithBinding
+                // arms, extract the payload into a local
+                // alloca + store, and register the binding
+                // name in ctx.locals so the body's reads
+                // resolve. Restore after the arm body.
+                let restore_binding: Option<(String, Option<(Type, String)>)> =
+                    if let Some((bname, bty)) = &arm.binding {
+                        let struct_ty = llvm_type_string(&scrutinee.ty);
+                        let bty_ll = llvm_type_string(bty);
+                        let extracted = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = extractvalue {} {}, 1\n",
+                            extracted, struct_ty, scr_v
+                        ));
+                        let addr = format!("{}.{}.addr", ctx.fresh_tmp(), bname);
+                        out.push_str(&format!("  {} = alloca {}\n", addr, bty_ll));
+                        out.push_str(&format!(
+                            "  store {} {}, {}* {}\n",
+                            bty_ll, extracted, bty_ll, addr
+                        ));
+                        let prev = ctx.locals.get(bname).cloned();
+                        ctx.locals.insert(bname.clone(), (bty.clone(), addr));
+                        Some((bname.clone(), prev))
+                    } else {
+                        None
+                    };
                 let v = emit_expr(&arm.body, ctx, out);
+                if let Some((bname, prev)) = restore_binding {
+                    match prev {
+                        Some(p) => { ctx.locals.insert(bname, p); }
+                        None => { ctx.locals.remove(&bname); }
+                    }
+                }
                 let pred = ctx.current_block.clone();
                 out.push_str(&format!("  br label %{}\n", merge_lbl));
                 incoming.push((v, pred));
@@ -3195,6 +3357,53 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 loaded, array_ty, array_ty, addr
             ));
             loaded
+        }
+        TypedExprKind::Block { stmts, tail } => {
+            // Block expression: emit each `let` stmt inline
+            // (alloca + store, register the name in ctx.locals
+            // so the tail can reference it), then emit the
+            // tail expression. After emission, restore any
+            // outer-scope bindings shadowed by inner lets so
+            // the surrounding scope's reads still resolve.
+            // V1 restricts block-internal stmts to `let` only;
+            // the checker rejects anything else.
+            let saved: Vec<(String, Option<(Type, String)>)> = stmts
+                .iter()
+                .filter_map(|s| {
+                    if let TypedStmt::Let { name, .. } = s {
+                        Some((name.clone(), ctx.locals.get(name).cloned()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for s in stmts {
+                if let TypedStmt::Let { name, ty, expr: rhs } = s {
+                    let value = emit_expr(rhs, ctx, out);
+                    let lty = llvm_type_string(ty);
+                    let addr = format!("{}.{}.addr", ctx.fresh_tmp(), name);
+                    out.push_str(&format!("  {} = alloca {}\n", addr, lty));
+                    out.push_str(&format!(
+                        "  store {} {}, {}* {}\n",
+                        lty, value, lty, addr
+                    ));
+                    ctx.locals.insert(name.clone(), (ty.clone(), addr));
+                }
+            }
+            let tail_val = emit_expr(tail, ctx, out);
+            // Restore outer scope so block-internal names
+            // don't leak past the expression.
+            for (name, prev) in saved {
+                match prev {
+                    Some(p) => {
+                        ctx.locals.insert(name, p);
+                    }
+                    None => {
+                        ctx.locals.remove(&name);
+                    }
+                }
+            }
+            tail_val
         }
         kind => unreachable!(
             "backend: TypedExprKind not lowered as standalone expression: {:?}",
@@ -4009,13 +4218,54 @@ fn collect_strings_in_expr<F>(
         TypedExprKind::Call { args, .. } | TypedExprKind::ArrayLit { elements: args } => {
             for a in args { collect_strings_in_expr(a, msgs, idx, intern); }
         }
+        TypedExprKind::CallIndirect { callee, args } => {
+            collect_strings_in_expr(callee, msgs, idx, intern);
+            for a in args { collect_strings_in_expr(a, msgs, idx, intern); }
+        }
         TypedExprKind::Cast { expr, .. } => collect_strings_in_expr(expr, msgs, idx, intern),
         TypedExprKind::Index { array, index, .. } => {
             collect_strings_in_expr(array, msgs, idx, intern);
             collect_strings_in_expr(index, msgs, idx, intern);
         }
         TypedExprKind::Len { array, .. } => collect_strings_in_expr(array, msgs, idx, intern),
-        _ => {}
+        TypedExprKind::Tuple { elements } => {
+            for e in elements { collect_strings_in_expr(e, msgs, idx, intern); }
+        }
+        TypedExprKind::TupleAccess { tuple, .. } => {
+            collect_strings_in_expr(tuple, msgs, idx, intern);
+        }
+        TypedExprKind::StructLit { fields, .. } => {
+            for (_, e) in fields { collect_strings_in_expr(e, msgs, idx, intern); }
+        }
+        TypedExprKind::FieldAccess { object, .. } => {
+            collect_strings_in_expr(object, msgs, idx, intern);
+        }
+        TypedExprKind::EnumVariantWithPayload { payload, .. } => {
+            collect_strings_in_expr(payload, msgs, idx, intern);
+        }
+        TypedExprKind::Match { scrutinee, arms } => {
+            collect_strings_in_expr(scrutinee, msgs, idx, intern);
+            for arm in arms {
+                collect_strings_in_expr(&arm.body, msgs, idx, intern);
+            }
+        }
+        TypedExprKind::IfExpr { cond, then_value, else_value } => {
+            collect_strings_in_expr(cond, msgs, idx, intern);
+            collect_strings_in_expr(then_value, msgs, idx, intern);
+            collect_strings_in_expr(else_value, msgs, idx, intern);
+        }
+        TypedExprKind::Block { stmts, tail } => {
+            for s in stmts { collect_print_strings(s, msgs, idx); }
+            collect_strings_in_expr(tail, msgs, idx, intern);
+        }
+        TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::Var(_)
+        | TypedExprKind::Ref { .. }
+        | TypedExprKind::RefMut { .. }
+        | TypedExprKind::FnRef { .. }
+        | TypedExprKind::EnumVariant { .. } => {}
     }
 }
 
@@ -4275,6 +4525,9 @@ pub(crate) fn walk_expr(
             walk_expr(object, declared, order, seen);
         }
         TypedExprKind::EnumVariant { .. } => {}
+        TypedExprKind::EnumVariantWithPayload { payload, .. } => {
+            walk_expr(payload, declared, order, seen);
+        }
         TypedExprKind::Match { scrutinee, arms } => {
             walk_expr(scrutinee, declared, order, seen);
             for arm in arms {
@@ -4285,6 +4538,19 @@ pub(crate) fn walk_expr(
             walk_expr(cond, declared, order, seen);
             walk_expr(then_value, declared, order, seen);
             walk_expr(else_value, declared, order, seen);
+        }
+        TypedExprKind::Block { stmts, tail } => {
+            // Block-local lets shadow / extend the declared set
+            // for the duration of the block. Clone the declared
+            // set so block-local names don't leak back out.
+            let mut block_declared = declared.clone();
+            for s in stmts {
+                if let TypedStmt::Let { name, expr, .. } = s {
+                    walk_expr(expr, &block_declared, order, seen);
+                    block_declared.insert(name.clone());
+                }
+            }
+            walk_expr(tail, &block_declared, order, seen);
         }
     }
 }
@@ -5398,8 +5664,19 @@ fn llvm_type_string(ty: &Type) -> String {
         // struct types (`%Struct_<Name>`), declared in the
         // module preamble. T1.2 phase 1.
         Type::Struct(name) => format!("%Struct_{}", name),
-        // Enums lower to a 32-bit integer tag. T1.3.
-        Type::Enum(_) => "i32".to_string(),
+        // T1.3 phase 2b: payloaded enums lower to named
+        // tagged-union struct types (`%Enum_<Name>`)
+        // declared in the preamble; plain enums stay as
+        // bare `i32` tags.
+        Type::Enum(name) => {
+            let payloaded = LLVM_ENUM_PAYLOAD_REGISTRY
+                .with(|r| r.borrow().contains_key(name));
+            if payloaded {
+                format!("%Enum_{}", name)
+            } else {
+                "i32".to_string()
+            }
+        }
         _ => llvm_type(ty).to_string(),
     }
 }

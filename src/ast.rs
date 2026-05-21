@@ -1,6 +1,34 @@
 use crate::span::Span;
 use std::fmt;
 
+thread_local! {
+    /// Names of structs declared with at least one non-Copy field
+    /// (in v1, that means an `OwnedStr` field — other affine field
+    /// types are still rejected at struct-decl time). Populated by
+    /// the checker before any `Type::is_copy()` calls fire so that
+    /// `Type::Struct(name)` correctly reports `false` for affine
+    /// aggregates. Backends emit per-field free calls when one of
+    /// these structs is dropped.
+    pub(crate) static STRUCT_NON_COPY_REGISTRY: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Reset and repopulate the non-Copy-struct registry. Called once
+/// per `check_program` after the struct registry is built.
+pub fn set_non_copy_structs<I: IntoIterator<Item = String>>(names: I) {
+    STRUCT_NON_COPY_REGISTRY.with(|cell| {
+        let mut set = cell.borrow_mut();
+        set.clear();
+        set.extend(names);
+    });
+}
+
+/// True when `name` was registered as a struct with non-Copy
+/// fields. Consulted by `Type::is_copy()` for `Type::Struct`.
+pub fn struct_has_non_copy_field(name: &str) -> bool {
+    STRUCT_NON_COPY_REGISTRY.with(|cell| cell.borrow().contains(name))
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     pub intents: Vec<Intent>,
@@ -369,6 +397,10 @@ impl Type {
             | Type::Mutex(_)
             | Type::Guard(_) => false,
             Type::Ref(_) | Type::RefMut(_) => true,
+            // Structs with at least one affine field (OwnedStr in v1)
+            // are themselves affine — copying would alias the heap
+            // buffer and double-free at scope exit. T1.2 phase 2b.
+            Type::Struct(name) => !struct_has_non_copy_field(name),
             _ => true,
         }
     }
@@ -806,6 +838,28 @@ pub enum ExprKind {
         then_value: Box<Expr>,
         else_value: Box<Expr>,
     },
+    /// `{ stmt; stmt; tail-expr }` — block expression.
+    /// Statements execute in order in a fresh nested scope;
+    /// the tail expression's value becomes the block's value
+    /// and type. Inner-scope `let` shadows don't leak (same
+    /// rules as `if`/`while`/`for` bodies). Enables
+    /// non-trivial `let` initializers (`let r = { let a = …;
+    /// let b = …; a + b };`) and richer match-arm bodies.
+    Block {
+        stmts: Vec<Stmt>,
+        tail: Box<Expr>,
+    },
+    /// `try EXPR` — error-propagation sugar. EXPR must
+    /// evaluate to a payloaded enum where exactly one
+    /// variant carries a payload and exactly one is
+    /// payload-less. If EXPR is the payloaded variant, the
+    /// inner value becomes the expression's result.
+    /// Otherwise the enclosing function early-returns the
+    /// payload-less variant. Requires the enclosing fn's
+    /// return type to match EXPR's enum type. T2.6.
+    Try {
+        inner: Box<Expr>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -815,14 +869,27 @@ pub struct MatchArm {
     pub body: Expr,
 }
 
-/// Match-arm pattern. T1.3 phase 1 only supports payload-less
-/// variant patterns, integer literal patterns, and the `_`
-/// catch-all. Payloaded variant destructures (`Some(x)`)
-/// land in phase 2b alongside tagged-union codegen.
+/// Match-arm pattern. T1.3 phase 1 ships payload-less variant
+/// patterns, integer literal patterns, and the `_` catch-all.
+/// T1.3 phase 2b adds `VariantWithBinding` for payloaded
+/// destructures (`Some(x) then …`); the parser accepts the
+/// syntax and the checker accepts the shape, but tagged-union
+/// codegen still goes through the WIP gate until backend
+/// support lands.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pattern {
     /// `EnumName.VariantName then …` — explicit enum variant.
     Variant { enum_name: String, variant: String },
+    /// `EnumName.VariantName(binding) then …` — payloaded
+    /// variant destructure. The single-binding form covers
+    /// `Option<T>` / `Result<T, _>` / `Result<_, E>` patterns;
+    /// multi-binding (tuple-style) variants are tracked
+    /// separately. T1.3 phase 2b.
+    VariantWithBinding {
+        enum_name: String,
+        variant: String,
+        binding: String,
+    },
     /// `42 then …` / `-1 then …` — integer literal
     /// pattern. Scrutinee must be an integer type; the
     /// match has no enum-style exhaustiveness check (a

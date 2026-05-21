@@ -1,0 +1,65 @@
+intent "T2.6 phase 2: `try` keyword sugar over Option error propagation";
+
+// The `try EXPR` keyword extracts the payload from an Option-like
+// enum or short-circuits the enclosing function by returning the
+// payload-less variant. Equivalent in spirit to Rust's `?` operator
+// but spelled keyword-first.
+//
+// Restrictions (v1):
+// - Allowed only as the RHS of the FIRST `let` in a function body
+// - Intermediate stmts must all be `let` bindings (no `if` / `while`)
+// - Function body must end with `return EXPR;`
+// - The enum must have exactly one payloaded variant (e.g. `Some(T)`)
+//   and one payload-less variant (e.g. `None`)
+//
+// The desugar lifts a chain of `let`s + final `return` into a
+// `match` on the try-target. See closures #91 (keyword reserved) and
+// #93 (Phase 2 desugar).
+
+enum Opt { Some(i64), None }
+
+// Pure propagation: extract `o`, double, re-wrap. Short-circuits None.
+fn doubled(o: Opt) -> Opt {
+  let v: i64 = try o;
+  return Opt.Some(v * 2);
+}
+
+// Chained intermediate `let`s after `try` are supported. Each one
+// lands in the block-expression of the desugared Some-arm.
+fn pipeline(o: Opt) -> Opt {
+  let v: i64 = try o;
+  let doubled_v: i64 = v * 2;
+  let plus_hundred: i64 = doubled_v + 100;
+  return Opt.Some(plus_hundred);
+}
+
+fn unwrap_or(o: Opt, def: i64) -> i64 {
+  return match o {
+    Opt.Some(v) then v,
+    Opt.None then def,
+  };
+}
+
+fn main() -> i64 {
+  // Some(5) → doubled to Some(10).
+  let a: Opt = doubled(Opt.Some(5));
+  assert unwrap_or(a, 0) == 10;
+
+  // None propagates through `try` — `doubled(None)` returns None.
+  let b: Opt = doubled(Opt.None);
+  assert unwrap_or(b, 99) == 99;
+
+  // Pipeline of let-stmts after try: 5 → 10 → 110.
+  let c: Opt = pipeline(Opt.Some(5));
+  assert unwrap_or(c, 0) == 110;
+
+  // None propagates through the pipeline too.
+  let d: Opt = pipeline(Opt.None);
+  assert unwrap_or(d, 99) == 99;
+
+  print "doubled(Some(5)) =", unwrap_or(a, 0);
+  print "doubled(None) defaulted to", unwrap_or(b, 99);
+  print "pipeline(Some(5)) =", unwrap_or(c, 0);
+  print "pipeline(None) defaulted to", unwrap_or(d, 99);
+  return 0;
+}

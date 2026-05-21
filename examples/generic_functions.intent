@@ -1,0 +1,44 @@
+intent "T1.4 phase 2: generic function monomorphization";
+
+// V1 supports `fn name<T>(args) -> ret { … }` where T is a single
+// type parameter used as an opaque pass-through. At each call site,
+// the monomorphization pre-pass infers T from the first argument's
+// literal type (i64 / f64 / bool / etc.) and generates a
+// specialized copy of the function with T substituted. Multiple
+// call sites with different concrete types produce distinct
+// specializations.
+//
+// Restrictions (v1):
+// - Single type parameter only (`<T>`, not `<T, U>`)
+// - First argument must be a LITERAL whose type infers T (Int,
+//   Float, Bool). Variable arguments need type-checking context
+//   that the pre-pass doesn't have.
+// - The body must be type-correct without knowing T (pass-through
+//   patterns — no arithmetic on T, no field access, etc. Those
+//   require interface bounds, which land with T1.5 phase 2).
+// - `where T is Iface` bounds parse but still gate (T1.5 phase 2
+//   interface dispatch).
+
+fn id<T>(x: T) -> T { return x; }
+
+fn first<T>(a: T, b: T) -> T { return a; }
+
+fn main() -> i64 {
+  // Each call site infers T from the first literal argument:
+  let a: i64 = id(42);
+  let b: bool = id(true);
+  let c: f64 = id(3.5);
+  let d: i64 = first(7, 9);
+
+  assert a == 42;
+  assert b;
+  assert d == 7;
+
+  // `id__i64`, `id__bool`, `id__f64`, `first__i64` are generated;
+  // the generic templates are removed before backend codegen.
+  print "id(42) =", a;
+  print "id(true) =", b;
+  print "id(3.5) =", c;
+  print "first(7, 9) =", d;
+  return 0;
+}

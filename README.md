@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (731 lib + 47 e2e tests passing):
+Supported today (767 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -177,8 +177,12 @@ Supported today (731 lib + 47 e2e tests passing):
   `let (a, b) = expr;`.
 - Structs `struct Point { x: i64, y: i64 }` with up to 64 fields; field access
   `p.x` and field assign `p.x = v;`.
-- Enums (payload-less in v1): `enum Color { Red, Green, Blue }`. Payloaded
-  variants parse but tagged-union codegen is gated (T1.3 phase 2b).
+- Enums: `enum Color { Red, Green, Blue }`. Payloaded variants `enum Opt
+  { Some(i64), None }` work in both backends — tagged-union codegen lays
+  them out as `{ i32 tag, T payload }`. Match destructure
+  `Opt.Some(v) then …` binds the payload into the arm scope. V1 limits
+  payloads to single Copy fields per variant + uniform payload type
+  across variants. See [examples/option_types.intent](examples/option_types.intent).
 - Type aliases: `type Coord = (i64, i64);`, `type X = i64;`.
 - Constants: `const ANSWER: i64 = 42;` — literal initializers only in v1.
 
@@ -208,12 +212,48 @@ Supported today (731 lib + 47 e2e tests passing):
   `for x in xs { … }` (consuming).
 - `break;` / `continue;`, `assert cond[, "msg"]`, `prove`, `print` (multi-item).
 - `match scrutinee { Color.Red then expr, … }` — exhaustive over enum
-  variants; integer-literal patterns and `_` wildcard supported. Bool / Str
-  / float scrutinee patterns are gated.
+  variants; integer-literal patterns, `_` wildcard, and **payloaded variant
+  destructure** `Opt.Some(v) then …` all supported. Bool / Str / float
+  scrutinee patterns are gated.
+- **Block expressions** `let r = { let a = …; let b = …; a + b };` — Let
+  stmts followed by a tail expression. Inner shadows don't leak.
+- **`try EXPR`** — Option/Result-like error-propagation sugar. In a
+  function whose return type is a payloaded enum, `let v: T = try opt;`
+  extracts the payload or short-circuits the function with the
+  payload-less variant. Restricted shape in v1 (let-try as first stmt,
+  intermediate lets, return) — see [examples/try_keyword.intent](examples/try_keyword.intent).
 - Short-circuit `&&` and `||` honor compile-time const folding —
   `false && (provably-bad)` and `true || (provably-bad)` compile cleanly.
 - Lexical scoping: inner `let x` shadowing of an outer same-name binding
   is contained to the inner scope (cross-type shadow allowed).
+
+### Generics & interfaces
+- **Generic functions** `fn id<T>(x: T) -> T { return x; }` —
+  monomorphized at compile time. The pre-pass walks call sites, infers
+  T from the first literal argument (v1 restriction), and generates a
+  specialized copy per concrete type (`id__i64`, `id__bool`, …). The
+  original generic template is dropped before codegen sees it. See
+  [examples/generic_functions.intent](examples/generic_functions.intent).
+  V1 limits: single type parameter, body must be type-correct without
+  knowing T (pass-through patterns).
+- **Interfaces** `interface Show { fn show(self: T) -> R; }` + `implement
+  Show for Point { fn show(self: Point) -> R { … } }` — static dispatch
+  via `recv.show()`. The impl hoists to `T_show`; the existing method-
+  dispatch path resolves the call at compile-time based on the receiver's
+  type. V1 limits: static dispatch only (no vtables); each impl must cover
+  every interface method; signatures must match exactly. See
+  [examples/interfaces.intent](examples/interfaces.intent).
+- **Drop interface** `implement Drop for T { fn drop(self: T) -> i64 { … } }`
+  — recognized + signature-validated. Users call `t.drop()` manually for
+  now; auto-call at scope exit lands with T2.7 phase 2 (depends on the
+  remaining T1.2 phase 2b non-Copy aggregate fields). See
+  [examples/drop_interface.intent](examples/drop_interface.intent).
+- **Structs with an `OwnedStr` field** are now affine. Both backends free
+  the field at scope exit; struct-literal init from a `Var` moves the
+  source binding so a heap string flows `caller → struct field → drop`
+  without a double-free. Other affine field types (`Vec<T>`, `[T;N]`,
+  `Task`, `Atomic`) still need deeper backend work. See
+  [examples/struct_owned_field.intent](examples/struct_owned_field.intent).
 
 ### Verification & contracts
 - `requires` / `ensures` clauses (terminated with `;`, before the body).
@@ -1935,15 +1975,15 @@ roadmap surface and unblocks the items below it.
 
 | # | Item | Depends on | Est. effort | Unlocks |
 |---|---|---|---|---|
-| 1 | **Block expressions** `let r = { stmts; tail-expr };` | — | low/medium | bare `{ }` stmts, const arithmetic, `[T; const_N]` |
-| 2 | **SMT modeling of struct field + method call + match + if-expr** | — | medium | `prove p.x == 5`, `ensures _return.x == …`, richer contracts |
-| 3 | **T1.2 phase 2b: RAII chains + non-Copy struct fields** | — | medium/high | `struct { v: Vec<T>, name: OwnedStr }` with auto-drop |
-| 4 | **T1.3 phase 2b: tagged-union codegen + pattern bindings** | — | high | enum payloads + `match Some(x) then …` destructure |
-| 5 | **T2.6: Option<T> / Result<T, E> + `try` keyword** | T1.3 phase 2b | low/medium | error-propagation sugar over enum payloads |
-| 6 | **T1.4 phase 2: generic call-site monomorphization** | — | high | `fn id<T>(x: T) -> T` callable at distinct concrete types |
-| 7 | **T1.5 phase 2: interface dispatch + bounded generics** | T1.4 phase 2 | medium/high | user-defined equality, generic algorithms over interfaces |
-| 8 | **T2.7: User-defined `Drop` interface** | T1.5 phase 2 | low/medium | RAII for user types with custom cleanup |
-| 9 | **Devanagari keyword aliases — Sanskrit / Hindi / Marathi** | — | medium | code-like-you-speak in three more languages; mixed-script files; classroom use beyond English |
+| 1 | ✅ **Block expressions** `let r = { stmts; tail-expr };` | — | low/medium | done 2026-05-21; see [examples/block_expressions.intent](examples/block_expressions.intent) |
+| 2 | ✅ **SMT modeling — if-expr, match, struct field access, method calls** | — | medium | done 2026-05-21 (#82 + #84 — full coverage) |
+| 3 | ✅ **T1.2 phase 2b (MVP): OwnedStr struct fields** | — | medium/high | done 2026-05-21 — `struct { name: OwnedStr }` works; both backends free the field at scope exit and struct-literal init from a `Var` moves the source binding; see [examples/struct_owned_field.intent](examples/struct_owned_field.intent). Other affine fields (`Vec<T>`, `[T;N]`, `Task`, `Atomic`) + multi-field drop order still pending. |
+| 4 | ✅ **T1.3 phase 2b: tagged-union codegen + pattern bindings** | — | high | done 2026-05-21 — see [examples/option_types.intent](examples/option_types.intent); both backends |
+| 5 | ✅ **T2.6: `try` keyword sugar for Option-like enums** | T1.3 phase 2b | low/medium | done 2026-05-21 — see [examples/try_keyword.intent](examples/try_keyword.intent). Generic Option<T> / Result<T, E> wait on #6 monomorphization. |
+| 6 | ✅ **T1.4 phase 2: generic call-site monomorphization** | — | high | done 2026-05-21 — pass-through generics specialize per call-site literal type; see [examples/generic_functions.intent](examples/generic_functions.intent). Var-arg inference + interface bounds pending. |
+| 7 | ✅ **T1.5 phase 2: interface dispatch (static)** | T1.4 phase 2 | medium/high | done 2026-05-21 — `interface` + `implement` + `recv.method()` dispatch; see [examples/interfaces.intent](examples/interfaces.intent). Dynamic dispatch (vtables) + bounded generics pending. |
+| 8 | ✅ **T2.7 Phase 1: Drop interface validation (manual call)** | T1.5 phase 2 | low/medium | done 2026-05-21 — signature validated, manual `t.drop()` works; see [examples/drop_interface.intent](examples/drop_interface.intent). Auto-call at scope exit (Phase 2) depends on #3. |
+| 9 | ✅ **Devanagari keyword aliases — Sanskrit / Hindi / Marathi (MVP)** | — | medium | done 2026-05-21; see [examples/hindi_keywords.intent](examples/hindi_keywords.intent), [examples/sanskrit_keywords.intent](examples/sanskrit_keywords.intent), [examples/marathi_keywords.intent](examples/marathi_keywords.intent). Multi-word aliases + script-aware diagnostics deferred. |
 
 **Devanagari aliases (#9) — granular sketch:**
 

@@ -157,9 +157,14 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
         TypedExprKind::StructLit { .. } | TypedExprKind::FieldAccess { .. } => false,
         // Enums + match also fall through to tree backends
         // for now. T1.3 follow-up.
-        TypedExprKind::EnumVariant { .. } | TypedExprKind::Match { .. } => false,
+        TypedExprKind::EnumVariant { .. }
+        | TypedExprKind::EnumVariantWithPayload { .. }
+        | TypedExprKind::Match { .. } => false,
         // If-expressions route through tree backends. T4.
         TypedExprKind::IfExpr { .. } => false,
+        // Block expressions route through tree backends in
+        // v1 (SSA lowering can be added in a follow-up).
+        TypedExprKind::Block { .. } => false,
     }
 }
 
@@ -181,7 +186,15 @@ fn emit_c_via_ssa(ir: &TypedProgram) -> String {
 
 /// Same dual-path strategy for the LLVM backend.
 fn emit_llvm_via_ssa(ir: &TypedProgram) -> String {
-    if ssa_path_supports(ir, ssa_llvm_extra_reject) {
+    // T1.3 phase 2b: payloaded enums need tagged-union codegen.
+    // Tree-LLVM now supports them (closure #90); SSA-LLVM
+    // doesn't. Force the tree-LLVM path for payloaded
+    // programs.
+    let has_payloaded_enum = ir
+        .enums
+        .iter()
+        .any(|e| e.payload_types.iter().any(|p| p.is_some()));
+    if !has_payloaded_enum && ssa_path_supports(ir, ssa_llvm_extra_reject) {
         let (module, lower_errs) = lower_program(ir);
         if lower_errs.is_empty() {
             if let Ok(ll) = ssa_backend_llvm::emit(&module) {

@@ -880,26 +880,56 @@ mod tests {
     }
 
     #[test]
-    fn generic_function_syntax_parses_but_gated() {
-        // T1.4 phase 1: the parser accepts `fn name<T>(…)`
-        // syntax and the AST carries the type parameters,
-        // but call-site monomorphization is still pending.
-        // Hitting a generic function should surface a clear
-        // "T1.4 phase 2" diagnostic — not silently break.
+    fn generic_function_unused_surfaces_dead_code_diagnostic() {
+        // T1.4 phase 2: monomorphization is now wired up.
+        // A generic function declared but never called with
+        // concrete types can't be specialized — surface a
+        // gentler diagnostic noting it's effectively dead.
         let source = r#"
             fn id<T>(x: T) -> T { return x; }
             fn main() -> i64 { return 0; }
         "#;
         let errors = compile(source)
-            .expect_err("generic function should fail with WIP diagnostic");
+            .expect_err("unused generic should surface dead-code diagnostic");
         assert!(
             errors
                 .iter()
-                .any(|e| e.message.contains("T1.4 phase 2")
-                    && e.message.contains("monomorphization")),
-            "expected T1.4-phase-2 diagnostic, got: {:?}",
+                .any(|e| e.message.contains("never called with concrete")),
+            "expected dead-generic diagnostic, got: {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn generic_id_function_compiles_and_runs_monomorphized() {
+        // T1.4 phase 2: `fn id<T>(x: T) -> T { return x; }`
+        // called with `id(42)` monomorphizes to `id__i64`
+        // and runs.
+        let source = r#"
+            fn id<T>(x: T) -> T { return x; }
+            fn main() -> i64 {
+              let a: i64 = id(42);
+              return a;
+            }
+        "#;
+        compile(source).expect("monomorphized generic call should compile");
+    }
+
+    #[test]
+    fn generic_id_function_specializes_per_concrete_type() {
+        // Multiple call sites with different concrete T
+        // generate distinct specializations (`id__i64`,
+        // `id__bool`).
+        let source = r#"
+            fn id<T>(x: T) -> T { return x; }
+            fn main() -> i64 {
+              let a: i64 = id(7);
+              let b: bool = id(true);
+              if b { return a; }
+              return 0;
+            }
+        "#;
+        compile(source).expect("multi-type-param specializations should compile");
     }
 
     #[test]
@@ -1451,26 +1481,18 @@ mod tests {
     }
 
     #[test]
-    fn enum_variant_with_payload_parses_but_gated() {
-        // T1.3 phase 2a: parser accepts `Some(T)` / `Err(E, F)`
-        // syntax and the AST carries the payload type list,
-        // but tagged-union codegen + pattern binding are still
-        // pending. Hitting a payloaded variant should surface a
-        // clear "T1.3 phase 2b" diagnostic — not silently break.
+    fn enum_variant_with_single_copy_payload_compiles() {
+        // T1.3 phase 2b: single-Copy-field payloads are now
+        // executable. The previous gate (which surfaced
+        // "T1.3 phase 2b" WIP diagnostics) lifted once the
+        // tree-C tagged-union codegen landed. Multi-field
+        // payloads and non-Copy payloads still gate; see
+        // `enum_variant_with_multi_payload_parses_but_gated`.
         let source = r#"
             enum Maybe { Some(i64), None }
             fn main() -> i64 { return 0; }
         "#;
-        let errors = compile(source)
-            .expect_err("payloaded variant should fail with WIP diagnostic");
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("T1.3 phase 2b")
-                    && e.message.contains("payload")),
-            "expected T1.3-phase-2b diagnostic, got: {:?}",
-            errors
-        );
+        compile(source).expect("single-Copy-payload enum should compile");
     }
 
     #[test]
@@ -1489,47 +1511,106 @@ mod tests {
     }
 
     #[test]
-    fn interface_decl_parses_but_gated() {
-        // T1.5 phase 1: the parser accepts `interface`,
-        // `implement`, and `where T is C` syntax. Dispatch +
-        // bounded-generic checking land in phase 2, so any
-        // program using these surfaces a clear gate.
+    fn interface_decl_without_impl_compiles_cleanly() {
+        // T1.5 phase 2: `interface` declarations are now
+        // accepted standalone — they just define a method
+        // signature contract. Without an `implement` block,
+        // the interface isn't dispatched against anywhere.
         let source = r#"
             interface Show {
               fn show(self: i64) -> i64;
             }
             fn main() -> i64 { return 0; }
         "#;
+        compile(source).expect("interface decl alone should compile");
+    }
+
+    #[test]
+    fn drop_interface_with_valid_signature_compiles() {
+        // T2.7 phase 1: `implement Drop for T` is recognized
+        // as a special interface contract. The auto-call at
+        // scope exit lands with #3 RAII work; until then,
+        // users declare the impl + call `t.drop()` manually.
+        let source = r#"
+            struct Resource { id: i64 }
+            interface Drop {
+              fn drop(self: Resource) -> i64;
+            }
+            implement Drop for Resource {
+              fn drop(self: Resource) -> i64 { return self.id; }
+            }
+            fn main() -> i64 {
+              let r: Resource = Resource { id: 42 };
+              return r.drop();
+            }
+        "#;
+        compile(source).expect("Drop impl with valid sig should compile");
+    }
+
+    #[test]
+    fn drop_interface_bad_return_type_rejected() {
+        // Drop impl must return i64 in v1.
+        let source = r#"
+            struct Resource { id: i64 }
+            interface Drop {
+              fn drop(self: Resource) -> bool;
+            }
+            implement Drop for Resource {
+              fn drop(self: Resource) -> bool { return true; }
+            }
+            fn main() -> i64 { return 0; }
+        "#;
         let errors = compile(source)
-            .expect_err("interface decl should fail with WIP diagnostic");
+            .expect_err("non-i64 Drop return should be rejected");
         assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("T1.5 phase 2")
-                    && e.message.contains("interface")),
-            "expected T1.5-phase-2 diagnostic, got: {:?}",
+            errors.iter().any(|e| e.message.contains("Drop impl for")),
+            "expected Drop-signature diagnostic, got: {:?}",
             errors
         );
     }
 
     #[test]
-    fn implement_for_parses_but_gated() {
+    fn drop_interface_wrong_method_name_rejected() {
+        // Drop impl must define a method named `drop`.
         let source = r#"
-            interface Show {
-              fn show(self: i64) -> i64;
+            struct Resource { id: i64 }
+            interface Drop {
+              fn destroy(self: Resource) -> i64;
             }
-            implement Show for i64 {
-              fn show(self: i64) -> i64 { return self; }
+            implement Drop for Resource {
+              fn destroy(self: Resource) -> i64 { return 0; }
             }
             fn main() -> i64 { return 0; }
         "#;
         let errors = compile(source)
-            .expect_err("implement decl should fail with WIP diagnostic");
+            .expect_err("wrong-named Drop method should be rejected");
         assert!(
-            errors.iter().any(|e| e.message.contains("T1.5 phase 2")),
-            "expected T1.5-phase-2 diagnostic, got: {:?}",
+            errors.iter().any(|e| e.message.contains("exactly one method named `drop`")),
+            "expected Drop-method-name diagnostic, got: {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn interface_with_impl_dispatches_statically() {
+        // T1.5 phase 2: `implement Iface for Type { fn m … }`
+        // hoists `m` to `<Type>_<method>` (same as
+        // `methods on T`), and `recv.m()` dispatches to the
+        // hoisted name via the existing method-call path.
+        let source = r#"
+            struct Point { x: i64, y: i64 }
+            interface Show {
+              fn show(self: Point) -> i64;
+            }
+            implement Show for Point {
+              fn show(self: Point) -> i64 { return self.x + self.y; }
+            }
+            fn main() -> i64 {
+              let p: Point = Point { x: 3, y: 4 };
+              return p.show();
+            }
+        "#;
+        compile(source).expect("interface impl + method dispatch should compile");
     }
 
     #[test]
@@ -1782,21 +1863,22 @@ mod tests {
 
     #[test]
     fn generic_type_param_trailing_comma_accepted() {
-        // `fn id<T,>(…)` (trailing comma in generic
-        // param list) parses; generic body itself is
-        // gated by the T1.4 phase 2 WIP guard but the
-        // parser accepts the trailing-comma shape.
+        // `fn id<T,>(…)` (trailing comma in generic param
+        // list) parses cleanly. T1.4 phase 2 monomorphization
+        // now specializes generics, so an UNUSED generic
+        // surfaces the dead-code diagnostic; that still
+        // confirms the parser accepted the trailing comma.
         let source = r#"
             fn id<T,>(x: T) -> T { return x; }
             fn main() -> i64 { return 0; }
         "#;
         let errors = compile(source)
-            .expect_err("generic fn hits T1.4 phase 2 gate");
+            .expect_err("unused generic hits dead-code gate");
         assert!(
             errors
                 .iter()
-                .any(|e| e.message.contains("T1.4 phase 2")),
-            "expected T1.4 gate, got: {:?}",
+                .any(|e| e.message.contains("never called with concrete")),
+            "expected dead-generic diagnostic, got: {:?}",
             errors
         );
     }
@@ -1952,38 +2034,151 @@ mod tests {
     }
 
     #[test]
-    fn generic_call_site_clean_diagnostic() {
-        // `id(5)` calling `fn id<T>(x: T) -> T` should
-        // surface a clean "T1.4 phase 2 in progress"
-        // gate diagnostic — not a panic or vague error.
+    fn generic_call_site_specializes_and_compiles() {
+        // T1.4 phase 2: `id(5)` calling `fn id<T>(x: T) -> T`
+        // now monomorphizes to `id__i64` and compiles
+        // cleanly.
         let source = r#"
             fn id<T>(x: T) -> T { return x; }
             fn main() -> i64 { return id(5); }
         "#;
+        compile(source).expect("specialized generic call should compile");
+    }
+
+    #[test]
+    fn try_keyword_binds_tightly_to_operand() {
+        // Regression guard: `try EXPR + 1` parses as
+        // `(try EXPR) + 1`, not `try (EXPR + 1)`. The parser
+        // reads the inner at primary-expr precedence so the
+        // `+ 1` becomes the outer binary, not part of try's
+        // operand. Both forms hit the WIP gate today, but
+        // when Phase 2 lands, the precedence here determines
+        // whether `try x + 1` extracts then adds (correct) or
+        // tries the sum (wrong). Pin the parse.
+        use crate::ast::ExprKind;
+        use crate::lexer::lex;
+        use crate::parser::parse;
+        // Wrap in a fn so the parser has a top-level context.
+        let source = "enum Opt { Some(i64), None } fn main() -> i64 { let v: i64 = try o + 1; return v; }";
+        let tokens = lex(source).expect("lex");
+        let (program, _diags) = parse(tokens);
+        // Find the let-init expression. We can't run the
+        // checker (it would gate); just inspect the AST.
+        let main_fn = program.functions.iter().find(|f| f.name == "main").unwrap();
+        let let_stmt = main_fn.body.iter().find_map(|s| match s {
+            crate::ast::Stmt::Let { expr, .. } => Some(expr),
+            _ => None,
+        }).expect("let stmt");
+        // Top-level expr should be Binary(Add, _, _) — the
+        // outer `+ 1`. The left of the Binary should be the
+        // Try wrapping `o`.
+        match &let_stmt.kind {
+            ExprKind::Binary { op, left, .. } => {
+                assert!(matches!(op, crate::ast::BinaryOp::Add));
+                assert!(
+                    matches!(left.kind, ExprKind::Try { .. }),
+                    "expected Try as left of Add, got {:?}",
+                    left.kind
+                );
+            }
+            other => panic!("expected Binary(Add, ...), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn try_keyword_desugars_let_try_return_pattern() {
+        // T2.6 Phase 2: `let v: T = try opt; ...; return X;`
+        // now desugars at the AST-level to a match-with-
+        // early-return. The pre-pass
+        // `desugar_try_let_in_program` rewrites the
+        // function body to `return match opt { Opt.Some(v)
+        // then X, Opt.None then Opt.None };` (with
+        // intermediate `let` stmts hoisted into a block-
+        // expression for the Some arm).
+        let source = r#"
+            enum Opt { Some(i64), None }
+            fn doubled(o: Opt) -> Opt {
+              let v: i64 = try o;
+              return Opt.Some(v * 2);
+            }
+            fn main() -> i64 { return 0; }
+        "#;
+        compile(source).expect("try-let-return pattern should desugar and compile");
+    }
+
+    #[test]
+    fn try_keyword_in_unsupported_shape_surfaces_phase_1_gate() {
+        // The Phase 2 desugar only fires for the restricted
+        // `[Let(try), Let*, Return]` shape. A `try` outside
+        // that shape (e.g. in a let inside an if-body) falls
+        // through to the Phase 1 gate.
+        let source = r#"
+            enum Opt { Some(i64), None }
+            fn weird(o: Opt) -> i64 {
+              if true {
+                let v: i64 = try o;
+                return v;
+              }
+              return 0;
+            }
+            fn main() -> i64 { return 0; }
+        "#;
         let errors = compile(source)
-            .expect_err("generic call sites are gated");
+            .expect_err("try in unsupported shape should surface gate");
         assert!(
-            errors.iter().any(|e| e.message.contains("monomorphization")),
-            "expected monomorphization gate diagnostic, got: {:?}",
+            errors.iter().any(|e| e.message.contains("`try EXPR` is reserved")),
+            "expected try-gate diagnostic, got: {:?}",
             errors
         );
     }
 
     #[test]
-    fn enum_with_payload_clean_diagnostic() {
-        // Payloaded enums parse but tagged-union codegen +
-        // pattern binding are gated under T1.3 phase 2b.
+    fn payloaded_enum_with_match_destructure_compiles_in_llvm() {
+        // T1.3 phase 2b Phase 4 LLVM: payloaded enums now
+        // compile end-to-end via the default LLVM backend.
+        // `Opt.Some(42)` builds the `{ i32, i64 }` struct via
+        // two `insertvalue`s; `match` extracts field 0 for the
+        // `switch` and field 1 (in VariantWithBinding arms)
+        // into an alloca registered in `ctx.locals` so the
+        // arm body's reference to `v` resolves.
         let source = r#"
             enum Opt { Some(i64), None }
-            fn main() -> i64 { return 0; }
+            fn unwrap_or(o: Opt, def: i64) -> i64 {
+              return match o {
+                Opt.Some(v) then v,
+                Opt.None then def,
+              };
+            }
+            fn main() -> i64 {
+              let a: Opt = Opt.Some(42);
+              return unwrap_or(a, 0);
+            }
         "#;
-        let errors = compile(source)
-            .expect_err("payloaded enum variants are gated");
-        assert!(
-            errors.iter().any(|e| e.message.contains("payload")),
-            "expected payload gate diagnostic, got: {:?}",
-            errors
-        );
+        compile(source).expect("payloaded enum + match destructure should compile via LLVM");
+    }
+
+    #[test]
+    fn payloaded_enum_with_match_destructure_compiles_in_tree_c() {
+        // T1.3 phase 2b: payloaded enums now lower to a
+        // tagged-union struct in tree-C (`typedef struct {
+        // i32 tag; i64 payload; } Enum_Opt;`). Match arms
+        // dispatch on `.tag` and destructure patterns
+        // `Opt.Some(v) then …` extract `__scr.payload` into
+        // a local `v` in the arm body's scope.
+        let source = r#"
+            enum Opt { Some(i64), None }
+            fn unwrap_or(o: Opt, def: i64) -> i64 {
+              return match o {
+                Opt.Some(v) then v,
+                Opt.None then def,
+              };
+            }
+            fn main() -> i64 {
+              let a: Opt = Opt.Some(42);
+              return unwrap_or(a, 0);
+            }
+        "#;
+        compile_to_c(source).expect("payloaded enum + match destructure should compile to C");
     }
 
     #[test]
@@ -3415,6 +3610,485 @@ mod tests {
             }
         "#;
         compile(source).expect("for + break + continue should compile");
+    }
+
+    #[test]
+    fn smt_method_call_discharges_via_ensures() {
+        // Method calls in proof position now reach the SMT
+        // layer. The pre-pass `rewrite_method_calls_to_calls`
+        // resolves the receiver's type via env lookup, builds
+        // the mangled name `<Type>_<method>`, and produces a
+        // synthetic Call. The existing inline-call discharger
+        // then attaches the method's `ensures` clauses to a
+        // fresh symbolic var. Combined with the struct-field
+        // rewrite (closure #82), `prove b.doubled() == 14`
+        // discharges when `b.v == 7` and the method's ensures
+        // says `_return == self.v * 2`.
+        let source = r#"
+            struct Box { v: i64 }
+            methods on Box {
+              fn doubled(self: Box) -> i64
+              ensures _return == self.v * 2;
+              {
+                return self.v * 2;
+              }
+            }
+            fn main() -> i64 {
+              let b: Box = Box { v: 7 };
+              prove b.doubled() == 14;
+              return b.doubled();
+            }
+        "#;
+        compile(source).expect("method call with ensures should discharge");
+    }
+
+    #[test]
+    fn smt_multiple_method_calls_discharge() {
+        // Two methods on the same struct + a composed proof
+        // over both.
+        let source = r#"
+            struct Box { v: i64 }
+            methods on Box {
+              fn val(self: Box) -> i64
+              ensures _return == self.v;
+              { return self.v; }
+              fn doubled(self: Box) -> i64
+              ensures _return == self.v * 2;
+              { return self.v * 2; }
+            }
+            fn main() -> i64 {
+              let b: Box = Box { v: 5 };
+              prove b.val() == 5;
+              prove b.doubled() == 10;
+              prove b.val() + b.doubled() == 15;
+              return 0;
+            }
+        "#;
+        compile(source).expect("multiple method-call discharges should work");
+    }
+
+    #[test]
+    fn variant_with_binding_pattern_compiles_in_tree_c() {
+        // T1.3 phase 2b (Phase 3): the destructure binding
+        // `v` in `Opt.Some(v) then …` is now introduced into
+        // the arm body's scope. The tree-C backend lowers the
+        // pattern to `case TAG: { <payload_ty> v_v =
+        // __scr.payload; __r = (<body>); } break;`. The body
+        // references `v` and resolves to the extracted
+        // payload.
+        let source = r#"
+            enum Opt { Some(i64), None }
+            fn unwrap(o: Opt) -> i64 {
+              return match o {
+                Opt.Some(v) then v,
+                Opt.None then 0,
+              };
+            }
+            fn main() -> i64 { return 0; }
+        "#;
+        compile_to_c(source).expect("payload destructure should compile to C");
+    }
+
+    #[test]
+    fn variant_with_binding_pattern_format_round_trips() {
+        // Formatter prints `Opt.Some(v) then ...` for the
+        // VariantWithBinding pattern. Validates the new
+        // arm in format.rs.
+        use crate::format::format_program;
+        use crate::lexer::lex;
+        use crate::parser::parse;
+        let source = "enum Opt { Some(i64), None } fn main() -> i64 { return match Opt.None { Opt.Some(v) then v, Opt.None then 0, }; }";
+        let tokens = lex(source).expect("lex");
+        let (program, diags) = parse(tokens);
+        assert!(diags.is_empty(), "parse diagnostics: {:?}", diags);
+        let formatted = format_program(&program);
+        assert!(
+            formatted.contains("Opt.Some(v)"),
+            "formatted output should include the payload binding form: {}",
+            formatted
+        );
+    }
+
+    #[test]
+    fn devanagari_numeral_literal_compiles() {
+        // Devanagari digits `०१२३४५६७८९` (U+0966..U+096F)
+        // lex as integer literals. `५` ≡ 5, `४२` ≡ 42.
+        // No suffix / float / radix support — integer-only
+        // in v1 for readability of small numbers in source.
+        let source = r#"
+            फलन main() -> i64 {
+              मान x: i64 = ५;
+              मान y: i64 = ४२;
+              मान sum: i64 = x + y;
+              खात्री sum == ४७;
+              परत sum;
+            }
+        "#;
+        compile(source).expect("Devanagari numerals should compile");
+    }
+
+    #[test]
+    fn devanagari_numeral_zero_compiles() {
+        // Single-digit zero `०` should lex as `0`.
+        let source = r#"
+            फलन main() -> i64 {
+              परत ०;
+            }
+        "#;
+        compile(source).expect("Devanagari zero should compile");
+    }
+
+    #[test]
+    fn devanagari_numeral_larger_value_compiles() {
+        // Multi-digit Devanagari numerals — `१००` ≡ 100,
+        // `२५५` ≡ 255. Validates the multi-codepoint
+        // consume loop in `lex_devanagari_number`.
+        let source = r#"
+            फलन main() -> i64 {
+              मान x: i64 = १००;
+              मान y: i64 = २५५;
+              परत x + y;
+            }
+        "#;
+        compile(source).expect("multi-digit Devanagari numerals should compile");
+    }
+
+    #[test]
+    fn devanagari_multi_word_alias_hindi_else() {
+        // Hindi `नहीं तो` (nahīṁ to — "if not / else") is a
+        // multi-word alias. A post-lex merger walks the
+        // token stream and stitches adjacent Devanagari
+        // words into a single token when their combined
+        // text matches the multi-word table.
+        let source = r#"
+            फलन main() -> i64 {
+              यदि 1 > 0 {
+                परत 100;
+              } नहीं तो {
+                परत 200;
+              }
+            }
+        "#;
+        compile(source).expect("Hindi multi-word else should compile");
+    }
+
+    #[test]
+    fn devanagari_multi_word_alias_hindi_for() {
+        // Hindi `के लिए` (ke liye — "for") is a multi-word
+        // alias spelling of the for-keyword.
+        let source = r#"
+            फलन main() -> i64 {
+              मान r: i64 = 0;
+              के लिए i from 0 to 5 {
+                r = r + i;
+              }
+              परत r;
+            }
+        "#;
+        compile(source).expect("Hindi multi-word for should compile");
+    }
+
+    #[test]
+    fn devanagari_multi_word_alias_hindi_prove() {
+        // Hindi `सिद्ध करो` (siddha karo — "prove!") is a
+        // multi-word alias for `prove`. Validates that the
+        // merger fires even when the first word (`सिद्ध`)
+        // has its own single-word alias for the same kind.
+        let source = r#"
+            फलन main() -> i64 {
+              मान x: i64 = 5;
+              सिद्ध करो x == 5;
+              परत x;
+            }
+        "#;
+        compile(source).expect("Hindi multi-word prove should compile");
+    }
+
+    #[test]
+    fn devanagari_keyword_aliases_compile_hindi() {
+        // Hindi-flavored keyword aliases (`फलन` = fn,
+        // `मान` = let, `परत` = return, `खात्री` = assert)
+        // route through the lexer's Devanagari path into
+        // the existing English TokenKinds. The full
+        // pipeline downstream (parser, checker, backend)
+        // never sees the Devanagari source — it only sees
+        // English tokens.
+        let source = r#"
+            फलन add(a: i64, b: i64) -> i64 {
+              परत a + b;
+            }
+            फलन main() -> i64 {
+              मान r: i64 = add(40, 2);
+              खात्री r == 42;
+              परत r;
+            }
+        "#;
+        compile(source).expect("Hindi-aliased program should compile");
+    }
+
+    #[test]
+    fn devanagari_keyword_aliases_compile_sanskrit() {
+        // Sanskrit aliases include `यदि` = if, `अन्यथा` =
+        // else, `शुद्ध फलन` = pure fn, plus `अपेक्षित` /
+        // `निश्चित` for requires / ensures.
+        let source = r#"
+            शुद्ध फलन abs(n: i64) -> i64
+            अपेक्षित n > 0 - 1000000;
+            निश्चित _return >= 0;
+            {
+              यदि n < 0 {
+                परत 0 - n;
+              } अन्यथा {
+                परत n;
+              }
+            }
+            फलन main() -> i64 {
+              मान y: i64 = abs(0 - 7);
+              खात्री y == 7;
+              सिद्ध y >= 0;
+              परत y;
+            }
+        "#;
+        compile(source).expect("Sanskrit-aliased program should compile");
+    }
+
+    #[test]
+    fn devanagari_aliases_mix_with_english_freely() {
+        // Mixed-script source — Devanagari `फलन` next to
+        // English `fn`, Devanagari `परत` next to English
+        // `return`. The lexer treats each token in isolation.
+        let source = r#"
+            fn double(x: i64) -> i64 {
+              परत x * 2;
+            }
+            फलन main() -> i64 {
+              let r: i64 = double(21);
+              assert r == 42;
+              return r;
+            }
+        "#;
+        compile(source).expect("mixed-script program should compile");
+    }
+
+    #[test]
+    fn devanagari_identifier_names_compile() {
+        // Names written in Devanagari (`नाम` = "name") that
+        // aren't keyword aliases should be lexed as
+        // `Ident(...)` and used as ordinary local-binding
+        // names. Validates the catch-all fallback in
+        // `lex_unicode_ident`.
+        let source = r#"
+            fn main() -> i64 {
+              let नाम: i64 = 42;
+              return नाम;
+            }
+        "#;
+        compile(source).expect("Devanagari identifier should compile");
+    }
+
+    #[test]
+    fn smt_if_expression_discharges_in_prove() {
+        // SMT now encodes `IfExpr` as `(ite cond then else)`.
+        // The combined if-expr + arithmetic case used to
+        // surface "if-expressions not supported in SMT v1";
+        // now it discharges cleanly.
+        let source = r#"
+            fn main() -> i64 {
+              let x: i64 = 5;
+              prove (if x > 0 { x } else { 0 - x }) > 0;
+              return 0;
+            }
+        "#;
+        compile(source).expect("if-expr in prove should discharge");
+    }
+
+    #[test]
+    fn smt_if_expression_constant_folds_through_let() {
+        // `let r = if true { 10 } else { 20 };` — the
+        // checker now folds the if-expr to its branch's
+        // constant when cond is known. Lets `prove r == 10`
+        // discharge via the constant-fold layer.
+        let source = r#"
+            fn main() -> i64 {
+              let cond: bool = true;
+              let r: i64 = if cond { 10 } else { 20 };
+              prove r == 10;
+              return r;
+            }
+        "#;
+        compile(source).expect("if-expr const-fold through let should discharge");
+    }
+
+    #[test]
+    fn smt_match_expression_discharges_in_prove() {
+        // SMT now encodes match (over integer patterns +
+        // wildcard) as nested `(ite (= scrutinee N) body
+        // …)`. `prove (match x { 1 then 10, … _ then 0 })
+        // == 30` discharges by inspection.
+        let source = r#"
+            fn main() -> i64 {
+              let x: i64 = 3;
+              prove (match x { 1 then 10, 2 then 20, 3 then 30, _ then 0 }) == 30;
+              return 0;
+            }
+        "#;
+        compile(source).expect("match in prove should discharge");
+    }
+
+    #[test]
+    fn smt_match_constant_folds_through_let() {
+        let source = r#"
+            fn main() -> i64 {
+              let x: i64 = 2;
+              let r: i64 = match x { 1 then 10, 2 then 20, _ then 99 };
+              prove r == 20;
+              return r;
+            }
+        "#;
+        compile(source).expect("match const-fold through let should discharge");
+    }
+
+    #[test]
+    fn smt_struct_field_access_discharges() {
+        // `prove p.x == 5` where `p` was initialized via
+        // struct literal now discharges. The SMT layer
+        // synthesizes `p__x` as a per-field var, asserts
+        // it equals the field initializer's expression, and
+        // rewrites `p.x` → `Var("p__x")` in proof
+        // obligations.
+        let source = r#"
+            struct P { x: i64, y: i64 }
+            fn main() -> i64 {
+              let p: P = P { x: 5, y: 10 };
+              prove p.x == 5;
+              prove p.y == 10;
+              prove p.x + p.y == 15;
+              return p.x;
+            }
+        "#;
+        compile(source).expect("struct field prove should discharge");
+    }
+
+    #[test]
+    fn smt_struct_field_with_computed_init_discharges() {
+        // Field initializers can be expressions over outer
+        // bindings — the synthesized fact `p__x ==
+        // (a * 2)` is fed to SMT, which discharges `p.x
+        // == 6` when `a == 3`.
+        let source = r#"
+            struct P { x: i64, y: i64 }
+            fn main() -> i64 {
+              let a: i64 = 3;
+              let b: i64 = 7;
+              let p: P = P { x: a * 2, y: b + 1 };
+              prove p.x == 6;
+              prove p.y == 8;
+              return 0;
+            }
+        "#;
+        compile(source).expect("struct field with computed init should discharge");
+    }
+
+    #[test]
+    fn smt_struct_field_disproof_surfaces_counterexample() {
+        // Wrong claim should be rejected with the SMT
+        // counterexample showing the actual value.
+        let source = r#"
+            struct P { x: i64 }
+            fn main() -> i64 {
+              let p: P = P { x: 5 };
+              prove p.x == 10;
+              return 0;
+            }
+        "#;
+        let errors = compile(source)
+            .expect_err("p.x == 10 is false; SMT should disprove");
+        assert!(
+            errors.iter().any(|e| e.message.contains("proof failed")),
+            "expected proof-failed diagnostic, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn block_expression_with_lets_then_tail_compiles() {
+        // T-block MVP: `let r = { let a = …; let b = …;
+        // a + b };` — block-expr as let RHS. Inner `let`s
+        // execute in a fresh scope; the tail's value becomes
+        // the block's value (and thus `r`).
+        let source = r#"
+            fn main() -> i64 {
+              let r: i64 = { let a: i64 = 5; let b: i64 = 10; a + b };
+              return r;
+            }
+        "#;
+        compile(source).expect("block-expr let-RHS should compile");
+    }
+
+    #[test]
+    fn nested_block_expression_compiles() {
+        // Block inside block — inner result feeds outer
+        // computation.
+        let source = r#"
+            fn main() -> i64 {
+              let outer: i64 = 100;
+              let r: i64 = {
+                let inner: i64 = { let a: i64 = 5; let b: i64 = 6; a * b };
+                inner + outer
+              };
+              return r;
+            }
+        "#;
+        compile(source).expect("nested block-expr should compile");
+    }
+
+    #[test]
+    fn empty_block_expression_just_value_compiles() {
+        // `{ 42 }` — block with zero stmts and an integer
+        // literal as the tail.
+        let source = r#"
+            fn main() -> i64 {
+              let r: i64 = { 42 };
+              return r;
+            }
+        "#;
+        compile(source).expect("empty-stmt block should compile");
+    }
+
+    #[test]
+    fn block_expression_only_allows_let_inside() {
+        // V1 restricts block-internal stmts to `let`. A
+        // `return` (or any other stmt form) inside the
+        // block surfaces an error — the parser's Block arm
+        // only consumes leading `let` stmts.
+        let source = r#"
+            fn main() -> i64 {
+              let r: i64 = { let a: i64 = 5; return 99; a + 1 };
+              return r;
+            }
+        "#;
+        let errors = compile(source)
+            .expect_err("block with non-let stmt is rejected");
+        assert!(
+            !errors.is_empty(),
+            "expected at least one diagnostic for non-let inside block"
+        );
+    }
+
+    #[test]
+    fn block_expression_shadowing_is_local() {
+        // Inner `let x` inside a block-expr shadows the outer
+        // `x` within the block scope; after the block
+        // evaluates, the outer `x` is unchanged.
+        let source = r#"
+            fn main() -> i64 {
+              let x: i64 = 5;
+              let r: i64 = { let x: i64 = 100; x + 1 };
+              assert x == 5;
+              return r;
+            }
+        "#;
+        compile(source).expect("block-expr shadowing should be local");
     }
 
     #[test]
@@ -5440,9 +6114,48 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.message.contains("non-Copy") && e.message.contains("Copy-only")),
-            "expected Copy-only diagnostic, got: {:?}",
+                .any(|e| e.message.contains("non-Copy")
+                    && e.message.contains("Vec / [T;N] / Task / Atomic")),
+            "expected non-Copy struct-field diagnostic, got: {:?}",
             errors
+        );
+    }
+
+    #[test]
+    fn struct_owned_str_field_compiles_and_drops() {
+        // T1.2 phase 2b: a struct may carry an `OwnedStr`
+        // field. The aggregate is non-Copy, the checker
+        // marks struct-literal initialization as a move on
+        // the source binding, and both backends emit a
+        // `free(v_t.<field>)` when the struct local is
+        // dropped at scope exit.
+        let source = r#"
+            struct Tag {
+              id: i64,
+              name: OwnedStr,
+              active: bool,
+            }
+            fn make_tag(id: i64, name: OwnedStr) -> Tag {
+              return Tag { id: id, name: name, active: true };
+            }
+            fn main() -> i64 {
+              let s: OwnedStr = "release-" + "v1";
+              let t: Tag = make_tag(7, s);
+              assert t.id == 7;
+              let u: Tag = Tag { id: 42, name: "a" + "b", active: false };
+              assert u.id == 42;
+              return 0;
+            }
+        "#;
+        compile(source)
+            .expect("struct with OwnedStr field should type-check");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        // Each struct local gets a per-field free; with two
+        // bindings (t, u) we expect two such free calls.
+        let free_count = c.matches("free((void*)v_").count();
+        assert!(
+            free_count >= 2,
+            "expected at least two per-field free() calls in C output, got {free_count}:\n{c}"
         );
     }
 

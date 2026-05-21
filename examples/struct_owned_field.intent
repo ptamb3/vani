@@ -1,0 +1,43 @@
+intent "T1.2 phase 2b: struct fields can hold OwnedStr (RAII free at scope exit)";
+
+// Structs in v1 originally restricted every field to a Copy
+// type. This example exercises the loosened rule: a struct
+// may now carry an `OwnedStr` field, and the compiler emits
+// a `free` for that field when the struct value goes out of
+// scope. Move tracking covers struct-literal initialization
+// from a `Var`, so a heap-allocated string flows from
+// caller → struct field → drop without a double-free.
+//
+// Other affine field types (Vec, [T;N], Task, Atomic, …)
+// still need deeper backend work and remain rejected.
+
+struct Tag {
+  id: i64,
+  name: OwnedStr,
+  active: bool,
+}
+
+fn make_tag(id: i64, name: OwnedStr) -> Tag {
+  return Tag { id: id, name: name, active: true };
+}
+
+fn main() -> i64 {
+  // Heap-allocated string flows through a binding into the
+  // struct field. The intermediate binding `s` is moved and
+  // never freed separately.
+  let s: OwnedStr = "release-" + "v1";
+  let t: Tag = make_tag(7, s);
+  print "tag id=", t.id, " name=", t.name, " active=", t.active;
+  assert t.id == 7;
+  assert t.active;
+
+  // Heap string flows directly into the field via a literal
+  // binary-concat — no intermediate binding involved.
+  let u: Tag = Tag { id: 42, name: "alpha" + "-beta", active: false };
+  print "tag id=", u.id, " name=", u.name, " active=", u.active;
+  assert u.id == 42;
+
+  // `t` and `u` both go out of scope here; the runtime
+  // performs `free` on each owning field.
+  return 0;
+}

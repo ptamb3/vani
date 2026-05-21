@@ -1,0 +1,22 @@
+// मराठी (marāṭhī) — Marathi-keyword example.
+// `कार्य` / `फलन` = fn, `मान` = let, `परत` = return,
+// `जर` / `नाहीतर` = if / else, `खात्री` = assert (certainty).
+
+फलन factorial(n: i64) -> i64 {
+  जर n <= 1 {
+    परत 1;
+  } नाहीतर {
+    परत n * factorial(n - 1);
+  }
+}
+
+फलन main() -> i64 {
+  मान a: i64 = factorial(5);
+  मान b: i64 = factorial(6);
+
+  खात्री a == 120;
+  खात्री b == 720;
+
+  print "5! =", a, " 6! =", b;
+  परत 0;
+}

@@ -1,0 +1,39 @@
+intent "Demonstrate block expressions as `let` initializers";
+
+// Block expressions let you bundle a short chain of `let` bindings
+// plus a tail expression inside `{ … }`. The tail's value becomes
+// the value of the whole block — useful when you want to factor an
+// intermediate computation without introducing top-level temporaries.
+
+fn main() -> i64 {
+  // Single-line block-expr: same effect as `let r = 5 + 10`, but
+  // the intermediate names `a` and `b` document the computation.
+  let r: i64 = { let a: i64 = 5; let b: i64 = 10; a + b };
+  assert r == 15, "r should be 5 + 10";
+
+  // Multi-line form. The block introduces a fresh scope; `temp` is
+  // not visible outside the braces.
+  let area: i64 = {
+    let width: i64 = 7;
+    let height: i64 = 6;
+    width * height
+  };
+  assert area == 42, "area should be 7 * 6";
+
+  // Nested blocks compose naturally. The inner block's tail feeds
+  // the outer block.
+  let combined: i64 = {
+    let inner: i64 = { let a: i64 = 3; let b: i64 = 4; a * b };
+    inner + 1
+  };
+  assert combined == 13;
+
+  // Shadowing is local to the block — the outer `x` survives.
+  let x: i64 = 5;
+  let twice_x: i64 = { let x: i64 = 100; x + x };
+  assert x == 5, "outer x is unshadowed after the block";
+  assert twice_x == 200;
+
+  print "r=", r, " area=", area, " combined=", combined, " twice_x=", twice_x;
+  return 0;
+}

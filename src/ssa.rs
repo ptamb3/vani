@@ -1918,7 +1918,9 @@ fn lower_expr_to_operand(
                 span: expr.span,
             })
         }
-        TypedExprKind::EnumVariant { .. } | TypedExprKind::Match { .. } => {
+        TypedExprKind::EnumVariant { .. }
+        | TypedExprKind::EnumVariantWithPayload { .. }
+        | TypedExprKind::Match { .. } => {
             Err(LowerError {
                 message: "SSA lowering of enums / match is not yet supported".to_string(),
                 span: expr.span,
@@ -1926,6 +1928,10 @@ fn lower_expr_to_operand(
         }
         TypedExprKind::IfExpr { .. } => Err(LowerError {
             message: "SSA lowering of if-expressions is not yet supported".to_string(),
+            span: expr.span,
+        }),
+        TypedExprKind::Block { .. } => Err(LowerError {
+            message: "SSA lowering of block expressions is not yet supported".to_string(),
             span: expr.span,
         }),
     }
@@ -1955,8 +1961,10 @@ fn expr_kind_name(kind: &TypedExprKind) -> &'static str {
         TypedExprKind::StructLit { .. } => "StructLit",
         TypedExprKind::FieldAccess { .. } => "FieldAccess",
         TypedExprKind::EnumVariant { .. } => "EnumVariant",
+        TypedExprKind::EnumVariantWithPayload { .. } => "EnumVariantWithPayload",
         TypedExprKind::Match { .. } => "Match",
         TypedExprKind::IfExpr { .. } => "IfExpr",
+        TypedExprKind::Block { .. } => "Block",
     }
 }
 

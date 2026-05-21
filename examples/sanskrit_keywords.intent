@@ -1,0 +1,27 @@
+// संस्कृत (saṁskṛta) — Sanskrit-keyword example.
+// Uses the classical-Sanskrit verbs for control flow and proof
+// constructs. `शुद्ध` = pure, `अपेक्षित` = requires, `निश्चित` = ensures.
+
+शुद्ध फलन abs(n: i64) -> i64
+अपेक्षित n > 0 - 1000000;
+निश्चित _return >= 0;
+{
+  यदि n < 0 {
+    परत 0 - n;
+  } अन्यथा {
+    परत n;
+  }
+}
+
+फलन main() -> i64 {
+  मान x: i64 = 0 - 42;
+  मान y: i64 = abs(x);
+
+  // `सिद्ध` ≅ "prove" (siddha root, "established"). The verifier
+  // discharges this via abs's `ensures` clause.
+  सिद्ध y >= 0;
+  खात्री y == 42;
+
+  print "x=", x, " |x|=", y;
+  परत 0;
+}

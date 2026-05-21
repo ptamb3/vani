@@ -1,0 +1,57 @@
+intent "T2.7 phase 1: user-defined Drop interface (manual call)";
+
+// `implement Drop for T { fn drop(self: T) -> i64 { ... } }` declares
+// a user-defined destructor contract for type T. V1 validates the
+// signature (must be `fn drop(self: T) -> i64`) and hoists the
+// implementation as `T_drop` so the existing method-dispatch path
+// can resolve `t.drop()` statically.
+//
+// Auto-call at scope exit is deferred to T2.7 phase 2, which needs
+// the RAII-chains work for non-Copy struct fields (#3) to land
+// first. Until then, users call `drop()` explicitly where they
+// want the destructor to run.
+//
+// V1 restrictions on Drop impls:
+// - Exactly one method named `drop`
+// - Signature: `fn drop(self: T) -> i64`
+// - Return value is conventionally the "release status" (e.g. 0
+//   for success). The wider Drop return-type story (unit / Result)
+//   waits on phase 2.
+
+struct Resource {
+  id: i64,
+  open: bool,
+}
+
+interface Drop {
+  fn drop(self: Resource) -> i64;
+}
+
+implement Drop for Resource {
+  fn drop(self: Resource) -> i64 {
+    // The body can do whatever cleanup the type needs. Here we
+    // just print to mark the call site.
+    print "  releasing resource", self.id;
+    return self.id;
+  }
+}
+
+fn use_and_release(id: i64) -> i64 {
+  let r: Resource = Resource { id: id, open: true };
+  print "  using resource", r.id;
+  // Manual call — Phase 2 will make this automatic at scope exit
+  // for types with an `implement Drop`.
+  return r.drop();
+}
+
+fn main() -> i64 {
+  print "fn 1 starts";
+  let a: i64 = use_and_release(7);
+  print "fn 1 ends, dropped =", a;
+  print "fn 2 starts";
+  let b: i64 = use_and_release(13);
+  print "fn 2 ends, dropped =", b;
+  assert a == 7;
+  assert b == 13;
+  return 0;
+}

@@ -908,6 +908,14 @@ fn format_expr(e: &Expr, parens_if_binary: bool, out: &mut String) {
                         out.push('.');
                         out.push_str(variant);
                     }
+                    crate::ast::Pattern::VariantWithBinding { enum_name, variant, binding } => {
+                        out.push_str(enum_name);
+                        out.push('.');
+                        out.push_str(variant);
+                        out.push('(');
+                        out.push_str(binding);
+                        out.push(')');
+                    }
                     crate::ast::Pattern::Int(v) => {
                         out.push_str(&v.to_string());
                     }
@@ -929,6 +937,30 @@ fn format_expr(e: &Expr, parens_if_binary: bool, out: &mut String) {
             out.push_str(" } else { ");
             format_expr(else_value, false, out);
             out.push_str(" }");
+        }
+        ExprKind::Block { stmts, tail } => {
+            // Inline block-expression form. Multi-statement
+            // blocks render on one line so the round-trip
+            // (parse → format → parse) stays stable; users
+            // who want indented layout can format manually.
+            // Comments inside the block aren't preserved
+            // here — block-expr is usually short enough that
+            // matters less than for top-level fn bodies.
+            out.push_str("{ ");
+            let empty_comments: &[crate::lexer::Comment] = &[];
+            for s in stmts {
+                let mut tmp = String::new();
+                let mut ctx = FmtCtx::new("", empty_comments);
+                format_stmt(s, 0, &mut ctx, &mut tmp);
+                out.push_str(tmp.trim());
+                out.push(' ');
+            }
+            format_expr(tail, false, out);
+            out.push_str(" }");
+        }
+        ExprKind::Try { inner } => {
+            out.push_str("try ");
+            format_expr(inner, true, out);
         }
     }
 }

@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-21
-**Test totals:** 731 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 767 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -24,7 +24,7 @@
 - **References:** second-class `&T` and `&mut T` (params only, no returns, no let-bindings, no nested refs). Call-site aliasing rejected. Auto-deref for indexing.
 - **First-class fn-pointers** `fn(T1, ...) -> R` (FnRef + indirect call). Pure / parallel-for / lock-graph passes reject indirect calls conservatively.
 - **Control flow:** `if/else`, `else if`, `while`, `for i in lo..hi`, `for x in &xs`, `for x in xs` (consuming), `break`, `continue`. Lexical scoping (nested scopes, shadowing).
-- **Constructs:** `let`, `let _ =`, plain `name = expr;` reassignment, `assert cond[, "msg"]`, `prove`, `print` (multi-item), discarded `call();` / `receiver.method();` as a statement (sugar for `let _ = …`).
+- **Constructs:** `let`, `let _ =`, plain `name = expr;` reassignment, `assert cond[, "msg"]`, `prove`, `print` (multi-item), discarded `call();` / `receiver.method();` as a statement (sugar for `let _ = …`), block expressions `let r = { let a = …; let b = …; a + b };` (Let stmts then tail expr).
 - `intent "…";` module header; multi-file with `use "path.intent";` (transitive resolve, cycle detection).
 
 ### Verification & contracts
@@ -388,11 +388,36 @@ fn main() returns i64 {
    `examples/methods.intent` exercises four shapes
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
-   and is included in the `intentc test` pass. **Phase 2b still pending**:
-   non-Copy fields with auto-drop chains in reverse-
-   declaration order at scope exit, user-defined `Drop`
-   interface (T2.7 dependency), `methods on Type<T>`
-   generic methods (depends on T1.4 phase 2).
+   and is included in the `intentc test` pass.
+   **Phase 2b (OwnedStr fields) done 2026-05-21**: structs
+   may now carry an `OwnedStr` field. The aggregate is
+   automatically affine; both backends emit a `free` of the
+   field at scope exit, and the checker treats struct-literal
+   initialization from a `Var` as a move on the source
+   binding so a heap string can flow `caller → struct field →
+   drop` without a double-free. Implementation: new
+   thread-local `STRUCT_NON_COPY_REGISTRY` in
+   [src/ast.rs](src/ast.rs) consulted by `Type::is_copy()`;
+   per-backend `STRUCT_FIELDS_REGISTRY` / `LLVM_STRUCT_FIELDS_REGISTRY`
+   populated at emit start so the `TypedStmt::Drop` handler
+   can free each owning field by name (C: `free((void*)v_t.<field>)`)
+   or index (LLVM: GEP + load i8* + `@free`). The LLVM
+   string-interning pre-pass (`collect_strings_in_expr` in
+   [src/backend_llvm.rs](src/backend_llvm.rs)) was the
+   blocker — it didn't recurse into `StructLit` / `Tuple` /
+   `Match` / `IfExpr` / `Block` / etc., so string literals
+   nested inside struct-field initializers fell back to
+   `i8* null` and segfaulted at `strlen`. Now recurses into
+   every sub-expression form. A new lib test
+   `struct_owned_str_field_compiles_and_drops` and example
+   `examples/struct_owned_field.intent` exercise the path
+   end-to-end. **Phase 2b still pending**: other affine
+   field types (`Vec<T>`, `[T;N]`, `Task`, `Atomic<T>`),
+   auto-drop chains in reverse-declaration order across
+   multiple owning fields, `methods on Type<T>` generic
+   methods (depends on T1.4 phase 2), user-defined `Drop`
+   auto-call at scope exit (T2.7 phase 2, depends on this
+   work).
 3. **Enums + `match`** — *phase 1 done 2026-05-20*. Payload-less
    `enum Color { Red, Green, Blue }` declarations, variant references
    `Color.Red`, and `match scrutinee { Variant then expr, … }`
@@ -418,22 +443,25 @@ fn main() returns i64 {
    variant surfaces a clear "T1.3 phase 2b: tagged-union
    codegen + pattern binding are still in progress" diagnostic
    so users learn the syntax parses but isn't yet executable.
-   Two new lib tests
-   (`enum_variant_with_payload_parses_but_gated`,
-   `enum_variant_with_multi_payload_parses_but_gated`) pin
-   the gate. **Phase 2b pending**: tagged-union layout in
-   AST + IR (variant index → typed payload tuple);
-   tree-C codegen as `struct { int32_t tag; union { T1
-   p_Some; struct {T1 a; T2 b;} p_Err; } u; }` with
-   per-variant constructor + read helpers; tree-LLVM codegen
-   as `{ i32, [Nbytes x i8] }` with bitcast on payload
-   read/write; pattern bindings (`Maybe.Some(x) then
-   expr(x)` introduces `x` typed as the variant's payload
-   into the arm); nested destructure (`Outcome.Ok((a, b))`);
-   guards (`Color.Red if cond then …`);
-   match exhaustiveness updated to handle payload
-   bindings without breaking the existing
-   coverage-by-variant-set check.
+   **Phase 2b/3 done 2026-05-21 (tree-C)**: single-Copy-payload
+   enums now compile end-to-end via `--backend=c`. The
+   compiler lays them out as `typedef struct { int32_t tag;
+   T payload; } Enum_<Name>;` where T is the shared payload
+   type. Constructors `Opt.Some(42)` build `(Enum_Opt){.tag
+   = 0, .payload = 42}`; match dispatches on `__scr.tag` and
+   destructure arms `Opt.Some(v) then …` extract `__scr
+   .payload` into a local `v` in the arm body's scope. The
+   `TypedEnumDecl` carries `payload_types: Vec<Option<Type>>`
+   and `TypedMatchArm` carries `binding: Option<(String,
+   Type)>`. LLVM driver currently rejects payloaded enums
+   with a "use --backend=c" diagnostic; tree-LLVM
+   tagged-union codegen is queued as a follow-up.
+   **Still pending**: multi-field payloads (`Pair(i64,
+   i64)`), non-Copy payloads (Vec/OwnedStr), mixed payload
+   types across variants (would need a union representation
+   in the C struct rather than a single field), nested
+   destructure (`Outcome.Ok((a, b))`), guards (`Color.Red
+   if cond then …`), and LLVM tagged-union codegen.
    **Wildcard `_` pattern done 2026-05-20**: `_ then …`
    arms are accepted by the parser (lexed as the
    identifier `_`), satisfy exhaustiveness without

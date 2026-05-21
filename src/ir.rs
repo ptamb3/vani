@@ -34,6 +34,13 @@ pub struct TypedEnumDecl {
     /// Variant names in declaration order. The variant's
     /// integer tag is its position. T1.3.
     pub variants: Vec<String>,
+    /// Per-variant payload type (parallel to `variants`).
+    /// `None` for payload-less variants; `Some(ty)` for
+    /// payloaded variants. v1 requires all payload-bearing
+    /// variants to share the same payload type (the C
+    /// backend lays it out as `typedef struct { int32_t tag;
+    /// T payload; } Enum_<Name>;`). T1.3 phase 2b.
+    pub payload_types: Vec<Option<Type>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -339,6 +346,18 @@ pub enum TypedExprKind {
         variant: String,
         tag: u32,
     },
+    /// Enum constructor with a payload: `Opt.Some(42)`.
+    /// V1 supports single-field payloads only. Backends lay
+    /// the enum out as a tagged union (`{ i64 tag; union {
+    /// .. } }` in C, `{i64, [N x i8]}` in LLVM). T1.3 phase
+    /// 2b.
+    EnumVariantWithPayload {
+        enum_name: String,
+        variant: String,
+        tag: u32,
+        payload: Box<TypedExpr>,
+        payload_ty: Type,
+    },
     /// Match expression. Arms carry their variant tag for
     /// backend dispatch. The wrapper's `ty` is the
     /// (unified) arm-body type. T1.3.
@@ -353,6 +372,15 @@ pub enum TypedExprKind {
         cond: Box<TypedExpr>,
         then_value: Box<TypedExpr>,
         else_value: Box<TypedExpr>,
+    },
+    /// `{ stmt; stmt; tail-expr }` — block expression.
+    /// `stmts` execute in order; `tail`'s value becomes the
+    /// block's value. The wrapper's `ty` matches `tail.ty`.
+    /// Scope handling already exists via the lower_if-style
+    /// shadow-restoration in SSA lowering. T-block.
+    Block {
+        stmts: Vec<TypedStmt>,
+        tail: Box<TypedExpr>,
     },
 }
 
@@ -371,6 +399,13 @@ pub struct TypedMatchArm {
     /// `case` label. None for variant + wildcard arms.
     /// T1.3 integer-literal pattern.
     pub int_value: Option<i128>,
+    /// Optional payload binding name + its type for
+    /// `Opt.Some(v) then …` destructure patterns. Backends
+    /// emit `<payload_ty> v_<binding> = (scrutinee).payload;`
+    /// at the start of the arm body so the body's reference
+    /// to `v` resolves. None for non-binding patterns.
+    /// T1.3 phase 2b.
+    pub binding: Option<(String, Type)>,
     pub body: TypedExpr,
 }
 

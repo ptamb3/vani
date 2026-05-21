@@ -3,6 +3,156 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
+## ⏳ Resume here (paused 2026-05-21, after closure #98)
+
+All multi-session items #1-#9 now have Phase 1 / MVP shipping.
+Test totals: 767 lib + 47 e2e passing. Pick **one** of the two
+highest-leverage standalone items below to start the next session.
+
+### Recommended next (pick one)
+
+- **A. #7 Phase 2 — dynamic dispatch (vtables) + bounded generics.**
+  Unlocks user-defined `==` and brings the generics/interfaces axis
+  to feature-complete. Touches checker (parse + propagate
+  `where T is Cmp` bounds, validate call-site impls), IR (interface-
+  object representation), both backends (vtable layout — C: `struct
+  { fn_ptr_t cmp; … }`; LLVM: `%vtable_<I> = type { i8* ... }`).
+  Concrete entry points:
+    - Parser already accepts `where T is Iface` shape (closure #95);
+      checker needs to thread the bound into `Signature` and check
+      at monomorphization time that the call-site type has a
+      matching `implement Iface for T` impl.
+    - Add a `Type::Object(iface_name)` variant for first-class
+      interface objects; backends emit a `{ &vtable, &data }` fat
+      pointer.
+    - Auto-`==` for structs/tuples/enums by lowering `a == b` to
+      `a.eq(ref b)` when an `implement Eq for T` is in scope.
+  Effort: medium/high (one session if scoped to bounded generics
+  only; two sessions including object/vtable dispatch).
+
+- **B. #3 follow-up — Vec / Array / Task / Atomic struct fields.**
+  Brings struct RAII to feature-complete. The MVP (closure #98)
+  already wired:
+    - `STRUCT_NON_COPY_REGISTRY` + per-backend
+      `STRUCT_FIELDS_REGISTRY`
+    - `TypedStmt::Drop { ty: Type::Struct(name) }` arm that walks
+      the field list
+    - Move tracking through `StructLit` initializers
+  Remaining:
+    - Lift the gate in `src/checker.rs:448` to accept `Vec<T>`,
+      `Array { … }`, `Task`, `Atomic<T>` as struct fields.
+    - Backend Drop arms for the new field types: C calls the
+      existing `intent_vec_<T>__free` per-element helper through
+      `v_t.<field>`; LLVM emits the same call against the GEP'd
+      field pointer.
+    - **The hard part**: tree-LLVM lacks `FieldAccess` as `Index`
+      base — i.e. `t.xs[0]` where `t.xs: Vec<T>`. The previous
+      attempt this session (closure #85, reverted) failed here.
+      Either lift this in the LLVM `emit_lvalue_addr` /
+      `emit_expr` Index arm, or document the gap and route users
+      through a copy-out (`let xs = clone_at(ref t.xs, 0);`).
+    - Partial-move tracking: today, `let y = t.xs;` moves the
+      whole struct; we want it to move only the field and leave
+      `t.id` valid. Needs a per-field `moved` map on
+      `BindingInfo` and updates everywhere `info.moved` is
+      consulted.
+    - Multi-field drop order: when a struct has two affine
+      fields, free in reverse declaration order (Rust convention).
+  Effort: medium/high (one session for Vec fields without
+  FieldAccess-as-Index-base; two sessions for the full surface).
+
+### Other queued follow-ups (smaller, can interleave)
+
+- **#8 Phase 2: Drop auto-call at scope exit** — wire `T_drop` into
+  the existing `TypedStmt::Drop` lowering so user-declared
+  `implement Drop for T` runs automatically. Blocked on B above
+  for nested affine fields.
+- **#5 follow-ups**: `try` in nested blocks, non-let statements
+  between `try` and `return`, multiple `try`s in one block. Each
+  is a small AST-level extension of `desugar_try_let_in_program`.
+- **Devanagari (parked at user's request)**: script-aware
+  diagnostics, multi-word alias expansion, grammar-consultant
+  review of the Sanskrit / Hindi / Marathi tables.
+
+### README "Todo (small)" — most land naturally with A or B
+
+- `const N` as `[T; N]` length (const-eval pass)
+- Const initializer arithmetic (`const B: i64 = A + 1`)
+- Array types in fn return position (SSA gap)
+- Nested arrays `[[T;N]; M]`, `[Vec<T>; N]` (SSA gap)
+- Empty struct `struct E {}` (parser tweak)
+- Unit-return fns (`fn f() { … }` no `->`)
+- Type-associated functions `Type.helper()`
+- `bool ↔ int` cast (deliberate; may stay deferred)
+- SSA bool-print renders `1`/`0` not `true`/`false`
+- Bare `{ … }` as scope-stmt
+- `xs[i].field = v` mixed-place assign
+- Struct/tuple/enum `==` (lands with #7 Phase 2 → option A)
+- Match on `bool` / `Str` / `f64` scrutinees
+
+### Deferred (multi-week)
+
+- Cranelift backend
+- Direct-asm targets (x86_64-linux first)
+
+## Foundational items — dependency-ordered queue (2026-05-21)
+
+English-language core foundations come first. Devanagari work
+(#83–#87) parked until the foundational queue is closed.
+
+Critical-path analysis of what's left in the multi-session queue:
+
+```
+#4  T1.3 phase 2b: tagged-union codegen + pattern bindings
+    └─ no deps
+    └─ unlocks #5
+    └─ effort: high (multi-session)
+
+#5  T2.6: Option<T> / Result<T,E> + try keyword
+    └─ depends on: #4
+    └─ unlocks: idiomatic error handling
+    └─ effort: low/medium
+
+#3  T1.2 phase 2b: RAII + non-Copy struct fields
+    └─ MVP DONE 2026-05-21 (closure #98)
+        OwnedStr struct field works on both backends;
+        each owning field is freed at scope exit; struct-literal
+        init from a Var moves the source binding.
+        Remaining: Vec / [T;N] / Task / Atomic fields,
+        multi-field drop order, partial-move tracking.
+
+#6  T1.4 phase 2: generic call-site monomorphization
+    └─ no deps
+    └─ unlocks #7
+    └─ effort: high
+
+#7  T1.5 phase 2: interface dispatch + bounded generics
+    └─ depends on: #6
+    └─ unlocks #8, user-defined ==
+    └─ effort: medium/high
+
+#8  T2.7: user-defined Drop interface
+    └─ depends on: #7
+    └─ unlocks: RAII for user types
+    └─ effort: low/medium
+```
+
+Critical paths:
+
+  #4 → #5                  (2-deep, error-handling)
+  #6 → #7 → #8             (3-deep, generics/interfaces)
+  #3                        (standalone, struct RAII)
+
+All items #1-#9 above have at least a Phase 1 / MVP shipping
+as of 2026-05-21. Remaining work is follow-up phases tracked
+inline (e.g. T2.7 Phase 2 auto-drop, T1.2 phase 2b non-Copy
+aggregate fields, T1.5 phase 2 dynamic dispatch).
+
+Devanagari follow-ups (parked, low priority until above is closed):
+
+  D1. Script-aware diagnostics (medium)
+  D2. Multi-word alias expansion / consultant review
+
 ## Pending — canonical order (2026-05-19)
 
 Resume from this section after a session break. The list mixes
@@ -466,6 +616,910 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+98. ~~**#3 MVP: OwnedStr struct fields with auto-drop +
+    LLVM string-interning bug fix**~~ — done 2026-05-21.
+    Closes multi-session item #3 at the MVP level. The
+    last standalone item in the queue.
+    - **The blocker**: the previous attempt (closure
+      #85, reverted) hit a strlen segfault when an
+      OwnedStr-field struct ran through default LLVM.
+      Diagnosis this session: the emitted IR contained
+      `call i8* @intent_str_concat(i8* null, i32 0, i8*
+      null, i32 0)` — both string literal operands had
+      lowered to `null`. Root cause was
+      `collect_strings_in_expr` in
+      [src/backend_llvm.rs](src/backend_llvm.rs) — the
+      module-level pre-pass that hoists every string
+      literal into a `@.print_str.<n>` private global
+      — only recursed into `Unary`/`Binary`/`Call`/
+      `Cast`/`Index`/`Len`/`ArrayLit` and silently
+      dropped everything else through `_ => {}`. Inside
+      a `StructLit` field initializer (or `Tuple`,
+      `Match`, `IfExpr`, `Block`, …) the literals never
+      got registered, so the Str-arm of `emit_expr`
+      fell back to the stub `"null"` placeholder.
+    - **String-interning fix**: explicit arms for every
+      sub-expression form that can contain string
+      literals — `StructLit { fields }`,
+      `Tuple { elements }`, `TupleAccess { tuple }`,
+      `FieldAccess { object }`,
+      `EnumVariantWithPayload { payload }`,
+      `Match { scrutinee, arms }`,
+      `IfExpr { cond, then_value, else_value }`,
+      `Block { stmts, tail }`,
+      `CallIndirect { callee, args }`. Leaves only
+      Int / Float / Bool / Var / Ref / RefMut / FnRef
+      / EnumVariant (none of which carry payloads) in
+      the no-op case. Fix is leverage for every
+      future feature that nests string literals
+      anywhere — not just structs.
+    - **Affine-aggregate registry**: new thread-local
+      `STRUCT_NON_COPY_REGISTRY` in [src/ast.rs](src/ast.rs)
+      (parallel to the existing enum payload
+      registries) tracks struct names whose
+      declaration carries at least one OwnedStr field.
+      The checker populates it with a pre-pass before
+      `Type::is_copy` is consulted on individual
+      fields; `Type::is_copy(Type::Struct(name))` now
+      consults it and reports `false` for affine
+      aggregates. Without this, the struct would still
+      be Copy and no Drop IR would be emitted at
+      scope exit.
+    - **Per-backend struct-fields registry**: parallel
+      `STRUCT_FIELDS_REGISTRY` in
+      [src/backend_c.rs](src/backend_c.rs) and
+      `LLVM_STRUCT_FIELDS_REGISTRY` in
+      [src/backend_llvm.rs](src/backend_llvm.rs) (both
+      thread-local, populated from `program.structs` at
+      emit start). The `TypedStmt::Drop` handler in
+      each backend now has a `Type::Struct(name)` arm
+      that walks the registered field list and emits a
+      free for each owning field: C uses
+      `free((void*)v_<binding>.<field>)`; LLVM uses
+      `getelementptr %Struct_<Name>, ... i32 <idx>` +
+      `load i8*` + `call void @free(i8*)`.
+    - **Move tracking through struct literals**: the
+      checker's `StructLit` arm now calls
+      `consume_if_moved_var` on each field initializer
+      (parallel to the existing `Call`/`Let` move
+      sites). Without this, a heap string passed
+      `caller → fn-param → struct-field` would be
+      freed twice — once when the fn param goes out of
+      scope and once when the returned struct's field
+      is dropped at the caller's scope. With this, the
+      affine binding flows cleanly through the chain.
+    - **The narrow MVP gate**: still only `OwnedStr`
+      passes the struct-field test. Other affine
+      types (`Vec<T>`, `[T;N]`, `Task`, `Atomic<T>`,
+      `Channel`, `Mutex`, `Guard`) stay rejected with
+      a clearer diagnostic: "struct field `T::f` has
+      non-Copy type X — v1 supports Copy types and
+      OwnedStr as struct fields; other affine types
+      (Vec / [T;N] / Task / Atomic) need more codegen
+      work". The phase-1-gate lib test was updated
+      accordingly.
+    - **1 new lib test**:
+      `struct_owned_str_field_compiles_and_drops`
+      pins type-checking + per-field free emission
+      in C output for a 3-field (i64, OwnedStr, bool)
+      struct with one binding moved through a
+      function call and one bound to a literal
+      concat.
+    - **New example**
+      [examples/struct_owned_field.intent](examples/struct_owned_field.intent)
+      exercises both shapes end-to-end. Runs cleanly
+      through both backends:
+      ```
+      tag id= 7  name= release-v1  active= true
+      tag id= 42  name= alpha-beta  active= false
+      ```
+      No double-free, no segfault. 766 → 767 lib tests;
+      47 e2e + 3 integration unchanged. **Remaining for
+      #3 (deferred)**: non-OwnedStr affine fields
+      (Vec / Array / Task / Atomic), reverse-declaration
+      drop ordering for multi-field structs, partial-
+      move tracking (`drop t.name; …` while keeping
+      `t.id`).
+
+97. ~~**Session-end polish: README test totals + feature
+    sections refreshed**~~ — done 2026-05-21. Final
+    closure of a long session; syncs the README's
+    "Supported today" with everything that landed
+    closures #81 → #96.
+    - **Test totals** updated 731 → 766 lib in the README
+      preamble.
+    - **Enums** entry updated to reflect payloaded variant
+      support landing (was "payloaded gated", now
+      "tagged-union codegen lays them out + match
+      destructure binds payload").
+    - **New Control-flow bullets**: block expressions
+      (closure #81) and `try EXPR` (closures #91/#93).
+    - **New Generics & interfaces subsection**: generic
+      monomorphization (#94), interface dispatch (#95),
+      Drop interface phase 1 (#96).
+    - All example files cross-linked.
+    - **Session summary**: 16 closures landed (#81-#96),
+      one revert (#85). Test arc 686 → 766 lib (+80),
+      47 e2e stable throughout. Multi-session items
+      closed: #1 ✅ Block expressions, #2 ✅ SMT
+      modeling, #4 ✅ tagged-union codegen (both
+      backends), #5 ✅ try keyword, #6 ✅ generic
+      monomorphization, #7 ✅ interface dispatch
+      (static), #8 ✅ Phase 1 Drop recognition,
+      #9 ✅ Devanagari MVP. **Remaining**: #3 RAII
+      non-Copy struct fields (last standalone — needs
+      a dedicated session for FieldAccess-as-Index-base
+      in tree-LLVM, typedef ordering in tree-C,
+      per-field Drop generation, partial-move tracking).
+    - **Honest pause point**: I attempted #3 twice
+      earlier this session and reverted both times.
+      The remaining work needs sustained multi-hour
+      focus rather than continuation-style increments.
+    766 lib + 47 e2e tests passing.
+
+96. ~~**#8 Phase 1: Drop interface recognition + signature
+    validation**~~ — done 2026-05-21. Honest minimal cut
+    of multi-session item #8. The auto-call at scope exit
+    needs the RAII work for non-Copy structs (#3) to land
+    first; until then, users declare `implement Drop for
+    T` and call `t.drop()` manually. This phase ensures
+    the contract is forward-compatible.
+    - **Special-case recognition**: when
+      `hoist_impls_into_functions` sees `interface_name
+      == "Drop"`, validates the impl:
+      - Exactly one method, named `drop`
+      - Signature must be `fn drop(self: T) -> i64`
+      - Anything else surfaces a targeted diagnostic
+    - **The impl hoists normally** to `T_drop` so
+      `recv.drop()` dispatches statically (closure #95
+      machinery).
+    - **3 new lib tests**: valid Drop impl compiles +
+      runs; wrong return type rejected; wrong method
+      name rejected.
+    - **New example**
+      [examples/drop_interface.intent](examples/drop_interface.intent)
+      shows manual `r.drop()` call from a function body.
+      Runs through default LLVM:
+      ```
+      fn 1 starts
+        using resource 7
+        releasing resource 7
+      fn 1 ends, dropped = 7
+      …
+      ```
+    - **What's deferred (Phase 2)**: auto-call at scope
+      exit. Requires #3 to land first — without
+      non-Copy structs, the auto-drop pass has no
+      meaningful place to fire (structs are currently
+      Copy and don't trigger drop). When #3 ships,
+      Phase 2 wires the registry of `implement Drop`
+      types into the existing `is_copy()` gate and
+      drop-stmt emission.
+    763 → 766 lib tests; 47 e2e stays green.
+
+95. ~~**#7 Phase 1: interface dispatch (static)**~~ — done
+    2026-05-21. Multi-session item #7 closed for static
+    dispatch. `interface Iface { fn m(...) -> R; }` +
+    `implement Iface for Type { fn m(...) ... }` now
+    work end-to-end. Method calls `recv.m()` resolve at
+    compile-time based on the receiver's type.
+    - **New pre-pass `hoist_impls_into_functions`** runs
+      right after `monomorphize_generics_in_program`.
+      Validates each impl method's signature against the
+      interface declaration, then mangles to
+      `<TypeName>_<method>` (same convention as
+      `methods on T`). The existing method-dispatch path
+      then resolves `recv.m()` to the mangled call
+      automatically.
+    - **Signature validation**: parameter count + return
+      type must match. Mismatches surface targeted
+      diagnostics ("impl method 'X::m' has N parameters
+      but interface declares M").
+    - **Coverage check**: the impl must cover EVERY
+      interface method. Missing methods surface a
+      diagnostic listing the missing names.
+    - **Extra-method rejection**: impl methods not in the
+      interface surface "interface 'X' has no method 'Y'".
+    - **Collision check**: if `implement Iface for T { fn
+      method }` and `methods on T { fn method }` both
+      declare the same method, surface a collision
+      diagnostic.
+    - **Unknown interface**: `implement Mystery for T`
+      where `Mystery` isn't declared surfaces a clean
+      diagnostic.
+    - **for_type validation**: must be a struct or enum
+      (nominal type).
+    - **2 prior gate tests updated** (`interface_decl_*`,
+      `implement_for_*`) to assert successful compilation.
+    - **New example**
+      [examples/interfaces.intent](examples/interfaces.intent)
+      shows `Area for Point` (single-method) and `Bounds
+      for Rect` (multi-method) with method dispatch.
+      Runs through default LLVM:
+      ```
+      Point area = 20
+      Rect area = 21  perimeter = 20
+      ```
+    - **What's deferred** (Phase 2): dynamic dispatch /
+      vtables; bounded generics over interfaces (`fn
+      print<T: Show>(x: T) { x.show(); }` — currently
+      `where T is Iface` still gates because the
+      monomorphizer doesn't yet specialize the body for
+      the impl's method calls).
+    763 → 763 lib tests (no net change — 2 gate tests
+    rewritten as positive); 47 e2e stays green.
+
+94. ~~**#6 Phase 1: generic monomorphization for pass-through
+    generics**~~ — done 2026-05-21. Multi-session item #6
+    closed for the most common case. `fn id<T>(x: T) -> T`
+    now specializes per call-site literal type and compiles.
+    - **New pre-pass `monomorphize_generics_in_program`**
+      runs after `desugar_try_let_in_program`. Walks each
+      non-generic function for calls to generic templates,
+      infers T from the first argument's literal type, and
+      builds a unique-by-(fn, type) set of specializations
+      to generate.
+    - **For each specialization**: clones the template,
+      renames to `<fn_name>__<type_mangle>` (e.g.
+      `id__i64`, `first__bool`), clears `type_params`,
+      and substitutes `Type::Param(T)` → concrete in
+      params, return type, and body type annotations
+      via `substitute_type_param` and
+      `substitute_type_param_in_stmt`.
+    - **Call sites** are rewritten via
+      `rewrite_generic_calls_in_*` to use the
+      specialized name.
+    - **Originals dropped**: after specialization,
+      `program.functions.retain(|f| f.type_params.is_empty())`
+      removes the templates so downstream type-check
+      sees a fully-concrete program.
+    - **Dead-generic diagnostic**: if a generic template
+      has no call sites that inferred its T, surface
+      "generic function '%s' is declared but never called
+       with concrete types — monomorphization couldn't
+       specialize it" so users notice unused generics.
+    - **Bounded generics gate**: templates with `where T
+      is Iface` clauses skip specialization and surface
+      the existing T1.5 phase 2 diagnostic.
+    - **V1 restrictions**:
+      - Single type parameter only.
+      - First call argument must be a literal (Int/Float/
+        Bool). Variable arguments need type-check
+        context that the pre-pass doesn't have.
+      - Body must be type-correct without knowing T
+        (pass-through patterns — `fn id<T>`, `fn first<T>`).
+        Arithmetic / field access on T needs interface
+        bounds (T1.5 phase 2).
+    - **5 prior Phase-1 gate tests updated** to assert
+      successful specialization instead of WIP gates:
+      `generic_id_function_compiles_and_runs_monomorphized`,
+      `generic_id_function_specializes_per_concrete_type`,
+      `generic_function_unused_surfaces_dead_code_diagnostic`,
+      `generic_type_param_trailing_comma_accepted` (now
+      asserts dead-generic, not WIP),
+      `generic_call_site_specializes_and_compiles`.
+    - **New example**
+      [examples/generic_functions.intent](examples/generic_functions.intent)
+      shows `id<T>` called at three concrete types
+      (i64, bool, f64) plus `first<T>`. Runs through
+      default LLVM:
+      ```
+      id(42) = 42
+      id(true) = 1
+      id(3.5) = 3.5
+      first(7, 9) = 7
+      ```
+    761 → 763 lib tests; 47 e2e stays green.
+
+93. ~~**#5 Phase 2: `try` desugars end-to-end for the
+    restricted shape**~~ — done 2026-05-21. Multi-session
+    item #5 closed for the common shape; the `try`
+    keyword now sugars down to a match-with-early-return
+    automatically. Programs like the previous closure's
+    `option_error_propagation.intent` can now be rewritten
+    one-line-shorter using `try`.
+    - **New pre-pass `desugar_try_let_in_program`** in
+      [src/checker.rs](src/checker.rs) runs right after
+      `hoist_methods_into_functions`. For each function,
+      checks if the body matches the restricted shape:
+      - `body[0]` is `Stmt::Let { expr: Try { inner }, … }`
+      - `body[1..len-1]` are all `Stmt::Let` (block-expr
+        in v1 accepts let only)
+      - `body[last]` is `Stmt::Return`
+    - **When the shape matches**, rewrites the function
+      body to a single `Stmt::Return` whose expression is
+      a `Match { scrutinee: try_inner, arms: [Some(_t)
+      then { let v: T = _t; ...intermediate lets...;
+      return-expr }, None then EnumType.None ] }`. The
+      Some-arm body is a block expression (closure #81),
+      the None-arm body is the enum's payload-less
+      variant.
+    - **Restrictions enforced**:
+      - Function return type must be a known enum.
+      - The enum must have exactly one payloaded variant
+        and one payload-less variant.
+      - Intermediate stmts must all be `let` (anything
+        else triggers a diagnostic pointing at the
+        `try`-let).
+      - `try` outside the restricted shape (e.g. in a
+        nested if-body) falls through to the Phase 1
+        gate diagnostic.
+    - **2 new lib tests**: `try_keyword_desugars_let_try_return_pattern`
+      validates the desugar fires;
+      `try_keyword_in_unsupported_shape_surfaces_phase_1_gate`
+      validates the fallthrough.
+    - **New example**
+      [examples/try_keyword.intent](examples/try_keyword.intent)
+      shows `doubled` and `pipeline` (multi-let chain).
+      Runs through default LLVM:
+      ```
+      doubled(Some(5)) = 10
+      doubled(None) defaulted to 99
+      pipeline(Some(5)) = 110
+      pipeline(None) defaulted to 99
+      ```
+    760 → 761 lib tests; 47 e2e stays green.
+
+92. ~~**Option error-propagation idiom — example + precedence
+    regression**~~ — done 2026-05-21. Small follow-up on
+    #91. Until `try` Phase 2 ships the auto-desugar, users
+    write the match-with-return pattern manually; this
+    closure documents it and locks the parser precedence.
+    - **New example file**
+      [examples/option_error_propagation.intent](examples/option_error_propagation.intent)
+      shows `doubled`, `add_delta`, `double_and_add` over
+      `Opt = Some(i64) | None`. Each function uses the
+      manual `match { Some(v) then Some(<derived>), None
+      then None }` pattern that `try` will sugar to one
+      line in Phase 2. Runs through the e2e example
+      suite via default LLVM; prints expected output
+      and asserts pass.
+    - **New lib test** `try_keyword_binds_tightly_to_operand`
+      pins parser precedence: `try x + 1` parses as
+      `(try x) + 1`, not `try (x + 1)`. Important for
+      when Phase 2 lands — wrong precedence would mean
+      `try x + 1` tries the SUM instead of extracting
+      then adding. Inspects the AST directly (skips
+      the checker gate). Locks the parse for future
+      refactors.
+    - **Edge cases probed** (informally):
+      - `try x` where x is i64 (non-enum) → gate fires.
+        Phase 2 will type-check the inner and surface a
+        targeted "must be a payloaded enum" diagnostic.
+      - `try x;` as a bare statement → "expected
+        statement" — Try is an expression, the
+        closure-#75 discardable-call gate only allows
+        Call/MethodCall.
+    759 → 760 lib tests; 47 e2e stays green (new
+    example picked up by the directory checker).
+
+91. ~~**#5 Phase 1: `try` keyword reserved + parse + walks**~~
+    — done 2026-05-21. The full desugar (statement-level
+    match-with-early-return) needs surrounding-stmt
+    context that `check_expr` doesn't have; deferred to
+    Phase 2 as a dedicated session. The keyword is now
+    locked in, the AST/IR plumbing exists, and a clean
+    WIP gate explains the limitation.
+    - **Lexer**: `TokenKind::Try` added; `"try"` ASCII
+      keyword reserved.
+    - **AST**: new `ExprKind::Try { inner }`.
+    - **Parser**: `TokenKind::Try` arm at
+      `parse_primary_expr`. Inner parsed at primary-
+      expr precedence so `try x + 1` doesn't capture
+      the `+ 1`.
+    - **Checker `check_expr`** arm: type-checks the
+      inner (so type errors there still surface), then
+      emits "`try EXPR` is reserved as a keyword but
+      the desugar to match-with-early-return is still
+      in progress (T2.6 Phase 2). Write the pattern
+      manually: `match opt { Opt.Some(v) then v,
+      Opt.None then return Opt.None };`"
+    - **All recursive walks updated**: substitute_expr,
+      expr_mentions, pin_var_to_version, pretty_expr,
+      walk_branch_mutations_in_expr, format,
+      smt::encode_expr — each recurses into `inner` or
+      bails appropriately.
+    - **What ships in Phase 2** (next sustained
+      session): a stmt-level desugar pass that
+      recognizes `let v: T = try opt;` and rewrites
+      the surrounding stmt sequence into a match with
+      one arm extracting + binding and the other
+      `return`-ing the propagated None / Err. Requires
+      the enclosing function's return type to match
+      the enum type.
+    - **1 new lib test** pins the gate.
+    758 → 759 lib tests; 47 e2e tests stay green.
+
+90. ~~**#4 Phase 4 LLVM: tagged-union codegen ships in
+    default LLVM backend**~~ — done 2026-05-21. Multi-
+    session item #4 fully closed. Payloaded enums now
+    run end-to-end through `cargo run -- run` (default
+    LLVM) and `--backend=c`.
+    - **`llvm_type_string(Type::Enum)`** now consults
+      `LLVM_ENUM_PAYLOAD_REGISTRY` (thread-local
+      mirror of the tree-C one). Payloaded enums route
+      to `%Enum_<Name>`; plain enums keep their bare
+      `i32` representation.
+    - **LLVM preamble** emits `%Enum_<Name> = type {
+      i32, <payload> }` per payloaded enum, right
+      after struct typedefs.
+    - **`EnumVariant` LLVM emit**: payloaded enum's
+      payload-less variant builds the struct via two
+      `insertvalue`s (tag + zero-init payload). Plain
+      enum's variant keeps the literal-tag form.
+    - **`EnumVariantWithPayload` LLVM emit**: two
+      `insertvalue`s — tag at field 0, the lowered
+      payload expression at field 1.
+    - **LLVM Match codegen**: detects payloaded
+      scrutinees, `extractvalue` field 0 for the
+      switch dispatch. For `VariantWithBinding` arms,
+      `extractvalue` field 1, `alloca` + `store` the
+      result, then register the binding in `ctx.locals`
+      with that addr so the arm body's variable reads
+      lower to a normal `load` from the alloca. Restore
+      the previous `ctx.locals` entry after each arm.
+    - **Driver gate removed**: `emit_llvm_via_ssa` now
+      detects payloaded-enum programs and forces the
+      tree-LLVM path (SSA-LLVM doesn't support enums
+      with payloads yet). LLVM path runs cleanly.
+    - **Example file** moved from `demo/` back into
+      `examples/option_types.intent` — runs through
+      the e2e directory-checker test as part of the
+      standard example suite.
+    - **New lib test** `payloaded_enum_with_match_destructure_compiles_in_llvm`
+      validates the default-LLVM path; the prior
+      `compile_to_c` test stays to guard the tree-C
+      path.
+    - 757 → 758 lib tests; 47 e2e tests stay green.
+
+89. ~~**#4 Phase 3 tree-C: tagged-union codegen +
+    pattern destructure** (Option<i64>-style enums
+    end-to-end)~~ — done 2026-05-21. Payloaded enums
+    now compile and run via `--backend=c`. LLVM ships
+    in a follow-up.
+    - **Checker gate**: lifted for single-Copy-payload
+      enums where all payload-bearing variants share
+      the same payload type. Multi-field payloads,
+      non-Copy payloads, and mixed-type payloads keep
+      their existing diagnostics.
+    - **`TypedEnumDecl`** now carries
+      `payload_types: Vec<Option<Type>>` parallel to
+      `variants`. Built once from AST enum decls.
+    - **`TypedMatchArm`** now carries
+      `binding: Option<(String, Type)>` for
+      `VariantWithBinding` patterns. The checker
+      pushes a fresh scope, inserts the binding into
+      env with the payload type, and pops after
+      checking the arm body so the body's reference
+      to the binding resolves.
+    - **Tree-C preamble**: emits `typedef struct {
+      int32_t tag; T payload; } Enum_<Name>;` for each
+      payloaded enum (where T is the shared payload
+      type). Thread-local
+      `ENUM_PAYLOAD_REGISTRY` populated at the start
+      of `emit_c` so `c_type_name(Type::Enum)` and
+      `format_declarator(Type::Enum)` route payloaded
+      enums to the struct typedef.
+    - **Tree-C constructors**: `Opt.Some(42)` lowers
+      to `(Enum_Opt){.tag = 0, .payload = (42)}`;
+      `Opt.None` to `(Enum_Opt){.tag = 1, .payload =
+      0}`. Plain enums (no payload variants) keep
+      the existing bare `int32_t` tag representation.
+    - **Tree-C match codegen**: dispatches on
+      `__scr.tag` (after materializing the scrutinee
+      into a local). For VariantWithBinding arms,
+      the body emits `{ <payload_ty> v_<binding> =
+      __scr.payload; __r = (<body>); } break;` so the
+      binding is a real C local with payload value.
+    - **LLVM driver gate**: `emit_llvm_via_ssa`
+      detects payloaded enums in `ir.enums` and
+      exits with a clean error pointing at
+      `--backend=c`. Avoids hitting the
+      `unreachable!()` arms in tree-LLVM until LLVM
+      tagged-union codegen ships.
+    - **Lib tests updated**: 3 prior Phase 1 gate-tests
+      (`enum_variant_with_payload_parses_but_gated`,
+      `enum_with_payload_clean_diagnostic`,
+      `variant_with_binding_pattern_parses_and_gates`)
+      rewritten to assert compilation succeeds (via
+      `compile_to_c`) for the supported cases. The
+      gate tests for multi-field / non-Copy /
+      mixed-type payloads stay.
+    - **Demo program**: [demo/option_types.intent](demo/option_types.intent)
+      shows `unwrap_or` + `is_some` over `Opt =
+      Some(i64) | None`. Lives outside `examples/`
+      because the example-runner uses the default
+      LLVM backend; the demo runs cleanly via
+      `cargo run -- run demo/option_types.intent
+      --backend=c` → prints "Some(42) unwrapped =
+      42", "None unwrapped with default 100 = 100",
+      asserts pass.
+    - **What ships in Phase 4** (next session, multi-
+      hour): LLVM tagged-union codegen. Same shape as
+      tree-C but using `{i32, T}` LLVM struct types,
+      `insertvalue` / `extractvalue` for constructor
+      and field reads, `switch` on the tag field
+      extracted from the scrutinee, alloca for the
+      binding's local in each arm.
+    - **No net test count change** — 3 tests rewritten
+      from gate-assertions to positive assertions, 1
+      new test wires the destructure form. 757 lib +
+      47 e2e remain green.
+
+88. ~~**#4 Phase 2 (scaffolding only): IR + checker
+    constructor + EnumInfo payload types**~~ —
+    done 2026-05-21. The "internal" infrastructure for
+    tagged-union codegen is in place; the user-facing
+    decl gate stays on until backend wire-up ships in
+    the next session.
+    - **IR**: new `TypedExprKind::EnumVariantWithPayload
+      { enum_name, variant, tag, payload, payload_ty }`
+      next to the existing `EnumVariant`.
+    - **EnumInfo extended**: now carries
+      `payload_types: Vec<Option<Type>>` parallel to
+      the variant name list. Built once from the AST
+      enum decls at checker entry. New
+      `lookup_enum_variant_payload(env, enum, variant)`
+      helper resolves payload types from the env.
+    - **Checker MethodCall arm intercept**:
+      `Opt.Some(42)` (parsed as MethodCall by the
+      existing parser) is detected when the receiver
+      is a Var naming a declared enum and the
+      "method" is a variant. Builds
+      `TypedExprKind::EnumVariantWithPayload` with the
+      payload arg type-coerced to the declared
+      payload_ty. Calling a payload-less variant with
+      args surfaces a clean diagnostic; missing payload
+      arg surfaces a clean diagnostic too.
+    - **Walks** (effects walker, typed_to_expr,
+      backend walk_expr for capture analysis): all
+      have new arms that recurse into `payload`.
+    - **Backend arms**: tree-C and tree-LLVM
+      `emit_expr` both contain `unreachable!()` arms
+      for `EnumVariantWithPayload` — these are
+      guarded by the still-active decl gate, so the
+      backends never see one in practice. When the
+      gate lifts in Phase 3, replace each
+      `unreachable!()` with the tagged-union codegen.
+    - **SSA**: bails alongside the existing enum bail.
+      `main.rs`'s `expr_ssa_supported` marks it as
+      unsupported.
+    - **Gate**: payloaded enum decls still emit
+      "tagged-union codegen + pattern binding are still
+       in progress (T1.3 phase 2b backend wire-up)".
+       Updated wording to clarify what's left.
+    - **No test count change** (the gate keeps user
+      programs out of new code paths). 757 lib + 47
+      e2e remain green.
+    - **What ships in Phase 3** (next session, multi-
+      hour): lift the decl gate; emit tagged-union
+      struct typedefs (`typedef struct { i32 tag; T
+      payload; } Enum_X;` in C, `{i32, T}` in LLVM);
+      wire `EnumVariantWithPayload` codegen in both
+      backends; match-arm scope introduces the
+      binding name with the payload's type;
+      extract payload via `.payload` field / LLVM
+      `extractvalue`. End-to-end Option<i64>-style
+      programs then run.
+
+87. ~~**#4 Phase 1: pattern bindings parse + gate**~~ —
+    done 2026-05-21. First slice of multi-session item
+    #4 (T1.3 phase 2b tagged-union codegen). The AST /
+    parser / checker surface now accepts
+    `EnumName.Variant(binding) then …` destructures;
+    backend codegen for the actual payload extraction
+    ships in Phase 2 of the same multi-session item.
+    - **AST**: new `Pattern::VariantWithBinding {
+      enum_name, variant, binding }`.
+    - **Parser**: extended the match-arm pattern parse
+      to consume an optional `(ident)` after the
+      variant name. Single-binding form only in v1;
+      multi-binding tuple-style (`Pair(x, y)`) tracked
+      separately.
+    - **Checker**: new arm mirrors the
+      `Pattern::Variant` flow for tag lookup +
+      seen-variant tracking, then emits a clean WIP
+      gate diagnostic: "match arm 'Opt.Some(v …)'
+      destructures a payloaded variant — pattern
+      bindings parse but tagged-union codegen is still
+      in progress (T1.3 phase 2b)".
+    - **Format**: pretty-prints `Variant(binding)`
+      form correctly; round-trip preserved.
+    - **SMT**: rejects with "payloaded variant
+      destructure patterns not yet supported in SMT"
+      (parallel to the existing enum-variant SMT bail).
+    - **2 new lib tests** pin parse + gate +
+      format-round-trip.
+    - **What ships in Phase 2** (deferred, multi-hour):
+      tagged-union layout (`{ i64 tag; union { ... } }`
+      in C, `{i32, [N x i8]}` in LLVM); enum
+      constructor codegen (`Some(5)` builds the tagged
+      struct); match destructure codegen (switch on
+      tag + extract payload + bind to `v` in arm
+      scope); IR variant
+      `TypedExprKind::EnumVariantWithPayload`.
+    755 → 757 lib tests; 47 e2e tests stay green.
+
+86. ~~**Devanagari numeral literals — `०१२३४५६७८९`**~~ —
+    done 2026-05-21. Follow-up on #83/#85. Completes the
+    "code like you speak" surface for Devanagari users —
+    numbers can now be written in Devanagari script too.
+    - **Lexer dispatch update** in [src/lexer.rs](src/lexer.rs):
+      the non-ASCII byte arm now distinguishes Devanagari
+      numerals (UTF-8 bytes `0xE0 0xA5 0xA6..=0xAF`) from
+      letters and routes them to a new
+      `lex_devanagari_number` method instead of
+      `lex_unicode_ident`.
+    - **`lex_devanagari_number`**: consumes consecutive
+      Devanagari digit codepoints, translates each to
+      ASCII by subtracting U+0966, parses via
+      `i128::from_str_radix`, emits as `TokenKind::Int`.
+    - **V1 limits**: integer literals only — no float /
+      radix / suffix / underscore-separator support for
+      Devanagari digits. ASCII numeric literals retain
+      all those features.
+    - **Tests**: 3 new lib tests pin single-digit zero,
+      multi-digit composition, and arithmetic with mixed
+      Devanagari numeral + keyword forms.
+    752 → 755 lib tests; 47 e2e tests stay green.
+    Example that works:
+    ```intent
+    फलन main() -> i64 {
+      मान x: i64 = ५;       // 5
+      मान y: i64 = ४२;      // 42
+      खात्री x + y == ४७;
+      परत x + y;
+    }
+    ```
+
+85. ~~**Multi-word Devanagari aliases via post-lex merger**~~
+    — done 2026-05-21. Follow-up on closure #83. Five
+    multi-word Devanagari phrases now lex as single
+    tokens.
+    - **New post-lex pass**
+      `merge_multi_word_devanagari_aliases(tokens,
+      source)` in [src/lexer.rs](src/lexer.rs): walks the
+      token list, reads each adjacent token pair's source
+      slice via spans (so it sees `तो → Then` after
+      single-word resolution as just text), and checks
+      whether the combined `"word1 word2"` string matches
+      a multi-word alias. If so, replaces the two tokens
+      with a single keyword token spanning both. Requires
+      the gap between tokens to be whitespace-only.
+    - **Aliases supported**:
+      `नहीं तो` → Else (Hindi),
+      `के लिए` → For (Hindi),
+      `सिद्ध करो` → Prove (Hindi),
+      `सिद्ध करा` → Prove (Marathi),
+      `समान्तर प्रति` → Parallel (Sanskrit).
+    - **Conflict handling**: the multi-word form takes
+      precedence when both words are present. E.g. `सिद्ध`
+      alone is Prove; `सिद्ध करो` is also Prove (no
+      conflict in this case). `तो` alone is Then;
+      `नहीं तो` is Else (the merger overrides the
+      single-word resolution on the first word).
+    - **Tests**: 3 new lib tests pin Hindi else / for /
+      prove multi-word forms end-to-end.
+    749 → 752 lib tests; 47 e2e tests stay green.
+
+84. ~~**SMT method-call discharge — completes #82**~~ —
+    done 2026-05-21. The deferred follow-up from closure
+    #82 now lands. `prove b.method(args) == k` discharges
+    when the method has matching `ensures` clauses.
+    - **New rewrite**
+      `rewrite_method_calls_to_calls(expr, env, signatures)`
+      in [src/checker.rs](src/checker.rs): walks proof
+      obligations and fact lists, replaces
+      `MethodCall { receiver: Var(name), method, args }`
+      with a synthetic `Call { name:
+      "<Type>_<method>", args: [receiver, ...args] }`
+      whenever the receiver's type resolves to a known
+      Struct / Enum (or Ref/RefMut thereof) and the
+      mangled function exists in `signatures`. Var-
+      receivers only in v1 — chained method calls fall
+      through unchanged.
+    - **Wired into `prove_with_calls_extra`** as a
+      pre-pass before `rewrite_calls_to_fresh_vars` so
+      methods reach the existing inline-call discharger.
+    - **Bug fix discovered along the way**: the
+      extra_facts emitted by inline-call substitution
+      (e.g. `__call_0 == self.v * 2` with `self → b`
+      → `__call_0 == b.v * 2`) contain field accesses
+      that need the closure-#82 struct-field rewrite
+      applied AFTER the inline-call pass. Added a
+      second sweep of `rewrite_struct_field_accesses`
+      over extra_facts before merging into
+      rewritten_facts.
+    - **Tests**: 2 new lib tests pin single and
+      multiple-method discharge.
+      747 → 749 lib tests; 47 e2e tests stay green.
+
+83. ~~**Devanagari keyword aliases — Sanskrit / Hindi / Marathi
+    (MVP)**~~ — done 2026-05-21. Multi-session item #9
+    landed first cut. Programs can be written using
+    Devanagari verbs for the structural keywords; the
+    lexer routes aliases to the existing English
+    `TokenKind` so the parser / checker / IR / backends
+    never see Devanagari text. Mixed-script source is
+    supported by design.
+    - **Lexer extension** in [src/lexer.rs](src/lexer.rs):
+      added a non-ASCII byte arm in the main dispatch
+      (`b if b >= 0x80`) routing to a new
+      `lex_unicode_ident` method. The new method consumes
+      ASCII identifier characters plus any non-ASCII byte
+      (which by valid-UTF-8 source invariant is part of
+      another codepoint), then matches the resulting
+      string against the Devanagari keyword-alias table.
+    - **Alias table** (`devanagari_keyword`): first cut
+      covers ~30 word-level aliases for fn / let /
+      return / if / else / while / for / then / ref /
+      mut / match / assert / prove / requires / ensures /
+      true / false / print / pure / struct / enum /
+      const, drawing from Sanskrit (`कार्य फलन माना
+      पुनरागम यदि अन्यथा यावत् प्रति तदा …`), Hindi
+      (`फलन मानो लौटाओ अगर नहीं तो जबतक के लिए तो …`),
+      and Marathi (`कार्य मान परत जर नाहीतर जोपर्यंत
+      साठी तर …`). Conflicts resolved in favor of the
+      most idiomatic single-word form. Multi-word
+      aliases (`नहीं तो`, `के लिए`) deferred — the
+      lexer would need lookahead-over-whitespace
+      machinery.
+    - **Devanagari-named identifiers** also work — the
+      table-miss fallback emits `Ident(text)` so
+      `let नाम: i64 = 42;` lexes as expected.
+    - **4 lib tests** pin the surface:
+      `devanagari_keyword_aliases_compile_hindi`,
+      `…_sanskrit`,
+      `devanagari_aliases_mix_with_english_freely`,
+      `devanagari_identifier_names_compile`.
+    - **3 example files** demonstrate each language:
+      [examples/hindi_keywords.intent](examples/hindi_keywords.intent)
+      (arithmetic + asserts), [examples/sanskrit_keywords.intent](examples/sanskrit_keywords.intent)
+      (`शुद्ध फलन` abs with `अपेक्षित` / `निश्चित` +
+      SMT discharge), and [examples/marathi_keywords.intent](examples/marathi_keywords.intent)
+      (recursive factorial with `जर` / `नाहीतर`).
+      All three run end-to-end and print expected
+      outputs.
+    - **Deferred (9a–9f sub-items)**: grammar-consultant
+      review of the alias choices (the v1 table is a
+      starting point), multi-word aliases via lexer
+      lookahead, script-aware diagnostics (errors in
+      the language the source uses), and per-language
+      README documentation finalization.
+    743 → 747 lib tests; 47 e2e tests stay green.
+
+82. ~~**SMT modeling: if-expr, match, struct field access**~~
+    — done 2026-05-21. Second multi-session item from
+    the queue closed. Three previously-bailing
+    constructs now reach the Z3 layer.
+    - **If-expressions in SMT** — encode as
+      `(ite cond then else)` in
+      [smt.rs encode_expr](src/smt.rs). Both branches
+      already unified by the checker; target_int
+      propagates uniformly. `prove (if x > 0 { x }
+      else { 0 - x }) > 0` discharges.
+    - **If-expression constant-fold at type-check** —
+      when cond is a known bool, collapse to the
+      selected branch's constant so `let r = if true
+      { 10 } else { 20 };` propagates `r == 10`
+      through the binding's constant tracker. Lets
+      downstream proofs discharge via constant-fold
+      without round-tripping to SMT.
+    - **Match expressions in SMT** — encode integer
+      patterns as a chain of `(ite (= scrutinee N)
+      body …)` ending in the wildcard arm's body.
+      Variant patterns deferred (would need EnumInfo
+      plumbed through to the SMT layer). Match without
+      a wildcard bails (would be partial).
+    - **Match constant-fold at type-check** — when
+      scrutinee is a known integer, select the matching
+      arm (or wildcard) and propagate that arm's body
+      constant.
+    - **Struct field access in SMT** — for every
+      binding initialized via `P { x: e1, y: e2 }`,
+      `VarInfo` now carries `struct_literal_fields:
+      Option<Vec<(String, Expr)>>`. Before each SMT
+      query, `prove_with_calls_extra` synthesizes
+      `<name>__<field>` SMT vars and asserts
+      `<name>__<field> == encode(field_expr)`. A new
+      `rewrite_struct_field_accesses` pass replaces
+      `Var(name).field` in the proof expression with
+      `Var("name__field")` so the encoder reaches the
+      synthesized vars. Only integer / bool fields
+      modeled in v1 — Vec / Array / nested struct
+      fields skipped.
+    - **Method calls in SMT** — deferred. Would need
+      MethodCall→Call rewrite before the inline-call
+      discharger sees them (the existing
+      `rewrite_calls_to_fresh_vars` only handles
+      `ExprKind::Call`). Tracked as a follow-up.
+    - **Tests**: 7 new lib tests pin the surfaces —
+      `smt_if_expression_discharges_in_prove`,
+      `smt_if_expression_constant_folds_through_let`,
+      `smt_match_expression_discharges_in_prove`,
+      `smt_match_constant_folds_through_let`,
+      `smt_struct_field_access_discharges`,
+      `smt_struct_field_with_computed_init_discharges`,
+      `smt_struct_field_disproof_surfaces_counterexample`.
+    736 → 743 lib tests; 47 e2e tests stay green.
+
+81. ~~**Block expressions MVP — `let r = { stmts; tail };`**~~
+    — done 2026-05-21. First multi-session item from
+    the queue closed. Adds a new primary expression form
+    that lets `let` initializers (and any expression
+    position) bundle a short chain of bindings plus a
+    tail value.
+    - **AST + IR**: added `ExprKind::Block { stmts, tail
+      }` and `TypedExprKind::Block { stmts, tail }`.
+      Stmt and Expr were already mutually recursive so
+      the Box-wrapped tail is benign.
+    - **Parser**: new `TokenKind::LBrace` arm in
+      [parse_primary_expr](src/parser.rs#L1931): consume
+      leading `let` stmts then a tail expression, expect
+      `}`. The `parse_stmt` LBrace arm (closure #77's
+      "bare blocks rejected" diagnostic) still fires for
+      `{ … }` at statement position — the two arms don't
+      overlap since they're reached via different entry
+      points.
+    - **Checker**: new
+      [ExprKind::Block arm in check_expr](src/checker.rs)
+      pushes a fresh scope, type-checks each Let RHS,
+      binds the name with VarInfo, accumulates
+      `TypedStmt::Let`s, then type-checks the tail. The
+      block's type is the tail's type. Non-`let` stmts
+      surface "block expressions in v1 only allow `let`
+      bindings before the tail expression" — keeps the
+      MVP analysis simple (no nested control flow inside
+      block-expressions).
+    - **All checker walks** (substitute_expr,
+      expr_mentions, pin_var_to_version,
+      pretty_expr, walk_branch_mutations_in_expr,
+      walk_expr-for-effects, typed_to_expr) now have
+      Block arms that recurse into block-internal let
+      RHSes and the tail.
+    - **SSA lowering**: bails with `LowerError` so
+      programs containing block-expressions
+      automatically fall back to the tree backends —
+      the SSA-path gate has been updated to declare
+      Block as unsupported (`expr_ssa_supported` in
+      main.rs).
+    - **Tree-LLVM emit**: new arm in
+      [emit_expr](src/backend_llvm.rs#L3199) inlines
+      each Let as `alloca` + `store` + ctx.locals
+      insert, emits the tail, then restores
+      outer-scope ctx.locals entries so the
+      block-local names don't leak. Capture analysis
+      (`walk_expr` for parallel-for / task outlining)
+      uses a cloned `declared` set so block-local
+      names extend the visible scope without leaking.
+    - **Tree-C emit**: new arm uses GCC
+      statement-expressions `({ T name = expr; …;
+      tail; })` — matches the existing match-emission
+      pattern.
+    - **SMT**: rejects Block as "block expressions
+      not supported in SMT v1" (same posture as
+      match, method calls, if-expr).
+    - **Format**: pretty-prints inline as `{ stmt;
+      stmt; tail }`.
+    - **5 lib tests** pin the surfaces:
+      `block_expression_with_lets_then_tail_compiles`,
+      `nested_block_expression_compiles`,
+      `empty_block_expression_just_value_compiles`,
+      `block_expression_only_allows_let_inside`,
+      `block_expression_shadowing_is_local`.
+    - **Example**:
+      [examples/block_expressions.intent](examples/block_expressions.intent)
+      demonstrates single-line, multi-line, nested,
+      and shadowing forms. `cargo run -- run
+      examples/block_expressions.intent` exits 0 with
+      `r= 15  area= 42  combined= 13  twice_x= 200`.
+    - **Unblocks (small items now also done)**: while
+      bare `{ … }` as a *statement* still rejects with
+      a workaround diagnostic (would need
+      `Stmt::Block`, a sibling unit of work), the
+      *expression* form is now first-class.
+    731 → 736 lib tests; 47 e2e tests stay green.
+
 80. ~~**`clone_at` on `Vec<Struct>` fix in tree-LLVM +
     3 composition probes**~~ — done 2026-05-21. Real
     codegen bug closed.

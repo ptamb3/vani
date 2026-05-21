@@ -46,11 +46,68 @@ thread_local! {
     /// Monotonic counter assigning outline IDs. Reset at the
     /// start of every `emit_c` call.
     static TASK_OUTLINE_COUNTER: std::cell::Cell<u32> = std::cell::Cell::new(0);
+    /// Per-program registry of enum payload types. Populated
+    /// at the start of `emit_c` from `program.enums`. Maps
+    /// each enum name → `Some(payload_ty)` if any variant has
+    /// a payload (v1 requires all payloaded variants to share
+    /// the same payload type), or `None` for plain enums.
+    /// Consulted by `c_type_name(Type::Enum)` so payloaded
+    /// enums route to the tagged-union struct typedef instead
+    /// of the bare `int32_t` tag. T1.3 phase 2b.
+    static ENUM_PAYLOAD_REGISTRY: std::cell::RefCell<std::collections::HashMap<String, Type>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Per-program registry of struct field lists. Populated at
+    /// the start of `emit_c` from `program.structs` and consulted
+    /// by the `TypedStmt::Drop` handler to free each owning
+    /// (`OwnedStr`) field when the struct binding goes out of
+    /// scope. T1.2 phase 2b.
+    static STRUCT_FIELDS_REGISTRY: std::cell::RefCell<std::collections::HashMap<String, Vec<(String, Type)>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Per-name C struct typedef for a payloaded enum. Prefixed
+/// with `Enum_` so the emitted C identifier is distinct from
+/// any builtin. T1.3 phase 2b.
+pub(crate) fn enum_c_name(name: &str) -> String {
+    format!("Enum_{}", name)
+}
+
+/// Return true if any variant of this enum carries a payload.
+/// T1.3 phase 2b.
+fn enum_has_payload(decl: &crate::ir::TypedEnumDecl) -> bool {
+    decl.payload_types.iter().any(|p| p.is_some())
+}
+
+/// Common payload type across all payloaded variants of the
+/// enum. Returns None for payload-less enums. Assumes the
+/// checker has already validated uniformity. T1.3 phase 2b.
+fn enum_common_payload_ty(decl: &crate::ir::TypedEnumDecl) -> Option<Type> {
+    decl.payload_types.iter().find_map(|p| p.clone())
 }
 
 pub fn emit_c(program: &TypedProgram) -> String {
     TASK_OUTLINES.with(|b| b.borrow_mut().clear());
     TASK_OUTLINE_COUNTER.with(|c| c.set(0));
+    // Populate the enum payload registry from the program's
+    // enum decls so `c_type_name(Type::Enum)` routes
+    // payloaded enums to their tagged-union struct typedef.
+    // T1.3 phase 2b.
+    ENUM_PAYLOAD_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        reg.clear();
+        for decl in &program.enums {
+            if let Some(payload_ty) = enum_common_payload_ty(decl) {
+                reg.insert(decl.name.clone(), payload_ty);
+            }
+        }
+    });
+    STRUCT_FIELDS_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        reg.clear();
+        for decl in &program.structs {
+            reg.insert(decl.name.clone(), decl.fields.clone());
+        }
+    });
     // Emit the body first (Vec bundles + intents + functions + main),
     // then prepend includes + only the runtime helpers it actually
     // references. Keeps the generated C tidy when SMT elision discharges
@@ -94,6 +151,30 @@ pub fn emit_c(program: &TypedProgram) -> String {
         emit_struct_bundle(decl, &mut body);
     }
     if !program.structs.is_empty() {
+        body.push('\n');
+    }
+    // Emit a per-name C struct typedef for each payloaded
+    // enum. Layout: `typedef struct { int32_t tag; T payload;
+    // } Enum_<Name>;` where T is the shared payload type for
+    // all payload-bearing variants. Plain enums stay as
+    // bare `int32_t` tags (no typedef needed). T1.3 phase 2b.
+    let mut any_enum_emitted = false;
+    for decl in &program.enums {
+        if !enum_has_payload(decl) {
+            continue;
+        }
+        let payload_ty = match enum_common_payload_ty(decl) {
+            Some(ty) => ty,
+            None => continue,
+        };
+        body.push_str(&format!(
+            "typedef struct {{ int32_t tag; {} payload; }} {};\n",
+            c_type_name(&payload_ty),
+            enum_c_name(&decl.name)
+        ));
+        any_enum_emitted = true;
+    }
+    if any_enum_emitted {
         body.push('\n');
     }
     // Emit tuple typedefs BEFORE vec / array typedefs so a
@@ -1365,6 +1446,24 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 out.push_str(&local_name(name));
                 out.push_str(");\n");
             }
+            Type::Struct(struct_name) => {
+                // Free every owning field of the struct. v1 only
+                // permits OwnedStr as a non-Copy field; later
+                // phases recurse into nested non-Copy structs.
+                // T1.2 phase 2b.
+                let fields = STRUCT_FIELDS_REGISTRY
+                    .with(|r| r.borrow().get(struct_name).cloned())
+                    .unwrap_or_default();
+                for (field_name, field_ty) in fields {
+                    if matches!(field_ty, Type::OwnedStr) {
+                        out.push_str("  free((void*)");
+                        out.push_str(&local_name(name));
+                        out.push('.');
+                        out.push_str(&field_name);
+                        out.push_str(");\n");
+                    }
+                }
+            }
             _ => {
                 // Other affine types (Array, Task, Atomic,
                 // Channel, Mutex — all stack-allocated structs
@@ -1935,9 +2034,31 @@ fn emit_expr(expr: &TypedExpr) -> String {
                 format!("({}).{}", inner, field)
             }
         }
-        TypedExprKind::EnumVariant { tag, .. } => {
-            // Enum variants lower to their integer tag. T1.3.
-            format!("((int32_t){})", tag)
+        TypedExprKind::EnumVariant { enum_name, tag, .. } => {
+            // Plain (payload-less) variant: just the tag.
+            // Payloaded enum's payload-less variant: build a
+            // tagged-union struct with `.tag` set and the
+            // `.payload` field zero-initialized. T1.3 phase 2b.
+            let payloaded = ENUM_PAYLOAD_REGISTRY.with(|r| r.borrow().contains_key(enum_name));
+            if payloaded {
+                format!(
+                    "(({}){{ .tag = (int32_t){}, .payload = 0 }})",
+                    enum_c_name(enum_name),
+                    tag
+                )
+            } else {
+                format!("((int32_t){})", tag)
+            }
+        }
+        TypedExprKind::EnumVariantWithPayload { enum_name, tag, payload, .. } => {
+            // T1.3 phase 2b: build the tagged-union struct
+            // literal with both `.tag` and `.payload` set.
+            format!(
+                "(({}){{ .tag = (int32_t){}, .payload = ({}) }})",
+                enum_c_name(enum_name),
+                tag,
+                emit_expr(payload)
+            )
         }
         TypedExprKind::Match { scrutinee, arms } => {
             // GCC statement-expression: switch on the tag,
@@ -1948,27 +2069,69 @@ fn emit_expr(expr: &TypedExpr) -> String {
             // loudly. With a wildcard arm, the default
             // branch *is* its body. T1.3 (wildcard).
             let result_ty = c_element_storage(&expr.ty);
-            let scr = emit_expr(scrutinee);
+            // T1.3 phase 2b: detect whether scrutinee is a
+            // payloaded enum so dispatch can use `.tag` and
+            // payload bindings can be extracted via `.payload`.
+            let scrutinee_payloaded = match &scrutinee.ty {
+                Type::Enum(name) => {
+                    ENUM_PAYLOAD_REGISTRY.with(|r| r.borrow().contains_key(name))
+                }
+                _ => false,
+            };
+            let scr_full = emit_expr(scrutinee);
             let mut body = String::new();
+            // For payloaded enums, materialize the scrutinee
+            // into a fresh local so we can read both .tag (for
+            // dispatch) and .payload (for binding) without
+            // re-evaluating the source expression.
+            let dispatch = if scrutinee_payloaded {
+                let enum_name = match &scrutinee.ty {
+                    Type::Enum(n) => n,
+                    _ => unreachable!(),
+                };
+                body.push_str(&format!(
+                    "{} __scr = ({}); ",
+                    enum_c_name(enum_name),
+                    scr_full
+                ));
+                "__scr.tag".to_string()
+            } else {
+                scr_full
+            };
             body.push_str(&format!("{} __r; ", result_ty));
-            body.push_str(&format!("switch ({}) {{ ", scr));
+            body.push_str(&format!("switch ({}) {{ ", dispatch));
             let mut wildcard_body: Option<String> = None;
             for arm in arms {
-                let arm_v = emit_expr(&arm.body);
                 if arm.is_wildcard {
+                    let arm_v = emit_expr(&arm.body);
                     wildcard_body = Some(arm_v);
-                } else if let Some(int_v) = arm.int_value {
-                    // Integer-literal pattern: switch on
-                    // scrutinee's value directly. T1.3
-                    // integer pattern.
+                    continue;
+                }
+                // For VariantWithBinding patterns, emit a fresh
+                // scoped block that declares the local binding
+                // initialized from `__scr.payload`, then emits
+                // the arm body referencing it.
+                let arm_block = if let Some((bname, bty)) = &arm.binding {
+                    let body_v = emit_expr(&arm.body);
+                    format!(
+                        "{{ {} v_{} = __scr.payload; __r = ({}); }}",
+                        c_type_name(bty),
+                        bname,
+                        body_v
+                    )
+                } else {
+                    let body_v = emit_expr(&arm.body);
+                    format!("__r = ({});", body_v)
+                };
+                if let Some(int_v) = arm.int_value {
                     body.push_str(&format!(
-                        "case {}: __r = ({}); break; ",
-                        int_v, arm_v
+                        "case {}: {} break; ",
+                        int_v, arm_block
                     ));
                 } else {
                     body.push_str(&format!(
-                        "case {}: __r = ({}); break; ",
-                        arm.tag, arm_v
+                        "case {}: {} break; ",
+                        arm.tag, arm_block
                     ));
                 }
             }
@@ -1987,6 +2150,26 @@ fn emit_expr(expr: &TypedExpr) -> String {
             let t = emit_expr(then_value);
             let e = emit_expr(else_value);
             format!("(({}) ? ({}) : ({}))", c, t, e)
+        }
+        TypedExprKind::Block { stmts, tail } => {
+            // GCC statement-expression form: `({ T a = e1;
+            // T b = e2; tail; })`. The tail's value is the
+            // last evaluated sub-expression. T-block. v1
+            // restricts inner stmts to `let` only, so no
+            // control flow leaks out of the expression.
+            let mut body = String::from("({ ");
+            for s in stmts {
+                if let TypedStmt::Let { name, ty, expr: rhs } = s {
+                    body.push_str(&format!(
+                        "{} v_{} = ({}); ",
+                        c_type_name(ty),
+                        name,
+                        emit_expr(rhs)
+                    ));
+                }
+            }
+            body.push_str(&format!("({}); }})", emit_expr(tail)));
+            body
         }
     }
 }
@@ -2513,6 +2696,19 @@ fn c_type_name(ty: &Type) -> String {
         Type::Channel(element, capacity) => c_channel_storage(element, *capacity),
         Type::Tuple(elements) => tuple_c_struct(elements),
         Type::Struct(name) => struct_c_name(name),
+        // T1.3 phase 2b: payloaded enums lower to the
+        // tagged-union struct (`Enum_<Name>`); plain enums
+        // stay as bare `int32_t` tags (via the c_leaf_type
+        // fallthrough below). The registry is populated at
+        // the start of `emit_c`.
+        Type::Enum(name) => {
+            let payloaded = ENUM_PAYLOAD_REGISTRY.with(|r| r.borrow().contains_key(name));
+            if payloaded {
+                enum_c_name(name)
+            } else {
+                "int32_t".to_string()
+            }
+        }
         other => c_leaf_type(other).to_string(),
     }
 }
@@ -2571,6 +2767,13 @@ fn format_declarator(ty: &Type, name: &str) -> String {
         Type::Vec(element) => format!("{} {}", vec_c_struct(element), name),
         Type::Tuple(elements) => format!("{} {}", tuple_c_struct(elements), name),
         Type::Struct(sname) => format!("{} {}", struct_c_name(sname), name),
+        // T1.3 phase 2b: payloaded enums lower to the
+        // tagged-union struct (Enum_<Name>); plain enums
+        // stay as bare int32_t tags (falls through to
+        // `c_leaf_type` via `other`).
+        Type::Enum(ename) if ENUM_PAYLOAD_REGISTRY.with(|r| r.borrow().contains_key(ename)) => {
+            format!("{} {}", enum_c_name(ename), name)
+        }
         Type::Ref(inner) => match &**inner {
             Type::Array { element, .. } => format!("const {}* {}", c_leaf_type(element), name),
             Type::Vec(element) => format!("const {}* {}", vec_c_struct(element), name),

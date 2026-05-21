@@ -107,6 +107,14 @@ pub enum TokenKind {
     Assert,
     Prove,
     Print,
+    /// `try EXPR` — error-propagation sugar over payloaded
+    /// enums. If `EXPR` evaluates to the enum's payload-less
+    /// "early-return" variant (e.g. `Opt.None`), the enclosing
+    /// function returns that value immediately. Otherwise the
+    /// payload is extracted and becomes the value of the `try`
+    /// expression. Requires the enclosing function's return
+    /// type to match the enum type. T2.6.
+    Try,
     Len,
     As,
     True,
@@ -157,8 +165,176 @@ pub enum TokenKind {
     Eof,
 }
 
+/// Resolve a Devanagari keyword alias to its English-equivalent
+/// `TokenKind`. Returns `None` for any non-alias string, which the
+/// caller treats as a regular Unicode identifier name.
+///
+/// V1 ships a small first cut covering the most common control-flow
+/// and verification keywords across Sanskrit / Hindi / Marathi.
+/// Conflicts where the same Devanagari word would map to two
+/// different English keywords are resolved in favor of the most
+/// idiomatic single-word form; multi-word aliases (e.g. `के लिए`
+/// for `for`, `नहीं तो` for `else`) are deferred until the lexer
+/// gains lookahead over whitespace.
+///
+/// The table is intentionally conservative — finalized aliases per
+/// language will land with grammar consultant review per Roadmap
+/// item #9.
+fn devanagari_keyword(text: &str) -> Option<TokenKind> {
+    let kind = match text {
+        // fn
+        "फलन" => TokenKind::Fn,           // phalan (Hindi/Marathi: "function")
+        "कार्य" => TokenKind::Fn,         // kārya (Sanskrit/Marathi: "function/work")
+        // let
+        "मान" => TokenKind::Let,          // māna (Marathi: "assume/let")
+        "माना" => TokenKind::Let,         // mānā (Sanskrit/Hindi)
+        // return
+        "परत" => TokenKind::Return,       // parat (Marathi: "back")
+        "लौटाओ" => TokenKind::Return,     // lauṭāo (Hindi: "return!")
+        "पुनरागम" => TokenKind::Return,   // punarāgama (Sanskrit)
+        // if / else
+        "यदि" => TokenKind::If,           // yadi (Sanskrit/Hindi: "if")
+        "अगर" => TokenKind::If,           // agar (Hindi: "if")
+        "जर" => TokenKind::If,            // jar (Marathi: "if")
+        "अन्यथा" => TokenKind::Else,      // anyathā (Sanskrit: "else")
+        "नाहीतर" => TokenKind::Else,      // nāhītar (Marathi: "else")
+        // while
+        "यावत्" => TokenKind::While,      // yāvat (Sanskrit: "while/until")
+        "जबतक" => TokenKind::While,       // jab tak (Hindi: "until")
+        "जोपर्यंत" => TokenKind::While,   // jopa­ryanta (Marathi: "until")
+        // for
+        "प्रति" => TokenKind::For,        // prati (Sanskrit: "for each")
+        "साठी" => TokenKind::For,         // sāṭhī (Marathi: "for")
+        // match arm "then"
+        "तदा" => TokenKind::Then,         // tadā (Sanskrit: "then")
+        "तो" => TokenKind::Then,          // to (Hindi: "then")
+        "तर" => TokenKind::Then,          // tar (Marathi: "then")
+        // ref
+        "पहा" => TokenKind::Ref,          // pahā (Marathi: "see/look")
+        "देखो" => TokenKind::Ref,         // dekho (Hindi: "see!")
+        // mut
+        "बदल" => TokenKind::Mut,          // badla (Marathi root: "change")
+        // match
+        "जुळवा" => TokenKind::Match,      // juḷvā (Marathi: "match")
+        "मिलान" => TokenKind::Match,      // milān (Hindi: "match")
+        "मेल" => TokenKind::Match,        // mela (Sanskrit: "join/match")
+        // assert
+        "खात्री" => TokenKind::Assert,    // khātrī (Marathi: "certainty")
+        "सुनिश्चित" => TokenKind::Assert, // sunishchit (Hindi: "ensured")
+        "सिद्धम्" => TokenKind::Assert,   // siddham (Sanskrit)
+        // prove
+        "सिद्ध" => TokenKind::Prove,      // siddha (Sanskrit root)
+        "प्रमाण" => TokenKind::Prove,     // pramāṇa (Sanskrit: "proof")
+        // requires / ensures
+        "अपेक्षित" => TokenKind::Requires, // apekṣita (Sanskrit: "required")
+        "चाहिए" => TokenKind::Requires,    // cāhiye (Hindi: "needs")
+        "पाहिजे" => TokenKind::Requires,   // pāhije (Marathi: "needs")
+        "निश्चित" => TokenKind::Ensures,   // nishchit (Hindi/Marathi: "definite")
+        // bool literals
+        "सत्य" => TokenKind::True,         // satya (Sanskrit: "truth")
+        "असत्य" => TokenKind::False,       // asatya (Sanskrit: "untruth")
+        // print
+        "छाप" => TokenKind::Print,         // chāp (Hindi/Marathi: "print/imprint")
+        // pure
+        "शुद्ध" => TokenKind::Pure,        // śuddha (Sanskrit: "pure")
+        // struct / enum
+        "संरचना" => TokenKind::Struct,     // saṁracanā (Sanskrit/Hindi: "structure")
+        "विकल्प" => TokenKind::Enum,       // vikalpa (Sanskrit: "option/alternative")
+        // const
+        "स्थिर" => TokenKind::Const,       // sthira (Sanskrit: "fixed/constant")
+        // break / continue
+        "विराम" => TokenKind::Break,       // virāma (Sanskrit: "pause/stop")
+        "रुको" => TokenKind::Break,        // ruko (Hindi: "stop")
+        "थांब" => TokenKind::Break,        // thāmba (Marathi: "stop")
+        "पुढे" => TokenKind::Continue,     // puḍhe (Marathi: "ahead/onward")
+        "आगे" => TokenKind::Continue,      // āge (Hindi: "ahead")
+        // for-loop range words
+        "में" => TokenKind::In,             // meṁ (Hindi: "in")
+        "से" => TokenKind::From,           // se (Hindi: "from")
+        "तक" => TokenKind::To,             // tak (Hindi: "to/until")
+        // reduce / with for `parallel for X reduce Y with op`
+        "संक्षेप" => TokenKind::Reduce,    // saṁkṣepa (Sanskrit: "reduction")
+        "सह" => TokenKind::With,           // saha (Sanskrit: "with")
+        _ => return None,
+    };
+    Some(kind)
+}
+
 pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
-    Lexer::new(source).lex()
+    let mut tokens = Lexer::new(source).lex()?;
+    merge_multi_word_devanagari_aliases(&mut tokens, source);
+    Ok(tokens)
+}
+
+/// Post-lex pass that merges adjacent token pairs whose combined
+/// text matches a multi-word Devanagari keyword alias. Examples:
+/// Hindi `नहीं तो` (`nahīṁ to`, "else"), `के लिए` (`ke liye`,
+/// "for"), `सिद्ध करो` (`siddha karo`, "prove"). The lexer's main
+/// pass only sees whitespace-separated words, so multi-word
+/// aliases need this stitching after the fact.
+///
+/// Reads the original source text via each token's span so it can
+/// inspect words that were already resolved to single-word aliases
+/// (e.g. `तो` lexed as `Then`). The multi-word form takes
+/// precedence when both words are present and the combined string
+/// matches a multi-word alias.
+fn merge_multi_word_devanagari_aliases(tokens: &mut Vec<Token>, source: &str) {
+    let mut i = 0;
+    while i + 1 < tokens.len() {
+        let a_span = tokens[i].span;
+        let b_span = tokens[i + 1].span;
+        // Skip merging across token gaps that contain more than
+        // whitespace (the merger pattern is `WORD WORD` with only
+        // ASCII spaces / tabs in between).
+        if !whitespace_only(source, a_span.end, b_span.start) {
+            i += 1;
+            continue;
+        }
+        let a_text = source.get(a_span.start..a_span.end);
+        let b_text = source.get(b_span.start..b_span.end);
+        if let (Some(a), Some(b)) = (a_text, b_text) {
+            // Both word slices must contain non-ASCII bytes (i.e.
+            // they're Devanagari, not English keywords). Avoids
+            // accidentally merging `let x` or similar.
+            if a.bytes().any(|byte| byte >= 0x80)
+                && b.bytes().any(|byte| byte >= 0x80)
+            {
+                let combined = format!("{} {}", a, b);
+                if let Some(kind) = multi_word_devanagari_keyword(&combined) {
+                    let merged_span = a_span.merge(b_span);
+                    tokens[i] = Token { kind, span: merged_span };
+                    tokens.remove(i + 1);
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+/// True iff `source[start..end]` contains only ASCII whitespace.
+fn whitespace_only(source: &str, start: usize, end: usize) -> bool {
+    source.get(start..end)
+        .map(|s| s.bytes().all(|b| b == b' ' || b == b'\t'))
+        .unwrap_or(false)
+}
+
+/// Resolve a multi-word Devanagari phrase to its English-equivalent
+/// `TokenKind`. The merger only consults this when both words were
+/// lexed as Devanagari Idents (i.e., neither was a single-word
+/// alias on its own). For v1, this is the safe overlap because
+/// none of these phrases share their first word with a single-word
+/// alias.
+fn multi_word_devanagari_keyword(text: &str) -> Option<TokenKind> {
+    let kind = match text {
+        "नहीं तो" => TokenKind::Else,       // nahīṁ to (Hindi: "if not / else")
+        "के लिए" => TokenKind::For,         // ke liye (Hindi: "for the sake of")
+        "सिद्ध करो" => TokenKind::Prove,    // siddha karo (Hindi: "prove!")
+        "सिद्ध करा" => TokenKind::Prove,    // siddha karā (Marathi: "prove!")
+        "समान्तर प्रति" => TokenKind::Parallel, // samāntara prati (Sanskrit)
+        _ => return None,
+    };
+    Some(kind)
 }
 
 /// A `// …` comment recovered from source for later use by tools
@@ -256,6 +432,23 @@ impl<'a> Lexer<'a> {
                 b'/' if self.match_byte(b'/') => self.skip_line_comment(),
                 b'0'..=b'9' => self.lex_number(start)?,
                 b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.lex_ident(start),
+                // Non-ASCII byte: start of a UTF-8 multi-byte
+                // codepoint sequence. Devanagari letters (U+0900
+                // – U+097F) and numerals (U+0966 – U+096F) live
+                // here. Numerals start `E0 A5 A6..A5 AF` in UTF-8;
+                // dispatch them to `lex_devanagari_number`, others
+                // to `lex_unicode_ident`. Item #9 — Sanskrit /
+                // Hindi / Marathi.
+                b if b >= 0x80 => {
+                    if b == 0xE0
+                        && self.peek() == Some(0xA5)
+                        && matches!(self.peek_next(), Some(0xA6..=0xAF))
+                    {
+                        self.lex_devanagari_number(start)?;
+                    } else {
+                        self.lex_unicode_ident(start);
+                    }
+                }
                 b'"' => self.lex_string(start)?,
                 b'(' => self.push(TokenKind::LParen, start),
                 b')' => self.push(TokenKind::RParen, start),
@@ -303,6 +496,52 @@ impl<'a> Lexer<'a> {
             span: Span::new(self.source.len(), self.source.len()),
         });
         Ok(self.tokens)
+    }
+
+    /// Lex a Devanagari integer literal — sequence of digits from
+    /// `०१२३४५६७८९` (U+0966 – U+096F). The first lead byte `0xE0`
+    /// has already been consumed; the next two bytes are read as
+    /// part of the first digit, then any subsequent Devanagari
+    /// digits are consumed too. The resulting digit string is
+    /// translated to ASCII and parsed via `i128::from_str_radix`.
+    /// No suffix / float / radix / underscore support in this
+    /// first cut — Devanagari literals are integers only, for
+    /// readability of small numbers in source. Item #9 follow-up.
+    fn lex_devanagari_number(&mut self, start: usize) -> Result<(), Diagnostic> {
+        // Consume the remaining two bytes of the first codepoint
+        // (`0xA5` then `0xA6..=0xAF` — already pre-checked at the
+        // dispatch site).
+        self.advance(); // 0xA5
+        self.advance(); // digit byte 0xA6..AF
+        // Consume any further Devanagari digits.
+        while self.peek() == Some(0xE0)
+            && self.peek_next() == Some(0xA5)
+            && matches!(
+                self.bytes.get(self.pos + 2).copied(),
+                Some(0xA6..=0xAF)
+            )
+        {
+            self.advance(); // 0xE0
+            self.advance(); // 0xA5
+            self.advance(); // digit
+        }
+        let span = Span::new(start, self.pos);
+        let raw = &self.source[start..self.pos];
+        let mut ascii_digits = String::with_capacity(raw.chars().count());
+        for ch in raw.chars() {
+            // Devanagari digit codepoints U+0966..U+096F map to
+            // ASCII '0'..'9' by subtracting 0x0966.
+            let code = ch as u32;
+            ascii_digits.push((b'0' + (code - 0x0966) as u8) as char);
+        }
+        let value: i128 = ascii_digits.parse().map_err(|_| {
+            Diagnostic::new(span, format!("invalid Devanagari integer '{}'", raw))
+        })?;
+        self.tokens.push(Token {
+            kind: TokenKind::Int(value),
+            span,
+        });
+        Ok(())
     }
 
     fn lex_number(&mut self, start: usize) -> Result<(), Diagnostic> {
@@ -424,6 +663,34 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
+    /// Lex an identifier that begins with a non-ASCII codepoint
+    /// (e.g. Devanagari letters). Consumes every following byte
+    /// that's either an identifier-continuation ASCII character
+    /// or any non-ASCII byte (which by validated-UTF-8 source
+    /// invariant means it's part of another codepoint). Then
+    /// matches the resulting string against the Devanagari
+    /// keyword-alias table — if a hit, route to the corresponding
+    /// English TokenKind. Otherwise treat as a Unicode identifier
+    /// name (`Ident`).
+    fn lex_unicode_ident(&mut self, start: usize) {
+        while let Some(b) = self.peek() {
+            if matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
+                || b >= 0x80
+            {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let text = &self.source[start..self.pos];
+        let kind = devanagari_keyword(text)
+            .unwrap_or_else(|| TokenKind::Ident(text.to_owned()));
+        self.tokens.push(Token {
+            kind,
+            span: Span::new(start, self.pos),
+        });
+    }
+
     fn lex_ident(&mut self, start: usize) {
         while matches!(
             self.peek(),
@@ -480,6 +747,7 @@ impl<'a> Lexer<'a> {
             "assert" => TokenKind::Assert,
             "prove" => TokenKind::Prove,
             "print" => TokenKind::Print,
+            "try" => TokenKind::Try,
             "len" => TokenKind::Len,
             "as" => TokenKind::As,
             "true" => TokenKind::True,

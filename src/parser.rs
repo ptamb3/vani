@@ -1951,6 +1951,46 @@ impl Parser {
                 kind: ExprKind::Str(text),
                 span: token.span,
             }),
+            TokenKind::LBrace => {
+                // Block expression: `{ stmt; stmt; tail-expr }`.
+                // V1 restricts the leading stmts to `let`
+                // bindings (the checker enforces this — the
+                // parser accepts any stmt sequence and emits a
+                // diagnostic later if a non-let appears here).
+                // The tail expression's value is the block's
+                // value.
+                let open_span = token.span;
+                let mut stmts: Vec<Stmt> = Vec::new();
+                while self.check(|k| matches!(k, TokenKind::Let)) {
+                    stmts.push(self.parse_let_stmt()?);
+                }
+                let tail = self.parse_expr()?;
+                let close = self.expect_keyword(
+                    "'}' (block-expression close)",
+                    |k| matches!(k, TokenKind::RBrace),
+                )?;
+                Ok(Expr {
+                    kind: ExprKind::Block {
+                        stmts,
+                        tail: Box::new(tail),
+                    },
+                    span: open_span.merge(close.span),
+                })
+            }
+            TokenKind::Try => {
+                // `try EXPR` — parse inner expression at
+                // primary-expr precedence so the `try` binds
+                // tightly to the operand (no surprise
+                // captures of trailing `+ …`). Checker
+                // validates that the inner evaluates to a
+                // suitable payloaded enum type. T2.6.
+                let inner = self.parse_primary_expr()?;
+                let inner_span = inner.span;
+                Ok(Expr {
+                    kind: ExprKind::Try { inner: Box::new(inner) },
+                    span: token.span.merge(inner_span),
+                })
+            }
             TokenKind::If => {
                 // If-expression: `if cond { expr } else { expr }`.
                 // Both branches must be a single expression in
@@ -2061,15 +2101,39 @@ impl Parser {
                                 |k| matches!(k, TokenKind::Dot),
                             )?;
                             let variant_tok = self.expect_ident()?;
-                            let pat_span = pat_start.merge(variant_tok.span);
+                            let mut pat_span = pat_start.merge(variant_tok.span);
                             let variant = ident_text(variant_tok);
-                            (
-                                Pattern::Variant {
-                                    enum_name: first_text,
-                                    variant,
-                                },
-                                pat_span,
-                            )
+                            // Optional `(binding)` after the variant
+                            // name — payloaded destructure. T1.3
+                            // phase 2b. v1 accepts the single-binding
+                            // form (`Some(x)`) only; multi-binding
+                            // tuple-style destructure is deferred.
+                            if self.check(|k| matches!(k, TokenKind::LParen)) {
+                                self.bump();
+                                let binding_tok = self.expect_ident()?;
+                                let binding = ident_text(binding_tok);
+                                let close = self.expect_keyword(
+                                    "')' (variant payload binding close)",
+                                    |k| matches!(k, TokenKind::RParen),
+                                )?;
+                                pat_span = pat_start.merge(close.span);
+                                (
+                                    Pattern::VariantWithBinding {
+                                        enum_name: first_text,
+                                        variant,
+                                        binding,
+                                    },
+                                    pat_span,
+                                )
+                            } else {
+                                (
+                                    Pattern::Variant {
+                                        enum_name: first_text,
+                                        variant,
+                                    },
+                                    pat_span,
+                                )
+                            }
                         }
                     };
                     self.expect_keyword("'then'", |k| matches!(k, TokenKind::Then))?;
