@@ -1,0 +1,22 @@
+intent "Runtime assertions with custom error messages";
+
+fn lookup(xs: ref Vec<i64>, i: u64) -> i64
+requires i < len(xs);
+{
+  // The verifier already proves the precondition; this redundant runtime
+  // check exists so a *bug at the caller* (which would violate the
+  // requires) produces a helpful message instead of a bare assertion.
+  assert i < len(xs), "lookup: index out of range";
+  return xs[i];
+}
+
+fn main() -> i64 {
+  let xs: Vec<i64> = vec(10, 20, 30, 40);
+
+  // Within the precondition: safe to call.
+  let v: i64 = lookup(ref xs, 2);
+  assert v == 30, "expected 30 at index 2";
+  print v;
+
+  return 0;
+}

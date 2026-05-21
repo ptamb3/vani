@@ -1,0 +1,13 @@
+intent "Exercise Vec<T> with affine ownership and functional update";
+
+fn main() -> i64 {
+  let xs: Vec<i64> = vec(10, 20, 30);
+  let xs           = push(xs, 40);
+  let xs           = set(xs, 0, 99);
+  let n: u64       = len(xs);
+  let first: i64   = xs[0];
+  assert n == 4;
+  assert first == 99;
+  print first;
+  return 0;
+}

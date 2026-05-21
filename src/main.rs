@@ -1,0 +1,1211 @@
+use vani::ast::Type;
+use vani::backend::Backend;
+use vani::backend_c::CBackend;
+use vani::backend_llvm::LlvmBackend;
+use vani::ir::{TypedExpr, TypedExprKind, TypedPrintItem, TypedProgram, TypedStmt};
+use vani::ssa::lower_program;
+use vani::ssa_backend_c;
+use vani::ssa_backend_llvm;
+
+/// Module-wide gate: returns false if any function uses a
+/// feature the SSA backends don't yet cover safely. Avoids
+/// emitting broken IR that would silently produce wrong
+/// output (the runtime error would only surface in tests).
+/// Per-backend `extra_reject` lets callers add backend-
+/// specific exclusions on top of the common set (e.g.,
+/// SSA-LLVM still rejects parallel-for and tasks; SSA-C
+/// now handles parallel-for so it sets `false` here).
+fn ssa_path_supports(
+    ir: &TypedProgram,
+    extra_reject: impl Fn(&TypedStmt) -> bool,
+) -> bool {
+    for f in &ir.functions {
+        for param in &f.params {
+            if !ssa_type_supported(&param.ty) {
+                return false;
+            }
+        }
+        if !ssa_type_supported(&f.return_type) {
+            return false;
+        }
+        if !stmts_ssa_supported(&f.body, &extra_reject) {
+            return false;
+        }
+    }
+    true
+}
+
+/// SSA-LLVM handles `parallel for` (full reduction op
+/// table) and `task`/`join` (single-block bodies via
+/// pthread_create/CreateThread outlining). Multi-block
+/// task bodies and other unsupported shapes surface
+/// `EmitError` from inside the SSA-LLVM emit → tree-LLVM
+/// fallback.
+fn ssa_llvm_extra_reject(_stmt: &TypedStmt) -> bool {
+    false
+}
+
+/// SSA-C now handles both `parallel for` (via OpenMP
+/// pragmas + reduction clauses) and `task`/`join` (via the
+/// `intent_thread_create`/`intent_thread_join` runtime
+/// wrappers + outlined `static void* intent_task_<N>(void*)`
+/// helpers). Multi-block task bodies and non-canonical
+/// parallel-for carry shapes still surface `EmitError` →
+/// tree-C fallback.
+fn ssa_c_extra_reject(_stmt: &TypedStmt) -> bool {
+    false
+}
+
+fn ssa_type_supported(_ty: &Type) -> bool {
+    // Every concurrency primitive now flows through SSA
+    // (Atomic + Mutex/Guard + Channel) on both SSA-C and
+    // SSA-LLVM. Anything an SSA backend can't yet handle
+    // surfaces `EmitError` from inside its emit and falls
+    // back per-backend in `emit_c_via_ssa` /
+    // `emit_llvm_via_ssa`.
+    true
+}
+
+fn stmts_ssa_supported(stmts: &[TypedStmt], extra_reject: &impl Fn(&TypedStmt) -> bool) -> bool {
+    stmts.iter().all(|s| stmt_ssa_supported(s, extra_reject))
+}
+
+fn stmt_ssa_supported(stmt: &TypedStmt, extra_reject: &impl Fn(&TypedStmt) -> bool) -> bool {
+    if extra_reject(stmt) {
+        return false;
+    }
+    match stmt {
+        TypedStmt::Print { items } => items.iter().all(|i| match i {
+            TypedPrintItem::Expr(e) => expr_ssa_supported(e),
+            TypedPrintItem::Str(_) => true,
+        }),
+        TypedStmt::Let { ty, expr, .. } | TypedStmt::Reassign { ty, expr, .. } => {
+            ssa_type_supported(ty) && expr_ssa_supported(expr)
+        }
+        TypedStmt::Drop { ty, .. } => ssa_type_supported(ty),
+        TypedStmt::Discard { expr } => expr_ssa_supported(expr),
+        TypedStmt::Return { expr } => expr_ssa_supported(expr),
+        TypedStmt::Assert { expr, .. } | TypedStmt::Prove { expr } => {
+            expr_ssa_supported(expr)
+        }
+        TypedStmt::If { cond, then_body, else_body } => {
+            expr_ssa_supported(cond)
+                && stmts_ssa_supported(then_body, extra_reject)
+                && stmts_ssa_supported(else_body, extra_reject)
+        }
+        TypedStmt::While { cond, body } => {
+            expr_ssa_supported(cond) && stmts_ssa_supported(body, extra_reject)
+        }
+        TypedStmt::For { start, end, body, .. } => {
+            expr_ssa_supported(start)
+                && expr_ssa_supported(end)
+                && stmts_ssa_supported(body, extra_reject)
+        }
+        TypedStmt::ForIter { collection_ty, body, .. } => {
+            ssa_type_supported(collection_ty)
+                && stmts_ssa_supported(body, extra_reject)
+        }
+        TypedStmt::TaskSpawn { body, .. } => stmts_ssa_supported(body, extra_reject),
+        TypedStmt::TaskJoin { .. } => true,
+        TypedStmt::IndexAssign { base_ty, index, value, .. } => {
+            ssa_type_supported(base_ty)
+                && expr_ssa_supported(index)
+                && expr_ssa_supported(value)
+        }
+        // FieldAssign currently has no SSA lowering — route
+        // through the tree backend. T1.2 phase 2a follow-up.
+        TypedStmt::FieldAssign { .. } => false,
+        TypedStmt::Break | TypedStmt::Continue => true,
+    }
+}
+
+fn expr_ssa_supported(expr: &TypedExpr) -> bool {
+    if !ssa_type_supported(&expr.ty) {
+        return false;
+    }
+    match &expr.kind {
+        TypedExprKind::Binary { left, right, .. } => {
+            expr_ssa_supported(left) && expr_ssa_supported(right)
+        }
+        TypedExprKind::Unary { expr: e, .. } => expr_ssa_supported(e),
+        TypedExprKind::Cast { expr: e, .. } => expr_ssa_supported(e),
+        TypedExprKind::Index { array, index, .. } => {
+            expr_ssa_supported(array) && expr_ssa_supported(index)
+        }
+        TypedExprKind::Len { array, .. } => expr_ssa_supported(array),
+        TypedExprKind::Call { args, .. } => args.iter().all(expr_ssa_supported),
+        TypedExprKind::CallIndirect { callee, args } => {
+            expr_ssa_supported(callee) && args.iter().all(expr_ssa_supported)
+        }
+        TypedExprKind::ArrayLit { elements } => {
+            elements.iter().all(expr_ssa_supported)
+        }
+        TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::Str(_)
+        | TypedExprKind::Var(_)
+        | TypedExprKind::Ref { .. }
+        | TypedExprKind::RefMut { .. }
+        | TypedExprKind::FnRef { .. } => true,
+        // Tuples flow through the tree backends; SSA lowering
+        // surfaces LowerError which routes here. Mark
+        // unsupported so the SSA gate falls back early. T1.1.
+        TypedExprKind::Tuple { .. } | TypedExprKind::TupleAccess { .. } => false,
+        // Structs likewise fall back to tree backends until
+        // SSA support lands (T1.2 follow-up).
+        TypedExprKind::StructLit { .. } | TypedExprKind::FieldAccess { .. } => false,
+        // Enums + match also fall through to tree backends
+        // for now. T1.3 follow-up.
+        TypedExprKind::EnumVariant { .. } | TypedExprKind::Match { .. } => false,
+        // If-expressions route through tree backends. T4.
+        TypedExprKind::IfExpr { .. } => false,
+    }
+}
+
+/// Try the SSA-driven C backend first; fall back to the
+/// tree-based path if the SSA pipeline doesn't yet cover a
+/// feature the program uses (Vec/Channel/FnPtr/Atomic/etc.).
+/// Once SSA-C reaches feature parity, the fallback can go.
+fn emit_c_via_ssa(ir: &TypedProgram) -> String {
+    if ssa_path_supports(ir, ssa_c_extra_reject) {
+        let (module, lower_errs) = lower_program(ir);
+        if lower_errs.is_empty() {
+            if let Ok(c) = ssa_backend_c::emit(&module) {
+                return c;
+            }
+        }
+    }
+    CBackend.emit(ir)
+}
+
+/// Same dual-path strategy for the LLVM backend.
+fn emit_llvm_via_ssa(ir: &TypedProgram) -> String {
+    if ssa_path_supports(ir, ssa_llvm_extra_reject) {
+        let (module, lower_errs) = lower_program(ir);
+        if lower_errs.is_empty() {
+            if let Ok(ll) = ssa_backend_llvm::emit(&module) {
+                return ll;
+            }
+        }
+    }
+    LlvmBackend.emit(ir)
+}
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const HELP: &str = "\
+intentc — Intent language compiler driver
+
+USAGE:
+    intentc <COMMAND> [ARGS]
+
+COMMANDS:
+    check <path>... [--json] [--no-verify] [--smt-debug]
+                                          Type-check one or more sources.
+                                          Paths may be files or directories
+                                          (the latter expand recursively to
+                                          *.intent descendants). With --json,
+                                          a single combined diagnostics
+                                          object on stdout collects all
+                                          findings across every file. With
+                                          --no-verify, the SMT verifier
+                                          is skipped for fast iteration
+                                          (runtime guards stay in place);
+                                          same effect as INTENTC_NO_VERIFY=1.
+                                          With --smt-debug, every SMT query
+                                          and z3 response is dumped to
+                                          stderr (also via INTENTC_SMT_DEBUG=1).
+    emit <file.intent> [--backend=<c|llvm>] [-o out]
+                                          Emit lowered source for a program.
+                                          --backend defaults to 'llvm'. Pass
+                                          --backend=c for the legacy C output.
+    emit-c <file.intent> [-o out.c]       Legacy alias for 'emit --backend=c'.
+                                          Kept for back-compat.
+    run <file.intent> [--backend=<c|llvm>]
+                                          Compile and run a program. Default
+                                          backend is 'llvm' (emits LLVM IR
+                                          and runs it via $LLI or `lli`).
+                                          With --backend=c, invokes $CC or
+                                          `cc` on the C output.
+    build <file.intent> [-o out]          AOT-compile to a native binary.
+                                          Lowers via the LLVM backend, calls
+                                          $LLC (or `llc`) for object code,
+                                          then $CC (or `cc`) to link with
+                                          libc. Output defaults to the
+                                          source file's stem in the cwd.
+    tokens <file.intent>                  Dump the token stream (debug).
+    ast <file.intent>                     Dump the parsed AST (debug). Skips
+                                          type checking.
+    ir <file.intent>                      Dump the typed IR (debug). Runs the
+                                          checker; what the backends see.
+    fmt <path>... [--check|--in-place]
+                                          Pretty-print canonical source.
+                                          // comments are preserved. Paths
+                                          may be files or directories (the
+                                          latter expand recursively to
+                                          *.intent descendants; dot-dirs
+                                          skipped).
+                                          Default writes to stdout (single-
+                                          file only); --check exits 1 if
+                                          any file is not canonical;
+                                          --in-place rewrites each file
+                                          (mtime stable when canonical).
+    test <path>... [--json] [--smt-debug] Compile + run each path via the
+                                          LLVM backend, treating exit 0 as
+                                          pass. Paths may be files or
+                                          directories (the latter expand
+                                          recursively to *.intent
+                                          descendants; dot-dirs skipped).
+                                          Output per file plus a summary;
+                                          exits 1 if any failed.
+                                          With --json, a machine-readable
+                                          results object is printed on
+                                          stdout instead of human lines.
+                                          With --smt-debug, every SMT query
+                                          and z3 response is dumped to
+                                          stderr (also via INTENTC_SMT_DEBUG=1).
+
+GLOBAL OPTIONS:
+    -h, --help        Show this message
+    -V, --version     Show version
+";
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(code) => code,
+        Err(message) => {
+            eprintln!("{}", message);
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn run() -> Result<ExitCode, String> {
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
+        return Err(HELP.to_string());
+    }
+
+    match args[1].as_str() {
+        "-h" | "--help" => {
+            println!("{}", HELP);
+            Ok(ExitCode::SUCCESS)
+        }
+        "-V" | "--version" => {
+            println!("intentc {}", env!("CARGO_PKG_VERSION"));
+            Ok(ExitCode::SUCCESS)
+        }
+        "check" => {
+            // Type-check one or more files. Paths may be files or
+            // directories (the latter expand recursively to
+            // `*.intent` descendants via `expand_intent_paths`).
+            // Exit 1 if any file's check fails. For `--json`, all
+            // diagnostics across all files are flattened into a
+            // single `{"diagnostics": [...]}` object so the schema
+            // matches the single-file form.
+            let mut json = false;
+            let mut path_args: Vec<String> = Vec::new();
+            for arg in args.iter().skip(2) {
+                match arg.as_str() {
+                    "--json" => json = true,
+                    "--no-verify" => {
+                        // Same effect as INTENTC_NO_VERIFY=1 — sets
+                        // the env var for the remainder of the
+                        // process so the checker's gates fire.
+                        std::env::set_var("INTENTC_NO_VERIFY", "1");
+                    }
+                    "--smt-debug" => {
+                        // Surface the existing INTENTC_SMT_DEBUG=1
+                        // toggle as a CLI flag so users debugging
+                        // a `prove` failure don't have to
+                        // rediscover the env var. The verifier
+                        // dumps each SMT query + z3 response to
+                        // stderr.
+                        std::env::set_var("INTENTC_SMT_DEBUG", "1");
+                    }
+                    other if other.starts_with('-') => {
+                        return Err(format!("unexpected argument '{}'", other));
+                    }
+                    other => path_args.push(other.to_string()),
+                }
+            }
+            if path_args.is_empty() {
+                return Err(format!("'check' requires a path argument\n\n{}", HELP));
+            }
+            let files = expand_intent_paths(&path_args)?;
+            if files.is_empty() {
+                return Err("no .intent files to check".into());
+            }
+
+            let mut failed = 0usize;
+            // For --json multi-file: accumulate every file's
+            // FileMap entries (shifted into a global frame) and
+            // every diagnostic (shifted by the same amount) into a
+            // single combined map/diags pair, then emit one JSON
+            // object at the end.
+            let mut combined_map = vani::diagnostic::FileMap::new();
+            let mut combined_diags: Vec<vani::diagnostic::Diagnostic> = Vec::new();
+
+            for file in &files {
+                match vani::compile_path(file) {
+                    Ok((_checked, _map)) => {
+                        if !json && files.len() > 1 {
+                            println!("ok: {}", file.display());
+                        }
+                    }
+                    Err((map, diagnostics)) => {
+                        failed += 1;
+                        if json {
+                            let shift = combined_map.extend_with(&map);
+                            for d in diagnostics {
+                                let mut shifted = d.clone();
+                                shifted.span = vani::span::Span::new(
+                                    d.span.start + shift,
+                                    d.span.end + shift,
+                                );
+                                shifted.related = d
+                                    .related
+                                    .iter()
+                                    .map(|(s, note)| {
+                                        (
+                                            vani::span::Span::new(
+                                                s.start + shift,
+                                                s.end + shift,
+                                            ),
+                                            note.clone(),
+                                        )
+                                    })
+                                    .collect();
+                                combined_diags.push(shifted);
+                            }
+                        } else if files.len() == 1 {
+                            return Err(
+                                vani::diagnostic::format_diagnostics_with_files(
+                                    &map,
+                                    &diagnostics,
+                                ),
+                            );
+                        } else {
+                            eprintln!(
+                                "{}",
+                                vani::diagnostic::format_diagnostics_with_files(
+                                    &map,
+                                    &diagnostics,
+                                )
+                            );
+                        }
+                    }
+                }
+            }
+
+            if json {
+                print!(
+                    "{}",
+                    vani::diagnostic::format_diagnostics_json_with_files(
+                        &combined_map,
+                        &combined_diags,
+                    )
+                );
+                // The single-file `{"diagnostics":[]}` success case
+                // also flows through here — combined_map is empty
+                // and the formatter emits the right empty object.
+            } else if failed == 0 {
+                if files.len() == 1 {
+                    println!("ok: {}", files[0].display());
+                } else {
+                    println!("ok: {} file(s)", files.len());
+                }
+            }
+            if failed > 0 {
+                Ok(ExitCode::from(1))
+            } else {
+                Ok(ExitCode::SUCCESS)
+            }
+        }
+        "emit" | "emit-c" => {
+            // `emit-c` is the legacy spelling kept for back-compat; the
+            // new `emit` form takes an explicit `--backend=<c|llvm>` flag
+            // so we can grow into LLVM (and beyond) without churning the
+            // CLI. The legacy alias pins backend=c regardless of flags.
+            let cmd_name = args[1].clone();
+            let file = required_file(&args, 2, &cmd_name)?;
+            let (backend_kind, out) = parse_emit_args(&args, 3, &cmd_name)?;
+            let checked = compile_path_or_report(&file)?;
+            let text = match backend_kind {
+                BackendKind::C => emit_c_via_ssa(&checked.ir),
+                BackendKind::Llvm => emit_llvm_via_ssa(&checked.ir),
+            };
+            match out {
+                Some(path) => fs::write(&path, text)
+                    .map_err(|error| format!("failed to write '{}': {}", path.display(), error))?,
+                None => print!("{}", text),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        "run" => {
+            let file = required_file(&args, 2, "run")?;
+            // Reuse the emit-args parser since `run` accepts the same
+            // backend flag. `-o` is meaningless for run but harmless
+            // to allow.
+            let (backend_kind, _out) = parse_emit_args(&args, 3, "run")?;
+            match backend_kind {
+                BackendKind::C => run_program(&file),
+                BackendKind::Llvm => run_program_llvm(&file),
+            }
+        }
+        "build" => {
+            let file = required_file(&args, 2, "build")?;
+            let (_backend_kind, out) = parse_emit_args(&args, 3, "build")?;
+            build_program_llvm(&file, out.as_deref())
+        }
+        "tokens" => {
+            // Debug subcommand: dump the token stream to stdout.
+            // Useful for parser/lexer development — see a token's
+            // source span and kind without running the full
+            // pipeline.
+            let file = required_file(&args, 2, "tokens")?;
+            let source = fs::read_to_string(&file)
+                .map_err(|error| format!("failed to read '{}': {}", file.display(), error))?;
+            match vani::lexer::lex(&source) {
+                Ok(tokens) => {
+                    for tok in &tokens {
+                        println!("{:>5}..{:<5} {:?}", tok.span.start, tok.span.end, tok.kind);
+                    }
+                    Ok(ExitCode::SUCCESS)
+                }
+                Err(diag) => Err(vani::diagnostic::format_diagnostics(
+                    file.to_str().unwrap_or("<input>"),
+                    &source,
+                    &[diag],
+                )),
+            }
+        }
+        "ast" => {
+            // Debug subcommand: dump the parsed AST. Skips the
+            // type checker — useful when you want to see what the
+            // parser produced even if the checker would reject.
+            let file = required_file(&args, 2, "ast")?;
+            let source = fs::read_to_string(&file)
+                .map_err(|error| format!("failed to read '{}': {}", file.display(), error))?;
+            let tokens = vani::lexer::lex(&source).map_err(|diag| {
+                vani::diagnostic::format_diagnostics(
+                    file.to_str().unwrap_or("<input>"),
+                    &source,
+                    &[diag],
+                )
+            })?;
+            let (program, diags) = vani::parser::parse(tokens);
+            // Print whatever the parser produced, then surface any
+            // parse diagnostics on stderr so partial parses are
+            // still useful.
+            println!("{:#?}", program);
+            if !diags.is_empty() {
+                eprintln!(
+                    "{}",
+                    vani::diagnostic::format_diagnostics(
+                        file.to_str().unwrap_or("<input>"),
+                        &source,
+                        &diags
+                    )
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        "ir" => {
+            // Debug subcommand: run the full pipeline through the
+            // type checker and dump the resulting TypedProgram.
+            // Useful for checker / IR work — see what the backends
+            // are actually about to lower.
+            let file = required_file(&args, 2, "ir")?;
+            let checked = compile_path_or_report(&file)?;
+            println!("{:#?}", checked.ir);
+            Ok(ExitCode::SUCCESS)
+        }
+        "test" => {
+            // Treat each path as a self-contained test case: compile +
+            // run it through the LLVM backend, capturing stdout/stderr.
+            // A test "passes" iff the program exits 0 (i.e. no `assert`
+            // fired, no runtime guard tripped, no proof obligation
+            // remained unsatisfied at runtime). Output per file plus a
+            // summary line; exit 1 if any failed. A directory arg
+            // expands to its `*.intent` children (non-recursive).
+            if args.len() < 3 {
+                return Err("test requires at least one source file\n\n".to_string() + HELP);
+            }
+            // Split flags from path args. Supported: --smt-debug
+            // and --json. The JSON form is machine-readable for CI;
+            // a single object on stdout, no per-file lines.
+            let mut path_args: Vec<String> = Vec::new();
+            let mut json = false;
+            for arg in args.iter().skip(2) {
+                match arg.as_str() {
+                    "--smt-debug" => {
+                        std::env::set_var("INTENTC_SMT_DEBUG", "1");
+                    }
+                    "--json" => json = true,
+                    other if other.starts_with('-') => {
+                        return Err(format!(
+                            "unknown flag for 'test': '{}' (expected --smt-debug, --json)",
+                            other
+                        ));
+                    }
+                    other => path_args.push(other.to_string()),
+                }
+            }
+            let files = expand_intent_paths(&path_args)?;
+            if files.is_empty() {
+                return Err("no .intent files to test".into());
+            }
+            let mut passed = 0usize;
+            let mut failed = 0usize;
+            // For --json mode we collect per-file outcomes and emit
+            // one object at the end. Each result records ok-ness,
+            // elapsed ms, and (for failures) the exit code + a
+            // brief reason. We deliberately do NOT include
+            // stdout/stderr in the JSON to keep the payload small —
+            // the human-readable form prints them on FAILED.
+            let mut json_results: Vec<String> = Vec::new();
+            for path in &files {
+                let start = std::time::Instant::now();
+                let result = run_program_llvm_capture(path);
+                let elapsed = start.elapsed().as_millis();
+                let path_str = json_escape(&path.display().to_string());
+                match result {
+                    Ok((0, _, _)) => {
+                        if !json {
+                            println!("{}: ok ({} ms)", path.display(), elapsed);
+                        }
+                        json_results.push(format!(
+                            "{{\"path\":\"{}\",\"ok\":true,\"ms\":{}}}",
+                            path_str, elapsed
+                        ));
+                        passed += 1;
+                    }
+                    Ok((code, stdout, stderr)) => {
+                        if !json {
+                            println!(
+                                "{}: FAILED (exit {}, {} ms)",
+                                path.display(),
+                                code,
+                                elapsed
+                            );
+                            if !stdout.is_empty() {
+                                eprintln!("--- stdout ---\n{}", stdout);
+                            }
+                            let stderr = trim_lli_backtrace(&stderr);
+                            if !stderr.is_empty() {
+                                eprintln!("--- stderr ---\n{}", stderr);
+                            }
+                        }
+                        json_results.push(format!(
+                            "{{\"path\":\"{}\",\"ok\":false,\"ms\":{},\"exit\":{},\"reason\":\"runtime\"}}",
+                            path_str, elapsed, code
+                        ));
+                        failed += 1;
+                    }
+                    Err(msg) => {
+                        if !json {
+                            println!("{}: FAILED (compile, {} ms)", path.display(), elapsed);
+                            eprintln!("{}", msg);
+                        }
+                        json_results.push(format!(
+                            "{{\"path\":\"{}\",\"ok\":false,\"ms\":{},\"reason\":\"compile\"}}",
+                            path_str, elapsed
+                        ));
+                        failed += 1;
+                    }
+                }
+            }
+            if json {
+                println!(
+                    "{{\"results\":[{}],\"summary\":{{\"passed\":{},\"failed\":{}}}}}",
+                    json_results.join(","),
+                    passed,
+                    failed
+                );
+            } else {
+                println!();
+                println!("{} passed; {} failed", passed, failed);
+            }
+            if failed > 0 {
+                Ok(ExitCode::from(1))
+            } else {
+                Ok(ExitCode::SUCCESS)
+            }
+        }
+        "fmt" => {
+            // Pretty-print canonical source. `// …` comments are
+            // preserved (best-effort: trailing same-line comments
+            // are promoted to leading; blank lines between comment
+            // groups are not preserved in v1).
+            //
+            // Modes (mutually exclusive):
+            //   default:     print formatted source to stdout
+            //                (single-file only)
+            //   --check:     exit 1 (silent) if any file is not
+            //                already canonical; useful for CI
+            //   --in-place:  overwrite each file with canonical
+            //                source
+            //
+            // Path args may be files or directories. Directories
+            // expand to their `*.intent` children (non-recursive)
+            // via the same helper used by `intentc test`.
+            let mut check = false;
+            let mut in_place = false;
+            let mut path_args: Vec<String> = Vec::new();
+            for arg in args.iter().skip(2) {
+                match arg.as_str() {
+                    "--check" => check = true,
+                    "--in-place" | "-i" => in_place = true,
+                    other if other.starts_with('-') => {
+                        return Err(format!(
+                            "unknown flag for 'fmt': '{}' (expected --check or --in-place)",
+                            other
+                        ));
+                    }
+                    other => path_args.push(other.to_string()),
+                }
+            }
+            if check && in_place {
+                return Err("--check and --in-place are mutually exclusive".into());
+            }
+            if path_args.is_empty() {
+                return Err(format!("'fmt' requires a path argument\n\n{}", HELP));
+            }
+            let files = expand_intent_paths(&path_args)?;
+            if files.is_empty() {
+                return Err("no .intent files to format".into());
+            }
+            if files.len() > 1 && !check && !in_place {
+                return Err(
+                    "multiple files require --check or --in-place \
+                     (stdout mode is single-file only)"
+                        .into(),
+                );
+            }
+
+            let mut not_canonical = 0usize;
+            for file in &files {
+                let source = fs::read_to_string(file).map_err(|error| {
+                    format!("failed to read '{}': {}", file.display(), error)
+                })?;
+                let tokens = vani::lexer::lex(&source).map_err(|diag| {
+                    vani::diagnostic::format_diagnostics(
+                        file.to_str().unwrap_or("<input>"),
+                        &source,
+                        &[diag],
+                    )
+                })?;
+                let comments = vani::lexer::extract_comments(&source);
+                let (program, diags) = vani::parser::parse(tokens);
+                if !diags.is_empty() {
+                    return Err(vani::diagnostic::format_diagnostics(
+                        file.to_str().unwrap_or("<input>"),
+                        &source,
+                        &diags,
+                    ));
+                }
+                let formatted = vani::format::format_program_with_comments(
+                    &program, &source, &comments,
+                );
+
+                if check {
+                    if formatted != source {
+                        eprintln!("{}: not canonically formatted", file.display());
+                        not_canonical += 1;
+                    }
+                } else if in_place {
+                    // Only write if content actually changes — keeps
+                    // mtime stable for files already canonical,
+                    // making `intentc fmt --in-place examples/`
+                    // safe to run repeatedly.
+                    if formatted != source {
+                        fs::write(file, &formatted).map_err(|e| {
+                            format!("failed to write '{}': {}", file.display(), e)
+                        })?;
+                    }
+                } else {
+                    print!("{}", formatted);
+                }
+            }
+            if check && not_canonical > 0 {
+                Ok(ExitCode::from(1))
+            } else {
+                Ok(ExitCode::SUCCESS)
+            }
+        }
+        other => Err(format!("unknown command '{}'\n\n{}", other, HELP)),
+    }
+}
+
+fn required_file(args: &[String], index: usize, command: &str) -> Result<PathBuf, String> {
+    args.get(index)
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("'{}' requires a source file argument\n\n{}", command, HELP))
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BackendKind {
+    C,
+    Llvm,
+}
+
+/// Parse `[--backend=<c|llvm>] [-o path | --out path]` for the
+/// `emit` subcommand. The legacy `emit-c` alias forces backend=c
+/// and rejects --backend to keep its semantics unambiguous.
+fn parse_emit_args(
+    args: &[String],
+    from: usize,
+    cmd_name: &str,
+) -> Result<(BackendKind, Option<PathBuf>), String> {
+    // LLVM is now the default — the project's direction is to move
+    // away from the C backend. The `emit-c` legacy alias forces C
+    // regardless of this default.
+    let mut backend = if cmd_name == "emit-c" {
+        BackendKind::C
+    } else {
+        BackendKind::Llvm
+    };
+    let mut out: Option<PathBuf> = None;
+    let mut idx = from;
+    while let Some(arg) = args.get(idx) {
+        if let Some(value) = arg.strip_prefix("--backend=") {
+            if cmd_name == "emit-c" {
+                return Err(
+                    "'emit-c' forces backend=c; use 'emit --backend=…' to choose"
+                        .to_string(),
+                );
+            }
+            backend = match value {
+                "c" => BackendKind::C,
+                "llvm" => BackendKind::Llvm,
+                other => return Err(format!("unknown backend '{}': expected c|llvm", other)),
+            };
+            idx += 1;
+        } else if arg == "-o" || arg == "--out" {
+            let path = args
+                .get(idx + 1)
+                .ok_or_else(|| format!("expected a path after '{}'", arg))?;
+            out = Some(PathBuf::from(path));
+            idx += 2;
+        } else {
+            return Err(format!("unexpected argument '{}'", arg));
+        }
+    }
+    Ok((backend, out))
+}
+
+fn compile_path_or_report(
+    _path: &Path,
+) -> Result<vani::checker::CheckedProgram, String> {
+    vani::compile_path(_path)
+        .map(|(c, _)| c)
+        .map_err(|(map, diagnostics)| {
+            vani::diagnostic::format_diagnostics_with_files(&map, &diagnostics)
+        })
+}
+
+fn run_program(path: &Path) -> Result<ExitCode, String> {
+    let checked = compile_path_or_report(path)?;
+    let c = emit_c_via_ssa(&checked.ir);
+    let (c_path, bin_path) = temp_paths(path);
+
+    fs::write(&c_path, c)
+        .map_err(|error| format!("failed to write '{}': {}", c_path.display(), error))?;
+
+    let cc = env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    // Probe once for `-fopenmp` support and add it when available
+    // so `parallel for` loops in the source get actual parallelism.
+    // Compilers without OpenMP issue an "unknown pragma" warning
+    // and run sequentially — also correct (the verifier proved the
+    // body is independent of iteration order).
+    let openmp_ok = Command::new(&cc)
+        .args(["-fopenmp", "-x", "c", "-E", "-"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let mut cmd = Command::new(&cc);
+    cmd.arg(&c_path)
+        .arg("-std=c11")
+        .arg("-O2");
+    // Link pthread on POSIX so the `task` lowering's
+    // pthread_create / pthread_join references resolve.
+    // glibc folds -lpthread into libc on modern systems;
+    // -pthread is the portable spelling and is also a
+    // no-op when libgomp already brings pthread in via
+    // -fopenmp. On Windows the runtime uses CreateThread
+    // (kernel32.lib is linked by default) and
+    // WaitOnAddress / WakeByAddressSingle (kernel32 +
+    // synchronization.lib).
+    if !cfg!(target_os = "windows") {
+        cmd.arg("-pthread");
+    } else {
+        cmd.arg("-lsynchronization");
+    }
+    if openmp_ok {
+        cmd.arg("-fopenmp");
+    }
+    let compile_out = cmd
+        .arg("-o")
+        .arg(&bin_path)
+        .output()
+        .map_err(|error| format!("failed to invoke {}: {}", cc, error))?;
+
+    if !compile_out.status.success() {
+        return Err(format!(
+            "{} failed while compiling '{}' (left at this path for debugging):\n{}",
+            cc,
+            c_path.display(),
+            String::from_utf8_lossy(&compile_out.stderr).trim_end()
+        ));
+    }
+
+    let run_result = Command::new(&bin_path).status();
+    let _ = fs::remove_file(&c_path);
+    let _ = fs::remove_file(&bin_path);
+    let status = run_result
+        .map_err(|error| format!("failed to run '{}': {}", bin_path.display(), error))?;
+
+    Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
+}
+
+/// LLVM equivalent of `run_program`. Emits `.ll`, runs it through
+/// `lli`, returns the program's exit code. `LLI` env var overrides
+/// the default `lli` binary lookup, mirroring `CC` for the C path.
+fn run_program_llvm(path: &Path) -> Result<ExitCode, String> {
+    let checked = compile_path_or_report(path)?;
+    let ll = emit_llvm_via_ssa(&checked.ir);
+    let stem = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("program");
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let ll_path = env::temp_dir().join(format!("intentc-{}-{}-{}.ll", stem, pid, nanos));
+    fs::write(&ll_path, ll)
+        .map_err(|error| format!("failed to write '{}': {}", ll_path.display(), error))?;
+
+    let lli = env::var("LLI").unwrap_or_else(|_| "lli".to_string());
+    let mut cmd = Command::new(&lli);
+    // The LLVM backend emits `parallel for` lowerings that call
+    // GOMP_parallel / omp_get_thread_num / omp_get_num_threads
+    // from libgomp.so. Probe the well-known soname; if present,
+    // tell lli to load it so JIT calls resolve. When absent, the
+    // OpenMP entries are unresolved but only get called by
+    // `parallel for` sites — pure-sequential programs still run.
+    add_libgomp_load_flags(&mut cmd);
+    // lli's MCJIT isn't thread-safe for concurrent function
+    // resolution; cap libgomp to a single thread when JITting so
+    // `parallel for` runs serially under the JIT. AOT builds
+    // (`intentc build`) leave the env alone and get real
+    // parallelism. Users who want JIT'd parallelism can override.
+    if env::var("OMP_NUM_THREADS").is_err() {
+        cmd.env("OMP_NUM_THREADS", "1");
+    }
+    cmd.arg(&ll_path);
+    let run_result = cmd.status();
+    let _ = fs::remove_file(&ll_path);
+    let status = run_result
+        .map_err(|error| format!("failed to invoke {}: {}", lli, error))?;
+    Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
+}
+
+/// Probe known libgomp.so paths and add `-load=<path>` flags to
+/// `cmd` for each one that exists. lli silently ignores duplicates
+/// and unknown paths. Order matters only when symbols collide,
+/// which they don't between libgomp versions.
+fn add_libgomp_load_flags(cmd: &mut Command) {
+    const CANDIDATES: &[&str] = &[
+        "/usr/lib/x86_64-linux-gnu/libgomp.so.1",
+        "/lib/x86_64-linux-gnu/libgomp.so.1",
+        "/usr/lib64/libgomp.so.1",
+        "/usr/lib/aarch64-linux-gnu/libgomp.so.1",
+        // Mac (Homebrew clang's libomp.dylib also works because
+        // lli on macOS can resolve both libgomp and libomp).
+        "/opt/homebrew/opt/libomp/lib/libomp.dylib",
+        "/usr/local/opt/libomp/lib/libomp.dylib",
+    ];
+    for path in CANDIDATES {
+        if std::path::Path::new(path).exists() {
+            cmd.arg(format!("-load={}", path));
+            return;
+        }
+    }
+    // `INTENT_LIBGOMP` env override for non-standard paths.
+    if let Ok(p) = env::var("INTENT_LIBGOMP") {
+        if std::path::Path::new(&p).exists() {
+            cmd.arg(format!("-load={}", p));
+        }
+    }
+}
+
+/// Drop lli's signal-handler diagnostics from a captured stderr.
+/// When an Intent program aborts (failed assert, divisor=0, etc.),
+/// lli intercepts SIGABRT and dumps "PLEASE submit a bug report",
+/// "Stack dump:", and a long native backtrace. None of that is
+/// useful to an Intent user — the line that *is* useful (e.g.
+/// `assertion failed: ...`) was printed earlier by the program
+/// itself. Truncate at the first lli-internal marker.
+/// Resolve a list of CLI args into a flat list of `.intent` files,
+/// shared by `intentc test` and `intentc fmt`. Each arg is treated
+/// as a file or a directory; a directory expands recursively to
+/// every `*.intent` descendant, alphabetized. Dot-prefixed
+/// directories (`.git`, `.cargo`, etc.) are skipped.
+fn expand_intent_paths(args: &[String]) -> Result<Vec<PathBuf>, String> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    for raw in args {
+        let path = PathBuf::from(raw);
+        if path.is_dir() {
+            walk_intent_files(&path, &mut files).map_err(|e| {
+                format!("failed to read directory '{}': {}", path.display(), e)
+            })?;
+        } else {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
+/// Append every `*.intent` file under `dir` to `out`, recursing
+/// into subdirectories in alphabetical order. Skips entries whose
+/// name starts with `.` so `intentc fmt --check .` doesn't drill
+/// into `.git/`, `.cargo/`, etc.
+fn walk_intent_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    let mut entries: Vec<_> = fs::read_dir(dir)?.filter_map(Result::ok).collect();
+    entries.sort_by_key(|e| e.path());
+    for entry in entries {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if name.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            walk_intent_files(&path, out)?;
+        } else if path.extension().and_then(|s| s.to_str()) == Some("intent") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Minimal JSON-string escaping for paths and short reason strings
+/// embedded in `intentc test --json` output. Just the basics: `\"`,
+/// `\\`, control chars escaped as `\uXXXX`. We don't pull in a
+/// JSON-emitter crate for this — the entire `--json` payload is
+/// hand-shaped, mirroring `format_diagnostics_json_with_files`.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn trim_lli_backtrace(stderr: &str) -> String {
+    const MARKERS: &[&str] = &["PLEASE submit a bug report", "Stack dump:"];
+    let mut cut = stderr.len();
+    for m in MARKERS {
+        if let Some(idx) = stderr.find(m) {
+            if idx < cut {
+                cut = idx;
+            }
+        }
+    }
+    let trimmed = stderr[..cut].trim_end();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", trimmed)
+    }
+}
+
+/// Like `run_program_llvm` but captures stdout+stderr instead of
+/// inheriting the parent's. Returns `(exit_code, stdout, stderr)` so
+/// callers (notably `intentc test`) can decide whether to show output.
+fn run_program_llvm_capture(path: &Path) -> Result<(i32, String, String), String> {
+    let checked = compile_path_or_report(path)?;
+    let ll = emit_llvm_via_ssa(&checked.ir);
+    let stem = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("program");
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let ll_path = env::temp_dir().join(format!("intentc-{}-{}-{}.ll", stem, pid, nanos));
+    fs::write(&ll_path, ll)
+        .map_err(|error| format!("failed to write '{}': {}", ll_path.display(), error))?;
+
+    let lli = env::var("LLI").unwrap_or_else(|_| "lli".to_string());
+    let mut cmd = Command::new(&lli);
+    add_libgomp_load_flags(&mut cmd);
+    if env::var("OMP_NUM_THREADS").is_err() {
+        cmd.env("OMP_NUM_THREADS", "1");
+    }
+    cmd.arg(&ll_path);
+    let output_result = cmd.output();
+    let _ = fs::remove_file(&ll_path);
+    let out = output_result
+        .map_err(|error| format!("failed to invoke {}: {}", lli, error))?;
+    Ok((
+        out.status.code().unwrap_or(1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
+}
+
+/// AOT-compile to a native binary via the LLVM backend.
+/// Pipeline: emit `.ll` → `llc -filetype=obj` → `.o` → `cc -o` → binary.
+/// `out_path` overrides the default (source-stem in the cwd).
+fn build_program_llvm(path: &Path, out_path: Option<&Path>) -> Result<ExitCode, String> {
+    let checked = compile_path_or_report(path)?;
+    let ll = emit_llvm_via_ssa(&checked.ir);
+    let stem = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("program");
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let ll_path = env::temp_dir().join(format!("intentc-{}-{}-{}.ll", stem, pid, nanos));
+    let opt_path = env::temp_dir().join(format!("intentc-{}-{}-{}.opt.ll", stem, pid, nanos));
+    let obj_path = env::temp_dir().join(format!("intentc-{}-{}-{}.o", stem, pid, nanos));
+    fs::write(&ll_path, ll)
+        .map_err(|error| format!("failed to write '{}': {}", ll_path.display(), error))?;
+
+    // Optional opt(1) pass: promotes our alloca-heavy locals into
+    // SSA values (mem2reg), inlines small functions, and folds
+    // constants before llc sees the IR. Skipped silently if `opt`
+    // is not installed — the build still completes with llc's own
+    // optimizer (the -O=2 below).
+    let opt = env::var("OPT").unwrap_or_else(|_| "opt".to_string());
+    let llc_input = match Command::new(&opt)
+        .arg("-O2")
+        .arg("-S")
+        .arg(&ll_path)
+        .arg("-o")
+        .arg(&opt_path)
+        .output()
+    {
+        Ok(o) if o.status.success() => opt_path.clone(),
+        // `opt` exists but choked: emit the stderr and keep going
+        // with the unoptimized IR so the user still gets a binary.
+        Ok(o) => {
+            eprintln!(
+                "warning: {} failed (continuing with unoptimized IR):\n{}",
+                opt,
+                String::from_utf8_lossy(&o.stderr).trim_end()
+            );
+            ll_path.clone()
+        }
+        // Tool missing entirely (cargo + no LLVM dev tools) — same
+        // fallback. Don't make `intentc build` require `opt`.
+        Err(_) => ll_path.clone(),
+    };
+
+    let llc = env::var("LLC").unwrap_or_else(|_| "llc".to_string());
+    let llc_out = Command::new(&llc)
+        .arg("-filetype=obj")
+        .arg("-relocation-model=pic")
+        // Default to -O=2. The verifier proves safety upstream so
+        // the optimizer is free to assume no UB on the proved paths.
+        // Users can override the optimization level by setting LLC
+        // to a wrapper script if they need a different level.
+        .arg("-O=2")
+        .arg("-o")
+        .arg(&obj_path)
+        .arg(&llc_input)
+        .output()
+        .map_err(|error| format!("failed to invoke {}: {}", llc, error))?;
+    if !llc_out.status.success() {
+        let _ = fs::remove_file(&opt_path);
+        let _ = fs::remove_file(&ll_path);
+        return Err(format!(
+            "{} failed while lowering '{}' (left at this path for debugging):\n{}",
+            llc,
+            llc_input.display(),
+            String::from_utf8_lossy(&llc_out.stderr).trim_end()
+        ));
+    }
+
+    let bin_path: PathBuf = match out_path {
+        Some(p) => p.to_path_buf(),
+        None => PathBuf::from(stem),
+    };
+    let cc = env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    // Linkage shape depends on host:
+    //   - POSIX: the LLVM backend's `parallel for` lowering
+    //     calls `@GOMP_parallel` / `@omp_get_*` from libgomp,
+    //     so we link via `-fopenmp` (covers gcc + clang).
+    //     Programs without parallel-for still link cleanly —
+    //     the linker drops the unused dep.
+    //   - Windows: libgomp isn't available; parallel-for
+    //     open-codes `@CreateThread` (kernel32, auto-linked)
+    //     and the mutex fast path calls `@WaitOnAddress` /
+    //     `@WakeByAddressSingle` from synchronization.lib —
+    //     so we add `-lsynchronization` and skip `-fopenmp`.
+    let mut link_cmd = Command::new(&cc);
+    link_cmd.arg(&obj_path);
+    if cfg!(target_os = "windows") {
+        link_cmd.arg("-lsynchronization");
+    } else {
+        link_cmd.arg("-fopenmp");
+    }
+    let link_out = link_cmd
+        .arg("-o")
+        .arg(&bin_path)
+        .output()
+        .map_err(|error| format!("failed to invoke {}: {}", cc, error))?;
+    let _ = fs::remove_file(&ll_path);
+    let _ = fs::remove_file(&opt_path);
+    let _ = fs::remove_file(&obj_path);
+    if !link_out.status.success() {
+        return Err(format!(
+            "{} failed while linking:\n{}",
+            cc,
+            String::from_utf8_lossy(&link_out.stderr).trim_end()
+        ));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn temp_paths(source_path: &Path) -> (PathBuf, PathBuf) {
+    let stem = source_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("program");
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let unique = format!("{}-{}-{}", stem, pid, nanos);
+    let c_path = env::temp_dir().join(format!("intentc-{}.c", unique));
+    let bin_path = env::temp_dir().join(format!("intentc-{}", unique));
+    (c_path, bin_path)
+}

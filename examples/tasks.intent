@@ -1,0 +1,54 @@
+intent "Affine task handles: declare units of work that the verifier proves race-free";
+
+// `task <name> { … }` declares an affine handle of type `Task`
+// and a side-effect-free body. The checker enforces the same
+// purity rules as a `parallel for` body — no `print`, no
+// `IndexAssign` on captured bindings, no impure calls — and
+// requires each handle to be consumed by exactly one
+// `join <name>;` in the same block.
+//
+// Spawn lowers to `pthread_create` against an outlined body
+// that receives a heap-allocated context holding the task's
+// captures by value; join calls `pthread_join` and frees the
+// context. Captures are restricted to Copy types (scalars +
+// bool); arrays / Vec / Atomic / Mutex / Guard / Channel
+// can't ride into the pthread context by value, so the
+// supported pattern is to pre-extract scalar values from
+// them before the spawn site.
+
+pure fn quartic(x: i64) -> i64 {
+  let s: i64 = x * x;
+  return s * s;
+}
+
+fn main() -> i64 {
+  let xs: [i64; 4] = [2, 3, 4, 5];
+  let bias: i64 = 100;
+
+  // Pre-extract the array values into Copy scalars so the
+  // task bodies can capture them.
+  let x0: i64 = xs[0];
+  let x3: i64 = xs[3];
+
+  // Two independent tasks that read captured `x0` / `x3`
+  // and `bias`. The verifier proves each body is
+  // pure-with-captures (no observable side effects,
+  // captures are read-only), so both run concurrently on a
+  // real pthread each.
+  task ta {
+    let a: i64 = quartic(x0) + bias;
+    let _ = a;
+  }
+  task tb {
+    let b: i64 = quartic(x3) + bias;
+    let _ = b;
+  }
+
+  // Each handle must be joined exactly once. Forgetting a
+  // join is a checker error; double-joining is too.
+  join ta;
+  join tb;
+
+  print 0;
+  return 0;
+}

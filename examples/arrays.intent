@@ -1,0 +1,14 @@
+intent "Exercise fixed-size stack arrays with affine ownership";
+
+fn sum_four(xs: [i64; 4]) -> i64 {
+  return xs[0] + xs[1] + xs[2] + xs[3];
+}
+
+fn main() -> i64 {
+  let xs: [i64; 4] = [1, 2, 3, 4];
+  prove len(xs) == 4;
+  let total: i64 = sum_four(xs);
+  assert total == 10;
+  print total;
+  return 0;
+}

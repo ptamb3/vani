@@ -1,0 +1,29 @@
+intent "A min/max tracker using struct + methods + mut-ref field-assign";
+
+struct Tracker { count: i64, min: i64, max: i64 }
+
+methods on Tracker {
+  fn observe(self: mut ref Tracker, v: i64) -> i64 {
+    self.count = self.count + 1;
+    self.min = if v < self.min { v } else { self.min };
+    self.max = if v > self.max { v } else { self.max };
+    return self.count;
+  }
+
+  fn range(self: ref Tracker) -> i64 { return self.max - self.min; }
+}
+
+fn main() -> i64 {
+  let t: Tracker = Tracker { count: 0, min: 999999, max: -999999 };
+  let _: i64 = t.observe(10);
+  let _: i64 = t.observe(5);
+  let _: i64 = t.observe(20);
+  let _: i64 = t.observe(7);
+  let r: i64 = t.range();
+  assert t.count == 4;
+  assert t.min == 5;
+  assert t.max == 20;
+  assert r == 15;
+  print "count=", t.count, " min=", t.min, " max=", t.max, " range=", r;
+  return 0;
+}

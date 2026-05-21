@@ -1,0 +1,105 @@
+intent "Atomic<T> — opt-in cells that read/write safely across threads";
+
+// The affine model rejects shared mutable state by default —
+// it's why `parallel for` bodies have no `IndexAssign` on
+// captured arrays and why two tasks can't both hold the same
+// `Vec<T>`. For patterns the affine model can't express
+// (counters, lock-free queues, lazy caches), `Atomic<T>` is
+// the opt-in escape hatch. T ranges over the integer widths
+// `i8`..`i64` and `u8`..`u64` plus `bool`. The five builtins
+// below dispatch on element width and emit width-appropriate
+// atomic ops on both backends. `Atomic<bool>` uses an i8
+// shadow in LLVM with zext/trunc at the operand boundary
+// (i1 atomic ops aren't byte-addressable); `atomic_fetch_add`
+// is rejected on bool by the checker.
+//
+//   atomic_new(initial: T) -> Atomic<T>                       // affine handle
+//   atomic_load(a: ref Atomic<T>) -> T                           // seq_cst read
+//   atomic_store(a: ref Atomic<T>, v: T) -> T                    // seq_cst write
+//   atomic_fetch_add(a: ref Atomic<T>, v: T) -> T                // returns old value
+//   atomic_compare_exchange(a: ref Atomic<T>, exp: T, new: T) -> bool  // CAS
+//
+// All four are unconditionally safe across threads — there's
+// no need to wrap them in `Mutex` or `Arc`. Backends lower to
+// C11 `<stdatomic.h>` ops (C) or LLVM `load atomic` / `store
+// atomic` / `atomicrmw` (LLVM), both with `seq_cst` ordering.
+
+pure fn double(x: i64) -> i64 {
+  return x + x;
+}
+
+fn main() -> i64 {
+  // Plain use: counter that two operations bump in sequence.
+  // Today this runs single-threaded — `parallel for` and
+  // `task` could share `ref counter` once a future session wires
+  // real threading through the same handle.
+  let counter: Atomic<i64> = atomic_new(0);
+  let _old1: i64 = atomic_fetch_add(ref counter, 5);
+  let _old2: i64 = atomic_fetch_add(ref counter, 7);
+
+  // Load the running total.
+  let total: i64 = atomic_load(ref counter);
+  print total;
+
+  // Store and immediately observe.
+  let _stored: i64 = atomic_store(ref counter, double(50));
+  let observed: i64 = atomic_load(ref counter);
+  print observed;
+
+  // Compare-and-swap: the building block for lock-free
+  // algorithms. `atomic_compare_exchange(ref a, exp, new)`
+  // atomically reads the cell; if it equals `exp`, writes
+  // `new` and returns `true`. Otherwise the cell stays as-is
+  // and the call returns `false`. Loop on `false` to retry
+  // (the "CAS loop" pattern).
+  let cas_target: Atomic<i64> = atomic_new(7);
+  let win: bool = atomic_compare_exchange(ref cas_target, 7, 21);
+  if win { print 1; } else { print 0; }
+  let lose: bool = atomic_compare_exchange(ref cas_target, 7, 30);
+  if lose { print 1; } else { print 0; }
+  print atomic_load(ref cas_target);
+
+  // Other widths reuse the same shape — the element type is
+  // inferred from the initial value (so `atomic_new(0 as
+  // i32)` creates an `Atomic<i32>`), and every op then
+  // operates at that width. Loads, stores, and CAS work
+  // uniformly; the backends emit `_Atomic int32_t` / `i32`
+  // storage and ops.
+  let counter32: Atomic<i32> = atomic_new(0 as i32);
+  let _old32: i32 = atomic_fetch_add(ref counter32, 100 as i32);
+  let _stored32: i32 = atomic_store(ref counter32, 50 as i32);
+  let observed32: i32 = atomic_load(ref counter32);
+  print observed32;
+
+  // u8 width — the smallest supported atomic. Verifies the
+  // byte-aligned atomic ops on both backends.
+  let byte: Atomic<u8> = atomic_new(0 as u8);
+  let _old8: u8 = atomic_fetch_add(ref byte, 7 as u8);
+  let observed8: u8 = atomic_load(ref byte);
+  print observed8;
+
+  // bool — useful for a one-shot "initialized" / "shutdown"
+  // flag. Load/store/CAS work; fetch_add is rejected by the
+  // checker (bool has no addition).
+  let flag: Atomic<bool> = atomic_new(false);
+  let _stored_flag: bool = atomic_store(ref flag, true);
+  let loaded_flag: bool = atomic_load(ref flag);
+  if loaded_flag { print 1; } else { print 0; }
+  let toggled: bool = atomic_compare_exchange(ref flag, true, false);
+  if toggled { print 1; } else { print 0; }
+
+  // `ref Atomic<T>` captures across `parallel for`: the canonical
+  // escape hatch for sharing mutable state with the iteration
+  // body. Each iteration's atomic_fetch_add is seq_cst, so
+  // the final count is deterministic regardless of how the
+  // runtime interleaves threads.
+  let par_counter: Atomic<i64> = atomic_new(0);
+  parallel for i from 0 to 8 {
+    let _ = atomic_fetch_add(ref par_counter, 1);
+  }
+  print atomic_load(ref par_counter);
+
+  // The handle itself is affine — every Atomic above is
+  // consumed at scope exit, just like a `Vec<T>`.
+  return 0;
+}

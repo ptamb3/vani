@@ -1,0 +1,40 @@
+intent "Loop invariants verified by the SMT layer";
+
+fn count_to(n: i64) -> i64
+requires n >= 0;
+requires n < 1000;
+ensures _return >= 0;
+{
+  let i: i64 = 0;
+  while i < n
+  invariant i >= 0;
+  invariant i <= n;
+  {
+    i = i + 1;
+  }
+  prove i >= 0;
+  return i;
+}
+
+fn min_via_loop(xs: ref [i64; 5]) -> i64 {
+  let best: i64 = xs[0];
+  for i from 1 to len(xs) {
+    if xs[i] < best {
+      best = xs[i];
+    }
+  }
+  return best;
+}
+
+fn main() -> i64 {
+  let s: i64 = count_to(5);
+  assert s == 5;
+
+  let xs: [i64; 5] = [4, 7, 1, 9, 3];
+  let m: i64 = min_via_loop(ref xs);
+  assert m == 1;
+
+  print s;
+  print m;
+  return 0;
+}

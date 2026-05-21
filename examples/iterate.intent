@@ -1,0 +1,48 @@
+intent "Iterate over arrays and Vecs with `for x in ref xs`";
+
+fn sum_vec(xs: ref Vec<i64>) -> i64 {
+  let total: i64 = 0;
+  for x in ref xs {
+    total = total + x;
+  }
+  return total;
+}
+
+fn max_in_array(xs: ref [i64; 5]) -> i64 {
+  let best: i64 = xs[0];
+  for x in ref xs {
+    if x > best {
+      best = x;
+    }
+  }
+  return best;
+}
+
+fn count_positives(xs: ref Vec<i64>) -> i64 {
+  let count: i64 = 0;
+  for x in ref xs {
+    if x > 0 {
+      count = count + 1;
+    }
+  }
+  return count;
+}
+
+fn main() -> i64 {
+  let nums: Vec<i64> = vec(1, 2, 3, 4, 5);
+  let total: i64 = sum_vec(ref nums);
+  assert total == 15;
+
+  let arr: [i64; 5] = [3, 7, 1, 9, 4];
+  let m: i64 = max_in_array(ref arr);
+  assert m == 9;
+
+  let mixed: Vec<i64> = vec(0 - 2, 5, 0 - 1, 3, 0, 4);
+  let p: i64 = count_positives(ref mixed);
+  assert p == 3;
+
+  print total;
+  print m;
+  print p;
+  return 0;
+}

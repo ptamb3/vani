@@ -1,0 +1,34 @@
+intent "Demonstrate if/else and while loops with Vec mutation";
+
+fn sum(xs: ref Vec<i64>) -> i64 {
+  let total: i64 = 0;
+  let i: u64 = 0;
+  let n: u64 = len(xs);
+  while i < n {
+    total = total + xs[i];
+    i = i + 1;
+  }
+  return total;
+}
+
+fn build_range(n: i64) -> Vec<i64> {
+  let xs: Vec<i64> = vec(0);
+  let i: i64 = 1;
+  while i < n {
+    xs = push(xs, i);
+    i = i + 1;
+  }
+  return xs;
+}
+
+fn main() -> i64 {
+  let xs: Vec<i64> = build_range(5);
+  let total: i64 = sum(ref xs);
+  if total > 5 {
+    assert total == 10;
+  } else {
+    assert total <= 5;
+  }
+  print total;
+  return 0;
+}

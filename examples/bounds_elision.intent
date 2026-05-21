@@ -1,0 +1,44 @@
+intent "SMT-discharged bounds checks — runtime guard elided when provable";
+
+// Case 1: caller proves the requires via the caller's own facts.
+// fn_first compiles to a raw `data[0]` access in the emitted C.
+fn first(xs: ref Vec<i64>) -> i64
+requires len(xs) > 0;
+{
+  return xs[0];
+}
+
+// Case 2: requires bounds the index parameter directly. xs[i] elides.
+fn at(xs: ref Vec<i64>, i: u64) -> i64
+requires i < len(xs);
+{
+  return xs[i];
+}
+
+// Case 3: the last-element idiom. `len(xs) - 1 < len(xs)` is provable
+// only when `len(xs) > 0` (so u64 subtraction doesn't underflow).
+fn last(xs: ref Vec<i64>) -> i64
+requires len(xs) > 0;
+{
+  return xs[len(xs) - 1];
+}
+
+// Case 4: for-loop body knows the iterator's bounds. `xs[i]` elides
+// without any extra annotation — the for-body fact pass adds
+// `i >= 0` and `i < len(xs)`.
+fn sum(xs: ref Vec<i64>) -> i64 {
+  let total: i64 = 0;
+  for i from 0 to len(xs) {
+    total = total + xs[i];
+  }
+  return total;
+}
+
+fn main() -> i64 {
+  let xs: Vec<i64> = vec(10, 20, 30, 40, 50);
+  print first(ref xs);
+  print at(ref xs, 2);
+  print last(ref xs);
+  print sum(ref xs);
+  return 0;
+}

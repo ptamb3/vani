@@ -1,0 +1,21 @@
+intent "Exercise integer widths, safe promotion, and constant arithmetic checks";
+
+fn widen_signed(a: i32, b: i64) -> i64 {
+  return a + b;
+}
+
+fn widen_mixed(a: i64, b: u32) -> i64 {
+  return a + b;
+}
+
+fn main() -> i64 {
+  let tiny: u8 = 2;
+  let small: u16 = 3;
+  let combined: u16 = tiny + small;
+  let score = widen_signed(10, 20) + widen_mixed(5, 7);
+
+  prove combined == 5;
+  assert score == 42;
+  print score;
+  return 0;
+}

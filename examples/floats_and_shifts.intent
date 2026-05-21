@@ -1,0 +1,22 @@
+intent "Exercise f32/f64 promotion, explicit casts, modulo, and shift checks";
+
+fn mix_score(base: f32, count: u32) -> f64 {
+  let mixed: f32 = base + count;
+  return (mixed as f64) + 2.25;
+}
+
+fn main() -> i64 {
+  let score = mix_score(1.5, 4);
+  let bits: u8 = 1 as u8;
+  let shifted: u8 = bits << 3;
+  let rem: u8 = shifted % 3;
+
+  prove 1.0 + 2.0 == 3.0;
+  prove shifted == 8;
+  prove rem == 2;
+  assert score > 7.0;
+
+  print score;
+  print shifted;
+  return 0;
+}

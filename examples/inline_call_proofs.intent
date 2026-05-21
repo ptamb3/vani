@@ -1,0 +1,48 @@
+intent "Proofs that reference inline function calls (via callee `ensures`)";
+
+// Each callee promises something about its return value. Callers do not
+// have to `let r = f(...)` first — the verifier rewrites every inline
+// `f(args)` into a fresh symbolic value constrained by f's ensures.
+
+fn inc(x: i64) -> i64
+requires x < 1000000;
+ensures _return > x;
+{
+  return x + 1;
+}
+
+fn clamp_nonneg(x: i64) -> i64
+ensures _return >= 0;
+{
+  // The early-return form works: after `if x < 0 { return 0; }` the
+  // verifier knows `x >= 0` on the fall-through, so `return x` clears
+  // the postcondition.
+  if x < 0 {
+    return 0;
+  }
+  return x;
+}
+
+fn caller(a: i64) -> i64
+requires a > 0;
+requires a < 100;
+{
+  // `inc(a)`'s ensures yields _return > a. Used inline in the prove.
+  prove inc(a) > a;
+
+  // `clamp_nonneg` always returns >= 0. Verifier sees this from the
+  // call site without any let-binding.
+  prove clamp_nonneg(-7) >= 0;
+
+  // Composition: clamp_nonneg applied to inc's result is still >= 0.
+  prove clamp_nonneg(inc(a)) >= 0;
+
+  return inc(a);
+}
+
+fn main() -> i64 {
+  let v: i64 = caller(5);
+  assert v == 6, "inc(5) should be 6";
+  print v;
+  return 0;
+}

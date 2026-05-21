@@ -1,0 +1,33 @@
+intent "for-loops over integer ranges";
+
+fn sum_squares(n: i64) -> i64 {
+  let total: i64 = 0;
+  for i from 1 to n {
+    total = total + i * i;
+  }
+  return total;
+}
+
+fn find_first_zero(xs: ref [i64; 5]) -> i64 {
+  let result: i64 = 0 - 1;
+  for i from 0 to len(xs) {
+    if xs[i] == 0 {
+      result = i as i64;
+      break;
+    }
+  }
+  return result;
+}
+
+fn main() -> i64 {
+  let s: i64 = sum_squares(5);
+  assert s == 30;
+
+  let xs: [i64; 5] = [3, 7, 0, 9, 1];
+  let idx: i64 = find_first_zero(ref xs);
+  assert idx == 2;
+
+  print s;
+  print idx;
+  return 0;
+}

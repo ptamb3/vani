@@ -1,0 +1,51 @@
+intent "SMT-verified array reasoning across function boundaries";
+
+// Demonstrates the array-theory v1 feature surface:
+//
+//   * literal `vec(...)` initializers expose per-slot values to the
+//     verifier;
+//   * `set(xs, k, v)` adds a slot fact AND a functional-update
+//     `(store …)` axiom, so untouched slots survive;
+//   * per-slot `ensures _return[k] == …` clauses propagate the
+//     entire post-state of an array across a function call.
+//
+// The verifier discharges every `prove` here at compile time. Any
+// runtime check on indexing inside the proven region is also
+// elided.
+
+fn replace_middle(xs: Vec<i64>) -> Vec<i64>
+requires len(xs) >= 3;
+ensures len(_return) == len(xs);
+ensures _return[0] == xs[0];
+ensures _return[1] == 999;
+ensures _return[2] == xs[2];
+{
+  let ys: Vec<i64> = set(xs, 1, 999);
+
+  // Callee-side proof of the touched slot; the ensures clauses
+  // above are discharged automatically by the array-theory facts
+  // emitted at the `set` call site (length, slot, and store-axiom).
+  // `xs` is moved by `set`, so we can't reference it here — but
+  // the ensures clauses semantically refer to xs's original value
+  // and are satisfied via the store axiom.
+  prove ys[1] == 999;
+  return ys;
+}
+
+fn main() -> i64 {
+  let original: Vec<i64> = vec(10, 20, 30);
+  let updated: Vec<i64> = replace_middle(original);
+
+  // Caller-side proofs — each ensures is substituted into a fact
+  // about the new binding and chained with the literal-init facts
+  // for `original`.
+  prove updated[0] == 10;
+  prove updated[1] == 999;
+  prove updated[2] == 30;
+  prove len(updated) == 3;
+
+  print updated[0];
+  print updated[1];
+  print updated[2];
+  return 0;
+}

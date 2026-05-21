@@ -1,0 +1,29 @@
+intent "Heap-allocated string concatenation via OwnedStr";
+
+// `Str + Str` (or any combination of Str/OwnedStr) produces a
+// fresh `OwnedStr` — heap-allocated, NUL-terminated, affine. The
+// compiler tracks ownership and inserts a `free` at scope exit
+// (or when the value is moved into another concat, returned, etc.).
+// The runtime helper `intent_str_concat` mallocs the joined buffer
+// in one pass and frees any OwnedStr operand it consumes.
+
+fn greet(name: Str) -> OwnedStr {
+  // `name` is a borrowed Str; concat with a literal Str returns a
+  // fresh OwnedStr that the caller owns.
+  return "Hello, " + name;
+}
+
+fn main() -> i64 {
+  let g1: OwnedStr = greet("alice");
+  let g2: OwnedStr = greet("bob");
+
+  // Each OwnedStr is consumed by the next concat; the helper frees
+  // the original buffer before returning the joined one. After
+  // these lines, `g1` and `g2` are moved and unusable.
+  let bang: OwnedStr = g1 + "!";
+  let dot: OwnedStr = g2 + ".";
+
+  print bang;
+  print dot;
+  return 0;
+}

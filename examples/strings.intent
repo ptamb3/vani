@@ -1,0 +1,33 @@
+// String literals and `Str` operations.
+//
+// Str today is the type of compile-time string literals (a borrowed
+// C-string `i8*` under the hood). Supported: param, return, let,
+// reassign, ==/!= via strcmp, len() via strlen. Concatenation and
+// ordering comparisons are still deferred — each is its own
+// follow-up.
+
+fn role(who: Str) -> Str {
+  if who == "admin" {
+    return "owner";
+  }
+  if who != "guest" {
+    return "member";
+  }
+  return "visitor";
+}
+
+fn greet(name: Str) -> i64 {
+  print "hello,", name;
+  return 0;
+}
+
+fn main() -> i64 {
+  let _ = greet("alice");
+  let title: Str = role("alice");
+  print "role:", title;
+  let visitor = role("guest");
+  print "role:", visitor;
+  let n: u64 = len("hello");
+  print "len:", n;
+  return 0;
+}

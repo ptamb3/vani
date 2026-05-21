@@ -1,0 +1,37 @@
+intent "Mutable references and indexed writes";
+
+fn double_each(xs: mut ref Vec<i64>) -> u64 {
+  let i: u64 = 0;
+  while i < len(xs) {
+    xs[i] = xs[i] * 2;
+    i = i + 1;
+  }
+  return len(xs);
+}
+
+fn fill(xs: mut ref [i64; 4], v: i64) -> i64 {
+  let i: u64 = 0;
+  while i < 4 {
+    xs[i] = v;
+    i = i + 1;
+  }
+  return v;
+}
+
+fn main() -> i64 {
+  let xs: Vec<i64> = vec(1, 2, 3, 4);
+  let count: u64 = double_each(mut ref xs);
+  assert count == 4;
+  assert xs[0] == 2;
+  assert xs[3] == 8;
+
+  let ys: [i64; 4] = [0, 0, 0, 0];
+  let filled: i64 = fill(mut ref ys, 9);
+  assert filled == 9;
+  assert ys[0] == 9;
+  assert ys[3] == 9;
+
+  print xs[3];
+  print ys[0];
+  return 0;
+}

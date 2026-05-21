@@ -1,0 +1,71 @@
+intent "Demonstrate methods on structs + enums with auto-ref dispatch and field assignment";
+
+const ORIGIN_X: i64 = 0;
+const ORIGIN_Y: i64 = 0;
+
+struct Point { x: i64, y: i64 }
+
+methods on Point {
+  fn manhattan(self: Point) -> i64 { return self.x + self.y; }
+
+  fn area(self: ref Point) -> i64 { return self.x * self.y; }
+
+  fn dist_from_origin(self: ref Point) -> i64 {
+    return self.x + self.y - ORIGIN_X - ORIGIN_Y;
+  }
+
+  fn shift(self: Point, dx: i64) -> Point {
+    return Point { x: self.x + dx, y: self.y };
+  }
+}
+
+struct Counter { n: i64 }
+
+methods on Counter {
+  fn bump(self: mut ref Counter) -> i64 {
+    self.n = self.n + 1;
+    return self.n;
+  }
+}
+
+enum Color { Red, Green, Blue }
+
+methods on Color {
+  fn tag(self: Color) -> i64 {
+    return match self {
+      Color.Red then 1,
+      Color.Green then 2,
+      Color.Blue then 3,
+    };
+  }
+}
+
+fn main() -> i64 {
+  let p: Point = Point { x: 3, y: 4 };
+  let m: i64 = p.manhattan();
+  let a: i64 = p.area();
+  let d: i64 = p.dist_from_origin();
+  let q: Point = p.shift(10);
+  let chained: i64 = p.shift(5).shift(2).manhattan();
+  assert m == 7;
+  assert a == 12;
+  assert d == 7;
+  assert q.x == 13;
+  assert chained == 14;
+
+  let c: Counter = Counter { n: 0 };
+  let b1: i64 = c.bump();
+  let b2: i64 = c.bump();
+  let b3: i64 = c.bump();
+  assert b1 == 1;
+  assert b2 == 2;
+  assert b3 == 3;
+  assert c.n == 3;
+
+  let col: Color = Color.Green;
+  let ct: i64 = col.tag();
+  assert ct == 2;
+
+  print "p.manhattan=", m, " chained=", chained, " c.n=", c.n, " color.tag=", ct;
+  return 0;
+}

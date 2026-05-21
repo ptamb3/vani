@@ -1,0 +1,28 @@
+# Rust build output
+/target/
+**/*.rs.bk
+
+# IDE / editor scratch
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local tooling stubs (left empty; ignore wholesale)
+.agents/
+.codex/
+
+# Compiler-emitted artifacts left in the tree
+*.ll
+*.o
+*.s
+a.out
+
+# Logs / debug dumps
+*.log
+*.dump

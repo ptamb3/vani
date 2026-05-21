@@ -1,0 +1,30 @@
+intent "Use the SMT verifier to discharge preconditions";
+
+fn clamp_low(x: i64, lo: i64) -> i64
+requires lo >= 0;
+{
+  if x < lo {
+    return lo;
+  } else {
+    return x;
+  }
+}
+
+fn safe_subtract(a: i64, b: i64) -> i64
+requires a >= b;
+requires b >= 0;
+{
+  prove a - b >= 0;
+  return a - b;
+}
+
+fn main() -> i64 {
+  let x: i64 = clamp_low(0 - 5, 0);
+  assert x == 0;
+
+  let d: i64 = safe_subtract(10, 3);
+  assert d == 7;
+
+  print d;
+  return 0;
+}

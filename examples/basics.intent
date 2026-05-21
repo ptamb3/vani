@@ -1,0 +1,21 @@
+intent "Compute a small score with checked constraints";
+
+fn add(a: i64, b: i64) -> i64 {
+  return a + b;
+}
+
+fn bounded_score(base: i64) -> i64
+requires base >= 0;
+{
+  let doubled: i64 = base * 2;
+  assert doubled >= base;
+  return add(doubled, 2);
+}
+
+fn main() -> i64 {
+  let answer = bounded_score(20);
+  prove 2 + 2 == 4;
+  assert answer >= 0;
+  print answer;
+  return 0;
+}

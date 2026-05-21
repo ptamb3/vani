@@ -1,0 +1,89 @@
+intent "Channels + Mutex / Guard: escape hatches for shared state the affine model can't express";
+
+// `Atomic<T>` (see examples/atomics.intent) gives you a single
+// cell with single-op atomicity. For multi-step protocols the
+// language also has:
+//
+//   `Channel<T>` — single-slot rendezvous. `channel_send` stores
+//                  a value + sets a ready flag; `channel_recv`
+//                  spin-waits on the flag, reads, then clears.
+//
+//   `Mutex<T>` + `Guard<T>` — value protected by a spin-lock.
+//                  `mutex_lock(ref m)` cmpxchg-loops until it
+//                  acquires; returns an affine `Guard<T>`.
+//                  `guard_get` / `guard_set` access the value
+//                  under the lock. The guard's scope-exit drop
+//                  releases the lock (RAII).
+//
+// Both v1 lowerings are sequential — there's no real threading
+// yet — but the semantics are race-free for any future
+// threading backend.
+
+pure fn double(x: i64) -> i64 { return x + x; }
+
+// Demonstrate a producer/consumer round-trip through a channel.
+fn produce(ch: ref Channel<i64>, v: i64) -> i64 {
+  return channel_send(ch, v);
+}
+
+fn consume(ch: ref Channel<i64>) -> i64 {
+  return channel_recv(ch);
+}
+
+// Demonstrate a multi-step protected update: read the current
+// value, double it, write it back — all under one lock. With
+// `Atomic<T>` you'd need a CAS loop; with `Mutex` + `Guard` the
+// whole sequence is implicitly atomic.
+fn double_in_place(m: ref Mutex<i64>) -> i64 {
+  let g: Guard<i64> = mutex_lock(m);
+  let cur: i64 = guard_get(ref g);
+  let next: i64 = double(cur);
+  let _ = guard_set(ref g, next);
+  return next;
+  // Guard `g` is dropped here — the backend emits an
+  // unlock at scope exit.
+}
+
+fn main() -> i64 {
+  // Channel round-trip.
+  let ch: Channel<i64> = channel_new();
+  let _sent: i64 = produce(ref ch, 7);
+  let received: i64 = consume(ref ch);
+  print received;
+
+  // Multi-message buffering. The channel holds up to 16
+  // pending values; send-send-send-recv-recv-recv preserves
+  // FIFO order. Useful for hand-off pipelines where one
+  // side produces a small batch before another consumes.
+  let buf: Channel<i64> = channel_new();
+  let _ = channel_send(ref buf, 11);
+  let _ = channel_send(ref buf, 22);
+  let _ = channel_send(ref buf, 33);
+  let r1: i64 = channel_recv(ref buf);
+  let r2: i64 = channel_recv(ref buf);
+  let r3: i64 = channel_recv(ref buf);
+  print r1;
+  print r2;
+  print r3;
+
+  // Mutex / Guard.
+  let m: Mutex<i64> = mutex_new(3);
+  let after_first: i64 = double_in_place(ref m);
+  let after_second: i64 = double_in_place(ref m);
+  print after_first;
+  print after_second;
+
+  // Channel<T, N> with a non-default payload + capacity. The
+  // checker validates N is a power of 2 ≥ 1 and T is one of
+  // the supported integer widths. Each (T, N) gets its own
+  // backend runtime helpers — no shared i64-only struct any
+  // more.
+  let narrow: Channel<i32, 8> = channel_new();
+  let _ = channel_send(ref narrow, 50 as i32);
+  let _ = channel_send(ref narrow, 60 as i32);
+  print channel_recv(ref narrow) as i64;
+  print channel_recv(ref narrow) as i64;
+
+  // The owned handles are all consumed at scope exit (affine).
+  return 0;
+}

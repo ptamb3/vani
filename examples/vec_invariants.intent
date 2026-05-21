@@ -1,0 +1,35 @@
+intent "Loop invariants over Vec length, end-to-end";
+
+// Builds a Vec by pushing one element per iteration. The invariant
+// `len(xs) == (i as u64)` is preserved by the body — the verifier
+// uses the builtin push-length relationship plus the substituted
+// reassignment for `i` to discharge preservation.
+//
+// At loop exit, the verifier knows `!(i < 5)` plus the invariants, so
+// `i == 5` and `len(xs) == 5` are both dischargeable without further
+// annotation.
+
+fn main() -> i64 {
+  let xs: Vec<i64> = vec(0);
+  let i: i64 = 1;
+
+  while i < 5
+  invariant len(xs) == (i as u64);
+  invariant i >= 1;
+  invariant i <= 5;
+  {
+    xs = push(xs, i * 10);
+    i = i + 1;
+  }
+
+  prove i == 5;
+  prove len(xs) == 5;
+
+  print xs[0];
+  print xs[1];
+  print xs[2];
+  print xs[3];
+  print xs[4];
+
+  return 0;
+}

@@ -1,0 +1,17 @@
+intent "Nested lexical scopes with branch-local Vecs and outer mutation";
+
+fn main() -> i64 {
+  let counter: i64 = 0;
+  let i: i64 = 0;
+  while i < 4 {
+    let local: Vec<i64> = vec(i, i + 1, i + 2);
+    let first: i64 = local[0];
+    if first >= 1 {
+      counter = counter + 1;
+    }
+    i = i + 1;
+  }
+  assert counter == 3;
+  print counter;
+  return 0;
+}

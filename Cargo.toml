@@ -1,0 +1,37 @@
+[package]
+name = "vani"
+version = "0.1.0"
+edition = "2021"
+description = "VANI (वाणी) — Verbose Alternative Natural Interface: a verifiable language designed to read like speech, not punctuation."
+license = "MIT"
+# `intentc` is the primary CLI; `intent-lsp` is a sibling binary
+# invoked by editors. Naming the default keeps `cargo run` working
+# without a `--bin` flag for the common case.
+default-run = "intentc"
+
+[lib]
+name = "vani"
+path = "src/lib.rs"
+
+[[bin]]
+name = "intentc"
+path = "src/main.rs"
+
+[[bin]]
+name = "intent-lsp"
+path = "src/bin/lsp.rs"
+
+[dependencies]
+# Language Server Protocol — sync stdio framing + LSP type definitions.
+# Both crates come from the rust-analyzer organization and have no
+# heavy transitive dependencies (no tokio).
+#
+# `lsp-types` transitively depends on `url`; pin to a version that
+# pulls in `idna < 1.0` so the build works on cargo 1.75 (later
+# idna versions require the unstable edition2024 feature).
+lsp-server = "=0.7.6"
+lsp-types = "=0.94.0"
+url = "=2.4.1"
+serde = "1"
+serde_json = "1"
+

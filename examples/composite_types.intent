@@ -1,0 +1,59 @@
+intent "Demonstrate structs, enums, tuples, match, and const declarations working together";
+
+const ORIGIN_X: i64 = 0;
+const ORIGIN_Y: i64 = 0;
+const SCORE_THRESHOLD: i64 = 100;
+
+struct Point { x: i64, y: i64 }
+
+enum Quadrant { First, Second, Third, Fourth, OnAxis }
+
+enum Verdict { Pass, Fail }
+
+fn quadrant_of(p: Point) -> Quadrant {
+  if p.x == ORIGIN_X { return Quadrant.OnAxis; }
+  if p.y == ORIGIN_Y { return Quadrant.OnAxis; }
+  if p.x > ORIGIN_X {
+    if p.y > ORIGIN_Y { return Quadrant.First; }
+    return Quadrant.Fourth;
+  }
+  if p.y > ORIGIN_Y { return Quadrant.Second; }
+  return Quadrant.Third;
+}
+
+fn manhattan(p: Point) -> i64
+requires p.x >= 0;
+requires p.y >= 0;
+{
+  return p.x + p.y;
+}
+
+fn score_to_verdict(s: i64) -> Verdict {
+  if s >= SCORE_THRESHOLD { return Verdict.Pass; }
+  return Verdict.Fail;
+}
+
+fn quadrant_tag(q: Quadrant) -> i64 {
+  return match q {
+    Quadrant.First then 1,
+    Quadrant.Second then 2,
+    Quadrant.Third then 3,
+    Quadrant.Fourth then 4,
+    Quadrant.OnAxis then 0,
+  };
+}
+
+fn main() -> i64 {
+  let p: Point = Point { x: 3, y: 4 };
+  let dist: i64 = manhattan(p);
+  let q: Quadrant = quadrant_of(p);
+  let tag: i64 = quadrant_tag(q);
+  let v: Verdict = score_to_verdict(dist);
+  let pair: (i64, i64) = (tag, dist);
+  print "tag=", pair.0, " dist=", pair.1;
+  let verdict_score: i64 = match v {
+    Verdict.Pass then 1,
+    Verdict.Fail then 0,
+  };
+  return verdict_score;
+}

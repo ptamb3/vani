@@ -1,0 +1,38 @@
+intent "First-class function pointers: pass behavior as a value";
+
+// `fn(T1, T2, ...) -> R` is a type. A top-level function's
+// name in expression position resolves to that function's
+// fn-pointer value, so you can pass functions as parameters.
+// Calls through the pointer work like normal calls — the
+// checker emits a `CallIndirect` IR node, both backends
+// lower to native function-pointer invocation (C function
+// pointer / LLVM `call <ret> %ptr(args)`).
+//
+// Indirect calls bypass the name-based purity / lock-graph
+// passes by construction (the checker has no signature to
+// consult), so they're rejected inside `parallel for` and
+// task bodies and inside `pure fn`. A future generation of
+// the call graph can lift this restriction.
+
+pure fn double(x: i64) -> i64 { return x + x; }
+pure fn triple(x: i64) -> i64 { return x + (x + x); }
+pure fn square(x: i64) -> i64 { return x * x; }
+
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+  return f(x);
+}
+
+fn main() -> i64 {
+  // The fn-ptr binding's annotation drives type-checking;
+  // assigning a function with a different signature is a
+  // hard type error.
+  let twice: fn(i64) -> i64 = double;
+  print twice(5);            // direct binding use: 10
+
+  // Pass functions as arguments.
+  print apply(double, 7);    // 14
+  print apply(triple, 7);    // 21
+  print apply(square, 9);    // 81
+
+  return 0;
+}

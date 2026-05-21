@@ -1,0 +1,155 @@
+intent "Effects/ownership verifier: pure functions and race-free parallel loops";
+
+// A `pure fn` is verified to have no observable side effects: no
+// print, no IndexAssign, no consuming Vec mutators, no call to a
+// non-pure function. The same rules apply to a `parallel for` body
+// — that's how the verifier proves each iteration is independent
+// and therefore race-free.
+//
+// Both backends now actually thread the loop. The C backend emits
+// `_Pragma("omp parallel for")` (the `run` driver auto-adds
+// `-fopenmp` when the toolchain probe succeeds, else the loop
+// runs sequentially — still correct). The LLVM backend lifts each
+// body into an outlined `@__intent_par_<N>` function and calls
+// `@GOMP_parallel` from libgomp; reduction updates lower to
+// `atomicrmw` (or, for `*`, a `cmpxchg` retry loop because
+// atomicrmw doesn't expose `mul`; bool `&&`/`||` go through an
+// i8 shadow because atomicrmw rejects `i1`). The verifier's
+// race-freedom proof carries over verbatim.
+
+pure fn square(x: i64) -> i64 {
+  return x * x;
+}
+
+pure fn shifted(x: i64, k: i64) -> i64
+requires k >= 0;
+requires k < 32;
+{
+  return x << k;
+}
+
+fn main() -> i64 {
+  // The body calls only pure functions and writes to no shared
+  // state, so the verifier accepts the parallel annotation.
+  parallel for i from 0 to 5 {
+    let r: i64 = square(i);
+    let _ = r;
+  }
+
+  // Same with two pure calls composed.
+  parallel for i from 0 to 4 {
+    let r: i64 = square(shifted(i, 1));
+    let _ = r;
+  }
+
+  // Outer captures: `bias` (scalar) and `xs` (array) are referenced
+  // inside the loop body. The verifier proves both are read-only
+  // from the body's perspective, so the LLVM backend passes their
+  // alloca pointers through the OpenMP ctx struct and the outlined
+  // thread function loads through them. Race-free by construction.
+  let bias: i64 = 100;
+  let xs: [i64; 4] = [10, 20, 30, 40];
+  parallel for i from 0 to 4 {
+    let r: i64 = xs[i] + bias;
+    let _ = r;
+  }
+
+  // Bindings are auto-borrowed (not consumed) by the parallel-for,
+  // so we can still read them here.
+  print xs[0] + bias;
+
+  // Reductions: `reduce total with +;` tells the checker that
+  // `total = total + …` inside the body is the only update, and
+  // tells the runtime to give each thread a private partial.
+  // OpenMP combines via `reduction(+:total)`; LLVM rewrites the
+  // in-body reassign to `atomicrmw add`.
+  let total: i64 = 0;
+  parallel for i from 0 to 4
+  reduce total with +;
+  {
+    total = total + xs[i];
+  }
+  print total;
+
+  // Multiplicative reduction. LLVM lowers `*` via a cmpxchg-retry
+  // loop (atomicrmw doesn't expose `mul`); C uses
+  // `reduction(*:product)`.
+  let product: i64 = 1;
+  parallel for i from 0 to 4
+  reduce product with *;
+  {
+    product = product * xs[i];
+  }
+  print product;
+
+  // Boolean OR reduction. The verifier scopes the carve-out to
+  // `any = any || …` shapes; reads of `any` outside that update
+  // are still forbidden so partial-value visibility can't leak.
+  // C: `reduction(||:any)`. LLVM rejects `atomicrmw` on `i1`, so
+  // the backend allocates an `i8` shadow in the parent, zext-
+  // stores the current bool into it, runs `atomicrmw or i8*`
+  // from inside the outlined fn, then writes `icmp ne i8 …, 0`
+  // back into the original `i1` alloca on exit.
+  let flags: [bool; 4] = [false, false, true, false];
+  let any: bool = false;
+  parallel for i from 0 to 4
+  reduce any with ||;
+  {
+    any = any || flags[i];
+  }
+  if any { print 1; } else { print 0; }
+
+  // Min / Max reductions. `min` and `max` are built-in pure
+  // intrinsic functions; the body's update form is
+  // `var = min(var, xs[i])` (or symmetric). LLVM lowers to the
+  // dedicated `atomicrmw smin/smax` instructions; C extends the
+  // pragma with `reduction(min:lo)` / `reduction(max:hi)`.
+  let lo: i64 = 100;
+  parallel for i from 0 to 4
+  reduce lo with min;
+  {
+    lo = min(lo, xs[i]);
+  }
+  print lo;
+
+  let hi: i64 = 0;
+  parallel for i from 0 to 4
+  reduce hi with max;
+  {
+    hi = max(hi, xs[i]);
+  }
+  print hi;
+
+  // Bitwise reductions: `&`, `|`, `^` on integer-typed
+  // accumulators. Different from `&&`/`||` (which are logical
+  // bool ops): bitwise variants run on the value's full width.
+  // C: `reduction(&:var)` / `reduction(|:var)` / `reduction(^:
+  // var)`. LLVM: native-width `atomicrmw and / or / xor`
+  // (no i8 shadow needed because the integer width is already
+  // byte-aligned).
+  let acc_and: i64 = -1;
+  parallel for i from 0 to 4
+  reduce acc_and with &;
+  {
+    acc_and = acc_and & xs[i];
+  }
+  print acc_and;
+
+  let acc_or: i64 = 0;
+  parallel for i from 0 to 4
+  reduce acc_or with |;
+  {
+    acc_or = acc_or | xs[i];
+  }
+  print acc_or;
+
+  let acc_xor: i64 = 0;
+  parallel for i from 0 to 4
+  reduce acc_xor with ^;
+  {
+    acc_xor = acc_xor ^ xs[i];
+  }
+  print acc_xor;
+
+  return 0;
+}

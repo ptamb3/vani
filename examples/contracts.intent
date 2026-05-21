@@ -1,0 +1,39 @@
+intent "Function contracts: requires + ensures + cross-call SMT reasoning";
+
+// `requires` clauses are verified at every call site against the caller's
+// current facts. Try replacing `checked_sub(20, 7)` below with
+// `checked_sub(3, 7)` — compilation fails with
+//   "argument to 'checked_sub' violates its 'requires' clause".
+
+fn checked_sub(a: i64, b: i64) -> i64
+requires a >= b;
+requires b >= 0;
+ensures _return >= 0;
+{
+  return a - b;
+}
+
+fn double_if_positive(x: i64) -> i64
+requires x < 1000000000;
+ensures _return >= x;
+{
+  if x > 0 {
+    return x + x;
+  } else {
+    return x;
+  }
+}
+
+fn main() -> i64 {
+  let diff: i64 = checked_sub(20, 7);
+  prove diff >= 0;
+  assert diff == 13;
+
+  let bigger: i64 = double_if_positive(5);
+  prove bigger >= 5;
+  assert bigger == 10;
+
+  print diff;
+  print bigger;
+  return 0;
+}
