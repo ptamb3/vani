@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #113)
+## ⏳ Resume here (paused 2026-05-22, after closure #114)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -14,7 +14,8 @@ user-Eq desugar for struct `==`, #105 partial-move tracking,
 `push(mut ref xs, v)`, #109 `xs[i].field = v` mixed-place
 assignment, #110 match on bool scrutinee, #111 match on Str
 scrutinee, #112 deep field paths for mixed-place assign,
-#113 enum payloads admit OwnedStr (heap-aware Drop). Test
+#113 enum payloads admit OwnedStr (heap-aware Drop), #114
+type-associated functions (`Type.helper(args)`). Test
 totals: 788 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
@@ -613,6 +614,43 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+114. ~~**Type-associated functions `Type.helper(args)`**~~ —
+     done 2026-05-22. Closes the README small-item "no
+     syntax for `Type.helper()`". Constructors and other
+     type-namespaced helpers now work without falling back
+     to free functions.
+     - **Checker** in [src/checker.rs](src/checker.rs):
+       removed the `must take 'self' as its first parameter`
+       gate in `hoist_methods_into_functions`. Self-less
+       methods are hoisted to the same `<TypeName>_<method>`
+       mangled name as their self-bearing siblings.
+     - **MethodCall handler** gained a new arm: when the
+       receiver is a `Var` naming a declared struct OR
+       enum AND `<TypeName>_<method>` is in the signature
+       table, the call rewrites to a direct
+       `Call { name: "<T>_<method>", args }` (no
+       self-receiver prefix). Args are type-checked against
+       the function's declared parameter types in order;
+       arity mismatches surface a clean diagnostic.
+     - **Co-exists with `recv.method()`**: a single
+       `methods on Point { fn new(x,y) -> Point …; fn sum(self: Point) -> i64 … }`
+       block can declare both shapes. `Point.new(1, 2)`
+       dispatches via the type-associated path; `p.sum()`
+       dispatches via the existing receiver path.
+     - **1 lib test added**:
+       `type_associated_function_compiles_and_dispatches`
+       asserts the program compiles and the C output
+       contains a direct `fn_B_make(…)` call. The legacy
+       `method_without_self_clean_diagnostic` was rewritten
+       — the rejected case no longer exists.
+     - **New example**
+       [examples/type_associated_fn.intent](examples/type_associated_fn.intent)
+       shows a `Point.new(x, y)` constructor + a
+       `Point.origin()` zero-arg helper + a regular
+       `p.sum()` method. Wired into the cross-backend
+       e2e test.
+     788 lib tests; 47 e2e stable.
+
 113. ~~**Enum payloads admit OwnedStr (heap-aware Drop)**~~ —
      done 2026-05-22. Closes a soundness gap: previously the
      enum-payload validation rejected any non-Copy type with

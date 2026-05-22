@@ -421,6 +421,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "struct_eq.intent",
         "struct_mixed_fields.intent",
         "tuple_eq.intent",
+        "type_associated_fn.intent",
         "struct_owned_field.intent",
         "tasks.intent",
         "vec_invariants.intent",

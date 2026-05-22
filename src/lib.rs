@@ -3457,29 +3457,27 @@ mod tests {
     }
 
     #[test]
-    fn method_without_self_clean_diagnostic() {
-        // `methods on B { fn make() -> B { … } }` (no
-        // self) previously hoisted to the mangled name
-        // `B_make` but was unreachable via the regular
-        // `recv.method()` dispatch and v1 has no
-        // `Type.method()` associated-function syntax —
-        // so the method was an unreachable orphan.
-        // Checker now rejects with a clear hint.
+    fn type_associated_function_compiles_and_dispatches() {
+        // `methods on B { fn make() -> B { … } }` (no self)
+        // is now valid — it becomes a type-associated
+        // function callable as `B.make()`. Closure #114.
         let source = r#"
             struct B { v: i64 }
             methods on B {
               fn make() -> B { return B { v: 99 }; }
             }
-            fn main() -> i64 { return 0; }
+            fn main() -> i64 {
+              let b: B = B.make();
+              assert b.v == 99;
+              return 0;
+            }
         "#;
-        let errors = compile(source)
-            .expect_err("method without self should be rejected");
+        compile(source)
+            .expect("Type.helper() should compile");
+        let c = compile_to_c(source).expect("C backend emits a program");
         assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("must take `self`")),
-            "expected self-required diagnostic, got: {:?}",
-            errors
+            c.contains("fn_B_make("),
+            "expected dispatch to fn_B_make in C output:\n{c}"
         );
     }
 

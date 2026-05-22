@@ -1579,27 +1579,13 @@ fn hoist_methods_into_functions(
                 ));
                 continue;
             }
-            // Enforce `self` as the first parameter — methods
-            // without a `self` receiver are unreachable via the
-            // `recv.method(args)` dispatch path and v1 has no
-            // associated-function call syntax (`Type.method()`).
-            // Surface a clean diagnostic instead of silently
-            // hoisting the method to an unreachable mangled name.
-            let has_self_first = method
-                .params
-                .first()
-                .map_or(false, |p| p.name == "self");
-            if !has_self_first {
-                diagnostics.push(Diagnostic::new(
-                    method.span,
-                    format!(
-                        "method '{}::{}' must take `self` as its first parameter — \
-                         use a free function for type-associated helpers without a receiver",
-                        type_name, method.name
-                    ),
-                ));
-                continue;
-            }
+            // Self-less methods are accepted — they become
+            // "type-associated functions" callable via
+            // `Type.method(args)`. The hoist gives them the
+            // same mangled name (`<TypeName>_<methodName>`)
+            // as methods with self, so a self-less `new` on
+            // `Point` becomes a top-level `Point_new`.
+            // T1.2 phase 2a follow-up.
             let mangled = format!("{}_{}", type_name, method.name);
             if program.functions.iter().any(|f| f.name == mangled)
                 || hoisted.iter().any(|f| f.name == mangled)
@@ -5734,6 +5720,65 @@ fn check_expr(
                             ));
                             return CheckedExpr::fallback_integer(expr.span);
                         }
+                    }
+                }
+            }
+            // Type-associated function call: `Type.fn(args)`
+            // where `Type` is a declared struct/enum AND
+            // `<Type>_<fn>` is in scope. This is the
+            // constructor pattern (`Point.new(1, 2)`) and
+            // any other self-less helper attached to a type
+            // via `methods on T { fn helper(…) { … } }`.
+            // T1.2 phase 2a follow-up (closure #114).
+            if let ExprKind::Var(type_name) = &receiver.kind {
+                let mangled = format!("{}_{}", type_name, method);
+                let is_nominal = env.lookup_struct(type_name).is_some()
+                    || env.lookup_enum(type_name).is_some();
+                if is_nominal {
+                    if let Some(sig) = signatures.get(&mangled) {
+                        // Validate arity.
+                        if sig.params.len() != args.len() {
+                            diagnostics.push(Diagnostic::new(
+                                expr.span,
+                                format!(
+                                    "type-associated function '{}.{}' expects {} \
+                                     arguments, got {}",
+                                    type_name,
+                                    method,
+                                    sig.params.len(),
+                                    args.len()
+                                ),
+                            ));
+                            return CheckedExpr::fallback_integer(expr.span);
+                        }
+                        // Type-check each arg against the
+                        // function's parameter types.
+                        let param_tys: Vec<Type> = sig.params.clone();
+                        let ret_ty_owned = sig.return_type.clone();
+                        let mut typed_args: Vec<TypedExpr> = Vec::new();
+                        for (i, arg) in args.iter().enumerate() {
+                            let checked = check_expr(arg, env, signatures, diagnostics);
+                            let coerced = coerce_checked(
+                                checked,
+                                &param_tys[i],
+                                arg.span,
+                                &format!("{}.{} arg #{}", type_name, method, i + 1),
+                                diagnostics,
+                            );
+                            diagnose_partial_then_whole_move(arg, &coerced, env, diagnostics);
+                            consume_if_moved_var(arg, &coerced, env);
+                            typed_args.push(coerced.expr);
+                        }
+                        return CheckedExpr::new(
+                            TypedExprKind::Call {
+                                name: mangled,
+                                name_span: *method_span,
+                                args: typed_args,
+                            },
+                            ret_ty_owned,
+                            None,
+                            expr.span,
+                        );
                     }
                 }
             }

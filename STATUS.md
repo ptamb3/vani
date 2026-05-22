@@ -389,6 +389,17 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Type-associated functions done 2026-05-22**:
+   `methods on T { fn helper(args) -> R { … } }` (without
+   `self`) declares a type-associated function, callable
+   as `T.helper(args)`. The checker hoists it to the same
+   `<T>_<method>` mangled name; the MethodCall handler
+   recognizes a Var receiver naming a struct/enum and
+   dispatches directly to that mangled function (no
+   self-receiver prefix). Co-exists with regular
+   `recv.method()` dispatch in the same block. See
+   [examples/type_associated_fn.intent](examples/type_associated_fn.intent).
+
    **Enum payloads admit OwnedStr done 2026-05-22**: enums
    like `enum Maybe { Some(OwnedStr), None }` are now valid
    in v1. The aggregate is affine; both backends emit a

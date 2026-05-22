@@ -1,0 +1,47 @@
+intent "Type-associated functions — `Type.helper(args)`";
+
+// `methods on T { fn helper(args) -> R { … } }` (without
+// `self`) declares a type-associated function. The checker
+// hoists it to the same mangled `<T>_<method>` name as
+// regular methods; users call it as `T.helper(args)`
+// (no receiver). Useful for constructors and other
+// type-namespaced helpers.
+//
+// Regular methods (with `self`) still work via the same
+// `recv.method()` dispatch path — both forms co-exist in
+// the same `methods on T { … }` block.
+
+struct Point { x: i64, y: i64 }
+
+methods on Point {
+  // Type-associated constructor — no `self`.
+  fn new(x: i64, y: i64) -> Point {
+    return Point { x: x, y: y };
+  }
+
+  // Type-associated origin helper.
+  fn origin() -> Point {
+    return Point { x: 0, y: 0 };
+  }
+
+  // Regular method with `self` — dispatch via `p.sum()`.
+  fn sum(self: Point) -> i64 {
+    return self.x + self.y;
+  }
+}
+
+fn main() -> i64 {
+  // `Point.new(...)` builds a Point with two args.
+  let a: Point = Point.new(3, 4);
+  let s1: i64 = a.sum();
+  print "a sum =", s1;
+  assert s1 == 7;
+
+  // `Point.origin()` takes no args.
+  let z: Point = Point.origin();
+  let s2: i64 = z.sum();
+  print "z sum =", s2;
+  assert s2 == 0;
+
+  return 0;
+}

@@ -1987,9 +1987,10 @@ deliberately deferred as v1 trade-offs.
 - ⏳ Empty struct `struct E {}` — parser requires ≥1 field.
 - ⏳ Unit-return functions (`fn f() { … }` without `-> Type`) — every fn
   needs a return type in v1.
-- ⏳ Type-associated functions `Type.helper()` — currently no syntax;
-  `methods on T { fn no_self() … }` is rejected. Free functions are the
-  recommended workaround.
+- ✅ Type-associated functions `Type.helper(args)` — declare with
+  `methods on T { fn helper(args) -> R { … } }` (no `self`); call as
+  `T.helper(args)`. Constructors and other type-namespaced helpers.
+  See [examples/type_associated_fn.intent](examples/type_associated_fn.intent).
 - ⏳ `bool ↔ int` cast — different semantic domains, forces explicit
   `if cond { 1 } else { 0 }` and vice versa. Trade-off, may stay deferred.
 - ⏳ SSA bool-print gap — bool literals via SSA path render as `1`/`0`
