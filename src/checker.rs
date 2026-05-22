@@ -490,11 +490,11 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
 
     let mut struct_registry: BTreeMap<String, StructInfo> = BTreeMap::new();
     for decl in &program.structs {
-        if decl.fields.is_empty() || decl.fields.len() > 64 {
+        if decl.fields.len() > 64 {
             diagnostics.push(Diagnostic::new(
                 decl.span,
                 format!(
-                    "struct '{}' has {} fields; v1 supports 1..=64",
+                    "struct '{}' has {} fields; v1 supports 0..=64",
                     decl.name,
                     decl.fields.len()
                 ),

@@ -971,17 +971,25 @@ impl Parser {
             // `field_path`. T1.2 phase 2b follow-up.
             self.parse_index_then_field_assign_stmt()
         } else if self.check(|kind| matches!(kind, TokenKind::LBrace)) {
-            // Bare block `{ … }` as a statement isn't supported in
-            // v1. Surface a clean diagnostic + the workaround
-            // (wrap in `if true { … }` for explicit scope, or
-            // inline the contents) instead of the opaque "expected
-            // statement". Tracked under the future "Block expressions"
-            // TODO.
-            Err(self.error_here(
-                "bare blocks `{ … }` as statements aren't supported \
-                 in v1 — wrap in `if true { … }` for an explicit \
-                 nested scope, or inline the contents",
-            ))
+            // Bare block `{ … }` as a statement — provides an
+            // explicit nested scope. Desugars to
+            // `if true { … }` at parse time so the existing
+            // If-scope machinery handles binding visibility,
+            // affine moves, and codegen. The constant-fold
+            // path collapses the `if true` away in both
+            // backends. T1.0 follow-up (closure #116).
+            let start = self.current().span;
+            let stmts = self.parse_block()?;
+            let end_span = stmts.last().map(|s| s.span()).unwrap_or(start);
+            Ok(Stmt::If {
+                cond: Expr {
+                    kind: ExprKind::Bool(true),
+                    span: start,
+                },
+                then_body: stmts,
+                else_body: Vec::new(),
+                span: start.merge(end_span),
+            })
         } else {
             // Last-chance fallback: try to parse an expression
             // followed by `;`. This enables side-effect-bearing
@@ -2252,20 +2260,30 @@ impl Parser {
                 // (struct names start uppercase) gates the
                 // attempt so plain variables never trip the
                 // lookahead. T1.2.
-                let looks_like_struct = name
+                // `Type {` followed by either `<ident> :` (a
+                // field initializer) OR `}` (an empty struct
+                // literal). Empty-struct literals exist for
+                // marker types declared as `struct E {}`.
+                let starts_uppercase = name
                     .chars()
                     .next()
                     .map(|c| c.is_ascii_uppercase())
-                    .unwrap_or(false)
-                    && matches!(self.current().kind, TokenKind::LBrace)
-                    && matches!(
-                        self.tokens.get(self.pos + 1).map(|t| &t.kind),
-                        Some(TokenKind::Ident(_))
-                    )
-                    && matches!(
-                        self.tokens.get(self.pos + 2).map(|t| &t.kind),
-                        Some(TokenKind::Colon)
-                    );
+                    .unwrap_or(false);
+                let starts_with_lbrace = matches!(self.current().kind, TokenKind::LBrace);
+                let inner_is_field = matches!(
+                    self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                    Some(TokenKind::Ident(_))
+                ) && matches!(
+                    self.tokens.get(self.pos + 2).map(|t| &t.kind),
+                    Some(TokenKind::Colon)
+                );
+                let inner_is_empty = matches!(
+                    self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                    Some(TokenKind::RBrace)
+                );
+                let looks_like_struct = starts_uppercase
+                    && starts_with_lbrace
+                    && (inner_is_field || inner_is_empty);
                 if looks_like_struct {
                     self.bump(); // {
                     let mut fields = Vec::new();

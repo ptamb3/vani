@@ -1984,7 +1984,7 @@ deliberately deferred as v1 trade-offs.
   clean diagnostic in place.
 - ⏳ Nested arrays `[[T; N]; M]` and `[Vec<T>; N]` — SSA path doesn't lower
   by-value element loads of these shapes yet.
-- ⏳ Empty struct `struct E {}` — parser requires ≥1 field.
+- ✅ Empty struct `struct E {}` — useful for marker / zero-sized types.
 - ✅ Unit-return functions — `fn f() { … }` without `-> Type` is sugar
   for `-> i64` with an implicit `return 0;` appended. Callers invoke as
   a bare statement (`f();`) or via `let _ = f();`. See
@@ -1997,8 +1997,8 @@ deliberately deferred as v1 trade-offs.
   `if cond { 1 } else { 0 }` and vice versa. Trade-off, may stay deferred.
 - ⏳ SSA bool-print gap — bool literals via SSA path render as `1`/`0`
   instead of `true`/`false`. Tree-LLVM path correct.
-- ⏳ Bare `{ … }` as scope-stmt — currently rejected with workaround
-  diagnostic; lands cheaply once block expressions exist.
+- ✅ Bare `{ … }` as scope-stmt — provides an explicit nested scope
+  for binding visibility. Desugars to `if true { … }` at parse time.
 - ✅ `xs[i].field = v` mixed-place assign — including deep paths
   (`xs[i].a.b = v`); each intermediate segment must be a Copy struct
   and the leaf field must be Copy.

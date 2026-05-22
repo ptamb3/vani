@@ -3317,27 +3317,19 @@ mod tests {
     }
 
     #[test]
-    fn bare_block_statement_surfaces_helpful_diagnostic() {
-        // `{ stmts; }` as a free-standing statement isn't
-        // supported in v1 (no `Stmt::Block` variant). The
-        // parser used to emit the opaque "expected
-        // statement"; it now points at the workaround.
+    fn bare_block_statement_compiles() {
+        // Closure #116: `{ stmts; }` as a free-standing
+        // statement now compiles. Desugars to `if true {
+        // stmts; }` at parse time so the existing If-scope
+        // machinery handles binding visibility and codegen.
         let source = r#"
             fn main() -> i64 {
               let x: i64 = 5;
-              { let y: i64 = 10; }
+              { let y: i64 = 10; assert y == 10; }
               return x;
             }
         "#;
-        let errors = compile(source)
-            .expect_err("bare block stmt is rejected");
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("bare blocks")),
-            "expected bare-block diagnostic, got: {:?}",
-            errors
-        );
+        compile(source).expect("bare-block stmt should compile");
     }
 
     #[test]
@@ -5051,7 +5043,7 @@ mod tests {
             errors
                 .iter()
                 .any(|e| e.message.contains("65 fields")
-                    && e.message.contains("1..=64")),
+                    && e.message.contains("0..=64")),
             "expected oversize-struct diagnostic, got: {:?}",
             errors
         );
@@ -5140,21 +5132,17 @@ mod tests {
     }
 
     #[test]
-    fn empty_struct_rejected() {
+    fn empty_struct_compiles() {
+        // Closure #116: empty structs (`struct E {}`) are now
+        // accepted for marker / zero-sized types.
         let source = r#"
-            struct Empty { }
-            fn main() -> i64 { return 0; }
+            struct Marker { }
+            fn main() -> i64 {
+              let m: Marker = Marker { };
+              return 0;
+            }
         "#;
-        let errors = compile(source)
-            .expect_err("empty struct should fail");
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("'Empty' has 0 fields")
-                    && e.message.contains("1..=64")),
-            "expected empty-struct diagnostic, got: {:?}",
-            errors
-        );
+        compile(source).expect("empty struct should compile");
     }
 
     #[test]

@@ -389,6 +389,13 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Empty struct + bare-block scope-stmt done 2026-05-22**:
+   `struct E {}` is now accepted for marker/zero-sized
+   types; struct-lit lookahead handles `Type {}`. Bare
+   `{ stmts; }` as a free-standing statement desugars to
+   `if true { stmts; }` at parse time, providing explicit
+   scoping for nested bindings.
+
    **Unit-return functions done 2026-05-22**: `fn f() { … }`
    without `-> Type` is parser sugar for `-> i64` with an
    implicit `return 0;` appended. Callers invoke as bare

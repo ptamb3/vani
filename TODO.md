@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #115)
+## ⏳ Resume here (paused 2026-05-22, after closure #116)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -16,8 +16,8 @@ assignment, #110 match on bool scrutinee, #111 match on Str
 scrutinee, #112 deep field paths for mixed-place assign,
 #113 enum payloads admit OwnedStr (heap-aware Drop), #114
 type-associated functions (`Type.helper(args)`), #115
-unit-return functions. Test totals: 790 lib + 47 e2e
-passing.
+unit-return functions, #116 empty struct + bare-block
+scope-stmt. Test totals: 790 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -615,6 +615,31 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+116. ~~**Empty struct + bare-block scope-stmt**~~ — done
+     2026-05-22. Two small README items in one closure.
+     - **Empty struct (`struct E {}`)**: checker no longer
+       rejects `decl.fields.is_empty()` — cap is now
+       `0..=64`. Parser's struct-lit lookahead extended to
+       accept `Type { }` (RBrace immediately after LBrace)
+       in addition to the existing `Type { field: …}`
+       shape. Useful for marker types (zero-sized
+       tag-only structs).
+     - **Bare `{ … }` as scope-stmt**: parser used to emit
+       "bare blocks aren't supported in v1" with a
+       workaround hint. Now desugars at parse time to
+       `Stmt::If { cond: Bool(true), then_body: <stmts>,
+       else_body: [] }`. The existing If-scope machinery
+       handles binding visibility, affine moves, and
+       codegen. Constant-fold collapses the `if true`
+       branch in both backends.
+     - **2 lib tests rewritten**:
+       `empty_struct_rejected` →
+       `empty_struct_compiles`,
+       `bare_block_statement_surfaces_helpful_diagnostic` →
+       `bare_block_statement_compiles`. The `1..=64`
+       diagnostic text updated to `0..=64`.
+     788 → 790 lib tests; 47 e2e stable.
+
 115. ~~**Unit-return functions: `fn f() { … }`**~~ — done
      2026-05-22. Procedures (side-effect-only functions)
      no longer need `-> i64` + `return 0;` boilerplate.
