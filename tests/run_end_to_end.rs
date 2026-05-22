@@ -413,6 +413,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "match_str.intent",
         "mixed_place_assign.intent",
         "mut_refs.intent",
+        "nested_struct_drop.intent",
         "parallel.intent",
         "partial_move.intent",
         "push_mut.intent",

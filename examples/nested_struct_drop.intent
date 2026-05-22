@@ -1,0 +1,42 @@
+intent "Nested affine struct fields with recursive Drop";
+
+// Structs can contain other structs as fields, including
+// non-Copy structs whose own fields are heap-shaped
+// (OwnedStr, Vec). Both backends recursively walk struct
+// types at scope-exit Drop time, freeing every heap-shaped
+// field along the way.
+//
+// v1 limit: nested-path moves (`o.inner.s`) on non-Copy
+// fields aren't tracked by the (single-level) moved_fields
+// map. Move the inner struct out first
+// (`let i = o.inner;` then `let v = i.s;`) — same end
+// result.
+
+struct Inner {
+  label: OwnedStr,
+  counts: Vec<i64>,
+}
+
+struct Outer {
+  id: i64,
+  body: Inner,
+}
+
+fn main() -> i64 {
+  let o: Outer = Outer {
+    id: 7,
+    body: Inner {
+      label: "hello" + " world",
+      counts: vec(1, 2, 3),
+    },
+  };
+  print "outer id =", o.id, " inner label =", o.body.label;
+  assert o.id == 7;
+  // Scope exit drops Outer:
+  //   1. Recursively drops `body` (Inner).
+  //   2. Inner's drop frees `label` (OwnedStr) and
+  //      `counts` (Vec<i64>) in reverse declaration order.
+  //   3. Outer's drop has no more heap fields after
+  //      recursing into `body`.
+  return 0;
+}

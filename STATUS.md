@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 798 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 800 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,17 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Nested affine struct fields + recursive Drop done
+   2026-05-22**: `struct Outer { inner: Inner, … }` where
+   Inner has heap fields now compiles. Both backends emit
+   recursive Drop walks through nested struct types. The
+   non-Copy registry uses fixed-point iteration so source
+   order doesn't matter. Nested-path moves like
+   `let v = o.inner.s;` are gated with a workaround hint
+   (move the inner struct out first) — full path-level
+   move tracking is deferred. See
+   [examples/nested_struct_drop.intent](examples/nested_struct_drop.intent).
+
    **Mutex / Channel enum payloads done 2026-05-22**:
    `enum Locked { Held(Mutex<i64>), Free }` and analog
    for Channel now compile. Symmetric to closure #123's

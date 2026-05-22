@@ -2615,6 +2615,57 @@ mod tests {
     }
 
     #[test]
+    fn nested_affine_struct_field_compiles_with_recursive_drop() {
+        // Closure #125: outer structs can carry inner
+        // structs whose own fields are heap-shaped. Both
+        // backends recursively walk struct types at Drop
+        // time. The non-Copy registry uses fixed-point
+        // iteration so source order doesn't matter for
+        // the registration.
+        let source = r#"
+            struct Inner { s: OwnedStr }
+            struct Outer { inner: Inner, id: i64 }
+            fn main() -> i64 {
+              let o: Outer = Outer { inner: Inner { s: "hi" + "lo" }, id: 7 };
+              assert o.id == 7;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("nested affine struct should compile");
+        // The C output should include a free of the inner
+        // struct's OwnedStr field, accessed via the outer
+        // struct's path.
+        assert!(
+            c.contains("free((void*)v_o.inner.s)"),
+            "expected recursive Drop emission in C output:\n{c}"
+        );
+    }
+
+    #[test]
+    fn nested_path_move_of_non_copy_field_rejected() {
+        // The `o.inner.s` move pattern would alias the
+        // outer struct's recursive Drop with the new
+        // binding — moved_fields can't represent the
+        // path-level move, so the checker rejects with
+        // a workaround hint.
+        let source = r#"
+            struct Inner { s: OwnedStr }
+            struct Outer { inner: Inner }
+            fn main() -> i64 {
+              let o: Outer = Outer { inner: Inner { s: "a" + "b" } };
+              let taken: OwnedStr = o.inner.s;
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("nested move should fail");
+        assert!(
+            errors.iter().any(|e| e.message.contains("nested field move")),
+            "expected nested-move diagnostic, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
     fn enum_mutex_payload_compiles() {
         // Closure #124: enum payloads admit `Mutex<T>`.
         // No Drop needed (Mutex is `{ value, locked }`

@@ -1004,60 +1004,20 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                     return;
                 }
                 if let Some((_, addr)) = ctx.locals.get(name).cloned() {
-                    let s_ty = format!("%Struct_{}", struct_name);
                     let moved: std::collections::HashSet<&String> =
                         moved_fields.iter().collect();
-                    // Fields are freed in reverse declaration
-                    // order so destruction mirrors construction
-                    // (Rust's RAII convention). Partial-moved
-                    // fields are skipped. T1.2 phase 2b.
-                    for (idx, (field_name, field_ty)) in
-                        fields.iter().enumerate().rev()
-                    {
-                        if moved.contains(&field_name) {
-                            continue;
-                        }
-                        match field_ty {
-                            Type::OwnedStr => {
-                                let fp = ctx.fresh_tmp();
-                                out.push_str(&format!(
-                                    "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
-                                    fp, s_ty, s_ty, addr, idx
-                                ));
-                                let s_ptr = ctx.fresh_tmp();
-                                out.push_str(&format!(
-                                    "  {} = load i8*, i8** {}\n",
-                                    s_ptr, fp
-                                ));
-                                out.push_str(&format!(
-                                    "  call void @free(i8* {})\n",
-                                    s_ptr
-                                ));
-                            }
-                            Type::Vec(element) => {
-                                let v_struct = vec_struct_name(element);
-                                let fp = ctx.fresh_tmp();
-                                out.push_str(&format!(
-                                    "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
-                                    fp, s_ty, s_ty, addr, idx
-                                ));
-                                let v_loaded = ctx.fresh_tmp();
-                                out.push_str(&format!(
-                                    "  {} = load {}, {}* {}\n",
-                                    v_loaded, v_struct, v_struct, fp
-                                ));
-                                let free_name = format!(
-                                    "@intent_vec_{}__free",
-                                    vec_struct_tag(element)
-                                );
-                                out.push_str(&format!(
-                                    "  call void {}({} {})\n",
-                                    free_name, v_struct, v_loaded
-                                ));
-                            }
-                            _ => {}
-                        }
-                    }
+                    // Recursively emit per-field frees,
+                    // descending into nested struct fields.
+                    // Reverse-declaration-order drop preserved
+                    // (Rust RAII convention). T1.2 phase 2b + D2.
+                    emit_llvm_struct_field_drops(
+                        &addr,
+                        struct_name,
+                        &fields,
+                        &moved,
+                        ctx,
+                        out,
+                    );
                 }
             } else if let Type::Enum(enum_name) = ty {
                 // Payloaded enums with a heap-shaped payload
@@ -4833,6 +4793,88 @@ fn is_int_or_bool(ty: &Type) -> bool {
 /// stable ctx-struct layout. The verifier has already proved the
 /// body has no observable side effects, which means every capture
 /// is read-only: passing pointers + concurrent reads is safe.
+/// Emit per-field frees for a struct at the given LLVM
+/// address. Recursively descends into nested struct fields.
+/// Reverse-declaration-order drop preserved.
+/// T1.2 phase 2b + D2.
+fn emit_llvm_struct_field_drops(
+    addr: &str,
+    struct_name: &str,
+    fields: &[(String, Type)],
+    moved: &std::collections::HashSet<&String>,
+    ctx: &mut FnCtx,
+    out: &mut String,
+) {
+    let s_ty = format!("%Struct_{}", struct_name);
+    for (idx, (field_name, field_ty)) in fields.iter().enumerate().rev() {
+        if moved.contains(field_name) {
+            continue;
+        }
+        match field_ty {
+            Type::OwnedStr => {
+                let fp = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
+                    fp, s_ty, s_ty, addr, idx
+                ));
+                let s_ptr = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load i8*, i8** {}\n",
+                    s_ptr, fp
+                ));
+                out.push_str(&format!(
+                    "  call void @free(i8* {})\n",
+                    s_ptr
+                ));
+            }
+            Type::Vec(element) => {
+                let v_struct = vec_struct_name(element);
+                let fp = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
+                    fp, s_ty, s_ty, addr, idx
+                ));
+                let v_loaded = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load {}, {}* {}\n",
+                    v_loaded, v_struct, v_struct, fp
+                ));
+                let free_name = format!(
+                    "@intent_vec_{}__free",
+                    vec_struct_tag(element)
+                );
+                out.push_str(&format!(
+                    "  call void {}({} {})\n",
+                    free_name, v_struct, v_loaded
+                ));
+            }
+            Type::Struct(inner_name) => {
+                let inner_fields = LLVM_STRUCT_FIELDS_REGISTRY
+                    .with(|r| r.borrow().get(inner_name).cloned())
+                    .unwrap_or_default();
+                if !inner_fields.is_empty() {
+                    let fp = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
+                        fp, s_ty, s_ty, addr, idx
+                    ));
+                    let empty: std::collections::HashSet<&String> =
+                        std::collections::HashSet::new();
+                    emit_llvm_struct_field_drops(
+                        &fp,
+                        inner_name,
+                        &inner_fields,
+                        &empty,
+                        ctx,
+                        out,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn collect_outer_captures(body: &[TypedStmt], loop_var: &str) -> Vec<String> {
     let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
     declared.insert(loop_var.to_string());

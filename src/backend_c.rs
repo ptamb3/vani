@@ -1633,30 +1633,13 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 // value is owned by another binding now.
                 // T1.2 phase 2b.
                 let moved: std::collections::HashSet<&String> = moved_fields.iter().collect();
-                for (field_name, field_ty) in fields.into_iter().rev() {
-                    if moved.contains(&field_name) {
-                        continue;
-                    }
-                    match field_ty {
-                        Type::OwnedStr => {
-                            out.push_str("  free((void*)");
-                            out.push_str(&local_name(name));
-                            out.push('.');
-                            out.push_str(&field_name);
-                            out.push_str(");\n");
-                        }
-                        Type::Vec(ref element) => {
-                            out.push_str("  ");
-                            out.push_str(&vec_helper(element, "free"));
-                            out.push('(');
-                            out.push_str(&local_name(name));
-                            out.push('.');
-                            out.push_str(&field_name);
-                            out.push_str(");\n");
-                        }
-                        _ => {}
-                    }
-                }
+                emit_struct_field_drops(
+                    &local_name(name),
+                    struct_name,
+                    &fields,
+                    &moved,
+                    out,
+                );
             }
             Type::Enum(enum_name) => {
                 // Payloaded enums with a heap-shaped payload
@@ -2056,6 +2039,65 @@ fn emit_for_iter(
             ));
         }
     }
+}
+
+/// Emit per-field free calls for a struct binding at the
+/// given C path (e.g. `v_o` or `v_o.inner`). Recursively
+/// descends into nested struct fields. Heap fields
+/// (OwnedStr, Vec) emit a free; nested struct fields recurse;
+/// other field types are no-ops. Fields are walked in
+/// reverse declaration order (Rust RAII convention).
+/// T1.2 phase 2b + D2.
+fn emit_struct_field_drops(
+    path: &str,
+    struct_name: &str,
+    fields: &[(String, Type)],
+    moved: &std::collections::HashSet<&String>,
+    out: &mut String,
+) {
+    for (field_name, field_ty) in fields.iter().rev() {
+        if moved.contains(field_name) {
+            continue;
+        }
+        match field_ty {
+            Type::OwnedStr => {
+                out.push_str("  free((void*)");
+                out.push_str(path);
+                out.push('.');
+                out.push_str(field_name);
+                out.push_str(");\n");
+            }
+            Type::Vec(element) => {
+                out.push_str("  ");
+                out.push_str(&vec_helper(element, "free"));
+                out.push('(');
+                out.push_str(path);
+                out.push('.');
+                out.push_str(field_name);
+                out.push_str(");\n");
+            }
+            Type::Struct(inner_name) => {
+                // Recurse into the nested struct's fields.
+                let inner_fields = STRUCT_FIELDS_REGISTRY
+                    .with(|r| r.borrow().get(inner_name).cloned())
+                    .unwrap_or_default();
+                if !inner_fields.is_empty() {
+                    let inner_path = format!("{}.{}", path, field_name);
+                    let empty: std::collections::HashSet<&String> =
+                        std::collections::HashSet::new();
+                    emit_struct_field_drops(
+                        &inner_path,
+                        inner_name,
+                        &inner_fields,
+                        &empty,
+                        out,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    let _ = struct_name; // reserved for future per-struct diagnostics
 }
 
 fn emit_index_assign(

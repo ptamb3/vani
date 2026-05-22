@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #124)
+## ⏳ Resume here (paused 2026-05-22, after closure #125)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -21,8 +21,9 @@ scope-stmt, #117 SSA bool-print parity, #118 Vec<T> enum
 payload, #119 [T;N] enum payload, #120 const-N as array
 length, #121 const-initializer arithmetic, #122
 Task + Atomic enum payloads, #123 Mutex / Channel
-struct fields, #124 Mutex / Channel enum payloads.
-Test totals: 798 lib + 47 e2e passing.
+struct fields, #124 Mutex / Channel enum payloads, #125
+nested affine struct fields + recursive Drop. Test totals:
+800 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -620,6 +621,53 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+125. ~~**Nested affine struct fields + recursive Drop**~~ —
+     done 2026-05-22. Closes D2 from the drop-chaining queue.
+     `struct Outer { inner: Inner, … }` where `Inner` is
+     non-Copy (has heap fields) now compiles, with both
+     backends recursively walking struct types at scope-
+     exit Drop time.
+     - **Checker gate** in [src/checker.rs](src/checker.rs)
+       admits `Type::Struct(_)` as a struct field type
+       (was rejected as "non-Copy" before).
+     - **Non-Copy registry fixed-point**: replaced the
+       single-pass population of `STRUCT_NON_COPY_REGISTRY`
+       with a fixed-point loop so source order doesn't
+       determine whether an outer struct gets marked
+       affine. Without this, `struct Outer { inner: Inner }`
+       declared before `struct Inner { s: OwnedStr }`
+       would slip through.
+     - **C backend**: extracted `emit_struct_field_drops`
+       helper from the existing Drop-arm body. Recurses
+       through nested struct fields (`Type::Struct(_)`
+       arm GEPs into the field via path concatenation and
+       calls itself).
+     - **LLVM backend**: parallel
+       `emit_llvm_struct_field_drops` helper. The
+       `Type::Struct(_)` arm GEPs into the field pointer
+       and recursively walks. Uses
+       `LLVM_STRUCT_FIELDS_REGISTRY` to look up the inner
+       struct's fields.
+     - **Nested-path move gate**: `let v = o.inner.s;` for
+       a non-Copy field is rejected with a clean
+       diagnostic + workaround hint (move the inner
+       struct out first). Without this gate the dual-Drop
+       (binding + outer-struct path) would double-free.
+       Implemented as `is_nested_field_access` check at
+       the let-stmt site.
+     - **2 lib tests + 1 example added**:
+       `nested_affine_struct_field_compiles_with_recursive_drop`
+       asserts the C output contains the chained
+       `free((void*)v_o.inner.s)`;
+       `nested_path_move_of_non_copy_field_rejected` pins
+       the gate;
+       [examples/nested_struct_drop.intent](examples/nested_struct_drop.intent)
+       exercises a `Outer { id, body: Inner { label:
+       OwnedStr, counts: Vec<i64> } }` flow.
+     - **Still pending**: nested-path move tracking (would
+       lift the diagnostic above); deeper RAII patterns.
+     798 → 800 lib tests; 47 e2e stable.
+
 124. ~~**`Mutex<T>` + `Channel<T, N>` enum payloads**~~ —
      done 2026-05-22. Symmetric to closure #123's
      struct-field work. Mutex and Channel are inline

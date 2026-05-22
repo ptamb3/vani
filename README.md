@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (798 lib + 47 e2e tests passing):
+Supported today (800 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -294,9 +294,13 @@ Supported today (798 lib + 47 e2e tests passing):
   [examples/enum_vec_payload.intent](examples/enum_vec_payload.intent),
   [examples/enum_arr_payload.intent](examples/enum_arr_payload.intent).
 - **Structs with affine fields** — `OwnedStr`, `Vec<T>`, `[T; N]` of Copy
-  elements, `Task`, `Atomic<T>`, `Mutex<T>`, and `Channel<T, N>` are
-  valid struct field types in v1; only `Guard<T>` is still rejected
-  (its bespoke RAII unlock needs more wiring).
+  elements, `Task`, `Atomic<T>`, `Mutex<T>`, `Channel<T, N>`, and **nested
+  affine structs** are valid struct field types in v1. Both backends
+  recursively walk struct types at scope-exit Drop time so a `struct
+  Outer { inner: Inner, id: i64 }` where `Inner` has `OwnedStr` /
+  `Vec<T>` fields gets full RAII chains. Only `Guard<T>` is still
+  rejected. See
+  [examples/nested_struct_drop.intent](examples/nested_struct_drop.intent).
   Heap-shaped fields (OwnedStr, Vec) are freed at scope exit; stack-shaped
   fields (arrays, Task, Atomic) need no runtime drop. Struct-literal init
   from a `Var` moves the source binding so a heap value flows `caller →

@@ -442,9 +442,26 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // field type is acceptable. T1.2 phase 2b + T2.7 phase 2.
     {
         let mut non_copy: Vec<String> = Vec::new();
-        for decl in &program.structs {
-            if decl.fields.iter().any(|f| !f.ty.is_copy()) {
-                non_copy.push(decl.name.clone());
+        // Fixed-point iteration so nested-struct fields
+        // propagate the non-Copy flag: a struct that
+        // contains an already-marked struct field becomes
+        // non-Copy itself. Without this, source order
+        // would determine whether `Outer { inner: Inner }`
+        // (with Inner non-Copy) is marked.
+        loop {
+            crate::ast::set_non_copy_structs(non_copy.clone());
+            let mut changed = false;
+            for decl in &program.structs {
+                if non_copy.iter().any(|n| n == &decl.name) {
+                    continue;
+                }
+                if decl.fields.iter().any(|f| !f.ty.is_copy()) {
+                    non_copy.push(decl.name.clone());
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
             }
         }
         // `hoist_impls_into_functions` (which already ran) drains
@@ -531,7 +548,13 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
                 || matches!(
                     &field.ty,
                     Type::Array { element, .. } if element.is_copy()
-                );
+                )
+                // Nested affine struct field: outer struct
+                // can contain an inner struct whose own
+                // fields are admitted. Drop chains
+                // recursively through the per-backend Drop
+                // emit. T1.2 phase 2b follow-up.
+                || matches!(&field.ty, Type::Struct(_));
             if !field_allowed {
                 diagnostics.push(Diagnostic::new(
                     field.span,
@@ -3245,6 +3268,22 @@ fn check_one_stmt(
 
             diagnose_partial_then_whole_move(expr, &checked, env, diagnostics);
 
+            // Nested-path move of a non-Copy field isn't
+            // tracked yet (`moved_fields` is one level deep).
+            // Allowing it would cause a double-free at the
+            // outer struct's Drop. Surface a clean diagnostic
+            // with the workaround: move the inner struct out
+            // first, then move out of that. T1.2 phase 2b
+            // follow-up. Closure #125.
+            if !checked.ty().is_copy() && is_nested_field_access(expr) {
+                diagnostics.push(Diagnostic::new(
+                    expr.span,
+                    "nested field move (`o.inner.s`) on a non-Copy field is \
+                     not supported yet — move the inner struct out first \
+                     (`let inner = o.inner;` then `let s = inner.s;`)",
+                ));
+            }
+
             consume_if_moved_var(expr, &checked, env);
 
             // `let _ = expr;` — discard pattern. Evaluate expr (consuming
@@ -5369,6 +5408,20 @@ fn diagnose_partial_then_whole_move(
                 );
             }
         }
+    }
+}
+
+/// True when `expr` is a FieldAccess chain of depth >= 2,
+/// i.e. `a.b.c` or deeper. Single-level field access
+/// (`a.b`) returns false. Used to gate nested non-Copy
+/// field moves which aren't tracked by `moved_fields`.
+/// Closure #125.
+fn is_nested_field_access(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::FieldAccess { object, .. } => {
+            matches!(object.kind, ExprKind::FieldAccess { .. })
+        }
+        _ => false,
     }
 }
 
