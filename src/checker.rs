@@ -697,27 +697,32 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
             if let Some(payload_ty) = decl.variants[i].payload.first() {
                 // T1.2 phase 2 struct RAII landed in closures
                 // #98 / #100; #113 added OwnedStr; #118 added
-                // Vec<T>; #119 adds `[T;N]` of Copy elements.
-                // Arrays of Copy elements need no Drop —
-                // they're stack-allocated and the surrounding
-                // affine binding's move tracking handles
-                // discipline. Task / Atomic still need more
-                // work and stay rejected.
+                // Vec<T>; #119 added `[T;N]` of Copy; #122
+                // adds Task and Atomic<T>. Task is a thread
+                // handle (no Drop in v1 — sequential
+                // lowering); Atomic<T> is a primitive cell
+                // (no Drop). Only Mutex / Guard / Channel
+                // payload types remain rejected — their
+                // bespoke RAII needs more codegen work.
                 let array_of_copy = matches!(
                     payload_ty,
                     Type::Array { element, .. } if element.is_copy()
                 );
                 let allowed = payload_ty.is_copy()
-                    || matches!(payload_ty, Type::OwnedStr | Type::Vec(_))
+                    || matches!(
+                        payload_ty,
+                        Type::OwnedStr | Type::Vec(_) | Type::Task | Type::Atomic(_)
+                    )
                     || array_of_copy;
                 if !allowed {
                     diagnostics.push(Diagnostic::new(
                         decl.variants[i].name_span,
                         format!(
                             "enum '{}' variant '{}' payload type {} is not \
-                             a Copy type, OwnedStr, Vec<T>, or [T;N] of Copy \
-                             elements — v1 enum payloads still reject Task \
-                             and Atomic<T>",
+                             admitted in v1 — supported payloads are Copy \
+                             types, OwnedStr, Vec<T>, [T;N] of Copy elements, \
+                             Task, and Atomic<T>; Mutex / Guard / Channel \
+                             still need more codegen work",
                             decl.name,
                             decl.variants[i].name,
                             payload_ty

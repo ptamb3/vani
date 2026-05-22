@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #121)
+## ⏳ Resume here (paused 2026-05-22, after closure #122)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -19,8 +19,9 @@ type-associated functions (`Type.helper(args)`), #115
 unit-return functions, #116 empty struct + bare-block
 scope-stmt, #117 SSA bool-print parity, #118 Vec<T> enum
 payload, #119 [T;N] enum payload, #120 const-N as array
-length, #121 const-initializer arithmetic. Test totals:
-794 lib + 47 e2e passing.
+length, #121 const-initializer arithmetic, #122
+Task + Atomic enum payloads. Test totals: 796 lib + 47
+e2e passing.
 
 ### Recommended next (pick one)
 
@@ -618,6 +619,32 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+122. ~~**Task + Atomic enum payloads**~~ — done 2026-05-22.
+     Last two of the originally-listed affine payload
+     types now work. Only Mutex / Guard / Channel payloads
+     remain rejected. Both new types have no Drop story
+     (Task drops via join in v1's sequential lowering;
+     Atomic is a primitive cell).
+     - **Checker gate** in [src/checker.rs](src/checker.rs)
+       admits `Type::Task` and `Type::Atomic(_)` alongside
+       the previously-supported types.
+     - **LLVM `llvm_type_string` gained a Task arm**:
+       returns `"%intent_task_handle"` (the existing
+       `{ i64, i8* }` struct from the module preamble).
+       Without this, the EnumVariantWithPayload codegen for
+       Task hit `llvm_type`'s aggregate-unreachable arm.
+     - **LLVM payload-zero literal**: extended the
+       `zeroinitializer` arm to include `Type::Task`
+       alongside Vec / Tuple / Struct / Array. Atomic
+       payload types already fold via `atomic_storage_llvm`
+       which returns a scalar integer width — they use
+       `0` (the existing `_ => "0"` fallback) cleanly.
+     - **2 lib tests added**:
+       `enum_atomic_payload_compiles` (Atomic<i64> as
+       payload), `enum_task_payload_compiles` (Task as
+       payload).
+     794 → 796 lib tests; 47 e2e stable.
+
 121. ~~**Const initializer arithmetic**~~ — done 2026-05-22.
      `const B: i64 = A + 1;` (and `*`, `-`, `/`, `%`) now
      folds at parse + check time across previously-declared

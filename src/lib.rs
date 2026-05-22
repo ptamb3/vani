@@ -2615,6 +2615,36 @@ mod tests {
     }
 
     #[test]
+    fn enum_atomic_payload_compiles() {
+        // Closure #122: enum payloads admit `Atomic<T>`.
+        // Atomic cells have no Drop (no allocation), so
+        // gate-lift + payload-zero literal is the only
+        // work needed.
+        let source = r#"
+            enum Slot { Active(Atomic<i64>), Empty }
+            fn main() -> i64 {
+              let s: Slot = Slot.Active(atomic_new(42));
+              let z: Slot = Slot.Empty;
+              return 0;
+            }
+        "#;
+        compile(source).expect("Atomic enum payload should compile");
+    }
+
+    #[test]
+    fn enum_task_payload_compiles() {
+        // Closure #122: enum payloads admit `Task`.
+        let source = r#"
+            enum State { Running(Task), Idle }
+            fn main() -> i64 {
+              let s: State = State.Idle;
+              return 0;
+            }
+        "#;
+        compile(source).expect("Task enum payload should compile");
+    }
+
+    #[test]
     fn enum_array_payload_compiles() {
         // Closure #119: enum payloads admit `[T; N]` of Copy
         // elements. Arrays have stack lifetime so no Drop is

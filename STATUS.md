@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 794 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 796 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,15 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Task + Atomic enum payloads done 2026-05-22**: closes
+   the originally-listed affine enum payload types. Only
+   Mutex / Guard / Channel payloads remain rejected. Both
+   Task and Atomic have no Drop story (Task drops via
+   join; Atomic is a primitive cell). LLVM
+   `llvm_type_string` gained a Task arm
+   (`%intent_task_handle`); the payload-less `zeroinitializer`
+   list extended to include Task.
+
    **Const initializer arithmetic done 2026-05-22**:
    `const B: i64 = A + 1;` (and `*`, `-`, `/`, `%`) folds
    over previously-declared integer consts. Checker

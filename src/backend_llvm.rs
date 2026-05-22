@@ -3400,12 +3400,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 // need LLVM's `null` literal, not `0`.
                 Type::OwnedStr => "null",
                 // Aggregate payloads (Vec / Tuple / Struct /
-                // Array) use `zeroinitializer` for the all-
-                // zero placeholder when the variant has no
-                // user-provided payload.
-                Type::Vec(_) | Type::Tuple(_) | Type::Struct(_) | Type::Array { .. } => {
-                    "zeroinitializer"
-                }
+                // Array / Task) use `zeroinitializer` for the
+                // all-zero placeholder when the variant has
+                // no user-provided payload. Task is a
+                // `{ i64, i8* }` struct.
+                Type::Vec(_)
+                | Type::Tuple(_)
+                | Type::Struct(_)
+                | Type::Array { .. }
+                | Type::Task => "zeroinitializer",
                 _ => "0",
             };
             let s0 = ctx.fresh_tmp();
@@ -6072,6 +6075,10 @@ fn llvm_type_string(ty: &Type) -> String {
                 "i32".to_string()
             }
         }
+        // Task handle: `{ i64 thread_id, i8* ctx_ptr }`.
+        // Declared as `%intent_task_handle` in the module
+        // preamble. T1.0 / closure #122.
+        Type::Task => "%intent_task_handle".to_string(),
         _ => llvm_type(ty).to_string(),
     }
 }

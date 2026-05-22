@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (794 lib + 47 e2e tests passing):
+Supported today (796 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -283,12 +283,13 @@ Supported today (794 lib + 47 e2e tests passing):
   `atomic_*(mut ref c.hits)`). Single-level only in v1
   (no `ref t.a.b`). See
   [examples/struct_atomic_field.intent](examples/struct_atomic_field.intent).
-- **Enums with affine payloads** — `enum Maybe { Some(OwnedStr), None }`,
-  `enum Bag { Items(Vec<i64>), Empty }`, and `enum Window { Open([i64; 4]),
-  Closed }` all work. The aggregate is affine; heap payloads (OwnedStr,
-  Vec) get a tag-conditional free at scope exit; array payloads have
-  stack lifetime (no free needed). v1 restriction: destructure-binding
-  patterns (`Some(s)`) require Copy payloads. See
+- **Enums with affine payloads** — Copy types, `OwnedStr`, `Vec<T>`,
+  `[T; N]` of Copy elements, `Task`, and `Atomic<T>` are all valid as
+  enum payload types in v1. Mutex / Guard / Channel still need more
+  codegen work. Heap payloads (OwnedStr, Vec) get a tag-conditional
+  free at scope exit; stack-shaped payloads (array, Task, Atomic) need
+  no Drop. v1 restriction: destructure-binding patterns (`Some(s)`)
+  require Copy payloads. See
   [examples/enum_owned_payload.intent](examples/enum_owned_payload.intent),
   [examples/enum_vec_payload.intent](examples/enum_vec_payload.intent),
   [examples/enum_arr_payload.intent](examples/enum_arr_payload.intent).
