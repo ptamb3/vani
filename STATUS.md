@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-21
-**Test totals:** 775 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 777 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,16 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Partial-move tracking done 2026-05-21**: `let taken =
+   bag.contents;` moves a single field out of a struct
+   without invalidating the rest of the struct. A new
+   `VarInfo.moved_fields` map tracks which fields have been
+   moved out; `TypedStmt::Drop` gained a `moved_fields:
+   Vec<String>` list that both backends consult to skip the
+   per-field free for moved-out fields. Reading a moved
+   field again surfaces a use-after-move diagnostic. See
+   [examples/partial_move.intent](examples/partial_move.intent).
+
    **User-Eq desugar for struct `==` done 2026-05-21**:
    `a == b` and `a != b` on two bindings of the same struct
    type desugar to `<T>_eq(a, b)` / `!<T>_eq(a, b)` whenever

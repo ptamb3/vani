@@ -6223,6 +6223,57 @@ mod tests {
     }
 
     #[test]
+    fn partial_move_field_extract_compiles() {
+        // T1.2 phase 2b partial-move: `let taken = b.contents;`
+        // moves the Vec field out of the struct. The struct
+        // binding is still live for its remaining Copy fields,
+        // and scope-exit Drop skips the moved field.
+        let source = r#"
+            struct Bag { id: i64, contents: Vec<i64> }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20, 30);
+              let b: Bag = Bag { id: 7, contents: xs };
+              let taken: Vec<i64> = b.contents;
+              assert b.id == 7;
+              return 0;
+            }
+        "#;
+        compile(source).expect("partial-move of struct field should compile");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        // The Vec freed at scope exit is `taken`, not `b.contents`.
+        assert!(
+            c.contains("intent_vec_int64_t__free(v_taken)"),
+            "expected free of v_taken in C output:\n{c}"
+        );
+        assert!(
+            !c.contains("intent_vec_int64_t__free(v_b.contents)"),
+            "should NOT emit free for moved-out field b.contents:\n{c}"
+        );
+    }
+
+    #[test]
+    fn partial_move_double_extract_rejected() {
+        // Reading a moved field again is a use-after-move.
+        let source = r#"
+            struct Bag { id: i64, contents: Vec<i64> }
+            fn main() -> i64 {
+              let b: Bag = Bag { id: 7, contents: vec(1, 2, 3) };
+              let taken: Vec<i64> = b.contents;
+              let again: Vec<i64> = b.contents;
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("double extract should fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("'b.contents' was moved")),
+            "expected use-after-move diagnostic, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
     fn struct_eq_via_user_impl() {
         // User-defined equality: `implement Eq for Point {
         // fn eq(self: Point, other: Point) -> bool { … } }`

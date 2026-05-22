@@ -1,0 +1,35 @@
+intent "Partial-move tracking — move a struct field while the struct lives";
+
+// `let taken = bag.contents;` moves the Vec field out of
+// the struct. The checker tracks the field-level move in
+// the binding's `moved_fields` map, scope-exit Drop skips
+// the moved field (avoiding a double-free), and reading the
+// field again surfaces a use-after-move diagnostic.
+//
+// Constraints: the struct itself is still live for its
+// remaining Copy fields; reading a moved field, or moving
+// the struct as a whole after a partial move, is rejected.
+
+struct Bag {
+  id: i64,
+  contents: Vec<i64>,
+}
+
+fn main() -> i64 {
+  let xs: Vec<i64> = vec(10, 20, 30);
+  let b: Bag = Bag { id: 7, contents: xs };
+
+  // Move the Vec field out. `b.contents` is now in
+  // `taken`; `b.id` is still readable.
+  let taken: Vec<i64> = b.contents;
+  print "id =", b.id;
+  assert b.id == 7;
+
+  // At scope exit:
+  // - `taken` is freed via its `Vec<i64>` Drop.
+  // - `b`'s struct Drop skips `contents` (moved) and emits
+  //   no other frees (`id` is Copy).
+  // - `xs` is moved into `b.contents`, so no Drop fires.
+  // No double-free, no leak.
+  return 0;
+}

@@ -1501,7 +1501,7 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 out.push_str(";\n");
             }
         }
-        TypedStmt::Drop { name, ty } => match ty {
+        TypedStmt::Drop { name, ty, moved_fields } => match ty {
             Type::Vec(element) => {
                 out.push_str("  ");
                 out.push_str(&vec_helper(element, "free"));
@@ -1556,8 +1556,14 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 // runtime drop. Fields are freed in reverse
                 // declaration order so destruction mirrors the
                 // construction order (Rust's RAII convention).
+                // Partial-moved fields are skipped — their
+                // value is owned by another binding now.
                 // T1.2 phase 2b.
+                let moved: std::collections::HashSet<&String> = moved_fields.iter().collect();
                 for (field_name, field_ty) in fields.into_iter().rev() {
+                    if moved.contains(&field_name) {
+                        continue;
+                    }
                     match field_ty {
                         Type::OwnedStr => {
                             out.push_str("  free((void*)");

@@ -220,6 +220,16 @@ struct VarInfo {
     /// `Var("p__x")` so field-access proofs discharge. Reset
     /// on any reassignment. None for non-struct bindings.
     struct_literal_fields: Option<Vec<(String, Expr)>>,
+    /// Names of struct fields that have been moved out via
+    /// `let y = t.f;` or passed by value into a function.
+    /// Each entry is the span of the consuming use, surfaced
+    /// in "field was moved here" diagnostic notes. v1 only
+    /// tracks single-level field moves (no nested
+    /// `moved_fields` on the moved-out field itself). Scope-
+    /// exit drop skips fields in this set so the per-field
+    /// free doesn't double-free a value that another binding
+    /// now owns. T1.2 phase 2b partial-move follow-up.
+    moved_fields: std::collections::BTreeMap<String, Span>,
 }
 
 #[derive(Clone, Debug)]
@@ -2510,6 +2520,7 @@ fn check_function(
                 no_drop: false,
                 is_const: true,
                 struct_literal_fields: None,
+                moved_fields: std::collections::BTreeMap::new(),
             },
         );
     }
@@ -2546,6 +2557,7 @@ fn check_function(
                     no_drop: suppress_self_drop,
                     is_const: false,
                     struct_literal_fields: None,
+                    moved_fields: std::collections::BTreeMap::new(),
                 },
             );
 
@@ -2592,6 +2604,7 @@ fn check_function(
                 no_drop: false,
                 is_const: false,
                 struct_literal_fields: None,
+                moved_fields: std::collections::BTreeMap::new(),
             },
         );
         for ens in &function.ensures {
@@ -3086,6 +3099,7 @@ fn emit_current_scope_drops(
             body.push(TypedStmt::Drop {
                 name: name.clone(),
                 ty: info.ty.clone(),
+                moved_fields: info.moved_fields.keys().cloned().collect(),
             });
         }
     }
@@ -3271,6 +3285,7 @@ fn check_one_stmt(
                     no_drop: false,
                     is_const: false,
                     struct_literal_fields,
+                    moved_fields: std::collections::BTreeMap::new(),
                 },
             );
 
@@ -3489,15 +3504,20 @@ fn check_one_stmt(
                 expr: ret_expr,
             });
 
-            let drop_names: Vec<(String, Type)> = env
+            let drop_names: Vec<(String, Type, Vec<String>)> = env
                 .all_bindings()
                 .filter(|(_, info)| !info.ty.is_copy() && info.moved.is_none() && !info.no_drop)
-                .map(|(name, info)| (name.clone(), info.ty.clone()))
+                .map(|(name, info)| (
+                    name.clone(),
+                    info.ty.clone(),
+                    info.moved_fields.keys().cloned().collect::<Vec<_>>(),
+                ))
                 .collect();
-            for (drop_name, drop_ty) in drop_names {
+            for (drop_name, drop_ty, moved_fields) in drop_names {
                 body.push(TypedStmt::Drop {
                     name: drop_name,
                     ty: drop_ty,
+                    moved_fields,
                 });
             }
 
@@ -3735,6 +3755,7 @@ fn check_one_stmt(
                             else_stmts.push(TypedStmt::Drop {
                                 name: name.clone(),
                                 ty: pre_info.ty.clone(),
+                                moved_fields: Vec::new(),
                             });
                             then_moved
                         } else {
@@ -3742,6 +3763,7 @@ fn check_one_stmt(
                             then_stmts.push(TypedStmt::Drop {
                                 name: name.clone(),
                                 ty: pre_info.ty.clone(),
+                                moved_fields: Vec::new(),
                             });
                             else_moved
                         }
@@ -4342,6 +4364,7 @@ fn check_one_stmt(
                     no_drop: false,
                     is_const: false,
                     struct_literal_fields: None,
+                    moved_fields: std::collections::BTreeMap::new(),
                 },
             );
 
@@ -4686,6 +4709,7 @@ fn check_one_stmt(
                     no_drop: var_no_drop,
                     is_const: false,
                     struct_literal_fields: None,
+                    moved_fields: std::collections::BTreeMap::new(),
                 },
             );
 
@@ -4877,6 +4901,7 @@ fn check_one_stmt(
                     no_drop: false,
                     is_const: false,
                     struct_literal_fields: None,
+                    moved_fields: std::collections::BTreeMap::new(),
                 },
             );
 
@@ -5011,6 +5036,7 @@ fn check_one_stmt(
                     no_drop: true,
                     is_const: false,
                     struct_literal_fields: None,
+                    moved_fields: std::collections::BTreeMap::new(),
                 },
             );
             // For each name, emit a Let binding that reads
@@ -5051,6 +5077,7 @@ fn check_one_stmt(
                         no_drop: false,
                         is_const: false,
                         struct_literal_fields: None,
+                        moved_fields: std::collections::BTreeMap::new(),
                     },
                 );
             }
@@ -5081,6 +5108,7 @@ fn emit_drops_through_loop(env: &Env, loop_body_depth: usize, body: &mut Vec<Typ
                 body.push(TypedStmt::Drop {
                     name: name.clone(),
                     ty: info.ty.clone(),
+                    moved_fields: Vec::new(),
                 });
             }
         }
@@ -5146,13 +5174,31 @@ fn consume_if_moved_var(
     if checked.ty().is_copy() {
         return;
     }
-    let ExprKind::Var(name) = &source.kind else {
-        return;
-    };
-    if let Some(info) = env.lookup_mut(name) {
-        if info.moved.is_none() {
-            info.moved = Some(source.span);
+    match &source.kind {
+        ExprKind::Var(name) => {
+            if let Some(info) = env.lookup_mut(name) {
+                if info.moved.is_none() {
+                    info.moved = Some(source.span);
+                }
+            }
         }
+        // Partial-move tracking: `let xs = t.contents;` moves
+        // the field's value out of the struct. The field is
+        // marked in the struct binding's `moved_fields` map so
+        // the scope-exit per-field free skips it. Subsequent
+        // reads of `t.contents` will surface a "field was
+        // moved" diagnostic. T1.2 phase 2b partial-move
+        // follow-up.
+        ExprKind::FieldAccess { object, field, .. } => {
+            if let ExprKind::Var(obj_name) = &object.kind {
+                if let Some(info) = env.lookup_mut(obj_name) {
+                    if !info.moved_fields.contains_key(field) {
+                        info.moved_fields.insert(field.clone(), source.span);
+                    }
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -5726,6 +5772,28 @@ fn check_expr(
                 }
             };
             let _ = struct_name;
+            // Partial-move check: reading a field that was
+            // previously moved out is a use-after-move.
+            // T1.2 phase 2b partial-move follow-up.
+            if let ExprKind::Var(obj_name) = &object.kind {
+                if let Some(info) = env.lookup(obj_name) {
+                    if let Some(move_span) = info.moved_fields.get(field).copied() {
+                        diagnostics.push(
+                            Diagnostic::new(
+                                expr.span,
+                                format!(
+                                    "field '{}.{}' was moved; cannot use after move",
+                                    obj_name, field
+                                ),
+                            )
+                            .with_related(
+                                move_span,
+                                format!("'{}.{}' was moved here", obj_name, field),
+                            ),
+                        );
+                    }
+                }
+            }
             CheckedExpr::new(
                 TypedExprKind::FieldAccess {
                     object: Box::new(inner.expr),
@@ -5996,6 +6064,7 @@ fn check_expr(
                         no_drop: false,
                         is_const: false,
                         struct_literal_fields: None,
+                        moved_fields: std::collections::BTreeMap::new(),
                     });
                     let bc = check_expr(&arm.body, env, signatures, diagnostics);
                     env.pop_scope();
@@ -6126,6 +6195,7 @@ fn check_expr(
                             no_drop: false,
                             is_const: false,
                             struct_literal_fields: None,
+                            moved_fields: std::collections::BTreeMap::new(),
                         });
                         typed_stmts.push(TypedStmt::Let {
                             name: name.clone(),

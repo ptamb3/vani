@@ -919,7 +919,7 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 out.push_str(&format!("{}:\n", cont_lbl));
             }
         }
-        TypedStmt::Drop { name, ty } => {
+        TypedStmt::Drop { name, ty, moved_fields } => {
             // For `Vec<T>`, route through the per-element-type
             // `@intent_vec_<tag>__free` helper. The helper
             // walks elements first for non-Copy element types
@@ -982,10 +982,18 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 }
                 if let Some((_, addr)) = ctx.locals.get(name).cloned() {
                     let s_ty = format!("%Struct_{}", struct_name);
+                    let moved: std::collections::HashSet<&String> =
+                        moved_fields.iter().collect();
                     // Fields are freed in reverse declaration
                     // order so destruction mirrors construction
-                    // (Rust's RAII convention). T1.2 phase 2b.
-                    for (idx, (_, field_ty)) in fields.iter().enumerate().rev() {
+                    // (Rust's RAII convention). Partial-moved
+                    // fields are skipped. T1.2 phase 2b.
+                    for (idx, (field_name, field_ty)) in
+                        fields.iter().enumerate().rev()
+                    {
+                        if moved.contains(&field_name) {
+                            continue;
+                        }
                         match field_ty {
                             Type::OwnedStr => {
                                 let fp = ctx.fresh_tmp();

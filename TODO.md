@@ -3,13 +3,14 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-21, after closure #104)
+## ⏳ Resume here (paused 2026-05-21, after closure #105)
 
 Closures landed this session: #99 bounded generics, #100 affine
 struct fields broadened, #101 user-Drop auto-call, #102
 field-borrow expressions, #103 reverse-declaration field drop
-order, #104 user-Eq desugar for struct `==`. Test totals:
-775 lib + 47 e2e passing.
+order, #104 user-Eq desugar for struct `==`, #105 partial-move
+tracking for struct fields. Test totals: 777 lib + 47 e2e
+passing.
 
 ### Recommended next (pick one)
 
@@ -607,6 +608,54 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+105. ~~**Partial-move tracking for struct fields**~~ — done
+     2026-05-21. `let taken = bag.contents;` moves the Vec
+     field out of the struct without invalidating the rest
+     of the struct. Closes the bulk of the T1.2 phase 2b
+     polish queue.
+     - **`VarInfo.moved_fields: BTreeMap<String, Span>`** in
+       [src/checker.rs](src/checker.rs) tracks which fields
+       have been moved out of a struct binding. Populated
+       at every consume site (let RHS, function arg,
+       struct-lit field init, return value).
+     - **`consume_if_moved_var` extended** with a
+       `FieldAccess { object: Var, field, ... }` arm that
+       inserts the field into the base binding's
+       `moved_fields` instead of marking the whole binding
+       moved. Symmetric with the existing Var arm.
+     - **FieldAccess read** consults `moved_fields` and
+       surfaces a use-after-move diagnostic with a "moved
+       here" related-span when the field is already in the
+       map.
+     - **`TypedStmt::Drop` extended** with a `moved_fields:
+       Vec<String>` field. Populated at both scope-exit
+       Drop emission sites (the inline pass and the
+       Return-path cleanup) from the binding's
+       `moved_fields` snapshot.
+     - **Per-backend Drop emit** in both
+       [src/backend_c.rs](src/backend_c.rs) and
+       [src/backend_llvm.rs](src/backend_llvm.rs) consults
+       the Drop's `moved_fields` list and skips any matching
+       field in the per-field free pass. Avoids the
+       double-free that would otherwise result from
+       `taken` (the new binding owning the Vec) and the
+       struct's own scope-exit walk both freeing the same
+       buffer.
+     - **2 lib tests added**:
+       `partial_move_field_extract_compiles` (asserts the
+       struct's moved field is NOT freed; only the new
+       binding is) and `partial_move_double_extract_rejected`
+       (use-after-move diagnostic).
+     - **New example**
+       [examples/partial_move.intent](examples/partial_move.intent)
+       exercises the pattern end-to-end; wired into the
+       cross-backend e2e test.
+     - **Still pending**: moving the struct as a whole
+       after a partial move (diagnose at the Var-consume
+       site); `mut ref t.xs` + `push(...)` combined
+       semantics; nested field moves (`t.inner.f`).
+     775 → 777 lib tests; 47 e2e stable.
+
 104. ~~**Auto `==` for structs via `implement Eq for T`**~~ —
      done 2026-05-21. `a == b` and `a != b` on two bindings
      of the same struct type desugar to a call to the

@@ -96,6 +96,15 @@ pub enum TypedStmt {
     Drop {
         name: String,
         ty: Type,
+        /// For struct bindings: names of fields that have
+        /// been moved out of this binding before scope exit
+        /// (via `let y = t.f;` or `f(t.f)` patterns). The
+        /// per-field free pass in both backends skips these
+        /// to avoid freeing a value that another binding now
+        /// owns. Empty for non-struct types and structs with
+        /// no partial moves. T1.2 phase 2b partial-move
+        /// follow-up.
+        moved_fields: Vec<String>,
     },
     /// Evaluate `expr` for its side effects (or to consume an affine value)
     /// and discard the result. Produced by `let _ = expr;`.

@@ -788,7 +788,7 @@ fn lower_stmt(
             let _ = lower_expr_to_value(expr, b, locals)?;
             Ok(())
         }
-        TypedStmt::Drop { name, ty } => {
+        TypedStmt::Drop { name, ty, moved_fields: _ } => {
             // Look up the binding's current SSA value so the
             // Drop carries an Operand. Missing locals entries
             // are a lowerer bug (Drop is emitted by the

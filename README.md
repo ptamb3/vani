@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (775 lib + 47 e2e tests passing):
+Supported today (777 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -251,6 +251,11 @@ Supported today (775 lib + 47 e2e tests passing):
   instead (the user's drop is then invoked explicitly when richer
   behavior is needed). See
   [examples/drop_interface.intent](examples/drop_interface.intent).
+- **Partial-move tracking** — `let taken = bag.contents;` moves a single
+  field out of a struct. The aggregate is still readable for its other
+  fields; scope-exit Drop skips the moved field (no double-free); a
+  second read of the moved field surfaces a use-after-move diagnostic.
+  See [examples/partial_move.intent](examples/partial_move.intent).
 - **User-defined `==` via `implement Eq for T`** — `a == b` and `a != b`
   on struct bindings desugar to the hoisted `<T>_eq(a, b)` / `!<T>_eq(a, b)`
   whenever both sides are the same struct type. Convention is
