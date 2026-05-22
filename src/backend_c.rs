@@ -1573,35 +1573,62 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
             drop_old,
         } => {
             if *drop_old {
-                let element = match ty {
-                    Type::Vec(element) => Some(element),
-                    _ => None,
-                };
-                if let Some(element) = element {
-                    let struct_name = vec_c_struct(element);
-                    let tmp = format!("_intent_tmp_{}", name);
-                    out.push_str("  {\n");
-                    out.push_str("    ");
-                    out.push_str(&struct_name);
-                    out.push(' ');
-                    out.push_str(&tmp);
-                    out.push_str(" = ");
-                    out.push_str(&emit_expr(expr));
-                    out.push_str(";\n    ");
-                    out.push_str(&vec_helper(element, "free"));
-                    out.push('(');
-                    out.push_str(&local_name(name));
-                    out.push_str(");\n    ");
-                    out.push_str(&local_name(name));
-                    out.push_str(" = ");
-                    out.push_str(&tmp);
-                    out.push_str(";\n  }\n");
-                } else {
-                    out.push_str("  ");
-                    out.push_str(&local_name(name));
-                    out.push_str(" = ");
-                    out.push_str(&emit_expr(expr));
-                    out.push_str(";\n");
+                // Heap-shaped reassign: evaluate the RHS into
+                // a temp first, free the OLD value, then move
+                // the temp into the binding. The order matters
+                // — the RHS may consume the binding itself
+                // (e.g. `xs = push(xs, k)` returns a fresh vec
+                // that takes ownership of the old buffer), and
+                // freeing-before-evaluating would crash. Vec
+                // was wired in closure #8 (`drop_old`
+                // self-consuming reassign). Closure #133
+                // extends the same pattern to OwnedStr — the
+                // bare-`x = "b" + ""` case was silently
+                // leaking the previous heap string.
+                match ty {
+                    Type::Vec(element) => {
+                        let struct_name = vec_c_struct(element);
+                        let tmp = format!("_intent_tmp_{}", name);
+                        out.push_str("  {\n");
+                        out.push_str("    ");
+                        out.push_str(&struct_name);
+                        out.push(' ');
+                        out.push_str(&tmp);
+                        out.push_str(" = ");
+                        out.push_str(&emit_expr(expr));
+                        out.push_str(";\n    ");
+                        out.push_str(&vec_helper(element, "free"));
+                        out.push('(');
+                        out.push_str(&local_name(name));
+                        out.push_str(");\n    ");
+                        out.push_str(&local_name(name));
+                        out.push_str(" = ");
+                        out.push_str(&tmp);
+                        out.push_str(";\n  }\n");
+                    }
+                    Type::OwnedStr => {
+                        let tmp = format!("_intent_tmp_{}", name);
+                        out.push_str("  {\n");
+                        out.push_str("    char* ");
+                        out.push_str(&tmp);
+                        out.push_str(" = ");
+                        out.push_str(&emit_expr(expr));
+                        out.push_str(";\n");
+                        out.push_str("    free((void*)");
+                        out.push_str(&local_name(name));
+                        out.push_str(");\n    ");
+                        out.push_str(&local_name(name));
+                        out.push_str(" = ");
+                        out.push_str(&tmp);
+                        out.push_str(";\n  }\n");
+                    }
+                    _ => {
+                        out.push_str("  ");
+                        out.push_str(&local_name(name));
+                        out.push_str(" = ");
+                        out.push_str(&emit_expr(expr));
+                        out.push_str(";\n");
+                    }
                 }
             } else {
                 out.push_str("  ");

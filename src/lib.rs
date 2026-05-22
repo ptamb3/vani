@@ -4006,6 +4006,54 @@ mod tests {
     }
 
     #[test]
+    fn reassign_owned_str_frees_previous_heap() {
+        // Closure #133: `s = "b" + ""` for a non-Copy
+        // `OwnedStr` binding now frees the previous heap
+        // before storing the new value. Was leaking — the
+        // Reassign emit's drop-old path only handled
+        // `Type::Vec`; OwnedStr fell through to the plain
+        // assign branch.
+        let source = r#"
+            fn main() -> i64 {
+              let s: OwnedStr = "a" + "1";
+              s = "b" + "2";
+              return 0;
+            }
+        "#;
+        compile(source).expect("OwnedStr reassign should compile");
+        let c = compile_to_c(source).expect("emits C");
+        // Expect the tmp-eval / free-old / move-tmp pattern.
+        assert!(
+            c.contains("char* _intent_tmp_s ="),
+            "expected tmp for RHS eval, got:\n{c}"
+        );
+        assert!(
+            c.contains("free((void*)v_s);"),
+            "expected free of old slot before reassign, got:\n{c}"
+        );
+    }
+
+    #[test]
+    fn reassign_vec_self_consuming_still_works() {
+        // Closure #133 reordered the LLVM Reassign emit
+        // (eval-first-then-free instead of free-before-eval)
+        // so a RHS that READS the binding doesn't observe
+        // freed memory. Self-consuming reassigns
+        // (`xs = push(xs, k)`) still work because the
+        // checker leaves `drop_old: false` for those — the
+        // RHS already consumed the buffer.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              xs = push(xs, 3);
+              xs = push(xs, 4);
+              return len(xs) as i64;
+            }
+        "#;
+        compile(source).expect("self-consuming Vec reassign should compile");
+    }
+
+    #[test]
     fn ensures_with_strict_lower_bound_compiles() {
         // `ensures _return > 0` discharged via
         // `requires x > 0` plus body returning x — SMT

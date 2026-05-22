@@ -25,5 +25,15 @@ fn main() -> i64 {
 
   print bang;
   print dot;
+
+  // Closure #133: reassigning an `OwnedStr` binding frees the
+  // previous heap string before storing the new one. The RHS
+  // (which doesn't consume `current` in this case) is
+  // evaluated into a temp first so the binding stays valid
+  // for any reads in the RHS.
+  let current: OwnedStr = "step-" + "1";
+  print "before: ", current;
+  current = "step-" + "2";
+  print "after:  ", current;
   return 0;
 }

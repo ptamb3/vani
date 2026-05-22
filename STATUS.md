@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 813 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 815 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,22 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **Reassign of OwnedStr frees previous heap done 2026-05-22**:
+   `s = "b" + ""` for a non-Copy `OwnedStr` binding now
+   frees the previous heap string before storing the new
+   value. Was a real leak: the Reassign emit's drop-old
+   path only handled `Type::Vec`; OwnedStr fell through to
+   the plain-assign branch and the previous allocation was
+   lost. C emits the same tmp-eval / free-old / move-tmp
+   shape Vec uses; LLVM emits eval-first then free-old then
+   store (the previous order — free-before-eval — was also
+   incorrect for any non-consuming RHS that READS the
+   binding, e.g. `s = s + ""`-ish patterns; the LLVM Vec
+   path had the same latent issue and is also fixed here).
+   Closure #133. Verified leak-free under
+   `-fsanitize=address,leak`. See updated
+   [examples/strings_concat.intent](examples/strings_concat.intent).
 
    **FieldAssign with heap-shaped field frees old slot done 2026-05-22**:
    `t.name = newstr` for an OwnedStr field (and

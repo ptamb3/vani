@@ -856,11 +856,18 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
             ctx.locals.insert(name.clone(), (ty.clone(), addr));
         }
         TypedStmt::Reassign { name, ty, expr, drop_old } => {
-            // Same alloca/store path as Let — Vec / Array / scalar
-            // all just need a store into the existing binding's
-            // address. `drop_old: true` (Vec reassign that didn't
-            // consume the previous value via the rhs) frees the
-            // current buffer first.
+            // Same alloca/store path as Let — Vec / Array /
+            // scalar all just need a store into the existing
+            // binding's address. `drop_old: true` (non-Copy
+            // reassign whose RHS doesn't itself consume the
+            // previous value) routes through "evaluate RHS
+            // into a temp, free the old slot, store the temp"
+            // so a RHS that READS the binding (e.g. through
+            // `xs.len`) doesn't observe freed memory. Vec was
+            // wired in #8 (still with the wrong order — eval
+            // came after free); closure #133 reorders to
+            // eval-first-then-free for safety and adds the
+            // OwnedStr arm.
             let addr = match ctx.locals.get(name) {
                 Some((_, a)) => a.clone(),
                 None => unreachable!(
@@ -868,30 +875,40 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                     name
                 ),
             };
+            let lty = llvm_type_string(ty);
+            let value = emit_expr(expr, ctx, out);
             if *drop_old {
-                if let Type::Vec(element) = ty {
-                    let s_ty = vec_struct_name(element);
-                    let elt = llvm_type(element);
-                    let data_p = ctx.fresh_tmp();
-                    out.push_str(&format!(
-                        "  {} = getelementptr {}, {}* {}, i64 0, i32 0\n",
-                        data_p, s_ty, s_ty, addr
-                    ));
-                    let data = ctx.fresh_tmp();
-                    out.push_str(&format!(
-                        "  {} = load {}*, {}** {}\n",
-                        data, elt, elt, data_p
-                    ));
-                    let raw = ctx.fresh_tmp();
-                    out.push_str(&format!(
-                        "  {} = bitcast {}* {} to i8*\n",
-                        raw, elt, data
-                    ));
-                    out.push_str(&format!("  call void @free(i8* {})\n", raw));
+                match ty {
+                    Type::Vec(element) => {
+                        let s_ty = vec_struct_name(element);
+                        let free_name = format!(
+                            "@intent_vec_{}__free",
+                            vec_struct_tag(element)
+                        );
+                        let old = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = load {}, {}* {}\n",
+                            old, s_ty, s_ty, addr
+                        ));
+                        out.push_str(&format!(
+                            "  call void {}({} {})\n",
+                            free_name, s_ty, old
+                        ));
+                    }
+                    Type::OwnedStr => {
+                        let old = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = load i8*, i8** {}\n",
+                            old, addr
+                        ));
+                        out.push_str(&format!(
+                            "  call void @free(i8* {})\n",
+                            old
+                        ));
+                    }
+                    _ => {}
                 }
             }
-            let value = emit_expr(expr, ctx, out);
-            let lty = llvm_type_string(ty);
             out.push_str(&format!("  store {} {}, {}* {}\n", lty, value, lty, addr));
         }
         TypedStmt::If { cond, then_body, else_body } => {

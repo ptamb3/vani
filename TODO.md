@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #132)
+## ⏳ Resume here (paused 2026-05-22, after closure #133)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -61,8 +61,15 @@ All 57 examples now run identically on both backends.
 (Vec field) now emit a free of the previous slot's heap
 before storing the new value in both backends. Mirrors
 closure #126's leaf-Drop logic for index-field assigns.
-Was a real leak masked by absence of an exercising
-example. Test totals: 813 lib + 47 e2e passing.
+#133 Reassign of OwnedStr frees previous heap + LLVM
+Reassign eval-order fix: `s = "b" + ""` no longer leaks
+the previous heap (the Reassign drop-old path was Vec-only
+in both backends; OwnedStr fell through to plain assign).
+The LLVM Reassign emit also had a latent bug — it freed
+the old buffer BEFORE evaluating the RHS, which would UAF
+on any RHS that READ the binding; reordered to
+eval-first-then-free. Test totals: 815 lib + 47 e2e
+passing.
 
 ### Recommended next (pick one)
 
