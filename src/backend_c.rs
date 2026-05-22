@@ -240,9 +240,18 @@ pub fn emit_c(program: &TypedProgram) -> String {
             Some(ty) => ty,
             None => continue,
         };
+        // Array payloads need the `T name[N]` declarator
+        // form rather than `intent_arr<N>_<T> name` (which
+        // would require the typedef and complicate the
+        // initializer story). Mirrors the struct-field array
+        // handling from closure #100. Closure #119.
+        let payload_decl = match &payload_ty {
+            Type::Array { .. } => format_declarator(&payload_ty, "payload"),
+            _ => format!("{} payload", c_type_name(&payload_ty)),
+        };
         body.push_str(&format!(
-            "typedef struct {{ int32_t tag; {} payload; }} {};\n",
-            c_type_name(&payload_ty),
+            "typedef struct {{ int32_t tag; {}; }} {};\n",
+            payload_decl,
             enum_c_name(&decl.name)
         ));
         any_enum_emitted = true;
@@ -2333,11 +2342,23 @@ fn emit_expr(expr: &TypedExpr) -> String {
         TypedExprKind::EnumVariantWithPayload { enum_name, tag, payload, .. } => {
             // T1.3 phase 2b: build the tagged-union struct
             // literal with both `.tag` and `.payload` set.
+            // Array payloads need a bare-brace `{e1, e2, …}`
+            // initializer since C forbids assigning a
+            // compound-literal array into a struct field of
+            // array type. Same fix as struct fields in
+            // closure #100. Closure #119.
+            let payload_str = match (&payload.ty, &payload.kind) {
+                (Type::Array { .. }, TypedExprKind::ArrayLit { elements }) => {
+                    let parts: Vec<String> = elements.iter().map(emit_expr).collect();
+                    format!("{{ {} }}", parts.join(", "))
+                }
+                _ => emit_expr(payload),
+            };
             format!(
-                "(({}){{ .tag = (int32_t){}, .payload = ({}) }})",
+                "(({}){{ .tag = (int32_t){}, .payload = {} }})",
                 enum_c_name(enum_name),
                 tag,
-                emit_expr(payload)
+                payload_str
             )
         }
         TypedExprKind::Match { scrutinee, arms } => {

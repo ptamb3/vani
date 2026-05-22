@@ -2631,6 +2631,28 @@ mod tests {
     }
 
     #[test]
+    fn enum_array_payload_compiles() {
+        // Closure #119: enum payloads admit `[T; N]` of Copy
+        // elements. Arrays have stack lifetime so no Drop is
+        // needed; the C typedef uses an inline `T name[N]`
+        // declarator and the LLVM payload-less variant uses
+        // `zeroinitializer`.
+        let source = r#"
+            enum Window { Open([i64; 4]), Closed }
+            fn main() -> i64 {
+              let a: Window = Window.Open([1, 2, 3, 4]);
+              let b: Window = Window.Closed;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("array enum payload should compile");
+        assert!(
+            c.contains("int64_t payload[4]"),
+            "expected inline C array declarator in enum typedef:\n{c}"
+        );
+    }
+
+    #[test]
     fn enum_vec_payload_compiles_and_drops() {
         // Closure #118: enum payloads admit `Vec<T>` in
         // addition to OwnedStr. The aggregate is affine and

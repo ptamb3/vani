@@ -3399,11 +3399,13 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 // Pointer payloads (OwnedStr lowers to i8*)
                 // need LLVM's `null` literal, not `0`.
                 Type::OwnedStr => "null",
-                // Aggregate Vec / Tuple / Struct payloads
-                // use `zeroinitializer` for the all-zero
-                // placeholder when the variant has no
+                // Aggregate payloads (Vec / Tuple / Struct /
+                // Array) use `zeroinitializer` for the all-
+                // zero placeholder when the variant has no
                 // user-provided payload.
-                Type::Vec(_) | Type::Tuple(_) | Type::Struct(_) => "zeroinitializer",
+                Type::Vec(_) | Type::Tuple(_) | Type::Struct(_) | Type::Array { .. } => {
+                    "zeroinitializer"
+                }
                 _ => "0",
             };
             let s0 = ctx.fresh_tmp();

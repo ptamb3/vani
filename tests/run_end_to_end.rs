@@ -399,6 +399,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "control_flow.intent",
         "drop_interface.intent",
         "early_exit.intent",
+        "enum_arr_payload.intent",
         "enum_eq.intent",
         "enum_owned_payload.intent",
         "enum_vec_payload.intent",

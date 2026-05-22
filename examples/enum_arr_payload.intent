@@ -1,0 +1,36 @@
+intent "Enum with `[T; N]` payload (stack-allocated array)";
+
+// Building on the OwnedStr (closure #113) and Vec<T>
+// (closure #118) enum payload work, this closure admits
+// `[T; N]` of Copy elements as a payload type. Arrays have
+// stack lifetime — no Drop is needed since there's no heap
+// resource attached. The empty/payload-less variant uses a
+// zeroinitializer placeholder.
+
+enum Window {
+  Open([i64; 4]),
+  Closed,
+}
+
+fn make(use_open: bool) -> Window {
+  if use_open {
+    return Window.Open([10, 20, 30, 40]);
+  }
+  return Window.Closed;
+}
+
+fn classify(w: Window) -> i64 {
+  return match w {
+    Window.Open then 1,
+    Window.Closed then 0,
+  };
+}
+
+fn main() -> i64 {
+  let a: Window = make(true);
+  let b: Window = make(false);
+  assert classify(a) == 1;
+  assert classify(b) == 0;
+  print "Window enum with [i64; 4] payload OK";
+  return 0;
+}

@@ -696,21 +696,28 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
             }
             if let Some(payload_ty) = decl.variants[i].payload.first() {
                 // T1.2 phase 2 struct RAII landed in closures
-                // #98 / #100; #113 added OwnedStr; #118 adds
-                // Vec<T>. Other affine payload types ([T;N],
-                // Task, Atomic) still need more work and stay
-                // rejected.
+                // #98 / #100; #113 added OwnedStr; #118 added
+                // Vec<T>; #119 adds `[T;N]` of Copy elements.
+                // Arrays of Copy elements need no Drop —
+                // they're stack-allocated and the surrounding
+                // affine binding's move tracking handles
+                // discipline. Task / Atomic still need more
+                // work and stay rejected.
+                let array_of_copy = matches!(
+                    payload_ty,
+                    Type::Array { element, .. } if element.is_copy()
+                );
                 let allowed = payload_ty.is_copy()
-                    || matches!(payload_ty, Type::OwnedStr | Type::Vec(_));
+                    || matches!(payload_ty, Type::OwnedStr | Type::Vec(_))
+                    || array_of_copy;
                 if !allowed {
                     diagnostics.push(Diagnostic::new(
                         decl.variants[i].name_span,
                         format!(
                             "enum '{}' variant '{}' payload type {} is not \
-                             Copy / OwnedStr / Vec<T> — v1 enum payloads \
-                             accept Copy types, OwnedStr, and Vec<T>; other \
-                             affine payload types ([T;N] / Task / Atomic) \
-                             need more codegen work",
+                             a Copy type, OwnedStr, Vec<T>, or [T;N] of Copy \
+                             elements — v1 enum payloads still reject Task \
+                             and Atomic<T>",
                             decl.name,
                             decl.variants[i].name,
                             payload_ty

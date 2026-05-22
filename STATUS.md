@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 792 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 793 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,15 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **`[T; N]` enum payload done 2026-05-22**: arrays of
+   Copy elements are now valid as enum payloads. No Drop
+   needed (stack lifetime). C-side uses an inline `T name[N]`
+   declarator (via `format_declarator`) and a bare-brace
+   `{e1, e2, …}` initializer for the variant constructor.
+   LLVM `zeroinitializer` extended to cover Array payloads
+   for payload-less variants. See
+   [examples/enum_arr_payload.intent](examples/enum_arr_payload.intent).
+
    **Vec<T> enum payload done 2026-05-22**: extends #113's
    OwnedStr work — enum variants can now hold `Vec<T>`
    payloads. Both backends emit a tag-conditional

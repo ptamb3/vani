@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #118)
+## ⏳ Resume here (paused 2026-05-22, after closure #119)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -18,7 +18,8 @@ scrutinee, #112 deep field paths for mixed-place assign,
 type-associated functions (`Type.helper(args)`), #115
 unit-return functions, #116 empty struct + bare-block
 scope-stmt, #117 SSA bool-print parity, #118 Vec<T> enum
-payload. Test totals: 792 lib + 47 e2e passing.
+payload, #119 [T;N] enum payload. Test totals: 793 lib +
+47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -616,6 +617,40 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+119. ~~**`[T; N]` enum payload**~~ — done 2026-05-22.
+     Closes another follow-up from #113. Arrays of Copy
+     elements as enum payloads need no Drop (stack
+     lifetime); both backends handle layout via small
+     fixes parallel to the struct-field array work.
+     - **Checker gate** in [src/checker.rs](src/checker.rs)
+       admits `Type::Array { element, .. }` when `element.is_copy()`.
+       Task / Atomic still rejected.
+     - **C-side typedef** in
+       [src/backend_c.rs](src/backend_c.rs) uses
+       `format_declarator(payload_ty, "payload")` for array
+       payloads — emits `int64_t payload[4]` (inline) instead
+       of an `intent_arr<N>_<T>` typedef. Mirrors the
+       struct-field array fix from closure #100.
+     - **C-side payload literal**: `EnumVariantWithPayload`
+       detects an inline `ArrayLit` payload and uses a
+       bare-brace `{e1, e2, …}` initializer instead of the
+       ArrayLit's `((T[N]){…})` compound-literal form
+       (which can't init a struct field of array type).
+     - **LLVM payload-zero**: extended the
+       `zeroinitializer` arm to include `Type::Array { .. }`
+       (was Vec / Tuple / Struct only).
+     - **1 lib test added**:
+       `enum_array_payload_compiles` asserts the C output
+       contains the inline `int64_t payload[4]`
+       declarator.
+     - **New example**
+       [examples/enum_arr_payload.intent](examples/enum_arr_payload.intent)
+       exercises a `Window { Open([i64;4]), Closed }` flow.
+       Wired into the cross-backend e2e test.
+     - **Still pending**: Task / Atomic enum payloads;
+       non-Copy destructure-binding extraction.
+     792 → 793 lib tests; 47 e2e stable.
+
 118. ~~**Vec<T> enum payload (heap-aware Drop)**~~ — done
      2026-05-22. Extends closure #113 (OwnedStr enum
      payload) to admit `Vec<T>`. Closes one of the four
