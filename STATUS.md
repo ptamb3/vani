@@ -389,6 +389,14 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Const initializer arithmetic done 2026-05-22**:
+   `const B: i64 = A + 1;` (and `*`, `-`, `/`, `%`) folds
+   over previously-declared integer consts. Checker
+   `literal_const_value` and parser `expr_as_int_literal`
+   both walk Var / Binary nodes recursively with checked
+   arithmetic. The resolved value flows into the `[T; N]`
+   array-length resolver from closure #120 too.
+
    **`const N` as array length done 2026-05-22**: users
    can now declare `const SIZE: i64 = 8;` and reference
    SIZE in array types (`[i64; SIZE]`) across let

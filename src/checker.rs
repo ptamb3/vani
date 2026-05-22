@@ -839,7 +839,7 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
         }
         // v1: initializer must be a literal. Unary minus
         // over a literal is allowed so `-1` works.
-        let value_const = match literal_const_value(&decl.value, &decl.ty) {
+        let value_const = match literal_const_value(&decl.value, &decl.ty, &const_registry) {
             Some(v) => v,
             None => {
                 diagnostics.push(Diagnostic::new(
@@ -2475,7 +2475,11 @@ fn substitute_type_param_in_stmt(stmt: &mut Stmt, t_name: &str, concrete: &Type)
 /// concrete `TypedConst`. v1 accepts plain integer/float/bool
 /// literals and unary-minus-of-literal. Anything else returns
 /// `None` and the caller surfaces a clear diagnostic. T4.15.
-fn literal_const_value(expr: &Expr, ty: &Type) -> Option<TypedConst> {
+fn literal_const_value(
+    expr: &Expr,
+    ty: &Type,
+    prior_consts: &BTreeMap<String, (Type, TypedConst, Span)>,
+) -> Option<TypedConst> {
     match &expr.kind {
         ExprKind::Int(v) if matches!(
             ty,
@@ -2489,12 +2493,52 @@ fn literal_const_value(expr: &Expr, ty: &Type) -> Option<TypedConst> {
             Some(TypedConst::Float(*v))
         }
         ExprKind::Bool(v) if matches!(ty, Type::Bool) => Some(TypedConst::Bool(*v)),
+        // Reference to a previously-declared const. The
+        // referenced const's type must match the declared type
+        // of the new const. T0.0 follow-up (closure #121).
+        ExprKind::Var(name) => {
+            let (other_ty, other_val, _) = prior_consts.get(name)?;
+            if other_ty != ty {
+                return None;
+            }
+            Some(other_val.clone())
+        }
         ExprKind::Unary { op: UnaryOp::Neg, expr: inner } => {
-            match literal_const_value(inner, ty)? {
+            match literal_const_value(inner, ty, prior_consts)? {
                 TypedConst::Int(v) => v.checked_neg().map(TypedConst::Int),
                 TypedConst::Float(v) => Some(TypedConst::Float(-v)),
                 _ => None,
             }
+        }
+        // Const arithmetic: +, -, *, /, % on integer consts.
+        // The result type is the declared `ty`; both operands
+        // must fold to the same integer type. Bool / float
+        // arithmetic isn't supported in const initializers
+        // (not needed in practice; floats also bring NaN /
+        // rounding wrinkles). T0.0 follow-up.
+        ExprKind::Binary { op, left, right } => {
+            if !matches!(
+                ty,
+                Type::I8 | Type::I16 | Type::I32 | Type::I64
+                | Type::U8 | Type::U16 | Type::U32 | Type::U64
+            ) {
+                return None;
+            }
+            let TypedConst::Int(l) = literal_const_value(left, ty, prior_consts)? else {
+                return None;
+            };
+            let TypedConst::Int(r) = literal_const_value(right, ty, prior_consts)? else {
+                return None;
+            };
+            let result = match op {
+                BinaryOp::Add => l.checked_add(r),
+                BinaryOp::Sub => l.checked_sub(r),
+                BinaryOp::Mul => l.checked_mul(r),
+                BinaryOp::Div if r != 0 => l.checked_div(r),
+                BinaryOp::Rem if r != 0 => l.checked_rem(r),
+                _ => None,
+            }?;
+            Some(TypedConst::Int(result))
         }
         _ => None,
     }

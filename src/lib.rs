@@ -1390,23 +1390,15 @@ mod tests {
     }
 
     #[test]
-    fn const_decl_rejects_non_literal_initializer() {
-        // v1 const initializers must be literal. `1 + 1`
-        // arithmetic at decl-time isn't supported yet — the
-        // diagnostic must point users at the constraint.
+    fn const_decl_arithmetic_initializer_compiles() {
+        // Closure #121: const initializers now accept
+        // integer arithmetic over previously-declared
+        // consts and literals.
         let source = r#"
             const TWO: i64 = 1 + 1;
             fn main() -> i64 { return TWO; }
         "#;
-        let errors = compile(source)
-            .expect_err("non-literal initializer should fail");
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("must be a literal")),
-            "expected literal-required diagnostic, got: {:?}",
-            errors
-        );
+        compile(source).expect("const arithmetic should compile");
     }
 
     #[test]
@@ -2062,23 +2054,15 @@ mod tests {
     }
 
     #[test]
-    fn const_initialized_with_other_const_rejected() {
-        // `const B: i64 = A + 1;` — arithmetic init not
-        // yet supported (literal only in v1).
+    fn const_initialized_with_other_const_compiles() {
+        // Closure #121: const arithmetic referencing prior
+        // consts is supported.
         let source = r#"
             const A: i64 = 5;
             const B: i64 = A + 1;
             fn main() -> i64 { return B; }
         "#;
-        let errors = compile(source)
-            .expect_err("non-literal const init should fail");
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("must be a literal value")),
-            "expected literal-required diagnostic, got: {:?}",
-            errors
-        );
+        compile(source).expect("const-A-plus-1 should compile");
     }
 
     #[test]

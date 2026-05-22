@@ -1981,8 +1981,8 @@ deliberately deferred as v1 trade-offs.
 
 - ✅ `const N` as array length `[T; N]` — works for previously-declared
   consts with an integer-literal initializer.
-- ⏳ Const initializer with arithmetic (`const B: i64 = A + 1;`) — literal-only
-  in v1; needs a const-eval pass (would land with block expressions).
+- ✅ Const initializer arithmetic — `const B: i64 = A + 1;` (and `* / - %`)
+  folds at parse time across previously-declared integer consts.
 - ⏳ Array types in fn return position — SSA layer lacks by-value-array return;
   clean diagnostic in place.
 - ⏳ Nested arrays `[[T; N]; M]` and `[Vec<T>; N]` — SSA path doesn't lower

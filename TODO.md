@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #120)
+## ⏳ Resume here (paused 2026-05-22, after closure #121)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -19,7 +19,8 @@ type-associated functions (`Type.helper(args)`), #115
 unit-return functions, #116 empty struct + bare-block
 scope-stmt, #117 SSA bool-print parity, #118 Vec<T> enum
 payload, #119 [T;N] enum payload, #120 const-N as array
-length. Test totals: 794 lib + 47 e2e passing.
+length, #121 const-initializer arithmetic. Test totals:
+794 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -617,6 +618,31 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+121. ~~**Const initializer arithmetic**~~ — done 2026-05-22.
+     `const B: i64 = A + 1;` (and `*`, `-`, `/`, `%`) now
+     folds at parse + check time across previously-declared
+     integer consts. Closes another README small-item.
+     - **Checker** `literal_const_value` in
+       [src/checker.rs](src/checker.rs) gained two arms:
+       `Var(name)` looks up a previously-validated const
+       (whose type must match the new const's declared
+       type); `Binary { op: +/-/*/'/'/%, .. }` recursively
+       folds both operands and applies the checked
+       arithmetic. Overflow / div-by-zero / type mismatch
+       return None, falling through to the existing
+       "must be a literal value" diagnostic.
+     - **Parser** `expr_as_int_literal` in
+       [src/parser.rs](src/parser.rs) mirrors the checker
+       fold (same five binary ops + Var lookup) so the
+       resolved integer value flows into the
+       `[T; SIZE]` array-length resolver (closure #120).
+     - **2 lib tests rewritten / added**: the legacy
+       `const_decl_rejects_non_literal_initializer` and
+       `const_initialized_with_other_const_rejected`
+       tests now assert the positive cases
+       (`*_compiles`).
+     794 lib tests; 47 e2e stable.
+
 120. ~~**`const N` as `[T; N]` array length**~~ — done
      2026-05-22. Closes a long-standing README small-item.
      Users can declare `const SIZE: i64 = 8;` and use it in

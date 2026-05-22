@@ -219,7 +219,7 @@ impl Parser {
         // can resolve a later `[T; NAME]` length reference.
         // Only literal forms (`42`, `-1`) qualify. T0.0
         // follow-up (closure #120).
-        if let Some(v) = expr_as_int_literal(&value) {
+        if let Some(v) = expr_as_int_literal(&value, &self.const_int_values) {
             self.const_int_values.insert(name.clone(), v);
         }
         Ok(ConstDecl {
@@ -2552,18 +2552,31 @@ fn ident_text(token: Token) -> String {
     }
 }
 
-/// Recognize integer-literal initializers (including the
-/// `-N` form from a `Minus` unary applied to an `Int`). Used
-/// by `parse_const_decl` to stash literal int values for the
-/// `[T; SIZE]` array-length resolver. T0.0 follow-up.
-fn expr_as_int_literal(expr: &Expr) -> Option<i128> {
+/// Recognize integer-literal initializers, including
+/// arithmetic over previously-declared consts. Used by
+/// `parse_const_decl` to stash literal int values for the
+/// `[T; SIZE]` array-length resolver. Mirrors the checker's
+/// `literal_const_value` const-fold. T0.0 follow-up.
+fn expr_as_int_literal(
+    expr: &Expr,
+    prior_consts: &std::collections::HashMap<String, i128>,
+) -> Option<i128> {
     match &expr.kind {
         ExprKind::Int(v) => Some(*v),
+        ExprKind::Var(name) => prior_consts.get(name).copied(),
         ExprKind::Unary { op: UnaryOp::Neg, expr: inner } => {
-            if let ExprKind::Int(v) = &inner.kind {
-                v.checked_neg()
-            } else {
-                None
+            expr_as_int_literal(inner, prior_consts)?.checked_neg()
+        }
+        ExprKind::Binary { op, left, right } => {
+            let l = expr_as_int_literal(left, prior_consts)?;
+            let r = expr_as_int_literal(right, prior_consts)?;
+            match op {
+                BinaryOp::Add => l.checked_add(r),
+                BinaryOp::Sub => l.checked_sub(r),
+                BinaryOp::Mul => l.checked_mul(r),
+                BinaryOp::Div if r != 0 => l.checked_div(r),
+                BinaryOp::Rem if r != 0 => l.checked_rem(r),
+                _ => None,
             }
         }
         _ => None,
