@@ -3,15 +3,16 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #108)
+## ⏳ Resume here (paused 2026-05-22, after closure #109)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
 expressions, #103 reverse-declaration field drop order, #104
 user-Eq desugar for struct `==`, #105 partial-move tracking,
 #106 enum `==` desugar + partial-then-whole-move diagnostic,
-#107 tuple auto-equality, #108 in-place `push(mut ref xs, v)`.
-Test totals: 782 lib + 47 e2e passing.
+#107 tuple auto-equality, #108 in-place
+`push(mut ref xs, v)`, #109 `xs[i].field = v` mixed-place
+assignment. Test totals: 783 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -609,6 +610,60 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+109. ~~**`xs[i].field = v` mixed-place assignment**~~ — done
+     2026-05-22. The parser was already gated with a workaround
+     diagnostic; this closure replaces the gate with real
+     lowering through both backends. Single-level paths only
+     in v1; the Copy-leaf restriction keeps the codegen
+     simple (no field-drop on overwrite).
+     - **AST + IR**: `Stmt::IndexAssign` and
+       `TypedStmt::IndexAssign` gained `field_path` fields
+       (`Vec<String>` AST-side; `Vec<(String, u32)>` IR-side
+       with resolved indices). Empty path falls back to plain
+       `xs[i] = v;`.
+     - **Parser**: the `looks_like_index_then_field_assign`
+       lookahead now routes to the new
+       `parse_index_then_field_assign_stmt` instead of
+       erroring. It parses one-or-more `.<field>` segments
+       before the `=`. The OLD diagnostic is gone.
+     - **Checker**: validates each segment against the
+       element type's struct declaration. Errors if the
+       element is non-struct, the field is unknown, the
+       leaf field is non-Copy (would need field-Drop on
+       overwrite — deferred), or the path is deeper than
+       one level. The leaf field's type drives the value
+       coercion (instead of the element type).
+     - **C backend** in
+       [src/backend_c.rs](src/backend_c.rs):
+       `emit_index_assign` gained a `field_path` parameter
+       and builds `.field1.field2…` suffix to append after
+       the indexed access. Works uniformly for owned
+       `[T;N]`, `Vec<T>`, and `&mut` variants.
+     - **LLVM backend** in
+       [src/backend_llvm.rs](src/backend_llvm.rs): both
+       the Vec and Array arms now walk the resolved
+       `field_path`, GEP'ing through each `i64 0, i32
+       <field_index>` segment and storing at the leaf
+       pointer. The struct type for each GEP comes from
+       `LLVM_STRUCT_FIELDS_REGISTRY`. Also switched
+       `llvm_type(element)` to `llvm_type_string` for the
+       Vec data pointer so aggregate elements like
+       `Struct("Point")` don't panic.
+     - **SSA gate** in `src/ssa.rs`: rejects non-empty
+       `field_path` with a `LowerError` so programs route
+       through the tree backend.
+     - **2 existing lib tests updated**:
+       `index_then_field_assign_gated_with_workaround` →
+       `index_then_field_assign_compiles_and_mutates` (now
+       asserts the program compiles); a new
+       `index_then_field_assign_no_field_unsupported` test
+       pins the deep-path-still-rejected diagnostic.
+     - **New example**
+       [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent)
+       exercises both `Vec<Point>` and `[Point; 3]` cases;
+       wired into the cross-backend e2e test.
+     782 → 783 lib tests; 47 e2e stable.
+
 108. ~~**In-place `push(mut ref xs, v)`**~~ — done 2026-05-22.
      Adds a second form of `push` that operates through a
      pointer to the Vec instead of consuming + returning it.

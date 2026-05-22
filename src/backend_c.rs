@@ -1729,9 +1729,10 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
             name,
             base_ty,
             index,
+            field_path,
             value,
             checked,
-        } => emit_index_assign(name, base_ty, index, value, *checked, out),
+        } => emit_index_assign(name, base_ty, index, field_path, value, *checked, out),
         TypedStmt::FieldAssign {
             object,
             field,
@@ -1970,6 +1971,7 @@ fn emit_index_assign(
     name: &str,
     base_ty: &Type,
     index: &TypedExpr,
+    field_path: &[(String, u32)],
     value: &TypedExpr,
     checked: bool,
     out: &mut String,
@@ -1978,6 +1980,13 @@ fn emit_index_assign(
     let index_str = emit_expr(index);
     let value_str = emit_expr(value);
 
+    // Build the per-field suffix once: `.field1.field2…`.
+    // Empty for plain `xs[i] = v;`. T1.2 phase 2b follow-up.
+    let field_suffix: String = field_path
+        .iter()
+        .map(|(name, _)| format!(".{}", name))
+        .collect();
+
     let underlying = base_ty.deref();
     let through_ref = base_ty.is_ref_mut();
 
@@ -1985,13 +1994,13 @@ fn emit_index_assign(
         Type::Array { length, .. } => {
             if checked {
                 out.push_str(&format!(
-                    "  {}[intent_check_bounds((uint64_t)({}), {})] = {};\n",
-                    local, index_str, length, value_str
+                    "  {}[intent_check_bounds((uint64_t)({}), {})]{} = {};\n",
+                    local, index_str, length, field_suffix, value_str
                 ));
             } else {
                 out.push_str(&format!(
-                    "  {}[{}] = {};\n",
-                    local, index_str, value_str
+                    "  {}[{}]{} = {};\n",
+                    local, index_str, field_suffix, value_str
                 ));
             }
         }
@@ -2003,13 +2012,13 @@ fn emit_index_assign(
             };
             if checked {
                 out.push_str(&format!(
-                    "  {0}.data[intent_check_bounds((uint64_t)({1}), {0}.len)] = {2};\n",
-                    prefix, index_str, value_str
+                    "  {0}.data[intent_check_bounds((uint64_t)({1}), {0}.len)]{2} = {3};\n",
+                    prefix, index_str, field_suffix, value_str
                 ));
             } else {
                 out.push_str(&format!(
-                    "  {}.data[(uint64_t)({})] = {};\n",
-                    prefix, index_str, value_str
+                    "  {}.data[(uint64_t)({})]{} = {};\n",
+                    prefix, index_str, field_suffix, value_str
                 ));
             }
         }

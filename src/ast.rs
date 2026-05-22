@@ -632,6 +632,12 @@ pub enum Stmt {
     IndexAssign {
         name: String,
         index: Expr,
+        /// `xs[i].field = …;` — single-level field path on the
+        /// indexed element. Empty for plain `xs[i] = v;`. v1
+        /// supports single-level paths (struct field) and
+        /// requires the Vec/array element to be a Copy struct.
+        /// T1.2 phase 2b follow-up.
+        field_path: Vec<String>,
         value: Expr,
         span: Span,
     },

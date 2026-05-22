@@ -1352,7 +1352,7 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 value_ty, v, value_ty, elem_p
             ));
         }
-        TypedStmt::IndexAssign { name, index, value, base_ty, .. } => {
+        TypedStmt::IndexAssign { name, index, field_path, value, base_ty, .. } => {
             let underlying = base_ty.deref().clone();
             let addr = match ctx.locals.get(name) {
                 Some((_, a)) => a.clone(),
@@ -1361,9 +1361,14 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                     name
                 ),
             };
+            // After computing a pointer `elt_p` to the
+            // indexed element, descend through field_path
+            // segments via further GEPs. The final pointer's
+            // pointee type is `value.ty` (the leaf field
+            // type). T1.2 phase 2b follow-up.
             if let Type::Vec(element) = &underlying {
                 let s_ty = vec_struct_name(element);
-                let elt_ty = llvm_type(element);
+                let elt_ty = llvm_type_string(element);
                 let data_p = ctx.fresh_tmp();
                 out.push_str(&format!(
                     "  {} = getelementptr {}, {}* {}, i64 0, i32 0\n",
@@ -1376,13 +1381,40 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 ));
                 let idx_v = emit_expr(index, ctx, out);
                 let idx_i64 = widen_index_to_64(&idx_v, &index.ty, ctx, out);
-                let val_v = emit_expr(value, ctx, out);
-                let p = ctx.fresh_tmp();
+                let mut p = ctx.fresh_tmp();
                 out.push_str(&format!(
                     "  {} = getelementptr {}, {}* {}, i64 {}\n",
                     p, elt_ty, elt_ty, data, idx_i64
                 ));
-                out.push_str(&format!("  store {} {}, {}* {}\n", elt_ty, val_v, elt_ty, p));
+                // Walk field segments: each one drives a
+                // `i64 0, i32 <field_index>` GEP. The struct
+                // type spelling for each segment is the type
+                // BEFORE descending into that segment.
+                let mut current_ty = element.as_ref().clone();
+                for (_, field_index) in field_path {
+                    let struct_ty_str = llvm_type_string(&current_ty);
+                    let next = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
+                        next, struct_ty_str, struct_ty_str, p, field_index
+                    ));
+                    p = next;
+                    // Advance current_ty to the field's type
+                    // (Copy primitive in v1, per checker gate).
+                    if let Type::Struct(sname) = &current_ty {
+                        // Use the struct registry to look up
+                        // the field's type. T1.2 phase 2b.
+                        let fields = LLVM_STRUCT_FIELDS_REGISTRY
+                            .with(|r| r.borrow().get(sname).cloned())
+                            .unwrap_or_default();
+                        if let Some((_, fty)) = fields.get(*field_index as usize) {
+                            current_ty = fty.clone();
+                        }
+                    }
+                }
+                let store_ty = llvm_type_string(&value.ty);
+                let val_v = emit_expr(value, ctx, out);
+                out.push_str(&format!("  store {} {}, {}* {}\n", store_ty, val_v, store_ty, p));
                 return;
             }
             if let Type::Array { element, .. } = &underlying {
@@ -1404,13 +1436,33 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                     ));
                     dest
                 };
-                let val_v = emit_expr(value, ctx, out);
-                let p = ctx.fresh_tmp();
+                let mut p = ctx.fresh_tmp();
                 out.push_str(&format!(
                     "  {} = getelementptr {}, {}* {}, i64 0, i64 {}\n",
                     p, agg, agg, addr, idx_i64
                 ));
-                out.push_str(&format!("  store {} {}, {}* {}\n", elt_ty, val_v, elt_ty, p));
+                let mut current_ty = element.as_ref().clone();
+                for (_, field_index) in field_path {
+                    let struct_ty_str = llvm_type_string(&current_ty);
+                    let next = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
+                        next, struct_ty_str, struct_ty_str, p, field_index
+                    ));
+                    p = next;
+                    if let Type::Struct(sname) = &current_ty {
+                        let fields = LLVM_STRUCT_FIELDS_REGISTRY
+                            .with(|r| r.borrow().get(sname).cloned())
+                            .unwrap_or_default();
+                        if let Some((_, fty)) = fields.get(*field_index as usize) {
+                            current_ty = fty.clone();
+                        }
+                    }
+                }
+                let store_ty = llvm_type_string(&value.ty);
+                let _ = elt_ty;
+                let val_v = emit_expr(value, ctx, out);
+                out.push_str(&format!("  store {} {}, {}* {}\n", store_ty, val_v, store_ty, p));
             } else {
                 // The checker requires the base type of an index-
                 // assign to be Vec<T> or [T; N]; everything else is

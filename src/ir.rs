@@ -142,6 +142,12 @@ pub enum TypedStmt {
         /// to choose the correct C lowering form.
         base_ty: Type,
         index: TypedExpr,
+        /// `xs[i].field = …;` — single-level field path on
+        /// the indexed element. Each entry is (field_name,
+        /// field_index). Empty for plain `xs[i] = v;`. v1
+        /// supports single-level paths only. T1.2 phase 2b
+        /// follow-up.
+        field_path: Vec<(String, u32)>,
         value: TypedExpr,
         /// Whether to emit a runtime bounds check. Compile-time-discharged
         /// constant indices on owned arrays skip the check.

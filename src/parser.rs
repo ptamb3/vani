@@ -937,18 +937,10 @@ impl Parser {
         } else if self.looks_like_field_assign() {
             self.parse_field_assign_stmt()
         } else if self.looks_like_index_then_field_assign() {
-            // Detected `<ident>[…].field = …;` shape but
-            // v1 doesn't have a place-tracker that can
-            // route an indexed-then-fielded lvalue through
-            // codegen. Surface a clean diagnostic + the
-            // standard workaround instead of the opaque
-            // "expected statement".
-            Err(self.error_here(
-                "mixed index + field assignment (e.g. `xs[i].field = …;`) is not \
-                 yet supported in v1 — copy the element to a local, modify the \
-                 fresh struct literal, and write it back: `xs[i] = T { f1: \
-                 v_new, f2: existing.f2, … };`",
-            ))
+            // Parse `<ident>[…].field = …;` directly into
+            // `Stmt::IndexAssign` with a non-empty
+            // `field_path`. T1.2 phase 2b follow-up.
+            self.parse_index_then_field_assign_stmt()
         } else if self.check(|kind| matches!(kind, TokenKind::LBrace)) {
             // Bare block `{ … }` as a statement isn't supported in
             // v1. Surface a clean diagnostic + the workaround
@@ -1195,6 +1187,48 @@ impl Parser {
         Ok(Stmt::IndexAssign {
             name,
             index,
+            field_path: Vec::new(),
+            value,
+            span: name_span.merge(semi.span),
+        })
+    }
+
+    /// Parse `<ident>[<index>].<field>(.<field>)* = <expr>;`
+    /// into `Stmt::IndexAssign` with a non-empty `field_path`.
+    /// The lookahead in `looks_like_index_then_field_assign`
+    /// has already validated the surface shape; this just
+    /// rebuilds the AST nodes. T1.2 phase 2b follow-up.
+    fn parse_index_then_field_assign_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let name_token = self.expect_ident()?;
+        let name_span = name_token.span;
+        let name = ident_text(name_token);
+        self.expect_keyword("'['", |kind| matches!(kind, TokenKind::LBracket))?;
+        let index = self.parse_expr()?;
+        self.expect_keyword("']'", |kind| matches!(kind, TokenKind::RBracket))?;
+        // Parse one-or-more `.<field>` segments.
+        let mut field_path: Vec<String> = Vec::new();
+        while self
+            .match_token(|k| matches!(k, TokenKind::Dot))
+            .is_some()
+        {
+            let field_tok = self.expect_ident()?;
+            field_path.push(ident_text(field_tok));
+            if !matches!(
+                self.current().kind,
+                TokenKind::Dot | TokenKind::Equal
+            ) {
+                return Err(self.error_here(
+                    "expected '.<field>' or '=' after indexed field-access",
+                ));
+            }
+        }
+        self.expect_keyword("'='", |kind| matches!(kind, TokenKind::Equal))?;
+        let value = self.parse_expr()?;
+        let semi = self.expect_keyword("';'", |kind| matches!(kind, TokenKind::Semicolon))?;
+        Ok(Stmt::IndexAssign {
+            name,
+            index,
+            field_path,
             value,
             span: name_span.merge(semi.span),
         })

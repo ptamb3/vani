@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (782 lib + 47 e2e tests passing):
+Supported today (783 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -255,6 +255,10 @@ Supported today (782 lib + 47 e2e tests passing):
   instead (the user's drop is then invoked explicitly when richer
   behavior is needed). See
   [examples/drop_interface.intent](examples/drop_interface.intent).
+- **Mixed-place assignment** — `xs[i].field = v;` writes through an index
+  plus a single-level struct field in one statement. Works on owned
+  `Vec<T>` and `[T; N]`. See
+  [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
 - **Partial-move tracking** — `let taken = bag.contents;` moves a single
   field out of a struct. The aggregate is still readable for its other
   fields; scope-exit Drop skips the moved field (no double-free); a
@@ -1985,8 +1989,8 @@ deliberately deferred as v1 trade-offs.
   instead of `true`/`false`. Tree-LLVM path correct.
 - ⏳ Bare `{ … }` as scope-stmt — currently rejected with workaround
   diagnostic; lands cheaply once block expressions exist.
-- ⏳ `xs[i].field = v` mixed-place assign — clean diagnostic with workaround;
-  needs a place-tracker in codegen.
+- ✅ `xs[i].field = v` mixed-place assign — single-level paths land
+  end-to-end; deeper paths (`xs[i].a.b = v`) still need a workaround.
 - ⏳ Generic function call sites — parses, gated diagnostic, lands with T1.4.
 - ⏳ Enum payload variants — parses, gated diagnostic, lands with T1.3 phase 2b.
 - ⏳ Match on bool / Str / float scrutinee — patterns accept ints / variants /

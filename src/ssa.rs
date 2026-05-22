@@ -820,7 +820,18 @@ fn lower_stmt(
                 span: crate::span::Span::default(),
             })
         }
-        TypedStmt::IndexAssign { name, base_ty, index, value, checked } => {
+        TypedStmt::IndexAssign { name, base_ty, index, field_path, value, checked } => {
+            // SSA path doesn't lower mixed index+field assigns
+            // yet — route to the tree backend. T1.2 phase 2b
+            // follow-up.
+            if !field_path.is_empty() {
+                return Err(LowerError {
+                    message: "SSA lowering of `xs[i].field = …` is not yet \
+                              implemented; routing to the tree backend"
+                        .to_string(),
+                    span: index.span,
+                });
+            }
             let array = locals
                 .get(name)
                 .map(|v| Operand::Value(*v))

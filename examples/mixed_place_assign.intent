@@ -1,0 +1,39 @@
+intent "Mixed-place assignment: `xs[i].field = v`";
+
+// `xs[i].field = v` writes through both an index and a field
+// in one statement. The parser builds an `IndexAssign` with a
+// non-empty `field_path`; the checker validates the path
+// (element must be a struct, field must exist, leaf type must
+// be Copy in v1); the backends GEP/access into the slot and
+// store the value at the field offset.
+//
+// Works on both owned arrays `[T; N]` and `Vec<T>` (and their
+// `mut ref` borrows). Single-level paths only in v1 — for
+// deeper updates like `xs[i].a.b = v`, copy the inner struct
+// to a local first.
+
+struct Point { x: i64, y: i64 }
+
+fn main() -> i64 {
+  // Owned Vec<Struct> — mutate two distinct slots' fields.
+  let xs: Vec<Point> = vec(Point { x: 1, y: 2 }, Point { x: 3, y: 4 });
+  xs[0].x = 99;
+  xs[1].y = 77;
+  let p0: Point = clone_at(ref xs, 0);
+  let p1: Point = clone_at(ref xs, 1);
+  assert p0.x == 99;
+  assert p0.y == 2;
+  assert p1.x == 3;
+  assert p1.y == 77;
+  print "Vec<Point> field updates OK";
+
+  // Owned [Struct; N] — same shape on a stack array.
+  let pts: [Point; 3] = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }, Point { x: 5, y: 6 }];
+  pts[1].x = 100;
+  pts[2].y = 200;
+  assert pts[1].x == 100;
+  assert pts[2].y == 200;
+  print "[Point; 3] field updates OK";
+
+  return 0;
+}

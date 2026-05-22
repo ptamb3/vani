@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 782 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 783 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,15 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **`xs[i].field = v` mixed-place assign done 2026-05-22**:
+   single-level field path on the indexed element. Parser
+   builds an `IndexAssign` with a non-empty `field_path`;
+   the checker validates the path against the struct decl;
+   both backends GEP/access into the slot and store at the
+   field offset. Copy-leaf only in v1 (avoids field-Drop on
+   overwrite). See
+   [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
    **In-place `push(mut ref xs, v)` done 2026-05-22**: a
    second form of `push` that operates through a Vec
    pointer instead of consuming + returning the Vec.

@@ -3971,6 +3971,7 @@ fn check_one_stmt(
         Stmt::IndexAssign {
             name,
             index,
+            field_path,
             value,
             span,
         } => {
@@ -4038,10 +4039,76 @@ fn check_one_stmt(
                 ));
             }
 
+            // Resolve field_path against the element type.
+            // For `xs[i].field = v;`, each path segment names a
+            // struct field; the final segment's type is what
+            // `value` must coerce to. Empty path falls back to
+            // plain `xs[i] = v;`. T1.2 phase 2b follow-up.
+            let mut resolved_path: Vec<(String, u32)> = Vec::new();
+            let mut target_ty = element_type.clone();
+            for segment in field_path {
+                let Type::Struct(struct_name) = &target_ty else {
+                    diagnostics.push(Diagnostic::new(
+                        *span,
+                        format!(
+                            "cannot apply field path '.{}' to non-struct element \
+                             type {}",
+                            segment, target_ty
+                        ),
+                    ));
+                    return false;
+                };
+                let Some(decl) = env.lookup_struct(struct_name) else {
+                    diagnostics.push(Diagnostic::new(
+                        *span,
+                        format!("struct '{}' is not declared", struct_name),
+                    ));
+                    return false;
+                };
+                let Some((idx, (_, field_ty))) = decl
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (n, _))| n == segment)
+                else {
+                    diagnostics.push(Diagnostic::new(
+                        *span,
+                        format!(
+                            "struct '{}' has no field named '{}'",
+                            struct_name, segment
+                        ),
+                    ));
+                    return false;
+                };
+                if field_path.len() > 1 {
+                    diagnostics.push(Diagnostic::new(
+                        *span,
+                        "deep field paths (e.g. `xs[i].a.b = …;`) are not \
+                         supported in v1 — bind the inner struct to a local \
+                         first, mutate it, then write back",
+                    ));
+                    return false;
+                }
+                if !field_ty.is_copy() {
+                    diagnostics.push(Diagnostic::new(
+                        *span,
+                        format!(
+                            "field '{}.{}' has non-Copy type {} — mixed \
+                             index+field assignment requires Copy field types \
+                             in v1",
+                            struct_name, segment, field_ty
+                        ),
+                    ));
+                    return false;
+                }
+                resolved_path.push((segment.clone(), idx as u32));
+                target_ty = field_ty.clone();
+            }
+
             let value_checked = check_expr(value, env, signatures, diagnostics);
             let value_coerced = coerce_checked(
                 value_checked,
-                &element_type,
+                &target_ty,
                 value.span,
                 "index-assign value",
                 diagnostics,
@@ -4166,6 +4233,7 @@ fn check_one_stmt(
                 name: name.clone(),
                 base_ty: info.ty.clone(),
                 index: idx_expr,
+                field_path: resolved_path,
                 value: val_expr,
                 checked: checked_flag,
             });
