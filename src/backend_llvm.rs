@@ -1197,18 +1197,17 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
         TypedStmt::Discard { expr } => {
             // `let _ = expr;` — evaluate for side effects, drop the value.
             // Scalar (incl. Str): just emit; the SSA result goes unused.
-            // Vec<T>: extract the data pointer from the returned
-            // struct and free it. Array (stack-allocated) and
-            // OwnedStr are handled by their own drop paths
-            // elsewhere; they don't need free here.
+            // Vec<T>: route through the per-element-type __free
+            // helper so nested-Vec elements get recursively
+            // released. OwnedStr: heap `i8*` from concat / call;
+            // free it directly (closure #134 — was leaking).
+            // Array (stack-allocated) and refs don't own a heap
+            // buffer.
             if is_scalar(&expr.ty) {
                 let _ = emit_expr(expr, ctx, out);
             } else if let Type::Vec(element) = &expr.ty {
                 let value = emit_expr(expr, ctx, out);
                 let s_ty = vec_struct_name(element);
-                // Route through the per-element-type __free
-                // helper so nested-Vec elements get
-                // recursively released (refines #7).
                 let free_name = format!(
                     "@intent_vec_{}__free",
                     vec_struct_tag(element)
@@ -1216,6 +1215,12 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 out.push_str(&format!(
                     "  call void {}({} {})\n",
                     free_name, s_ty, value
+                ));
+            } else if matches!(&expr.ty, Type::OwnedStr) {
+                let value = emit_expr(expr, ctx, out);
+                out.push_str(&format!(
+                    "  call void @free(i8* {})\n",
+                    value
                 ));
             } else {
                 // Array (stack) and refs don't own a heap buffer.

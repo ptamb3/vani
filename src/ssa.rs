@@ -576,8 +576,17 @@ fn lower_stmt(
             locals.insert(name.clone(), v);
             Ok(())
         }
-        TypedStmt::Reassign { name, expr, drop_old, .. } => {
-            if *drop_old {
+        TypedStmt::Reassign { name, ty, expr, drop_old } => {
+            // Closure #134: SSA now lowers `drop_old` reassigns
+            // for OwnedStr / Vec — evaluate the RHS first, then
+            // emit a Drop of the OLD value (so any RHS that
+            // READS the binding still sees the live buffer),
+            // then update locals to the new SSA value. The
+            // backends' Drop emit handlers handle the actual
+            // free. Other non-Copy reassigns still surface as
+            // a LowerError (the tree backends model those
+            // shapes; SSA doesn't yet).
+            if *drop_old && !matches!(ty, Type::OwnedStr | Type::Vec(_)) {
                 return Err(LowerError {
                     message: format!(
                         "reassign of '{}' over a non-Copy value is not in the v1 SSA subset",
@@ -586,8 +595,21 @@ fn lower_stmt(
                     span: expr.span,
                 });
             }
-            let v = lower_expr_to_value(expr, b, locals)?;
-            locals.insert(name.clone(), v);
+            let new_v = lower_expr_to_value(expr, b, locals)?;
+            if *drop_old {
+                if let Some(old) = locals.get(name).copied() {
+                    b.emit(
+                        Type::I64,
+                        expr.span,
+                        InstrKind::Drop {
+                            source: Operand::Value(old),
+                            name: name.clone(),
+                            ty: ty.clone(),
+                        },
+                    );
+                }
+            }
+            locals.insert(name.clone(), new_v);
             Ok(())
         }
         TypedStmt::Return { expr } => {
@@ -784,8 +806,25 @@ fn lower_stmt(
         TypedStmt::Discard { expr } => {
             // The value is dropped, but any side-effecting
             // subexpressions (asserts, indexing, calls) still
-            // run. Lower into an SSA value and forget it.
-            let _ = lower_expr_to_value(expr, b, locals)?;
+            // run. Lower into an SSA value, then for non-Copy
+            // heap-shaped types emit a Drop so the backend
+            // releases the buffer (`free` for OwnedStr, the
+            // matching `__free` helper for Vec). Closure #134:
+            // `let _ = make_owned_str();` was silently leaking
+            // because the lowerer just forgot the value.
+            let v = lower_expr_to_value(expr, b, locals)?;
+            let ty = expr.ty.clone();
+            if matches!(ty, Type::OwnedStr | Type::Vec(_)) {
+                b.emit(
+                    Type::I64,
+                    expr.span,
+                    InstrKind::Drop {
+                        source: Operand::Value(v),
+                        name: "_".to_string(),
+                        ty,
+                    },
+                );
+            }
             Ok(())
         }
         TypedStmt::Drop { name, ty, moved_fields: _ } => {

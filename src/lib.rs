@@ -3362,6 +3362,53 @@ mod tests {
     }
 
     #[test]
+    fn discarded_owned_str_call_frees_heap() {
+        // Closure #134: `let _ = make_owned_str();` was
+        // silently leaking the returned heap string because
+        // the tree-C, tree-LLVM, and SSA Discard emit handlers
+        // all skipped OwnedStr (only Vec was wired). All three
+        // paths now free the heap.
+        let source = r#"
+            fn make() -> OwnedStr {
+              return "hello " + "world";
+            }
+            fn main() -> i64 {
+              let _ = make();
+              return 0;
+            }
+        "#;
+        compile(source).expect("OwnedStr discard should compile");
+        let c = compile_to_c(source).expect("emits C");
+        assert!(
+            c.contains("free((void*)_intent_discard)"),
+            "expected free of discarded OwnedStr, got:\n{c}"
+        );
+    }
+
+    #[test]
+    fn discarded_owned_str_via_bare_call_frees_heap() {
+        // Also exercise the bare-call form (`make();`) which
+        // the parser sugars to `let _ = make();`. Same free
+        // path; this guards against the discard codegen
+        // diverging from the let-underscore form.
+        let source = r#"
+            fn make() -> OwnedStr {
+              return "a" + "b";
+            }
+            fn main() -> i64 {
+              make();
+              return 0;
+            }
+        "#;
+        compile(source).expect("bare-call discard of OwnedStr should compile");
+        let c = compile_to_c(source).expect("emits C");
+        assert!(
+            c.contains("free((void*)_intent_discard)"),
+            "expected free of discarded OwnedStr from bare call, got:\n{c}"
+        );
+    }
+
+    #[test]
     fn bare_variable_as_statement_still_rejected() {
         // Regression guard: only call-shaped expressions
         // get the statement-sugar treatment. A bare `x;`

@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 815 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 817 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,21 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`let _ = …` discard of OwnedStr frees heap done 2026-05-22**:
+   `let _ = make_owned_str();` (and the bare-call form
+   `make();` that the parser sugars to it) was silently
+   leaking the returned heap string. All three Discard
+   emit paths — tree-C, tree-LLVM, and the SSA lowerer
+   that fed both SSA-C and SSA-LLVM — handled `Vec<T>` but
+   skipped `OwnedStr`, falling through to a `(void)`-style
+   no-op. SSA Reassign lowering was also extended to lower
+   `drop_old` reassigns for OwnedStr / Vec (was a hard
+   reject — fell back to tree backends) so closure #133's
+   `current = "step-" + ""` shape lowers through SSA too.
+   Closure #134. Verified leak-free under
+   `-fsanitize=address,leak`. See updated
+   [examples/strings_concat.intent](examples/strings_concat.intent).
 
    **Reassign of OwnedStr frees previous heap done 2026-05-22**:
    `s = "b" + ""` for a non-Copy `OwnedStr` binding now

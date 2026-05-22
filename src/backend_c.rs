@@ -1771,6 +1771,15 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 out.push_str(&vec_helper(element, "free"));
                 out.push_str("(_intent_discard);\n  }\n");
             }
+            Type::OwnedStr => {
+                // Closure #134: `let _ = make_owned_str();` must
+                // free the returned heap string, otherwise the
+                // allocation leaks. Bind to a brace-scoped tmp
+                // so consecutive discards don't collide.
+                out.push_str("  {\n    char* _intent_discard = ");
+                out.push_str(&emit_expr(expr));
+                out.push_str(";\n    free((void*)_intent_discard);\n  }\n");
+            }
             Type::Array { element, length } => {
                 // Arrays have stack lifetime. Still materialize the RHS into
                 // a brace-scoped tmp so its side-effecting subexpressions

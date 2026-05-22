@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #133)
+## ⏳ Resume here (paused 2026-05-22, after closure #134)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -68,8 +68,13 @@ in both backends; OwnedStr fell through to plain assign).
 The LLVM Reassign emit also had a latent bug — it freed
 the old buffer BEFORE evaluating the RHS, which would UAF
 on any RHS that READ the binding; reordered to
-eval-first-then-free. Test totals: 815 lib + 47 e2e
-passing.
+eval-first-then-free. #134 `let _ = …` discard of
+OwnedStr frees heap: `let _ = make_owned_str();` (and
+bare `make();`) was silently leaking — tree-C, tree-LLVM,
+and SSA Discard handlers all only knew about Vec. All
+three now free the heap. SSA Reassign also extended to
+lower `drop_old` for OwnedStr / Vec (was a hard reject).
+Test totals: 817 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

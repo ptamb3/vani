@@ -35,5 +35,13 @@ fn main() -> i64 {
   print "before: ", current;
   current = "step-" + "2";
   print "after:  ", current;
+
+  // Closure #134: `let _ = expr;` (and the bare-call form
+  // `make_something();`) frees the returned heap string
+  // immediately. Previously the SSA-C, tree-C, and
+  // tree-LLVM Discard handlers all silently leaked an
+  // OwnedStr return value.
+  let _ = greet("carol");
+  print "discarded greet OK";
   return 0;
 }
