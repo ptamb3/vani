@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #135)
+## ⏳ Resume here (paused 2026-05-22, after closure #136)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -80,8 +80,13 @@ from a Call or Binary `+` expression (the v1
 heap-producers); Var / FieldAccess / TupleAccess and
 other variants stay non-consuming so the binding's
 scope-exit Drop still owns the free (avoids double-free
-on patterns like `print t.name`). Test totals: 820 lib
-+ 47 e2e passing.
+on patterns like `print t.name`). #136 `Vec<OwnedStr>`
+compiles to valid C: the C backend's `element_tag`
+helper was leaking the `*` from `char*` into the typedef
+name (`intent_vec_char*`), making the emitted C fail at
+cc. Added explicit `str` / `owned_str` arms. LLVM was
+already sanitizing. Test totals: 821 lib + 47 e2e
+passing.
 
 ### Recommended next (pick one)
 

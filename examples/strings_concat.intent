@@ -51,5 +51,18 @@ fn main() -> i64 {
   // stays a non-consuming read, since the binding's
   // scope-exit Drop frees the heap.
   print greet("dan");
+
+  // Closure #136: `Vec<OwnedStr>` now compiles. The C
+  // backend's element-tag generator was leaking the `*`
+  // of `char*` into the typedef name (`intent_vec_char*`),
+  // producing invalid C. Each slot owns its heap string;
+  // the Vec's `__free` walks every live element and
+  // releases each one before freeing the buffer.
+  let names: Vec<OwnedStr> = vec(
+    "first" + "-name",
+    "second" + "-name",
+    "third" + "-name"
+  );
+  print "Vec<OwnedStr> built OK";
   return 0;
 }

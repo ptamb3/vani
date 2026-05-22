@@ -3386,6 +3386,38 @@ mod tests {
     }
 
     #[test]
+    fn vec_of_owned_str_compiles_to_valid_c() {
+        // Closure #136: `Vec<OwnedStr>` was emitting
+        // `intent_vec_char*` typedefs (with the asterisk
+        // included in the tag) and failing to compile with
+        // cc. The `element_tag` helper's fallback
+        // (`c_leaf_type(element).replace(' ', "_")`) didn't
+        // strip the `*`. Fixed by spelling Str / OwnedStr
+        // explicitly as `str` / `owned_str` so the typedef
+        // is a valid C identifier.
+        let source = r#"
+            fn make() -> OwnedStr {
+              return "hello " + "world";
+            }
+            fn main() -> i64 {
+              let xs: Vec<OwnedStr> = vec(make(), make());
+              return 0;
+            }
+        "#;
+        compile(source).expect("Vec<OwnedStr> should compile");
+        let c = compile_to_c(source).expect("emits C");
+        assert!(
+            c.contains("intent_vec_owned_str"),
+            "expected valid Vec<OwnedStr> typedef, got:\n{c}"
+        );
+        // Sanity: no asterisks leaking into identifiers.
+        assert!(
+            !c.contains("intent_vec_char*"),
+            "should not emit invalid intent_vec_char*, got:\n{c}"
+        );
+    }
+
+    #[test]
     fn print_of_fresh_owned_str_call_frees_heap() {
         // Closure #135: `print make_owned_str();` would leak
         // because the print emitters all treated OwnedStr

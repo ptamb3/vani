@@ -977,6 +977,15 @@ pub(crate) fn element_tag(element: &Type) -> String {
         // Vec<Struct> support.
         Type::Struct(name) => struct_c_name(name),
         Type::Tuple(elements) => tuple_c_struct(elements),
+        // `Str` / `OwnedStr` both spell as a `char*` /
+        // `const char*` in C — neither is a valid C
+        // identifier suffix. Spell them as `str` /
+        // `owned_str` so `Vec<OwnedStr>` becomes
+        // `intent_vec_owned_str` and friends. Closure
+        // #136 (was emitting `intent_vec_char*` and
+        // failing to compile).
+        Type::Str => "str".to_string(),
+        Type::OwnedStr => "owned_str".to_string(),
         _ => c_leaf_type(element).replace(' ', "_"),
     }
 }
