@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-21
-**Test totals:** 777 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-22
+**Test totals:** 779 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,20 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Enum `==` desugar + partial-then-whole-move done
+   2026-05-22**: `check_equality` matches `(Enum, Enum)` of
+   the same nominal type in addition to struct-struct, so
+   `implement Eq for Color { fn eq(self: Color, other: Color)
+   -> bool }` makes `a == b` work on Color bindings. The
+   enum-type resolver (`resolve_enum_types_in_program`) now
+   walks `program.impls` so the impl body's `self: Color`
+   resolves to `Type::Enum` (was `Type::Struct`, blocking
+   `self as i32`). Separately, moving a struct as a whole
+   after a partial-field-move now emits a clean diagnostic
+   ("cannot move 'b' — its field 'f' was previously moved
+   out"). See
+   [examples/enum_eq.intent](examples/enum_eq.intent).
+
    **Partial-move tracking done 2026-05-21**: `let taken =
    bag.contents;` moves a single field out of a struct
    without invalidating the rest of the struct. A new

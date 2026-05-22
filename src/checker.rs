@@ -1198,6 +1198,23 @@ fn resolve_enum_types_in_program(
             }
         }
     }
+    // `implement Iface for T { … }` impls carry a target
+    // type plus methods that may reference enums in their
+    // signatures and bodies (e.g. `implement Eq for Color`
+    // needs `self: Color` to resolve to `Type::Enum`).
+    // T1.5 phase 2 follow-up.
+    for imp in &mut program.impls {
+        resolve_enum_types_in_type(&mut imp.for_type, enums);
+        for method in &mut imp.methods {
+            resolve_enum_types_in_type(&mut method.return_type, enums);
+            for p in &mut method.params {
+                resolve_enum_types_in_type(&mut p.ty, enums);
+            }
+            for s in &mut method.body {
+                resolve_enum_types_in_stmt(s, enums);
+            }
+        }
+    }
 }
 
 fn resolve_enum_types_in_type(
@@ -3148,6 +3165,8 @@ fn check_one_stmt(
                 check_expr(expr, env, signatures, diagnostics)
             };
 
+            diagnose_partial_then_whole_move(expr, &checked, env, diagnostics);
+
             consume_if_moved_var(expr, &checked, env);
 
             // `let _ = expr;` — discard pattern. Evaluate expr (consuming
@@ -3422,6 +3441,7 @@ fn check_one_stmt(
                 ));
                 return false;
             };
+            diagnose_partial_then_whole_move(expr, &coerced, env, diagnostics);
             consume_if_moved_var(expr, &coerced, env);
             let drop_old = !existing.ty.is_copy() && existing.moved.is_none();
             let mut rhs = coerced.expr;
@@ -3473,6 +3493,7 @@ fn check_one_stmt(
                     diagnostics,
                 )
             };
+            diagnose_partial_then_whole_move(expr, &checked, env, diagnostics);
             consume_if_moved_var(expr, &checked, env);
 
             // Verify each ensures clause holds for this return expression.
@@ -4025,6 +4046,7 @@ fn check_one_stmt(
                 "index-assign value",
                 diagnostics,
             );
+            diagnose_partial_then_whole_move(value, &value_coerced, env, diagnostics);
             consume_if_moved_var(value, &value_coerced, env);
 
             // Compile-time bounds-check elision for owned-array case only.
@@ -5166,6 +5188,45 @@ fn validate_param_type(ty: &Type, span: Span, diagnostics: &mut Vec<Diagnostic>)
     validate_array_element_type(ty, span, diagnostics);
 }
 
+/// Emit a "cannot move whole struct after partial move"
+/// diagnostic when `source` is a Var consume of a binding
+/// that already has at least one moved-out field. Call BEFORE
+/// `consume_if_moved_var` since the latter doesn't read
+/// `moved_fields`. T1.2 phase 2b partial-move follow-up.
+fn diagnose_partial_then_whole_move(
+    source: &Expr,
+    checked: &CheckedExpr,
+    env: &Env,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if checked.ty().is_copy() {
+        return;
+    }
+    if let ExprKind::Var(name) = &source.kind {
+        if let Some(info) = env.lookup(name) {
+            if let Some((field, move_span)) =
+                info.moved_fields.iter().next().map(|(f, s)| (f.clone(), *s))
+            {
+                diagnostics.push(
+                    Diagnostic::new(
+                        source.span,
+                        format!(
+                            "cannot move '{}' — its field '{}' was previously \
+                             moved out, leaving the struct only partially \
+                             initialized",
+                            name, field
+                        ),
+                    )
+                    .with_related(
+                        move_span,
+                        format!("'{}.{}' was moved here", name, field),
+                    ),
+                );
+            }
+        }
+    }
+}
+
 fn consume_if_moved_var(
     source: &Expr,
     checked: &CheckedExpr,
@@ -5675,6 +5736,7 @@ fn check_expr(
                 // field would own the same heap pointer and the
                 // backend would emit two `free` calls for it.
                 // T1.2 phase 2b.
+                diagnose_partial_then_whole_move(&found.1, &coerced, env, diagnostics);
                 consume_if_moved_var(&found.1, &coerced, env);
                 typed_fields.push((fname.clone(), coerced.expr));
             }
@@ -7362,34 +7424,35 @@ fn check_equality(
         Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)
     );
     if lhs_is_aggregate || rhs_is_aggregate {
-        if let (Type::Struct(lhs_name), Type::Struct(rhs_name)) = (lhs.ty(), rhs.ty()) {
-            if lhs_name == rhs_name {
-                let eq_fn = format!("{}_eq", lhs_name);
-                if let Some(sig) = signatures.get(&eq_fn) {
-                    let bool_return = sig.return_type == Type::Bool;
-                    let two_args = sig.params.len() == 2;
-                    if bool_return && two_args {
-                        let lhs_ty = lhs.ty().clone();
-                        let call_kind = TypedExprKind::Call {
-                            name: eq_fn,
-                            name_span: span,
-                            args: vec![lhs.expr, rhs.expr],
-                        };
-                        let call = CheckedExpr::new(call_kind, Type::Bool, None, span);
-                        if op == BinaryOp::Eq {
-                            let _ = lhs_ty;
-                            return call;
-                        }
-                        return CheckedExpr::new(
-                            TypedExprKind::Unary {
-                                op: crate::ast::UnaryOp::Not,
-                                expr: Box::new(call.expr),
-                            },
-                            Type::Bool,
-                            None,
-                            span,
-                        );
+        let same_nominal = match (lhs.ty(), rhs.ty()) {
+            (Type::Struct(l), Type::Struct(r)) if l == r => Some(l.clone()),
+            (Type::Enum(l), Type::Enum(r)) if l == r => Some(l.clone()),
+            _ => None,
+        };
+        if let Some(name) = same_nominal {
+            let eq_fn = format!("{}_eq", name);
+            if let Some(sig) = signatures.get(&eq_fn) {
+                let bool_return = sig.return_type == Type::Bool;
+                let two_args = sig.params.len() == 2;
+                if bool_return && two_args {
+                    let call_kind = TypedExprKind::Call {
+                        name: eq_fn,
+                        name_span: span,
+                        args: vec![lhs.expr, rhs.expr],
+                    };
+                    let call = CheckedExpr::new(call_kind, Type::Bool, None, span);
+                    if op == BinaryOp::Eq {
+                        return call;
                     }
+                    return CheckedExpr::new(
+                        TypedExprKind::Unary {
+                            op: crate::ast::UnaryOp::Not,
+                            expr: Box::new(call.expr),
+                        },
+                        Type::Bool,
+                        None,
+                        span,
+                    );
                 }
             }
         }
@@ -7404,8 +7467,10 @@ fn check_equality(
                 "tuples have no built-in `==` — compare each component via `.0` / `.1` / …".to_string()
             }
             (Type::Enum(name), _) | (_, Type::Enum(name)) => format!(
-                "enum '{}' has no built-in `==` — use `match` to discriminate, or compare the integer tag via `as i64`",
-                name
+                "enum '{}' has no built-in `==` — declare \
+                 `implement Eq for {} {{ fn eq(self: {}, other: {}) -> bool {{ … }} }}` \
+                 to define equality, or use `match` to discriminate",
+                name, name, name, name
             ),
             _ => unreachable!("guarded by lhs_is_aggregate || rhs_is_aggregate"),
         };
@@ -7701,6 +7766,7 @@ fn check_call(
             } else {
                 checked
             };
+            diagnose_partial_then_whole_move(arg, &coerced, env, diagnostics);
             consume_if_moved_var(arg, &coerced, env);
             coerced.expr
         })
@@ -8783,6 +8849,8 @@ fn check_push_builtin(
         diagnostics,
     );
 
+    diagnose_partial_then_whole_move(&args[0], &xs, env, diagnostics);
+
     consume_if_moved_var(&args[0], &xs, env);
 
     let result_type = Type::Vec(Box::new(element_type));
@@ -8841,6 +8909,8 @@ fn check_set_builtin(
         "set value",
         diagnostics,
     );
+
+    diagnose_partial_then_whole_move(&args[0], &xs, env, diagnostics);
 
     consume_if_moved_var(&args[0], &xs, env);
 

@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (777 lib + 47 e2e tests passing):
+Supported today (779 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -257,10 +257,11 @@ Supported today (777 lib + 47 e2e tests passing):
   second read of the moved field surfaces a use-after-move diagnostic.
   See [examples/partial_move.intent](examples/partial_move.intent).
 - **User-defined `==` via `implement Eq for T`** — `a == b` and `a != b`
-  on struct bindings desugar to the hoisted `<T>_eq(a, b)` / `!<T>_eq(a, b)`
-  whenever both sides are the same struct type. Convention is
-  `fn eq(self: T, other: T) -> bool`. See
-  [examples/struct_eq.intent](examples/struct_eq.intent).
+  on struct or enum bindings desugar to the hoisted `<T>_eq(a, b)` /
+  `!<T>_eq(a, b)` whenever both sides are the same nominal type.
+  Convention is `fn eq(self: T, other: T) -> bool`. See
+  [examples/struct_eq.intent](examples/struct_eq.intent) and
+  [examples/enum_eq.intent](examples/enum_eq.intent).
 - **Field-borrow expressions** — `ref t.f` and `mut ref t.f` take a borrow
   of a struct field. The result type is `&<field_ty>` / `&mut <field_ty>`;
   backends GEP into the struct's storage. Unlocks atomic operations
@@ -1981,9 +1982,10 @@ deliberately deferred as v1 trade-offs.
 - ⏳ Enum payload variants — parses, gated diagnostic, lands with T1.3 phase 2b.
 - ⏳ Match on bool / Str / float scrutinee — patterns accept ints / variants /
   `_` in v1.
-- ⏳ Tuple / enum `==` — targeted diagnostic; struct `==` now ships via
-  `implement Eq for T`. Tuple / enum auto-equality lands when a matching
-  desugar is added (mirrors the struct case).
+- ⏳ Tuple `==` — targeted diagnostic; struct/enum `==` ship via
+  `implement Eq for T`. Tuple auto-equality lands when a matching
+  desugar is added (mirrors the struct/enum case) — tuples are anonymous
+  so this needs compiler-derived equality rather than a user impl.
 
 **Trade-offs (working as intended, not on the queue):**
 

@@ -3,14 +3,14 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-21, after closure #105)
+## ⏳ Resume here (paused 2026-05-22, after closure #106)
 
-Closures landed this session: #99 bounded generics, #100 affine
-struct fields broadened, #101 user-Drop auto-call, #102
-field-borrow expressions, #103 reverse-declaration field drop
-order, #104 user-Eq desugar for struct `==`, #105 partial-move
-tracking for struct fields. Test totals: 777 lib + 47 e2e
-passing.
+Closures landed: #99 bounded generics, #100 affine struct
+fields broadened, #101 user-Drop auto-call, #102 field-borrow
+expressions, #103 reverse-declaration field drop order, #104
+user-Eq desugar for struct `==`, #105 partial-move tracking,
+#106 enum `==` desugar + partial-then-whole-move diagnostic.
+Test totals: 779 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -608,6 +608,40 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+106. ~~**Enum `==` desugar + partial-then-whole-move diagnostic**~~ —
+     done 2026-05-22. Two follow-ups in one closure.
+     - **Enum `==` via user Eq**: `check_equality` now matches
+       `(Type::Enum(l), Type::Enum(r))` in addition to the
+       Struct/Struct case. Same dispatch shape: `<E>_eq(a, b)`
+       for `==`, `!<E>_eq(a, b)` for `!=`. The diagnostic for
+       enums-without-impl updated to point at the
+       `implement Eq for E` recipe.
+     - **`resolve_enum_types_in_program` walks impls**: the
+       enum-name → `Type::Enum` resolver previously walked
+       methods_blocks but not `program.impls`. The Eq impl
+       body's `(self as i32)` cast was rejected because `self`
+       still typed as `Type::Struct("Color")` (the parser's
+       default for any nominal name). New arm walks impls'
+       for_type + method signatures + method bodies.
+     - **Partial-then-whole-move diagnostic**:
+       `diagnose_partial_then_whole_move` helper emits a
+       "cannot move 'b' — its field 'f' was previously moved
+       out" diagnostic at every Var-consume site where the
+       binding has a non-empty `moved_fields` map. Wired in
+       front of each `consume_if_moved_var` callsite (8
+       sites) via a mechanical regex pass.
+     - **2 lib tests added**:
+       `enum_eq_via_user_impl` (end-to-end Color equality
+       through hoisted `Color_eq`) and
+       `partial_move_whole_after_field_rejected` (the new
+       diagnostic).
+     - **New example**
+       [examples/enum_eq.intent](examples/enum_eq.intent)
+       exercises the pattern with `(self as i32)` for
+       payload-less enums. Wired into the cross-backend e2e
+       test.
+     777 → 779 lib tests; 47 e2e stable.
+
 105. ~~**Partial-move tracking for struct fields**~~ — done
      2026-05-21. `let taken = bag.contents;` moves the Vec
      field out of the struct without invalidating the rest

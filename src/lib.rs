@@ -6223,6 +6223,60 @@ mod tests {
     }
 
     #[test]
+    fn enum_eq_via_user_impl() {
+        // Mirrors `struct_eq_via_user_impl`: `implement Eq for
+        // Color { fn eq(self: Color, other: Color) -> bool }`
+        // makes `a == b` and `a != b` work on Color bindings.
+        let source = r#"
+            enum Color { Red, Green, Blue }
+            interface Eq { fn eq(self: Color, other: Color) -> bool; }
+            implement Eq for Color {
+              fn eq(self: Color, other: Color) -> bool {
+                return (self as i32) == (other as i32);
+              }
+            }
+            fn main() -> i64 {
+              let a: Color = Color.Red;
+              let b: Color = Color.Red;
+              let c: Color = Color.Blue;
+              assert a == b;
+              assert a != c;
+              return 0;
+            }
+        "#;
+        compile(source).expect("Color equality should compile via user Eq impl");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        assert!(
+            c.contains("fn_Color_eq("),
+            "expected dispatch to Color_eq in C output:\n{c}"
+        );
+    }
+
+    #[test]
+    fn partial_move_whole_after_field_rejected() {
+        // After `let taken = b.contents;`, the struct `b` is
+        // only partially initialized; moving it as a whole is
+        // unsound and surfaces a targeted diagnostic.
+        let source = r#"
+            struct Bag { id: i64, contents: Vec<i64> }
+            fn consume(b: Bag) -> i64 { return b.id; }
+            fn main() -> i64 {
+              let b: Bag = Bag { id: 1, contents: vec(1, 2, 3) };
+              let taken: Vec<i64> = b.contents;
+              let n: i64 = consume(b);
+              return n;
+            }
+        "#;
+        let errors = compile(source)
+            .expect_err("whole-struct move after partial move should fail");
+        assert!(
+            errors.iter().any(|e| e.message.contains("partially initialized")),
+            "expected partial-move diagnostic, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
     fn partial_move_field_extract_compiles() {
         // T1.2 phase 2b partial-move: `let taken = b.contents;`
         // moves the Vec field out of the struct. The struct

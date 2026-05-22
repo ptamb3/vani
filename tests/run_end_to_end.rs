@@ -399,6 +399,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "control_flow.intent",
         "drop_interface.intent",
         "early_exit.intent",
+        "enum_eq.intent",
         "floats_and_shifts.intent",
         "for_loops.intent",
         "inline_call_proofs.intent",

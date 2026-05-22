@@ -1,0 +1,30 @@
+intent "User-defined `==` for enums via `implement Eq for E`";
+
+// Same recipe as `examples/struct_eq.intent`: declare an
+// `Eq` impl with `fn eq(self: E, other: E) -> bool` and the
+// checker rewrites `a == b` / `a != b` to call the hoisted
+// `<E>_eq`. For payload-less enums the body can compare
+// tags directly via `as i32`; for payloaded enums a `match`
+// is the natural shape.
+
+enum Color { Red, Green, Blue }
+
+interface Eq {
+  fn eq(self: Color, other: Color) -> bool;
+}
+
+implement Eq for Color {
+  fn eq(self: Color, other: Color) -> bool {
+    return (self as i32) == (other as i32);
+  }
+}
+
+fn main() -> i64 {
+  let a: Color = Color.Red;
+  let b: Color = Color.Red;
+  let c: Color = Color.Blue;
+  assert a == b;
+  assert a != c;
+  print "Color equality works";
+  return 0;
+}
