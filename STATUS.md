@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 825 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 827 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,21 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`len` of fresh OwnedStr drops heap done 2026-05-22**:
+   `len(make_owned_str())` was silently leaking —
+   `intent_str_len` (strlen) doesn't consume its argument,
+   so a fresh-OwnedStr operand (Call / Binary `+`) had no
+   other binding to own the heap after the `len` call.
+   Fixed in both the SSA lowering of `TypedExprKind::Len`
+   for `Str/OwnedStr` (emits a `Drop` instruction after
+   the `intent_str_len` call) and the tree-LLVM
+   `TypedExprKind::Len` arm (emits `call void @free(i8* %v)`
+   after the strlen). Var / FieldAccess operands skip
+   the drop — same conservative whitelist as closures
+   #135 / #137 / #138. Closure #139. Verified leak-free
+   under `-fsanitize=address,leak`. See updated
+   [examples/strings_concat.intent](examples/strings_concat.intent).
 
    **`strcmp` of fresh OwnedStr drops heap done 2026-05-22**:
    `make_owned_str() == "literal"` (and `!=`, `<`, `<=`,

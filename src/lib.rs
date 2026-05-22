@@ -3004,6 +3004,42 @@ mod tests {
     }
 
     #[test]
+    fn len_of_fresh_owned_str_drops_heap() {
+        // Closure #139: `len(make_owned_str())` was silently
+        // leaking — `intent_str_len` (strlen) doesn't
+        // consume its argument, so a fresh-OwnedStr operand
+        // (Call / Binary `+`) had no other owner. Fixed in
+        // both the SSA path and tree-LLVM via the same
+        // Call/Binary whitelist used for print (#135), match
+        // (#137), and strcmp (#138).
+        let source = r#"
+            fn make() -> OwnedStr {
+              return "hello " + "world";
+            }
+            fn main() -> i64 {
+              let n: u64 = len(make());
+              return 0;
+            }
+        "#;
+        compile(source).expect("len(fresh) should compile");
+    }
+
+    #[test]
+    fn len_of_var_owned_str_no_double_free() {
+        // Regression guard for closure #139: Var-OwnedStr
+        // operand must NOT free (the binding's scope-exit
+        // Drop owns the heap).
+        let source = r#"
+            fn main() -> i64 {
+              let s: OwnedStr = "hello " + "world";
+              let n: u64 = len(s);
+              return 0;
+            }
+        "#;
+        compile(source).expect("len(Var) should compile");
+    }
+
+    #[test]
     fn str_cmp_with_fresh_owned_str_operand_drops_heap() {
         // Closure #138: `make_owned_str() == "literal"` was
         // silently leaking. `intent_str_cmp` / `strcmp`

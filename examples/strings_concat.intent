@@ -73,5 +73,11 @@ fn main() -> i64 {
   if greet("ed") == "Hello, ed" {
     print "strcmp branch hit";
   }
+
+  // Closure #139: `len(make_owned_str())` now frees the
+  // fresh heap after strlen. Same Call/Binary whitelist
+  // as strcmp — Var/FieldAccess operands skip the drop.
+  let n: u64 = len(greet("fay"));
+  print "len of fresh:", n;
   return 0;
 }

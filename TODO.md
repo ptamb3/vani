@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #138)
+## ⏳ Resume here (paused 2026-05-22, after closure #139)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -101,7 +101,12 @@ consume its arguments, so a fresh Call / Binary `+`
 OwnedStr operand had no other owner. Fixed both the
 SSA lowering and the tree-LLVM strcmp branch. Var /
 FieldAccess operands skip the drop (existing
-whitelist). Test totals: 825 lib + 47 e2e passing.
+whitelist). #139 `len` of fresh OwnedStr drops heap:
+`len(make_owned_str())` had the same shape — strlen
+doesn't consume its argument; fresh Call / Binary `+`
+operands had no other owner. Same whitelist-based fix
+applied to the SSA `Len` lowering and tree-LLVM `Len`
+emit. Test totals: 827 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

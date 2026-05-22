@@ -3267,6 +3267,19 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 let s = emit_expr(array, ctx, out);
                 let v = ctx.fresh_tmp();
                 out.push_str(&format!("  {} = call i64 @strlen(i8* {})\n", v, s));
+                // Free fresh-OwnedStr operand after `strlen`
+                // (which doesn't consume its argument). Var /
+                // FieldAccess operands skip — outer binding's
+                // scope-exit Drop owns the heap. Closure
+                // #139.
+                if matches!(array.ty, Type::OwnedStr)
+                    && matches!(
+                        array.kind,
+                        TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
+                    )
+                {
+                    out.push_str(&format!("  call void @free(i8* {})\n", s));
+                }
                 return v;
             }
             if let TypedExprKind::Var(name) = &array.kind {

@@ -1927,6 +1927,19 @@ fn lower_expr_to_operand(
             // either a compile-time constant or a single
             // aggregate-field extract.
             if matches!(array.ty, Type::Str | Type::OwnedStr) {
+                // Fresh-OwnedStr operand (Call / Binary `+`)
+                // owns a heap allocation with no other
+                // binding. `intent_str_len` (strlen) doesn't
+                // consume its argument — emit a `Drop` after
+                // the call. Var / FieldAccess / TupleAccess
+                // operands skip the drop (binding owns).
+                // Closure #139 mirrors #135 / #137 / #138.
+                let needs_drop = matches!(array.ty, Type::OwnedStr)
+                    && matches!(
+                        array.kind,
+                        TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
+                    );
+                let a_for_drop = a.clone();
                 let v = b.emit(
                     expr.ty.clone(),
                     expr.span,
@@ -1935,6 +1948,17 @@ fn lower_expr_to_operand(
                         args: vec![a],
                     },
                 );
+                if needs_drop {
+                    b.emit(
+                        Type::I64,
+                        expr.span,
+                        InstrKind::Drop {
+                            source: a_for_drop,
+                            name: "_".to_string(),
+                            ty: Type::OwnedStr,
+                        },
+                    );
+                }
                 return Ok(Operand::Value(v));
             }
             let v = b.emit(
