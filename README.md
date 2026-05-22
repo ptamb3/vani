@@ -255,9 +255,10 @@ Supported today (786 lib + 47 e2e tests passing):
   instead (the user's drop is then invoked explicitly when richer
   behavior is needed). See
   [examples/drop_interface.intent](examples/drop_interface.intent).
-- **Mixed-place assignment** — `xs[i].field = v;` writes through an index
-  plus a single-level struct field in one statement. Works on owned
-  `Vec<T>` and `[T; N]`. See
+- **Mixed-place assignment** — `xs[i].field = v;` and the deeper
+  `xs[i].a.b = v;` write through an index plus a struct field path in
+  one statement. Works on owned `Vec<T>` and `[T; N]`. Intermediate
+  segments must be Copy structs; the leaf field must be Copy. See
   [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
 - **Partial-move tracking** — `let taken = bag.contents;` moves a single
   field out of a struct. The aggregate is still readable for its other
@@ -1989,8 +1990,9 @@ deliberately deferred as v1 trade-offs.
   instead of `true`/`false`. Tree-LLVM path correct.
 - ⏳ Bare `{ … }` as scope-stmt — currently rejected with workaround
   diagnostic; lands cheaply once block expressions exist.
-- ✅ `xs[i].field = v` mixed-place assign — single-level paths land
-  end-to-end; deeper paths (`xs[i].a.b = v`) still need a workaround.
+- ✅ `xs[i].field = v` mixed-place assign — including deep paths
+  (`xs[i].a.b = v`); each intermediate segment must be a Copy struct
+  and the leaf field must be Copy.
 - ⏳ Generic function call sites — parses, gated diagnostic, lands with T1.4.
 - ⏳ Enum payload variants — parses, gated diagnostic, lands with T1.3 phase 2b.
 - ⏳ Match on float scrutinee — `bool` and `Str` ship today (see

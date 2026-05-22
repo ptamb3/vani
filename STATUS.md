@@ -389,6 +389,14 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Deep field paths for `xs[i].a.b = v` done 2026-05-22**:
+   the depth gate in the checker was lifted; the existing
+   loop already validates each segment with per-step type
+   descent and a Copy check on intermediates and the leaf.
+   Backends already iterated over segments (closure #109).
+   See updated
+   [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
    **Match on `Str` / `OwnedStr` scrutinee done 2026-05-22**:
    string-literal patterns desugar at the checker level to a
    nested if-expression chain over `==` on Str (strcmp-based).

@@ -8,11 +8,13 @@ intent "Mixed-place assignment: `xs[i].field = v`";
 // store the value at the field offset.
 //
 // Works on both owned arrays `[T; N]` and `Vec<T>` (and their
-// `mut ref` borrows). Single-level paths only in v1 — for
-// deeper updates like `xs[i].a.b = v`, copy the inner struct
-// to a local first.
+// `mut ref` borrows). Deep paths (`xs[i].a.b = v`) work too,
+// as long as each intermediate segment is a Copy struct and
+// the leaf field is Copy.
 
 struct Point { x: i64, y: i64 }
+struct Inner { v: i64 }
+struct Outer { inner: Inner, id: i64 }
 
 fn main() -> i64 {
   // Owned Vec<Struct> — mutate two distinct slots' fields.
@@ -34,6 +36,19 @@ fn main() -> i64 {
   assert pts[1].x == 100;
   assert pts[2].y == 200;
   print "[Point; 3] field updates OK";
+
+  // Deep paths: `xs[i].a.b = v` chains through nested Copy
+  // structs. The checker validates each descent; the backend
+  // GEPs through each segment.
+  let outers: [Outer; 2] = [
+    Outer { inner: Inner { v: 1 }, id: 10 },
+    Outer { inner: Inner { v: 2 }, id: 20 },
+  ];
+  outers[0].inner.v = 99;
+  outers[1].id = 222;
+  assert outers[0].inner.v == 99;
+  assert outers[1].id == 222;
+  print "Deep field paths OK";
 
   return 0;
 }

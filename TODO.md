@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #111)
+## ⏳ Resume here (paused 2026-05-22, after closure #112)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -13,7 +13,8 @@ user-Eq desugar for struct `==`, #105 partial-move tracking,
 #107 tuple auto-equality, #108 in-place
 `push(mut ref xs, v)`, #109 `xs[i].field = v` mixed-place
 assignment, #110 match on bool scrutinee, #111 match on Str
-scrutinee. Test totals: 786 lib + 47 e2e passing.
+scrutinee, #112 deep field paths for mixed-place assign.
+Test totals: 786 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -611,6 +612,32 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+112. ~~**Deep field paths for `xs[i].a.b = v`**~~ — done
+     2026-05-22. Closure #109 shipped single-level paths;
+     this lifts the depth restriction. The existing
+     checker loop already iterates each segment with
+     per-step type descent + Copy check; only the
+     `field_path.len() > 1` gate needed removal. Backends
+     already loop over segments (both C's
+     `.field1.field2…` suffix and LLVM's chained GEP).
+     - **Checker** in [src/checker.rs](src/checker.rs):
+       removed the explicit `if field_path.len() > 1` gate.
+       Per-segment Copy check still enforces the invariant
+       (intermediate segments must be Copy structs; leaf
+       must be Copy).
+     - **Backends**: no changes. The existing emission
+       loops handle arbitrary path length.
+     - **Example refreshed**:
+       [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent)
+       now includes a `Outer { inner: Inner }` two-level
+       update alongside the original single-level cases.
+     - **Lib test rewritten**: the legacy
+       `index_then_field_assign_no_field_unsupported`
+       test became
+       `index_then_field_assign_deep_path_compiles`
+       (positive case).
+     786 lib tests; 47 e2e stable.
+
 111. ~~**Match on `Str` / `OwnedStr` scrutinee**~~ — done
      2026-05-22. Pattern::Str was scaffolded in closure #110
      and gated with a "not yet supported" diagnostic; this

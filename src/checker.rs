@@ -4080,15 +4080,14 @@ fn check_one_stmt(
                     ));
                     return false;
                 };
-                if field_path.len() > 1 {
-                    diagnostics.push(Diagnostic::new(
-                        *span,
-                        "deep field paths (e.g. `xs[i].a.b = …;`) are not \
-                         supported in v1 — bind the inner struct to a local \
-                         first, mutate it, then write back",
-                    ));
-                    return false;
-                }
+                // Multi-segment paths flow through naturally —
+                // each iteration validates the next descent.
+                // The Copy check is per-segment; for the leaf
+                // it enforces the no-field-Drop-on-overwrite
+                // invariant; for intermediate struct fields
+                // (e.g. `inner: Inner` where Inner is Copy)
+                // it passes since aggregate Copy structs only
+                // contain Copy data.
                 if !field_ty.is_copy() {
                     diagnostics.push(Diagnostic::new(
                         *span,

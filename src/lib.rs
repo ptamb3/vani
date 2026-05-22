@@ -5372,28 +5372,21 @@ mod tests {
     }
 
     #[test]
-    fn index_then_field_assign_no_field_unsupported() {
-        // Sanity: the LEGACY workaround diagnostic was tied to
-        // the old "not yet supported" branch; with mixed-place
-        // assign shipping, the diagnostic surface that remains
-        // is the deep-path case (`xs[i].a.b = v;`).
+    fn index_then_field_assign_deep_path_compiles() {
+        // Closure #112: deep field paths (`xs[i].a.b = v`)
+        // now lower end-to-end. Each intermediate segment
+        // must be a Copy struct and the leaf field must be
+        // Copy (no field-Drop on overwrite in v1).
         let source = r#"
             struct Inner { v: i64 }
             struct Outer { inner: Inner }
             fn main() -> i64 {
               let pts: [Outer; 1] = [Outer { inner: Inner { v: 0 } }];
               pts[0].inner.v = 99;
-              return 0;
+              return pts[0].inner.v;
             }
         "#;
-        let errors = compile(source).expect_err("deep paths should reject");
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("deep field paths")),
-            "expected deep-path diagnostic, got: {:?}",
-            errors
-        );
+        compile(source).expect("deep field path should compile");
     }
 
     #[test]
