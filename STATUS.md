@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 797 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 798 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,13 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Mutex / Channel enum payloads done 2026-05-22**:
+   `enum Locked { Held(Mutex<i64>), Free }` and analog
+   for Channel now compile. Symmetric to closure #123's
+   struct-field work — Mutex/Channel are inline layouts
+   with no Drop concern; gate-lift + LLVM
+   `zeroinitializer` extension cover everything.
+
    **Mutex / Channel struct fields done 2026-05-22**:
    `struct State { m: Mutex<i64> }` and the analog for
    `Channel<T, N>` now compile. Combined with the

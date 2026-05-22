@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #123)
+## ⏳ Resume here (paused 2026-05-22, after closure #124)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -21,7 +21,8 @@ scope-stmt, #117 SSA bool-print parity, #118 Vec<T> enum
 payload, #119 [T;N] enum payload, #120 const-N as array
 length, #121 const-initializer arithmetic, #122
 Task + Atomic enum payloads, #123 Mutex / Channel
-struct fields. Test totals: 797 lib + 47 e2e passing.
+struct fields, #124 Mutex / Channel enum payloads.
+Test totals: 798 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -619,6 +620,36 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+124. ~~**`Mutex<T>` + `Channel<T, N>` enum payloads**~~ —
+     done 2026-05-22. Symmetric to closure #123's
+     struct-field work. Mutex and Channel are inline
+     struct layouts with no Drop concern; gate-lift +
+     payload-zero literal extension are the only changes
+     needed.
+     - **Checker gate** in [src/checker.rs](src/checker.rs)
+       admits `Type::Mutex(_)` and `Type::Channel(_, _)`
+       as enum payloads alongside the previously-supported
+       types. Diagnostic narrowed to call out Guard<T> as
+       the single remaining gap.
+     - **LLVM payload-zero literal** extended:
+       `Type::Mutex(_)` and `Type::Channel(_, _)` join the
+       `zeroinitializer` list alongside Vec / Tuple /
+       Struct / Array / Task.
+     - **No Drop emission needed**: Mutex and Channel
+       payloads are stack-shaped; the existing enum-Drop
+       dispatch correctly emits a no-op for these payload
+       kinds. (Only OwnedStr / Vec payloads have heap-
+       conditional frees.)
+     - **1 lib test added**:
+       `enum_mutex_payload_compiles`. The Channel case
+       parallels Mutex's shape; not separately tested to
+       avoid the channel-literal type-inference gotcha
+       (`channel()` needs an explicit type hint or
+       turbofish that's tracked elsewhere).
+     - **Still pending**: Guard<T> as struct field /
+       enum payload (RAII unlock wiring).
+     797 → 798 lib tests; 47 e2e stable.
+
 123. ~~**`Mutex<T>` + `Channel<T, N>` struct fields**~~ —
      done 2026-05-22. Combined with closure #102's
      field-borrow (`ref s.m`), users can now build

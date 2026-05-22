@@ -3399,16 +3399,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 // Pointer payloads (OwnedStr lowers to i8*)
                 // need LLVM's `null` literal, not `0`.
                 Type::OwnedStr => "null",
-                // Aggregate payloads (Vec / Tuple / Struct /
-                // Array / Task) use `zeroinitializer` for the
-                // all-zero placeholder when the variant has
-                // no user-provided payload. Task is a
-                // `{ i64, i8* }` struct.
+                // Aggregate payloads use `zeroinitializer`
+                // for the all-zero placeholder when the
+                // variant has no user-provided payload.
                 Type::Vec(_)
                 | Type::Tuple(_)
                 | Type::Struct(_)
                 | Type::Array { .. }
-                | Type::Task => "zeroinitializer",
+                | Type::Task
+                | Type::Mutex(_)
+                | Type::Channel(_, _) => "zeroinitializer",
                 _ => "0",
             };
             let s0 = ctx.fresh_tmp();

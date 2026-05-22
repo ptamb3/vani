@@ -701,12 +701,11 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
                 // T1.2 phase 2 struct RAII landed in closures
                 // #98 / #100; #113 added OwnedStr; #118 added
                 // Vec<T>; #119 added `[T;N]` of Copy; #122
-                // adds Task and Atomic<T>. Task is a thread
-                // handle (no Drop in v1 — sequential
-                // lowering); Atomic<T> is a primitive cell
-                // (no Drop). Only Mutex / Guard / Channel
-                // payload types remain rejected — their
-                // bespoke RAII needs more codegen work.
+                // added Task and Atomic<T>; #124 adds Mutex
+                // and Channel (parallel to closure #123's
+                // struct-field work). Only Guard<T> remains
+                // rejected — its RAII unlock needs bespoke
+                // wiring through the enum-Drop dispatch.
                 let array_of_copy = matches!(
                     payload_ty,
                     Type::Array { element, .. } if element.is_copy()
@@ -714,7 +713,12 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
                 let allowed = payload_ty.is_copy()
                     || matches!(
                         payload_ty,
-                        Type::OwnedStr | Type::Vec(_) | Type::Task | Type::Atomic(_)
+                        Type::OwnedStr
+                            | Type::Vec(_)
+                            | Type::Task
+                            | Type::Atomic(_)
+                            | Type::Mutex(_)
+                            | Type::Channel(_, _)
                     )
                     || array_of_copy;
                 if !allowed {
@@ -724,8 +728,8 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
                             "enum '{}' variant '{}' payload type {} is not \
                              admitted in v1 — supported payloads are Copy \
                              types, OwnedStr, Vec<T>, [T;N] of Copy elements, \
-                             Task, and Atomic<T>; Mutex / Guard / Channel \
-                             still need more codegen work",
+                             Task, Atomic<T>, Mutex<T>, and Channel<T, N>; \
+                             only Guard<T> still needs codegen work",
                             decl.name,
                             decl.variants[i].name,
                             payload_ty

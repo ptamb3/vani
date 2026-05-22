@@ -2615,6 +2615,22 @@ mod tests {
     }
 
     #[test]
+    fn enum_mutex_payload_compiles() {
+        // Closure #124: enum payloads admit `Mutex<T>`.
+        // No Drop needed (Mutex is `{ value, locked }`
+        // inline data with no heap allocation).
+        let source = r#"
+            enum Locked { Held(Mutex<i64>), Free }
+            fn main() -> i64 {
+              let m: Locked = Locked.Held(mutex_new(0));
+              let f: Locked = Locked.Free;
+              return 0;
+            }
+        "#;
+        compile(source).expect("Mutex enum payload should compile");
+    }
+
+    #[test]
     fn enum_atomic_payload_compiles() {
         // Closure #122: enum payloads admit `Atomic<T>`.
         // Atomic cells have no Drop (no allocation), so

@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (797 lib + 47 e2e tests passing):
+Supported today (798 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -284,9 +284,9 @@ Supported today (797 lib + 47 e2e tests passing):
   (no `ref t.a.b`). See
   [examples/struct_atomic_field.intent](examples/struct_atomic_field.intent).
 - **Enums with affine payloads** — Copy types, `OwnedStr`, `Vec<T>`,
-  `[T; N]` of Copy elements, `Task`, and `Atomic<T>` are all valid as
-  enum payload types in v1. Mutex / Guard / Channel still need more
-  codegen work. Heap payloads (OwnedStr, Vec) get a tag-conditional
+  `[T; N]` of Copy elements, `Task`, `Atomic<T>`, `Mutex<T>`, and
+  `Channel<T, N>` are all valid as enum payload types in v1; only
+  `Guard<T>` still needs codegen work. Heap payloads (OwnedStr, Vec) get a tag-conditional
   free at scope exit; stack-shaped payloads (array, Task, Atomic) need
   no Drop. v1 restriction: destructure-binding patterns (`Some(s)`)
   require Copy payloads. See
