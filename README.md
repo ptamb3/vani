@@ -258,7 +258,10 @@ Supported today (800 lib + 47 e2e tests passing):
 - **Mixed-place assignment** — `xs[i].field = v;` and the deeper
   `xs[i].a.b = v;` write through an index plus a struct field path in
   one statement. Works on owned `Vec<T>` and `[T; N]`. Intermediate
-  segments must be Copy structs; the leaf field must be Copy. See
+  segments must be Copy structs. The leaf field may be Copy OR a
+  heap-shaped type (`OwnedStr` / `Vec<T>`) — when the leaf is heap-
+  shaped, both backends free the previous slot value before storing
+  the new one, so the old allocation does not leak. See
   [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
 - **Partial-move tracking** — `let taken = bag.contents;` moves a single
   field out of a struct. The aggregate is still readable for its other

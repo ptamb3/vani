@@ -5632,6 +5632,91 @@ mod tests {
     }
 
     #[test]
+    fn mixed_place_assign_leaf_owned_str_emits_drop() {
+        // F2 / closure #126: mixed-place index+field assign
+        // where the LEAF field is OwnedStr is now allowed,
+        // and the backends emit a free of the old slot
+        // before storing the new value. Intermediate path
+        // segments still require Copy.
+        let source = r#"
+            struct Tag { name: OwnedStr }
+            fn main() -> i64 {
+              let ts: Vec<Tag> = vec(
+                Tag { name: "a" + "1" },
+                Tag { name: "b" + "2" }
+              );
+              ts[0].name = "c" + "3";
+              return 0;
+            }
+        "#;
+        compile(source).expect("F2: leaf-OwnedStr mixed-place should compile");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        // The C backend must free the old slot before the
+        // store, otherwise the previous heap allocation
+        // leaks.
+        assert!(
+            c.contains("free((void*)v_ts.data[(uint64_t)(0)].name);"),
+            "expected free-of-old-slot before leaf store, got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn mixed_place_assign_leaf_vec_emits_drop() {
+        // F2 / closure #126: when the leaf field is itself
+        // a Vec<T>, the backends emit a call to the inner
+        // Vec's __free helper on the old slot before the
+        // store. The whole-Vec replacement still requires
+        // Copy intermediate segments.
+        let source = r#"
+            struct Bag { items: Vec<i64> }
+            fn main() -> i64 {
+              let bs: Vec<Bag> = vec(
+                Bag { items: vec(1, 2) }
+              );
+              bs[0].items = vec(9, 8, 7);
+              return 0;
+            }
+        "#;
+        compile(source).expect("F2: leaf-Vec mixed-place should compile");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        assert!(
+            c.contains("intent_vec_int64_t__free(v_bs.data[(uint64_t)(0)].items);"),
+            "expected vec-free of old slot before leaf store, got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn mixed_place_assign_intermediate_non_copy_rejected() {
+        // F2 / closure #126: the leaf exception is only
+        // for the leaf — intermediate path segments must
+        // still be Copy. A non-Copy intermediate field
+        // would need full path-level Drop chains the
+        // backends don't yet emit.
+        let source = r#"
+            struct Inner { name: OwnedStr }
+            struct Outer { inner: Inner }
+            fn main() -> i64 {
+              let xs: Vec<Outer> = vec(
+                Outer { inner: Inner { name: "a" + "1" } }
+              );
+              xs[0].inner = Inner { name: "b" + "2" };
+              return 0;
+            }
+        "#;
+        let err = compile(source).expect_err(
+            "non-Copy intermediate in mixed-place assign should be rejected",
+        );
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("non-Copy") || msg.contains("Copy"),
+            "expected diagnostic to mention Copy, got: {}",
+            msg
+        );
+    }
+
+    #[test]
     fn index_assign_to_struct_array_element() {
         // Index-assign a whole struct value into a
         // `[Struct; N]` slot, e.g. `pts[1] = Point{…};`.

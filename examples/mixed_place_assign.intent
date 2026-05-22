@@ -3,18 +3,24 @@ intent "Mixed-place assignment: `xs[i].field = v`";
 // `xs[i].field = v` writes through both an index and a field
 // in one statement. The parser builds an `IndexAssign` with a
 // non-empty `field_path`; the checker validates the path
-// (element must be a struct, field must exist, leaf type must
-// be Copy in v1); the backends GEP/access into the slot and
-// store the value at the field offset.
+// (element must be a struct, field must exist); the backends
+// GEP/access into the slot and store the value at the field
+// offset.
 //
 // Works on both owned arrays `[T; N]` and `Vec<T>` (and their
 // `mut ref` borrows). Deep paths (`xs[i].a.b = v`) work too,
-// as long as each intermediate segment is a Copy struct and
-// the leaf field is Copy.
+// as long as each intermediate segment is a Copy struct.
+//
+// LEAF EXCEPTION: when the FINAL (leaf) segment is a heap-
+// shaped type (`OwnedStr` or `Vec<T>`), the backends emit a
+// free of the old slot's value before storing the new one,
+// preventing the previous allocation from leaking. Intermediate
+// segments still require Copy.
 
 struct Point { x: i64, y: i64 }
 struct Inner { v: i64 }
 struct Outer { inner: Inner, id: i64 }
+struct Label { name: OwnedStr }
 
 fn main() -> i64 {
   // Owned Vec<Struct> — mutate two distinct slots' fields.
@@ -49,6 +55,16 @@ fn main() -> i64 {
   assert outers[0].inner.v == 99;
   assert outers[1].id == 222;
   print "Deep field paths OK";
+
+  // Leaf-OwnedStr exception: the backends free the old
+  // heap string before storing the new one. The struct
+  // itself stays in a Vec<Label> slot.
+  let labels: Vec<Label> = vec(
+    Label { name: "first" + "" },
+    Label { name: "second" + "" }
+  );
+  labels[0].name = "renamed" + "";
+  print "Leaf-OwnedStr overwrite OK";
 
   return 0;
 }

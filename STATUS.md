@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 800 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 803 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -511,6 +511,17 @@ fn main() returns i64 {
    descent and a Copy check on intermediates and the leaf.
    Backends already iterated over segments (closure #109).
    See updated
+   [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **Mixed-place leaf-OwnedStr / leaf-Vec done 2026-05-22**:
+   the Copy gate on the leaf segment of `xs[i].a.b = v` was
+   relaxed for heap-shaped types (`OwnedStr` and `Vec<T>`).
+   Intermediate segments still require Copy. Both backends
+   emit a free of the old slot before storing the new value:
+   the C backend writes `free((void*)<lv>)` (OwnedStr) or
+   `intent_vec_<T>__free(<lv>)` (Vec); LLVM loads the old
+   pointer and calls `@free` or `@intent_vec_<tag>__free`.
+   Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
 
    **Match on `Str` / `OwnedStr` scrutinee done 2026-05-22**:

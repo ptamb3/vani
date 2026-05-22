@@ -2123,19 +2123,47 @@ fn emit_index_assign(
     let underlying = base_ty.deref();
     let through_ref = base_ty.is_ref_mut();
 
-    match underlying {
+    let element_ty: Option<Type> = match underlying {
+        Type::Array { element, .. } => Some((**element).clone()),
+        Type::Vec(element) => Some((**element).clone()),
+        _ => None,
+    };
+
+    // Resolve the leaf field type for the field_path (if any).
+    // If the leaf is a heap-shaped field (OwnedStr / Vec<T>),
+    // we must Drop the old slot value before overwriting it,
+    // otherwise the previous heap allocation leaks. The Copy
+    // gate in the checker permits this only at the leaf
+    // position; intermediate segments stay Copy. F2 / #126.
+    let leaf_ty: Option<Type> = element_ty.as_ref().and_then(|el| {
+        let mut cur = el.clone();
+        for (seg, _) in field_path {
+            let Type::Struct(struct_name) = &cur else {
+                return None;
+            };
+            let fields = STRUCT_FIELDS_REGISTRY
+                .with(|r| r.borrow().get(struct_name).cloned())
+                .unwrap_or_default();
+            let next = fields.iter().find(|(n, _)| n == seg).map(|(_, t)| t.clone());
+            cur = next?;
+        }
+        Some(cur)
+    });
+
+    // Build the lvalue prefix and slot index expression for
+    // the chosen container shape. The lvalue used for the
+    // pre-Drop free MUST match the lvalue used for the store,
+    // so we compute it once.
+    let (slot_lvalue, store_line): (Option<String>, String) = match underlying {
         Type::Array { length, .. } => {
-            if checked {
-                out.push_str(&format!(
-                    "  {}[intent_check_bounds((uint64_t)({}), {})]{} = {};\n",
-                    local, index_str, length, field_suffix, value_str
-                ));
+            let idx_expr = if checked {
+                format!("intent_check_bounds((uint64_t)({}), {})", index_str, length)
             } else {
-                out.push_str(&format!(
-                    "  {}[{}]{} = {};\n",
-                    local, index_str, field_suffix, value_str
-                ));
-            }
+                index_str.clone()
+            };
+            let lv = format!("{}[{}]{}", local, idx_expr, field_suffix);
+            let store = format!("  {} = {};\n", lv, value_str);
+            (Some(lv), store)
         }
         Type::Vec(_) => {
             let prefix = if through_ref {
@@ -2143,26 +2171,39 @@ fn emit_index_assign(
             } else {
                 local.clone()
             };
-            if checked {
-                out.push_str(&format!(
-                    "  {0}.data[intent_check_bounds((uint64_t)({1}), {0}.len)]{2} = {3};\n",
-                    prefix, index_str, field_suffix, value_str
-                ));
+            let idx_expr = if checked {
+                format!(
+                    "intent_check_bounds((uint64_t)({}), {}.len)",
+                    index_str, prefix
+                )
             } else {
-                out.push_str(&format!(
-                    "  {}.data[(uint64_t)({})]{} = {};\n",
-                    prefix, index_str, field_suffix, value_str
-                ));
+                format!("(uint64_t)({})", index_str)
+            };
+            let lv = format!("{}.data[{}]{}", prefix, idx_expr, field_suffix);
+            let store = format!("  {} = {};\n", lv, value_str);
+            (Some(lv), store)
+        }
+        _ => (
+            None,
+            format!("  /* unsupported index-assign target for {} */\n", base_ty),
+        ),
+    };
+
+    if let (Some(lv), Some(lty)) = (slot_lvalue.as_ref(), leaf_ty.as_ref()) {
+        if !field_path.is_empty() {
+            match lty {
+                Type::OwnedStr => {
+                    out.push_str(&format!("  free((void*){});\n", lv));
+                }
+                Type::Vec(elem) => {
+                    out.push_str(&format!("  {}({});\n", vec_helper(elem, "free"), lv));
+                }
+                _ => {}
             }
         }
-        _ => {
-            // Should not happen — checker rejects.
-            out.push_str(&format!(
-                "  /* unsupported index-assign target for {} */\n",
-                base_ty
-            ));
-        }
     }
+
+    out.push_str(&store_line);
 }
 
 /// Emit a `print item1, item2, …;` statement. Each item is printed

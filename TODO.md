@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #125)
+## ⏳ Resume here (paused 2026-05-22, after closure #126)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -22,8 +22,22 @@ payload, #119 [T;N] enum payload, #120 const-N as array
 length, #121 const-initializer arithmetic, #122
 Task + Atomic enum payloads, #123 Mutex / Channel
 struct fields, #124 Mutex / Channel enum payloads, #125
-nested affine struct fields + recursive Drop. Test totals:
-800 lib + 47 e2e passing.
+nested affine struct fields + recursive Drop, #126 mixed-
+place leaf-OwnedStr / leaf-Vec assign (F2) — Copy gate on
+the leaf segment relaxed for heap-shaped types; both
+backends emit a free of the old slot before storing the
+new value. Test totals: 803 lib + 47 e2e passing.
+
+Known limitation discovered while implementing #126: the
+C backend's `c_element_drop_old(slot, ty)` only knows how
+to drop `Type::Vec(_)` slots, so `intent_vec_<S>__free`
+emits an empty per-element loop body for `S = Struct{…}`
+with owning fields. This is a pre-existing gap (independent
+of F2) — a Vec<Struct{OwnedStr…}> leaks its element field
+heaps at scope exit. Closure #127 candidate: extend
+`c_element_drop_old` to handle `Type::Struct` (recurse via
+the struct field registry) and `Type::OwnedStr` (free), and
+mirror the same in the LLVM `intent_vec_<S>__free` emitter.
 
 ### Recommended next (pick one)
 

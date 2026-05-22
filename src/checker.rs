@@ -4163,7 +4163,7 @@ fn check_one_stmt(
             // plain `xs[i] = v;`. T1.2 phase 2b follow-up.
             let mut resolved_path: Vec<(String, u32)> = Vec::new();
             let mut target_ty = element_type.clone();
-            for segment in field_path {
+            for (path_index, segment) in field_path.iter().enumerate() {
                 let Type::Struct(struct_name) = &target_ty else {
                     diagnostics.push(Diagnostic::new(
                         *span,
@@ -4197,21 +4197,26 @@ fn check_one_stmt(
                     ));
                     return false;
                 };
-                // Multi-segment paths flow through naturally —
-                // each iteration validates the next descent.
-                // The Copy check is per-segment; for the leaf
-                // it enforces the no-field-Drop-on-overwrite
-                // invariant; for intermediate struct fields
-                // (e.g. `inner: Inner` where Inner is Copy)
-                // it passes since aggregate Copy structs only
-                // contain Copy data.
-                if !field_ty.is_copy() {
+                // Per-segment Copy check, with a leaf
+                // exception for heap-shaped fields (OwnedStr,
+                // Vec): those route through a "free old +
+                // store new" emit in the backend (closure
+                // #126 / F2). Intermediate segments still
+                // require Copy — non-Copy intermediates would
+                // need full path-level Drop chains which the
+                // backends don't yet emit through index+field
+                // assigns.
+                let is_last = path_index == field_path.len() - 1;
+                let leaf_heap = is_last
+                    && matches!(field_ty, Type::OwnedStr | Type::Vec(_));
+                if !field_ty.is_copy() && !leaf_heap {
                     diagnostics.push(Diagnostic::new(
                         *span,
                         format!(
                             "field '{}.{}' has non-Copy type {} — mixed \
-                             index+field assignment requires Copy field types \
-                             in v1",
+                             index+field assignment requires Copy types on \
+                             intermediate path segments; only the leaf may \
+                             be OwnedStr or Vec<T>",
                             struct_name, segment, field_ty
                         ),
                     ));

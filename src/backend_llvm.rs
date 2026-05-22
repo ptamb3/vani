@@ -1483,6 +1483,7 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 }
                 let store_ty = llvm_type_string(&value.ty);
                 let val_v = emit_expr(value, ctx, out);
+                emit_leaf_overwrite_drop(&value.ty, field_path, &p, ctx, out);
                 out.push_str(&format!("  store {} {}, {}* {}\n", store_ty, val_v, store_ty, p));
                 return;
             }
@@ -1531,6 +1532,7 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 let store_ty = llvm_type_string(&value.ty);
                 let _ = elt_ty;
                 let val_v = emit_expr(value, ctx, out);
+                emit_leaf_overwrite_drop(&value.ty, field_path, &p, ctx, out);
                 out.push_str(&format!("  store {} {}, {}* {}\n", store_ty, val_v, store_ty, p));
             } else {
                 // The checker requires the base type of an index-
@@ -4621,6 +4623,43 @@ fn vec_element_of_first_arg(args: &[TypedExpr]) -> Option<Type> {
 
 pub(crate) fn vec_struct_name(element: &Type) -> String {
     format!("%intent_vec_{}", vec_struct_tag(element))
+}
+
+/// Mixed-place index+field assign: if the leaf field is a
+/// heap-shaped type (OwnedStr / Vec<T>), the old slot's
+/// resources must be freed before the new value is stored.
+/// `p` already points at the leaf slot; `leaf_ty` is its
+/// type. No-op when `field_path` is empty (the whole-element
+/// store has its own slot-drop path) or the leaf is Copy.
+/// Closure #126 / F2.
+fn emit_leaf_overwrite_drop(
+    leaf_ty: &Type,
+    field_path: &[(String, u32)],
+    p: &str,
+    ctx: &mut FnCtx<'_>,
+    out: &mut String,
+) {
+    if field_path.is_empty() {
+        return;
+    }
+    match leaf_ty {
+        Type::OwnedStr => {
+            let old = ctx.fresh_tmp();
+            out.push_str(&format!("  {} = load i8*, i8** {}\n", old, p));
+            out.push_str(&format!("  call void @free(i8* {})\n", old));
+        }
+        Type::Vec(element) => {
+            let s_ty = vec_struct_name(element);
+            let old = ctx.fresh_tmp();
+            out.push_str(&format!("  {} = load {}, {}* {}\n", old, s_ty, s_ty, p));
+            let free_name = format!("@intent_vec_{}__free", vec_struct_tag(element));
+            out.push_str(&format!(
+                "  call void {}({} {})\n",
+                free_name, s_ty, old
+            ));
+        }
+        _ => {}
+    }
 }
 
 /// Composable identifier-safe tag for a Vec's element type.
