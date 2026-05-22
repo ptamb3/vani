@@ -35,5 +35,17 @@ fn main() -> i64 {
   assert twice_x == 200;
 
   print "r=", r, " area=", area, " combined=", combined, " twice_x=", twice_x;
+
+  // Closure #129: block expressions also admit `print`
+  // statements before the tail, so you can log intermediate
+  // values from inside a `let` initializer.
+  let total: i64 = {
+    let lo: i64 = 10;
+    print "  computing total, lo=", lo;
+    let hi: i64 = 20;
+    print "  hi=", hi;
+    lo + hi
+  };
+  assert total == 30;
   return 0;
 }

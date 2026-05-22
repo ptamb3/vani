@@ -2061,16 +2061,22 @@ impl Parser {
             }),
             TokenKind::LBrace => {
                 // Block expression: `{ stmt; stmt; tail-expr }`.
-                // V1 restricts the leading stmts to `let`
-                // bindings (the checker enforces this — the
-                // parser accepts any stmt sequence and emits a
-                // diagnostic later if a non-let appears here).
-                // The tail expression's value is the block's
-                // value.
+                // V1 admits `let` bindings and `print` stmts
+                // in the prefix; the checker enforces the
+                // surface restriction (other stmts surface a
+                // clean diagnostic with the workaround). The
+                // tail expression's value is the block's value.
+                // Closure #129 extends the v1 Block MVP.
                 let open_span = token.span;
                 let mut stmts: Vec<Stmt> = Vec::new();
-                while self.check(|k| matches!(k, TokenKind::Let)) {
-                    stmts.push(self.parse_let_stmt()?);
+                loop {
+                    if self.check(|k| matches!(k, TokenKind::Let)) {
+                        stmts.push(self.parse_let_stmt()?);
+                    } else if self.check(|k| matches!(k, TokenKind::Print)) {
+                        stmts.push(self.parse_print_stmt()?);
+                    } else {
+                        break;
+                    }
                 }
                 let tail = self.parse_expr()?;
                 let close = self.expect_keyword(

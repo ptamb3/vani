@@ -3614,14 +3614,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             loaded
         }
         TypedExprKind::Block { stmts, tail } => {
-            // Block expression: emit each `let` stmt inline
+            // Block expression: emit each Let stmt inline
             // (alloca + store, register the name in ctx.locals
-            // so the tail can reference it), then emit the
-            // tail expression. After emission, restore any
-            // outer-scope bindings shadowed by inner lets so
-            // the surrounding scope's reads still resolve.
-            // V1 restricts block-internal stmts to `let` only;
-            // the checker rejects anything else.
+            // so the tail can reference it) and each Print
+            // stmt inline (via the normal stmt emitter), then
+            // emit the tail expression. After emission, restore
+            // any outer-scope bindings shadowed by inner lets
+            // so the surrounding scope's reads still resolve.
+            // V1 admits Let + Print stmts; the checker rejects
+            // anything else. Closure #129.
             let saved: Vec<(String, Option<(Type, String)>)> = stmts
                 .iter()
                 .filter_map(|s| {
@@ -3633,16 +3634,22 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 })
                 .collect();
             for s in stmts {
-                if let TypedStmt::Let { name, ty, expr: rhs } = s {
-                    let value = emit_expr(rhs, ctx, out);
-                    let lty = llvm_type_string(ty);
-                    let addr = format!("{}.{}.addr", ctx.fresh_tmp(), name);
-                    out.push_str(&format!("  {} = alloca {}\n", addr, lty));
-                    out.push_str(&format!(
-                        "  store {} {}, {}* {}\n",
-                        lty, value, lty, addr
-                    ));
-                    ctx.locals.insert(name.clone(), (ty.clone(), addr));
+                match s {
+                    TypedStmt::Let { name, ty, expr: rhs } => {
+                        let value = emit_expr(rhs, ctx, out);
+                        let lty = llvm_type_string(ty);
+                        let addr = format!("{}.{}.addr", ctx.fresh_tmp(), name);
+                        out.push_str(&format!("  {} = alloca {}\n", addr, lty));
+                        out.push_str(&format!(
+                            "  store {} {}, {}* {}\n",
+                            lty, value, lty, addr
+                        ));
+                        ctx.locals.insert(name.clone(), (ty.clone(), addr));
+                    }
+                    TypedStmt::Print { .. } => {
+                        emit_stmt(s, ctx, out);
+                    }
+                    _ => {}
                 }
             }
             let tail_val = emit_expr(tail, ctx, out);

@@ -2574,19 +2574,25 @@ fn emit_expr(expr: &TypedExpr) -> String {
         }
         TypedExprKind::Block { stmts, tail } => {
             // GCC statement-expression form: `({ T a = e1;
-            // T b = e2; tail; })`. The tail's value is the
-            // last evaluated sub-expression. T-block. v1
-            // restricts inner stmts to `let` only, so no
-            // control flow leaks out of the expression.
+            // T b = e2; print …; tail; })`. The tail's value
+            // is the last evaluated sub-expression. T-block.
+            // V1 admits Let + Print stmts; the checker rejects
+            // anything else. Closure #129.
             let mut body = String::from("({ ");
             for s in stmts {
-                if let TypedStmt::Let { name, ty, expr: rhs } = s {
-                    body.push_str(&format!(
-                        "{} v_{} = ({}); ",
-                        c_type_name(ty),
-                        name,
-                        emit_expr(rhs)
-                    ));
+                match s {
+                    TypedStmt::Let { name, ty, expr: rhs } => {
+                        body.push_str(&format!(
+                            "{} v_{} = ({}); ",
+                            c_type_name(ty),
+                            name,
+                            emit_expr(rhs)
+                        ));
+                    }
+                    TypedStmt::Print { items } => {
+                        emit_print_items(items, &mut body);
+                    }
+                    _ => {}
                 }
             }
             body.push_str(&format!("({}); }})", emit_expr(tail)));

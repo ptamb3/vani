@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 807 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 809 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,21 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **Block expressions admit print stmts done 2026-05-22**:
+   `let r = { let a = …; print "log", a; tail }` now
+   compiles. The v1 Block MVP was Let-only; the relaxation
+   keeps the same shape (Let prefix + tail expression) but
+   also lets `print` stmts interleave for logging
+   intermediate values. Control flow, reassignment, and
+   other shapes still surface the existing diagnostic.
+   Parser accepts a Let/Print prefix; checker pushes
+   `TypedStmt::Print` into the block's stmts; tree-C and
+   tree-LLVM Block emitters emit print stmts inline (via
+   `emit_print_items` / the standard stmt emitter). SSA
+   Block routing is unchanged (still falls back to tree
+   backends). Closure #129. See updated
+   [examples/block_expressions.intent](examples/block_expressions.intent).
 
    **OwnedStr enum payload destructure done 2026-05-22**:
    `match m { Msg.Text(s) then … }` now compiles when the

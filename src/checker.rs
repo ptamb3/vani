@@ -6768,13 +6768,17 @@ fn check_expr(
             )
         }
         ExprKind::Block { stmts, tail } => {
-            // T-block MVP: `{ let a = e1; let b = e2; tail }`.
-            // Only `let` bindings allowed inside the block for
-            // v1; anything else (control flow, assignments,
-            // task spawn, etc.) surfaces a clean diagnostic
-            // pointing at the workaround (hoist the stmt
-            // outside the block). The block's type is the
-            // tail expression's type.
+            // T-block MVP: `{ let a = e1; print "log"; tail }`.
+            // V1 admits `let` bindings (including `let _ = …`,
+            // which is also what the parser produces for bare
+            // `f();` discarded calls) plus `print` stmts before
+            // the tail expression. Control flow (if/while/for),
+            // reassignment, task spawn, and other shapes that
+            // affect the surrounding scope's state still
+            // surface a clean diagnostic pointing at the
+            // workaround (hoist outside the block). The
+            // block's type is the tail expression's type.
+            // Closure #129 extends the v1 Block MVP.
             env.push_scope();
             let mut typed_stmts: Vec<TypedStmt> = Vec::new();
             for s in stmts {
@@ -6806,10 +6810,26 @@ fn check_expr(
                             expr: rhs_checked.expr,
                         });
                     }
+                    Stmt::Print { items, .. } => {
+                        let mut typed_items: Vec<crate::ir::TypedPrintItem> =
+                            Vec::with_capacity(items.len());
+                        for item in items {
+                            match item {
+                                crate::ast::PrintItem::Str(s) => typed_items
+                                    .push(crate::ir::TypedPrintItem::Str(s.clone())),
+                                crate::ast::PrintItem::Expr(e) => {
+                                    let ce = check_expr(e, env, signatures, diagnostics);
+                                    typed_items
+                                        .push(crate::ir::TypedPrintItem::Expr(ce.expr));
+                                }
+                            }
+                        }
+                        typed_stmts.push(TypedStmt::Print { items: typed_items });
+                    }
                     _ => {
                         diagnostics.push(Diagnostic::new(
                             s.span(),
-                            "block expressions in v1 only allow `let` bindings before the tail expression — hoist control flow or assignments outside the block",
+                            "block expressions in v1 only allow `let` bindings and `print` statements before the tail expression — hoist control flow or assignments outside the block",
                         ));
                     }
                 }

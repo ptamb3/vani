@@ -4466,6 +4466,57 @@ mod tests {
     }
 
     #[test]
+    fn block_expression_admits_print_stmts() {
+        // Closure #129 extends the v1 Block MVP to allow
+        // `print` statements before the tail expression.
+        // Useful for logging intermediate values inside a
+        // block-expression initializer.
+        let source = r#"
+            fn main() -> i64 {
+              let r: i64 = {
+                let a: i64 = 10;
+                print "inside block, a=", a;
+                let b: i64 = 20;
+                a + b
+              };
+              return r;
+            }
+        "#;
+        compile(source).expect("block-expr with print should compile");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        // The print should appear inside the GCC statement-
+        // expression body, not hoisted out.
+        assert!(
+            c.contains("fputs(\"inside block, a=\""),
+            "expected print fputs inside block, got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn block_expression_print_runs_before_tail() {
+        // Closure #129: prints inside a Block execute before
+        // the tail expression. Verifies the C statement-
+        // expression ordering.
+        let source = r#"
+            fn main() -> i64 {
+              let x: i64 = {
+                print "begin";
+                let v: i64 = 7;
+                v + 1
+              };
+              return x;
+            }
+        "#;
+        let c = compile_to_c(source).expect("C backend emits a program");
+        // The print's fputs must appear before the tail
+        // expression's (v + 1) in the emitted text.
+        let p = c.find("fputs(\"begin\"").expect("print site");
+        let v_def = c.find("int64_t v_v =").expect("v def");
+        assert!(p < v_def, "print should be emitted before tail-prep:\n{}", c);
+    }
+
+    #[test]
     fn block_expression_shadowing_is_local() {
         // Inner `let x` inside a block-expr shadows the outer
         // `x` within the block scope; after the block
