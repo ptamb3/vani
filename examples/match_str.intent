@@ -1,0 +1,36 @@
+intent "Match on Str scrutinee — string-literal pattern dispatch";
+
+// `match` now accepts a `Str` (or `OwnedStr`) scrutinee with
+// string-literal patterns. A wildcard is required since the
+// string space is open. The checker desugars to a nested
+// if-expression chain over `s == "lit"` (which lowers to
+// strcmp in both backends); the scrutinee binds to a temp
+// first so any side-effecting expression evaluates once.
+
+fn level(name: Str) -> i64 {
+  return match name {
+    "low" then 1,
+    "med" then 2,
+    "high" then 3,
+    _ then 0,
+  };
+}
+
+fn main() -> i64 {
+  assert level("low") == 1;
+  assert level("med") == 2;
+  assert level("high") == 3;
+  assert level("nope") == 0;
+
+  // OwnedStr scrutinees work too. `==` on Str/OwnedStr is
+  // strcmp-based, so a concatenated value compares by content.
+  let label: OwnedStr = "lev" + "el";
+  let n: i64 = match label {
+    "level" then 100,
+    _ then 0,
+  };
+  assert n == 100;
+
+  print "Str match works";
+  return 0;
+}

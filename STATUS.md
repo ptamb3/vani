@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 784 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 786 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,15 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Match on `Str` / `OwnedStr` scrutinee done 2026-05-22**:
+   string-literal patterns desugar at the checker level to a
+   nested if-expression chain over `==` on Str (strcmp-based).
+   The scrutinee binds to a temp once so any side-effecting
+   expression evaluates exactly once. Wildcard required.
+   No backend changes — uses existing `==`/IfExpr/Block
+   primitives. See
+   [examples/match_str.intent](examples/match_str.intent).
+
    **Match on `bool` scrutinee done 2026-05-22**:
    `match b { true then …, false then …, _ then … }` works.
    Exhaustiveness requires both arms OR a wildcard. Bool

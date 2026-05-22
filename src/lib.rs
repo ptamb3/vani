@@ -2631,6 +2631,48 @@ mod tests {
     }
 
     #[test]
+    fn match_str_dispatch_with_wildcard() {
+        // T1.3 follow-up: Str-typed scrutinee desugars to a
+        // nested if-expr chain using `==` on Str (strcmp).
+        // Wildcard is required.
+        let source = r#"
+            fn level(name: Str) -> i64 {
+              return match name {
+                "low" then 1,
+                "high" then 3,
+                _ then 0,
+              };
+            }
+            fn main() -> i64 {
+              assert level("low") == 1;
+              assert level("high") == 3;
+              assert level("?") == 0;
+              return 0;
+            }
+        "#;
+        compile(source).expect("Str match with wildcard should compile");
+    }
+
+    #[test]
+    fn match_str_missing_wildcard_rejected() {
+        // Str scrutinees are open — missing wildcard surfaces
+        // a clean diagnostic.
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "x";
+              return match s { "a" then 1, "b" then 2 };
+            }
+        "#;
+        let errors = compile(source)
+            .expect_err("Str match without wildcard should fail");
+        assert!(
+            errors.iter().any(|e| e.message.contains("string scrutinees require a wildcard")),
+            "expected wildcard-required diagnostic, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
     fn match_bool_compiles_and_dispatches() {
         // Bool scrutinee with `true` / `false` literal
         // patterns is supported. Exhaustiveness requires both

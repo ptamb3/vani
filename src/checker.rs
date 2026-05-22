@@ -5331,6 +5331,180 @@ fn consume_if_moved_var(
     }
 }
 
+/// Desugar `match s { "a" then …, "b" then …, _ then … }` on
+/// a `Str` / `OwnedStr` scrutinee into a nested if-expression
+/// chain. The scrutinee binds to a single temp so any side
+/// effect runs once. A wildcard arm is required (the string
+/// space is open). T1.3 follow-up (closure #111).
+fn check_match_str(
+    scrutinee: &CheckedExpr,
+    arms: &[crate::ast::MatchArm],
+    span: Span,
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let scrut_ty = scrutinee.ty().clone();
+    // Generate a unique temp binding name from the match
+    // span so nested matches don't collide.
+    let tmp_name = format!("__match_str_{}", span.start);
+    // Two passes: (1) check each arm body to build the typed
+    // body expressions + collect the result type, validate
+    // each pattern; (2) fold the arms into a nested IfExpr.
+    let mut seen_strs: Vec<String> = Vec::new();
+    let mut wildcard_body: Option<TypedExpr> = None;
+    let mut wildcard_seen_at: Option<usize> = None;
+    let mut typed_arms: Vec<(String, TypedExpr)> = Vec::new();
+    let mut result_ty: Option<Type> = None;
+    for (i, arm) in arms.iter().enumerate() {
+        if wildcard_seen_at.is_some() {
+            diagnostics.push(Diagnostic::new(
+                arm.pattern_span,
+                "match arm is unreachable: a wildcard `_` arm above already \
+                 covers every remaining case"
+                    .to_string(),
+            ));
+            continue;
+        }
+        match &arm.pattern {
+            crate::ast::Pattern::Str(s) => {
+                if seen_strs.iter().any(|p| p == s) {
+                    diagnostics.push(Diagnostic::new(
+                        arm.pattern_span,
+                        format!(
+                            "match arm for string pattern \"{}\" appears twice",
+                            s
+                        ),
+                    ));
+                    continue;
+                }
+                seen_strs.push(s.clone());
+                let body_checked = check_expr(&arm.body, env, signatures, diagnostics);
+                if let Some(prev) = &result_ty {
+                    if body_checked.ty() != prev {
+                        diagnostics.push(Diagnostic::new(
+                            arm.body.span,
+                            format!(
+                                "match arm body type mismatch: expected {}, got {}",
+                                prev,
+                                body_checked.ty()
+                            ),
+                        ));
+                    }
+                } else {
+                    result_ty = Some(body_checked.ty().clone());
+                }
+                typed_arms.push((s.clone(), body_checked.expr));
+            }
+            crate::ast::Pattern::Wildcard => {
+                wildcard_seen_at = Some(i);
+                let body_checked = check_expr(&arm.body, env, signatures, diagnostics);
+                if let Some(prev) = &result_ty {
+                    if body_checked.ty() != prev {
+                        diagnostics.push(Diagnostic::new(
+                            arm.body.span,
+                            format!(
+                                "match arm body type mismatch: expected {}, got {}",
+                                prev,
+                                body_checked.ty()
+                            ),
+                        ));
+                    }
+                } else {
+                    result_ty = Some(body_checked.ty().clone());
+                }
+                wildcard_body = Some(body_checked.expr);
+            }
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    arm.pattern_span,
+                    format!(
+                        "match scrutinee is {}, but pattern is not a string \
+                         literal — use `\"text\" then …` or `_ then …`",
+                        scrut_ty
+                    ),
+                ));
+                continue;
+            }
+        }
+    }
+    if wildcard_body.is_none() {
+        diagnostics.push(Diagnostic::new(
+            span,
+            "non-exhaustive match: string scrutinees require a wildcard \
+             `_ then …` arm to cover values not explicitly listed"
+                .to_string(),
+        ));
+    }
+    let unified = result_ty.unwrap_or(Type::I64);
+    let default_body = wildcard_body.unwrap_or_else(|| TypedExpr {
+        kind: TypedExprKind::Int(0),
+        ty: unified.clone(),
+        constant: Some(TypedConst::Int(0)),
+        span,
+        binding_decl_span: None,
+    });
+    // Fold the string arms right-to-left into a nested
+    // IfExpr chain whose final else is the wildcard body.
+    let mut chain = default_body;
+    for (text, body) in typed_arms.into_iter().rev() {
+        let scr_var = TypedExpr {
+            kind: TypedExprKind::Var(tmp_name.clone()),
+            ty: scrut_ty.clone(),
+            constant: None,
+            span,
+            binding_decl_span: None,
+        };
+        let lit = TypedExpr {
+            kind: TypedExprKind::Str(text),
+            ty: Type::Str,
+            constant: None,
+            span,
+            binding_decl_span: None,
+        };
+        let cond = TypedExpr {
+            kind: TypedExprKind::Binary {
+                op: BinaryOp::Eq,
+                left: Box::new(scr_var),
+                right: Box::new(lit),
+                checked: true,
+            },
+            ty: Type::Bool,
+            constant: None,
+            span,
+            binding_decl_span: None,
+        };
+        chain = TypedExpr {
+            kind: TypedExprKind::IfExpr {
+                cond: Box::new(cond),
+                then_value: Box::new(body),
+                else_value: Box::new(chain),
+            },
+            ty: unified.clone(),
+            constant: None,
+            span,
+            binding_decl_span: None,
+        };
+    }
+    // Wrap the if-chain in a Block that first binds the
+    // scrutinee to the temp. The Block's tail value is the
+    // if-chain.
+    let bind_stmt = TypedStmt::Let {
+        name: tmp_name.clone(),
+        ty: scrut_ty.clone(),
+        expr: scrutinee.expr.clone(),
+    };
+    CheckedExpr::new(
+        TypedExprKind::Block {
+            stmts: vec![bind_stmt],
+            tail: Box::new(chain),
+        },
+        unified,
+        None,
+        span,
+    )
+}
+
 fn check_expr(
     expr: &Expr,
     env: &mut Env,
@@ -5937,6 +6111,24 @@ fn check_expr(
         }
         ExprKind::Match { scrutinee, arms } => {
             let scrutinee_checked = check_expr(scrutinee, env, signatures, diagnostics);
+            // Match on `Str` / `OwnedStr` desugars to a
+            // nested if-expression chain via `==` on Str.
+            // The scrutinee is bound to a temp first so any
+            // side-effecting expression evaluates once. A
+            // wildcard arm is required since Str is open;
+            // missing wildcard surfaces a diagnostic.
+            // T1.3 follow-up (closure #111).
+            let scrut_ty_early = scrutinee_checked.ty().clone();
+            if matches!(scrut_ty_early, Type::Str | Type::OwnedStr) {
+                return check_match_str(
+                    &scrutinee_checked,
+                    arms,
+                    expr.span,
+                    env,
+                    signatures,
+                    diagnostics,
+                );
+            }
             // Two dispatch shapes in v1: enum-tag dispatch
             // and integer-literal dispatch. Bool and other
             // non-integer/non-enum scalars are rejected. The

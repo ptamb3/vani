@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #110)
+## ⏳ Resume here (paused 2026-05-22, after closure #111)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -12,8 +12,8 @@ user-Eq desugar for struct `==`, #105 partial-move tracking,
 #106 enum `==` desugar + partial-then-whole-move diagnostic,
 #107 tuple auto-equality, #108 in-place
 `push(mut ref xs, v)`, #109 `xs[i].field = v` mixed-place
-assignment, #110 match on bool scrutinee. Test totals: 784
-lib + 47 e2e passing.
+assignment, #110 match on bool scrutinee, #111 match on Str
+scrutinee. Test totals: 786 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -611,6 +611,46 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+111. ~~**Match on `Str` / `OwnedStr` scrutinee**~~ — done
+     2026-05-22. Pattern::Str was scaffolded in closure #110
+     and gated with a "not yet supported" diagnostic; this
+     closure lowers it.
+     - **`check_match_str` helper** in
+       [src/checker.rs](src/checker.rs): detects `Str` /
+       `OwnedStr` scrutinee at the start of the Match
+       check and desugars to:
+       ```
+       {
+         let __match_str_<span> = <scrutinee>;
+         if __match_str == "a" { body_a }
+         else if __match_str == "b" { body_b }
+         else { wildcard_body }
+       }
+       ```
+       The scrutinee binds to a temp once so any
+       side-effecting expression evaluates exactly once.
+     - **Exhaustiveness**: wildcard arm required (the
+       string space is open). Missing wildcard surfaces
+       "non-exhaustive match: string scrutinees require a
+       wildcard `_ then …` arm".
+     - **Duplicate / unreachable-arm checks** carry the
+       same shape as the integer/bool path.
+     - **No backend changes** — desugar uses existing
+       `==` on Str/OwnedStr (strcmp-based) + IfExpr + Block
+       primitives. Both tree backends and the SSA fallback
+       work as-is.
+     - **2 lib tests added**:
+       `match_str_dispatch_with_wildcard` (positive case
+       through both backends) and
+       `match_str_missing_wildcard_rejected` (the
+       diagnostic).
+     - **New example**
+       [examples/match_str.intent](examples/match_str.intent)
+       exercises Str and OwnedStr scrutinees with `==`
+       returning a content-based comparison. Wired into
+       the cross-backend e2e test.
+     784 → 786 lib tests; 47 e2e stable.
+
 110. ~~**Match on `bool` scrutinee**~~ — done 2026-05-22.
      `match b { true then …, false then …, _ then … }` now
      works. Exhaustiveness requires both arms OR a wildcard.

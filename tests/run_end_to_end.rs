@@ -407,6 +407,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "invariants.intent",
         "iterate.intent",
         "match_bool.intent",
+        "match_str.intent",
         "mixed_place_assign.intent",
         "mut_refs.intent",
         "parallel.intent",
