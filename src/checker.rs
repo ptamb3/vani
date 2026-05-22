@@ -5627,16 +5627,68 @@ fn check_match_str(
         };
     }
     // Wrap the if-chain in a Block that first binds the
-    // scrutinee to the temp. The Block's tail value is the
-    // if-chain.
+    // scrutinee to the temp. For Str scrutinees the temp is
+    // a borrowed pointer (Copy) and the Block's tail is the
+    // if-chain directly. For an `OwnedStr` scrutinee (e.g.
+    // `match make_owned_str() { "xy" then 1, _ then 0 }`)
+    // the temp owns a heap allocation that nobody else
+    // references, so we wrap the if-chain through an
+    // intermediate `__result` let, drop the temp, then yield
+    // `__result` as the block's tail. Closure #137: without
+    // the drop the scrutinee's heap leaks.
     let bind_stmt = TypedStmt::Let {
         name: tmp_name.clone(),
         ty: scrut_ty.clone(),
         expr: scrutinee.expr.clone(),
     };
+    // Only fresh heap-producing scrutinee expressions
+    // (Call returning OwnedStr, Binary `+` concat) own a
+    // heap allocation that no other binding holds. Var /
+    // FieldAccess / TupleAccess scrutinees reference a
+    // value that's already tracked by some outer binding
+    // — emitting a Drop on the temp here would double-free
+    // (the outer binding's scope-exit Drop frees the same
+    // pointer). Closure #137 mirrors closure #135's
+    // print-of-OwnedStr whitelist.
+    let needs_temp_drop = matches!(scrut_ty, Type::OwnedStr)
+        && matches!(
+            scrutinee.expr.kind,
+            TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
+        );
+    let stmts = if needs_temp_drop {
+        let result_name = format!("__match_str_result_{}", span.start);
+        let result_stmt = TypedStmt::Let {
+            name: result_name.clone(),
+            ty: unified.clone(),
+            expr: chain,
+        };
+        let drop_stmt = TypedStmt::Drop {
+            name: tmp_name.clone(),
+            ty: scrut_ty.clone(),
+            moved_fields: Vec::new(),
+        };
+        let result_var_tail = TypedExpr {
+            kind: TypedExprKind::Var(result_name),
+            ty: unified.clone(),
+            constant: None,
+            span,
+            binding_decl_span: None,
+        };
+        return CheckedExpr::new(
+            TypedExprKind::Block {
+                stmts: vec![bind_stmt, result_stmt, drop_stmt],
+                tail: Box::new(result_var_tail),
+            },
+            unified,
+            None,
+            span,
+        );
+    } else {
+        vec![bind_stmt]
+    };
     CheckedExpr::new(
         TypedExprKind::Block {
-            stmts: vec![bind_stmt],
+            stmts,
             tail: Box::new(chain),
         },
         unified,

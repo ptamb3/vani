@@ -3004,6 +3004,67 @@ mod tests {
     }
 
     #[test]
+    fn match_owned_str_fresh_scrutinee_drops_temp() {
+        // Closure #137: `match make_owned_str() { … }` was
+        // silently leaking the scrutinee's heap. The
+        // `check_match_str` desugar bound the scrutinee to a
+        // temp inside a Block but never emitted a Drop, so
+        // the fresh OwnedStr from the Call escaped without
+        // being freed. The fix only kicks in for fresh
+        // heap-producers (Call / Binary scrutinees); Var /
+        // FieldAccess scrutinees reference a value owned by
+        // some outer binding and don't need a drop here.
+        let source = r#"
+            fn pick(i: i64) -> OwnedStr {
+              return "x" + "y";
+            }
+            fn main() -> i64 {
+              let r: i64 = match pick(0) {
+                "xy" then 1,
+                _ then 0,
+              };
+              return r;
+            }
+        "#;
+        compile(source).expect("fresh-OwnedStr match should compile");
+        let c = compile_to_c(source).expect("emits C");
+        // The desugar lifts the if-chain into a `__match_str_result_<n>`
+        // binding and drops the `__match_str_<n>` temp.
+        assert!(
+            c.contains("__match_str_result_"),
+            "expected result-wrap let, got:\n{c}"
+        );
+        assert!(
+            c.contains("free((void*)v___match_str_"),
+            "expected free of match-str temp, got:\n{c}"
+        );
+    }
+
+    #[test]
+    fn match_owned_str_var_scrutinee_no_double_free() {
+        // Closure #137 must NOT emit a Drop temp when the
+        // scrutinee is a Var (the var owns the heap; freeing
+        // the temp would double-free at the outer scope-exit).
+        let source = r#"
+            fn main() -> i64 {
+              let label: OwnedStr = "lev" + "el";
+              let n: i64 = match label {
+                "level" then 100,
+                _ then 0,
+              };
+              assert n == 100;
+              return 0;
+            }
+        "#;
+        compile(source).expect("Var-OwnedStr match should compile");
+        let c = compile_to_c(source).expect("emits C");
+        assert!(
+            !c.contains("__match_str_result_"),
+            "should not wrap when scrutinee is a Var (would double-free), got:\n{c}"
+        );
+    }
+
+    #[test]
     fn match_bool_compiles_and_dispatches() {
         // Bool scrutinee with `true` / `false` literal
         // patterns is supported. Exhaustiveness requires both

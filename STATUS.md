@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 821 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 823 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,27 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`match make_owned_str() { … }` drops temp scrutinee done 2026-05-22**:
+   `match` on a fresh OwnedStr scrutinee (Call or `+`
+   concat producing a heap string with no other owner)
+   was silently leaking. `check_match_str` bound the
+   scrutinee to a temp inside a synthetic Block but never
+   emitted a Drop for the temp, so the heap escaped at
+   Block exit. Restructured the synthetic Block to wrap
+   the if-chain through a `__match_str_result_<n>` let,
+   emit a `TypedStmt::Drop` for the temp after the
+   if-chain runs, then yield the result var as the
+   block's tail. Tree-C / tree-LLVM Block codegen also
+   extended to emit Drop stmts inside the GCC
+   statement-expression body. The fix uses the same
+   conservative whitelist as closure #135 (Call / Binary
+   only) so Var / FieldAccess scrutinees — which alias an
+   outer-binding's heap — don't get spuriously dropped
+   (would double-free at the outer scope's existing
+   Drop). Closure #137. Verified leak-free under
+   `-fsanitize=address,leak`. See updated
+   [examples/match_str.intent](examples/match_str.intent).
 
    **`Vec<OwnedStr>` compiles to valid C done 2026-05-22**:
    the C backend's `element_tag` helper was leaking the

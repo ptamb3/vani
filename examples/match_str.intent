@@ -31,6 +31,22 @@ fn main() -> i64 {
   };
   assert n == 100;
 
+  // Closure #137: when the scrutinee is a FRESH OwnedStr —
+  // i.e. produced by a call or a `+` concat without a
+  // separate binding — the match desugar drops the heap
+  // automatically after the if-chain runs. Previously this
+  // shape was silently leaking.
+  let m: i64 = match level_label() + "!" {
+    "lo!" then 1,
+    "hi!" then 3,
+    _ then 0,
+  };
+  assert m == 3;
+
   print "Str match works";
   return 0;
+}
+
+fn level_label() -> OwnedStr {
+  return "h" + "i";
 }

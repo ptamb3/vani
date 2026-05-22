@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #136)
+## ⏳ Resume here (paused 2026-05-22, after closure #137)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -85,8 +85,17 @@ compiles to valid C: the C backend's `element_tag`
 helper was leaking the `*` from `char*` into the typedef
 name (`intent_vec_char*`), making the emitted C fail at
 cc. Added explicit `str` / `owned_str` arms. LLVM was
-already sanitizing. Test totals: 821 lib + 47 e2e
-passing.
+already sanitizing. #137 `match make_owned_str() { … }`
+drops temp scrutinee: fresh OwnedStr match scrutinees
+(Call / `+` concat) were leaking — `check_match_str`
+bound to a temp but never emitted a Drop. Restructured
+the synthetic Block to wrap the if-chain through a
+`__match_str_result_<n>` let, drop the temp, then yield
+the result var. Tree-C / tree-LLVM Block codegen also
+extended to emit Drop stmts. Var / FieldAccess
+scrutinees stay unwrapped (would double-free with the
+outer binding's existing Drop). Test totals: 823 lib +
+47 e2e passing.
 
 ### Recommended next (pick one)
 

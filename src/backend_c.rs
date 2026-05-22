@@ -2678,7 +2678,11 @@ fn emit_expr(expr: &TypedExpr) -> String {
             // T b = e2; print …; tail; })`. The tail's value
             // is the last evaluated sub-expression. T-block.
             // V1 admits Let + Print stmts; the checker rejects
-            // anything else. Closure #129.
+            // anything else from user-written blocks. Synthetic
+            // blocks (e.g. the `match-str` desugar) can also
+            // include `Drop` stmts so the temp scrutinee gets
+            // released after the if-chain evaluates. Closure
+            // #137.
             let mut body = String::from("({ ");
             for s in stmts {
                 match s {
@@ -2693,6 +2697,22 @@ fn emit_expr(expr: &TypedExpr) -> String {
                     TypedStmt::Print { items } => {
                         emit_print_items(items, &mut body);
                     }
+                    TypedStmt::Drop { name, ty, .. } => match ty {
+                        Type::OwnedStr => {
+                            body.push_str(&format!(
+                                "free((void*){}); ",
+                                local_name(name)
+                            ));
+                        }
+                        Type::Vec(element) => {
+                            body.push_str(&format!(
+                                "{}({}); ",
+                                vec_helper(element, "free"),
+                                local_name(name)
+                            ));
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
