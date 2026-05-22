@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (796 lib + 47 e2e tests passing):
+Supported today (797 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -294,7 +294,9 @@ Supported today (796 lib + 47 e2e tests passing):
   [examples/enum_vec_payload.intent](examples/enum_vec_payload.intent),
   [examples/enum_arr_payload.intent](examples/enum_arr_payload.intent).
 - **Structs with affine fields** — `OwnedStr`, `Vec<T>`, `[T; N]` of Copy
-  elements, `Task`, and `Atomic<T>` are valid struct field types in v1.
+  elements, `Task`, `Atomic<T>`, `Mutex<T>`, and `Channel<T, N>` are
+  valid struct field types in v1; only `Guard<T>` is still rejected
+  (its bespoke RAII unlock needs more wiring).
   Heap-shaped fields (OwnedStr, Vec) are freed at scope exit; stack-shaped
   fields (arrays, Task, Atomic) need no runtime drop. Struct-literal init
   from a `Var` moves the source binding so a heap value flows `caller →

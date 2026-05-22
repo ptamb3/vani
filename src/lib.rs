@@ -6419,24 +6419,38 @@ mod tests {
     }
 
     #[test]
-    fn struct_mutex_field_still_rejected() {
-        // T1.2 phase 2b admits OwnedStr, Vec<T>, [T;N], Task,
-        // and Atomic<T> as struct fields. Mutex / Guard /
-        // Channel remain rejected — their RAII shape is more
-        // bespoke and not yet wired through the struct Drop
-        // path.
+    fn struct_mutex_field_compiles_and_locks() {
+        // Closure #123: Mutex<T> is now an accepted struct
+        // field. Together with closure #102's field-borrow
+        // (`ref s.m`), users can build mutex-guarded state
+        // structures.
         let source = r#"
-            struct Locked { m: Mutex<i64> }
+            struct State { m: Mutex<i64> }
+            fn main() -> i64 {
+              let s: State = State { m: mutex_new(42) };
+              let g = mutex_lock(ref s.m);
+              return 0;
+            }
+        "#;
+        compile(source).expect("Mutex field + lock should compile");
+    }
+
+    #[test]
+    fn struct_guard_field_still_rejected() {
+        // Guard<T> requires explicit Drop wiring (RAII
+        // unlock) — still rejected as a struct field.
+        let source = r#"
+            struct Locked { g: Guard<i64> }
             fn main() -> i64 { return 0; }
         "#;
         let errors = compile(source)
-            .expect_err("Mutex field should fail in v1");
+            .expect_err("Guard field should still fail");
         assert!(
             errors
                 .iter()
                 .any(|e| e.message.contains("non-Copy")
-                    && e.message.contains("Mutex / Guard / Channel")),
-            "expected non-Copy struct-field diagnostic, got: {:?}",
+                    && e.message.contains("Guard")),
+            "expected Guard-rejected diagnostic, got: {:?}",
             errors
         );
     }

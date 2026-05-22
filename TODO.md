@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #122)
+## ⏳ Resume here (paused 2026-05-22, after closure #123)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -20,8 +20,8 @@ unit-return functions, #116 empty struct + bare-block
 scope-stmt, #117 SSA bool-print parity, #118 Vec<T> enum
 payload, #119 [T;N] enum payload, #120 const-N as array
 length, #121 const-initializer arithmetic, #122
-Task + Atomic enum payloads. Test totals: 796 lib + 47
-e2e passing.
+Task + Atomic enum payloads, #123 Mutex / Channel
+struct fields. Test totals: 797 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -619,6 +619,37 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+123. ~~**`Mutex<T>` + `Channel<T, N>` struct fields**~~ —
+     done 2026-05-22. Combined with closure #102's
+     field-borrow (`ref s.m`), users can now build
+     mutex-guarded state structures.
+     - **Checker gate** in [src/checker.rs](src/checker.rs)
+       admits `Type::Mutex(_)` and `Type::Channel(_, _)`
+       alongside the previously-supported affine field
+       types. Only `Type::Guard(_)` remains rejected — its
+       RAII unlock is bespoke and needs more wiring through
+       the struct-Drop path.
+     - **Backends unchanged**: Mutex and Channel are inline
+       struct layouts (`{ value, locked }` / Vyukov MPSC
+       ring buffer slots). The existing struct typedef +
+       field-Drop emission paths already handle them
+       — Mutex / Channel don't carry heap data themselves
+       so the per-field Drop is a no-op.
+     - **Field-borrow integration**: `mutex_lock(ref s.m)`
+       and `channel_send(ref s.ch, value)` flow through
+       closure #102's `RefField` machinery cleanly.
+     - **2 existing lib tests refreshed**:
+       `struct_mutex_field_still_rejected` →
+       `struct_mutex_field_compiles_and_locks`; new
+       `struct_guard_field_still_rejected` pins the
+       remaining gate. Diagnostic text updated to reflect
+       the new Guard-only rejection.
+     - **Still pending**: `Guard<T>` as struct field
+       (needs RAII-unlock wiring through struct Drop);
+       Mutex / Guard / Channel as enum payloads (would
+       follow the same path).
+     796 → 797 lib tests; 47 e2e stable.
+
 122. ~~**Task + Atomic enum payloads**~~ — done 2026-05-22.
      Last two of the originally-listed affine payload
      types now work. Only Mutex / Guard / Channel payloads

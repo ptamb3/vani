@@ -524,7 +524,10 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
             // it requires moving the Vec out via a let binding.
             let field_allowed = field.ty.is_copy()
                 || matches!(field.ty, Type::OwnedStr | Type::Task)
-                || matches!(&field.ty, Type::Atomic(_) | Type::Vec(_))
+                || matches!(
+                    &field.ty,
+                    Type::Atomic(_) | Type::Vec(_) | Type::Mutex(_) | Type::Channel(_, _)
+                )
                 || matches!(
                     &field.ty,
                     Type::Array { element, .. } if element.is_copy()
@@ -535,9 +538,9 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
                     format!(
                         "struct field '{}::{}' has non-Copy type {} — \
                          v1 supports Copy types, OwnedStr, Vec<T>, \
-                         [T; N] of Copy elements, Task, and Atomic<T> as \
-                         struct fields; Mutex / Guard / Channel still need \
-                         explicit wiring",
+                         [T; N] of Copy elements, Task, Atomic<T>, \
+                         Mutex<T>, and Channel<T, N> as struct fields; \
+                         Guard<T> still needs explicit wiring",
                         decl.name, field.name, field.ty
                     ),
                 ));

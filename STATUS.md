@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 796 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 797 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,15 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Mutex / Channel struct fields done 2026-05-22**:
+   `struct State { m: Mutex<i64> }` and the analog for
+   `Channel<T, N>` now compile. Combined with the
+   field-borrow work from closure #102,
+   `mutex_lock(ref s.m)` flows cleanly. Both are inline
+   struct layouts; per-field Drop is a no-op. Only
+   `Guard<T>` remains rejected as a struct field — its
+   RAII unlock is bespoke and needs more wiring.
+
    **Task + Atomic enum payloads done 2026-05-22**: closes
    the originally-listed affine enum payload types. Only
    Mutex / Guard / Channel payloads remain rejected. Both
