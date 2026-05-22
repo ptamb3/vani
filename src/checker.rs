@@ -8957,12 +8957,35 @@ fn check_push_builtin(
     }
 
     let xs = check_expr(&args[0], env, signatures, diagnostics);
-    let element_type = match xs.ty() {
-        Type::Vec(element) => (**element).clone(),
+    // Two forms:
+    //   push(xs: Vec<T>, v: T)       -> Vec<T>     (consuming)
+    //   push(xs: mut ref Vec<T>, v)  -> i64        (in-place; returns new len)
+    // Dispatch on the first arg's type. The mut-ref form
+    // works through a struct field (`mut ref t.xs`) without
+    // requiring partial-move + write-back. T1.2 phase 2b
+    // follow-up.
+    let (element_type, in_place) = match xs.ty() {
+        Type::Vec(element) => ((**element).clone(), false),
+        Type::RefMut(inner) => match &**inner {
+            Type::Vec(element) => ((**element).clone(), true),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "push() requires a Vec or mut ref Vec argument, got {}",
+                        xs.ty()
+                    ),
+                ));
+                return CheckedExpr::fallback(Type::Vec(Box::new(Type::I64)), span);
+            }
+        },
         other => {
             diagnostics.push(Diagnostic::new(
                 args[0].span,
-                format!("push() requires a Vec argument, got {}", other),
+                format!(
+                    "push() requires a Vec or mut ref Vec argument, got {}",
+                    other
+                ),
             ));
             return CheckedExpr::fallback(Type::Vec(Box::new(Type::I64)), span);
         }
@@ -8977,14 +9000,22 @@ fn check_push_builtin(
         diagnostics,
     );
 
-    diagnose_partial_then_whole_move(&args[0], &xs, env, diagnostics);
+    // Consuming form moves the source binding; in-place form
+    // leaves it borrowed (the existing `RefMut`/`RefMutField`
+    // checks already validated the borrow shape).
+    if !in_place {
+        diagnose_partial_then_whole_move(&args[0], &xs, env, diagnostics);
+        consume_if_moved_var(&args[0], &xs, env);
+    }
 
-    consume_if_moved_var(&args[0], &xs, env);
-
-    let result_type = Type::Vec(Box::new(element_type));
+    let (call_name, result_type) = if in_place {
+        ("push_mut".to_string(), Type::I64)
+    } else {
+        ("push".to_string(), Type::Vec(Box::new(element_type)))
+    };
     CheckedExpr::new(
         TypedExprKind::Call {
-            name: "push".to_string(),
+            name: call_name,
             name_span: span,
             args: vec![xs.expr, value.expr],
         },

@@ -1158,6 +1158,34 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
         store = push_store,
     ));
 
+    // In-place push for `push(mut ref xs, v)` — operates on a
+    // pointer to the Vec struct. Used when the Vec is owned by
+    // another binding (e.g. a struct field) and the caller
+    // doesn't want to consume + reassign. T1.2 phase 2b
+    // follow-up.
+    let push_mut_store = if element_is_array {
+        format!(
+            "    memcpy(xs->data[xs->len], v, sizeof({}));\n    xs->len++;",
+            c_element,
+        )
+    } else {
+        "    xs->data[xs->len++] = v;".to_string()
+    };
+    out.push_str(&format!(
+        "static INTENT_UNUSED int64_t {sn}__push_mut({sn}* xs, {ct} v) {{\
+\n    if (xs->len >= xs->capacity) {{\
+\n        xs->capacity = xs->capacity ? xs->capacity * 2 : 1;\
+\n        xs->data = ({ct}*)realloc(xs->data, xs->capacity * sizeof({ct}));\
+\n        if (!xs->data) abort();\
+\n    }}\
+\n{store}\
+\n    return (int64_t)xs->len;\
+\n}}\n",
+        sn = struct_name,
+        ct = c_element,
+        store = push_mut_store,
+    ));
+
     // `__set(xs, i, v)`: store the new value at xs.data[i].
     // For non-Copy elements (Vec<T>, Array<T, N>) the old slot
     // value's resources are released first via the element-
@@ -2539,6 +2567,21 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             format!(
                 "{}({}, {})",
                 vec_helper(element, "push"),
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
+        "push_mut" => {
+            // In-place push: first arg is `mut ref Vec<T>`,
+            // which lowers to a pointer to the Vec struct.
+            // Element type comes from peeking through the ref.
+            let element = match args[0].ty.deref() {
+                Type::Vec(element) => element.clone(),
+                _ => unreachable!("push_mut() arg 0 must be (mut ref) Vec<_>"),
+            };
+            format!(
+                "{}({}, {})",
+                vec_helper(&element, "push_mut"),
                 emit_expr(&args[0]),
                 emit_expr(&args[1])
             )

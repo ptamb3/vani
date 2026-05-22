@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (780 lib + 47 e2e tests passing):
+Supported today (782 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -172,7 +172,11 @@ Supported today (780 lib + 47 e2e tests passing):
 - Fixed-size stack arrays `[T; N]` (affine) with `xs[i]` and `len(xs)`.
 - Heap-allocated `Vec<T>` (affine) with `vec(...)`, `push` / `set` / `clone`,
   `len`, indexing, `clone_at(ref xs, i)` for non-Copy slot reads. Empty
-  `vec()` is supported. `Vec<Vec<T>>` and `Vec<Struct>` work.
+  `vec()` is supported. `Vec<Vec<T>>` and `Vec<Struct>` work. `push` has
+  two forms: `push(xs: Vec<T>, v) -> Vec<T>` (consuming) and
+  `push(xs: mut ref Vec<T>, v) -> i64` (in-place, returns the new length —
+  useful through a struct field). See
+  [examples/push_mut.intent](examples/push_mut.intent).
 - Tuples `(T1, T2, ...)` (n in 2..=4) with `.0` / `.1` access; destructure
   `let (a, b) = expr;`.
 - Structs `struct Point { x: i64, y: i64 }` with up to 64 fields; field access

@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 780 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 782 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,14 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **In-place `push(mut ref xs, v)` done 2026-05-22**: a
+   second form of `push` that operates through a Vec
+   pointer instead of consuming + returning the Vec.
+   Useful for growing a Vec owned by a struct field
+   without partial-move + write-back. Same realloc
+   logic as the consuming form; returns `i64` (new len).
+   See [examples/push_mut.intent](examples/push_mut.intent).
+
    **Tuple auto-equality done 2026-05-22**: tuples are
    anonymous so they can't have a user `Eq` impl, but the
    checker synthesizes an AND-chain of per-element

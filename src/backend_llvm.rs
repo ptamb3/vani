@@ -2917,7 +2917,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
                 return dest;
             }
-            if matches!(name.as_str(), "push" | "set" | "clone") {
+            if matches!(name.as_str(), "push" | "set" | "clone" | "push_mut") {
                 let elt = vec_element_of_first_arg(args)
                     .expect("vec builtins take a Vec as the first arg");
                 // Use the composable tag so nested-Vec elements
@@ -3927,6 +3927,7 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
     let elt_size = vec_element_size_expr(element);
     let tag = vec_struct_tag(element);
     let push_name = format!("@intent_vec_{}__push", tag);
+    let push_mut_name = format!("@intent_vec_{}__push_mut", tag);
     let set_name = format!("@intent_vec_{}__set", tag);
     let clone_name = format!("@intent_vec_{}__clone", tag);
     let free_name = format!("@intent_vec_{}__free", tag);
@@ -3989,6 +3990,75 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
         s_ty
     ));
     out.push_str(&format!("  ret {} %r2\n", s_ty));
+    out.push_str("}\n");
+
+    // ---- push_mut(xs_p, v): in-place push through a Vec
+    // struct pointer. Grow if needed; store at len; bump len;
+    // return new length as i64. Used by `push(mut ref xs, v)`
+    // — caller passes a pointer to the Vec (alloca address or
+    // field GEP). T1.2 phase 2b follow-up.
+    out.push_str(&format!(
+        "define i64 {}({}* %xs_p, {} %v) {{\n",
+        push_mut_name, s_ty, elt_ty
+    ));
+    out.push_str(&format!(
+        "  %data_p_m = getelementptr {}, {}* %xs_p, i32 0, i32 0\n",
+        s_ty, s_ty
+    ));
+    out.push_str(&format!(
+        "  %len_p_m = getelementptr {}, {}* %xs_p, i32 0, i32 1\n",
+        s_ty, s_ty
+    ));
+    out.push_str(&format!(
+        "  %cap_p_m = getelementptr {}, {}* %xs_p, i32 0, i32 2\n",
+        s_ty, s_ty
+    ));
+    out.push_str(&format!(
+        "  %data_m = load {}*, {}** %data_p_m\n",
+        elt_ty, elt_ty
+    ));
+    out.push_str("  %len_m = load i64, i64* %len_p_m\n");
+    out.push_str("  %cap_m = load i64, i64* %cap_p_m\n");
+    out.push_str("  %new_len_m = add i64 %len_m, 1\n");
+    out.push_str("  %need_m = icmp ugt i64 %new_len_m, %cap_m\n");
+    out.push_str("  br i1 %need_m, label %grow_m, label %inplace_m\n");
+    out.push_str("grow_m:\n");
+    out.push_str("  %cap_doubled_m = mul i64 %cap_m, 2\n");
+    out.push_str("  %cap_was_zero_m = icmp eq i64 %cap_m, 0\n");
+    out.push_str("  %new_cap_gm = select i1 %cap_was_zero_m, i64 1, i64 %cap_doubled_m\n");
+    out.push_str(&format!(
+        "  %new_bytes_gm = mul i64 %new_cap_gm, {}\n",
+        elt_size
+    ));
+    out.push_str(&format!(
+        "  %old_raw_m = bitcast {}* %data_m to i8*\n",
+        elt_ty
+    ));
+    out.push_str("  %new_raw_m = call i8* @realloc(i8* %old_raw_m, i64 %new_bytes_gm)\n");
+    out.push_str(&format!(
+        "  %new_data_gm = bitcast i8* %new_raw_m to {}*\n",
+        elt_ty
+    ));
+    out.push_str(&format!(
+        "  store {}* %new_data_gm, {}** %data_p_m\n",
+        elt_ty, elt_ty
+    ));
+    out.push_str("  store i64 %new_cap_gm, i64* %cap_p_m\n");
+    out.push_str("  br label %store_v_m\n");
+    out.push_str("inplace_m:\n");
+    out.push_str("  br label %store_v_m\n");
+    out.push_str("store_v_m:\n");
+    out.push_str(&format!(
+        "  %final_data_m = phi {}* [ %new_data_gm, %grow_m ], [ %data_m, %inplace_m ]\n",
+        elt_ty
+    ));
+    out.push_str(&format!(
+        "  %slot_m = getelementptr {}, {}* %final_data_m, i64 %len_m\n",
+        elt_ty, elt_ty
+    ));
+    out.push_str(&format!("  store {} %v, {}* %slot_m\n", elt_ty, elt_ty));
+    out.push_str("  store i64 %new_len_m, i64* %len_p_m\n");
+    out.push_str("  ret i64 %new_len_m\n");
     out.push_str("}\n");
 
     // ---- set(xs, i, v): write in place, return xs.

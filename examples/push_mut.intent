@@ -1,0 +1,43 @@
+intent "In-place Vec push — `push(mut ref xs, v)`";
+
+// Two forms of `push`:
+//
+//   push(xs: Vec<T>, v: T) -> Vec<T>          consuming
+//   push(xs: mut ref Vec<T>, v: T) -> i64     in-place
+//
+// The consuming form moves `xs` into the call and returns
+// the (possibly-reallocated) Vec, useful for functional-style
+// pipelines. The in-place form takes a `mut ref` to the Vec
+// and returns the new length — useful when the Vec is owned
+// by another binding (such as a struct field) and you don't
+// want to consume + reassign.
+//
+// Combined with the affine-struct-fields + field-borrow work,
+// this lets a struct carry a Vec and grow it without
+// extracting the Vec out of the struct.
+
+struct Bag { id: i64, contents: Vec<i64> }
+
+fn main() -> i64 {
+  // Local Vec — works with both forms. Here we use the
+  // in-place form to grow the local without reassigning.
+  let xs: Vec<i64> = vec(10, 20);
+  let n1: i64 = push(mut ref xs, 30);
+  let n2: i64 = push(mut ref xs, 40);
+  print "local lens =", n1, n2;
+  assert n1 == 3;
+  assert n2 == 4;
+
+  // Vec field of a struct — the in-place form really shines
+  // here because the consuming form would need partial-move
+  // tracking + write-back to handle this pattern.
+  let b: Bag = Bag { id: 7, contents: vec(100, 200) };
+  let m1: i64 = push(mut ref b.contents, 300);
+  let m2: i64 = push(mut ref b.contents, 400);
+  print "field lens =", m1, m2;
+  assert m1 == 3;
+  assert m2 == 4;
+  assert b.id == 7;
+
+  return 0;
+}

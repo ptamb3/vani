@@ -6251,6 +6251,46 @@ mod tests {
     }
 
     #[test]
+    fn push_mut_through_struct_field() {
+        // T1.2 phase 2b follow-up: `push(mut ref t.xs, v)`
+        // dispatches to the in-place `__push_mut` helper.
+        // Combined with affine struct fields + field-borrow,
+        // this is the natural way to grow a Vec owned by a
+        // struct.
+        let source = r#"
+            struct Bag { id: i64, contents: Vec<i64> }
+            fn main() -> i64 {
+              let b: Bag = Bag { id: 7, contents: vec(1, 2) };
+              let n: i64 = push(mut ref b.contents, 3);
+              assert n == 3;
+              assert b.id == 7;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("in-place push through field should compile");
+        assert!(
+            c.contains("intent_vec_int64_t__push_mut"),
+            "expected __push_mut helper in C output:\n{c}"
+        );
+    }
+
+    #[test]
+    fn push_mut_local_binding() {
+        // The in-place form also works on a local Vec — the
+        // caller takes `mut ref xs` and the helper grows /
+        // mutates through the pointer.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20);
+              let n: i64 = push(mut ref xs, 30);
+              assert n == 3;
+              return 0;
+            }
+        "#;
+        compile(source).expect("in-place push on local should compile");
+    }
+
+    #[test]
     fn enum_eq_via_user_impl() {
         // Mirrors `struct_eq_via_user_impl`: `implement Eq for
         // Color { fn eq(self: Color, other: Color) -> bool }`

@@ -3,15 +3,15 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #107)
+## ⏳ Resume here (paused 2026-05-22, after closure #108)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
 expressions, #103 reverse-declaration field drop order, #104
 user-Eq desugar for struct `==`, #105 partial-move tracking,
 #106 enum `==` desugar + partial-then-whole-move diagnostic,
-#107 tuple auto-equality. Test totals: 780 lib + 47 e2e
-passing.
+#107 tuple auto-equality, #108 in-place `push(mut ref xs, v)`.
+Test totals: 782 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -609,6 +609,48 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+108. ~~**In-place `push(mut ref xs, v)`**~~ — done 2026-05-22.
+     Adds a second form of `push` that operates through a
+     pointer to the Vec instead of consuming + returning it.
+     Closes the last partial-move polish gap noted in
+     closure #105.
+     - **`check_push_builtin`** in [src/checker.rs](src/checker.rs):
+       dispatches on the first arg's type. `Vec<T>` → existing
+       consuming form (returns Vec<T>); `mut ref Vec<T>` →
+       new in-place form (returns `i64` = new length, doesn't
+       consume the source). Diagnostic updated to mention
+       both forms.
+     - **C runtime** in [src/backend_c.rs](src/backend_c.rs)
+       gained a per-element `intent_vec_<T>__push_mut(Vec*,
+       T)` helper alongside the existing `__push`. Same realloc
+       logic, but mutates through the pointer instead of
+       returning a new struct value.
+     - **LLVM runtime** in
+       [src/backend_llvm.rs](src/backend_llvm.rs) gained
+       `@intent_vec_<tag>__push_mut(%intent_vec_<tag>*, T)
+       -> i64` with GEP'd loads + stores into the Vec
+       struct's data/len/cap slots. Reuses the existing
+       grow-or-store basic-block structure.
+     - **Call-site dispatch** in both backends: the
+       `push_mut` Call name routes to the in-place helper.
+       LLVM's `vec_element_of_first_arg` already derefs
+       through refs, so the existing tag-resolution path
+       works.
+     - **SSA gate** in [src/main.rs](src/main.rs): rejects
+       `Call("push_mut", ...)` so programs using the
+       in-place form route through the tree backend
+       (SSA-C / SSA-LLVM don't lower push_mut yet).
+     - **2 lib tests added**:
+       `push_mut_through_struct_field` (asserts the
+       `__push_mut` helper appears in C output for the
+       through-field call) and `push_mut_local_binding`
+       (asserts the in-place form works on a local Vec).
+     - **New example**
+       [examples/push_mut.intent](examples/push_mut.intent)
+       exercises both shapes (local + struct field). Wired
+       into the cross-backend e2e test.
+     780 → 782 lib tests; 47 e2e stable.
+
 107. ~~**Tuple auto-equality (compiler-derived `==`)**~~ — done
      2026-05-22. Closes the last of the
      struct/enum/tuple `==` triad — tuples are anonymous so

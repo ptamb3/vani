@@ -409,6 +409,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "mut_refs.intent",
         "parallel.intent",
         "partial_move.intent",
+        "push_mut.intent",
         "scopes.intent",
         "strings.intent",
         "strings_concat.intent",
