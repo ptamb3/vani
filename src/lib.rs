@@ -1096,6 +1096,49 @@ mod tests {
     }
 
     #[test]
+    fn field_assign_owned_str_field_emits_free_of_old() {
+        // Closure #132: when the field type is OwnedStr, the
+        // FieldAssign emitter must free the old slot value
+        // before storing the new one, otherwise the previous
+        // heap allocation leaks.
+        let source = r#"
+            struct Tag { name: OwnedStr }
+            fn main() -> i64 {
+              let t: Tag = Tag { name: "a" + "1" };
+              t.name = "b" + "2";
+              return 0;
+            }
+        "#;
+        compile(source).expect("OwnedStr field-assign should compile");
+        let c = compile_to_c(source).expect("emits C");
+        assert!(
+            c.contains("free((void*)v_t.name);"),
+            "expected free-of-old before assign, got:\n{c}"
+        );
+    }
+
+    #[test]
+    fn field_assign_vec_field_emits_vec_free_of_old() {
+        // Closure #132: when the field type is Vec<T>, the
+        // FieldAssign emitter must call the inner Vec's
+        // __free on the old slot before storing the new one.
+        let source = r#"
+            struct Bag { items: Vec<i64> }
+            fn main() -> i64 {
+              let b: Bag = Bag { items: vec(1, 2) };
+              b.items = vec(9, 8, 7);
+              return 0;
+            }
+        "#;
+        compile(source).expect("Vec field-assign should compile");
+        let c = compile_to_c(source).expect("emits C");
+        assert!(
+            c.contains("intent_vec_int64_t__free(v_b.items);"),
+            "expected vec-free-of-old before assign, got:\n{c}"
+        );
+    }
+
+    #[test]
     fn field_assign_through_mut_ref() {
         // Field-assign through `mut ref Counter` (e.g.
         // inside a method that takes `self: mut ref T`).

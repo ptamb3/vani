@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #131)
+## ⏳ Resume here (paused 2026-05-22, after closure #132)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -56,8 +56,13 @@ mismatched the arm bodies' struct literals; switched to
 the runner was missing 14 of the 57 example programs (the
 gap that allowed #130's C-side bug to ship undetected).
 All 57 examples now run identically on both backends.
-Test totals: 811 lib + 47 e2e passing (the e2e runner
-itself iterates over 57 examples now instead of 43).
+#132 FieldAssign with heap-shaped field frees old slot:
+`t.name = newstr` (OwnedStr field) and `b.items = newvec`
+(Vec field) now emit a free of the previous slot's heap
+before storing the new value in both backends. Mirrors
+closure #126's leaf-Drop logic for index-field assigns.
+Was a real leak masked by absence of an exercising
+example. Test totals: 813 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

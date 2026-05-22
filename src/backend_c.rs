@@ -1856,10 +1856,31 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
             // borrows (typed-AST `RefMut` collapses to a
             // pointer in C codegen — see field-access
             // emission). T1.2 phase 2a follow-up.
+            //
+            // Heap-shaped field overwrite: when the field
+            // type is OwnedStr or Vec<T>, the previous slot's
+            // resources must be freed before the new value
+            // is stored, otherwise the old allocation leaks.
+            // Mirrors the leaf-Drop logic in `emit_index_assign`
+            // (closure #126 / F2). Closure #132.
             let obj = emit_expr(object);
             let v = emit_expr(value);
             let op = if *through_mut_ref { "->" } else { "." };
-            out.push_str(&format!("  {}{}{} = {};\n", obj, op, field, v));
+            let lvalue = format!("{}{}{}", obj, op, field);
+            match &value.ty {
+                Type::OwnedStr => {
+                    out.push_str(&format!("  free((void*){});\n", lvalue));
+                }
+                Type::Vec(element) => {
+                    out.push_str(&format!(
+                        "  {}({});\n",
+                        vec_helper(element, "free"),
+                        lvalue
+                    ));
+                }
+                _ => {}
+            }
+            out.push_str(&format!("  {} = {};\n", lvalue, v));
         }
         TypedStmt::For {
             var,

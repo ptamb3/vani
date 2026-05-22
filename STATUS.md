@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 811 lib + 47 end-to-end tests passing; the cross-backend parity runner now covers 57 of the 57 examples under `examples/` (was 43). (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 813 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,25 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **FieldAssign with heap-shaped field frees old slot done 2026-05-22**:
+   `t.name = newstr` for an OwnedStr field (and
+   `b.items = newvec` for a Vec field) now frees the
+   previous slot's heap before storing the new value, both
+   for plain owned-struct assigns and through-`mut ref`
+   borrows. Mirrors the leaf-Drop logic from closure #126
+   for mixed-place index-assigns (`xs[i].field = …`). Was
+   a real leak: a struct with an OwnedStr field that gets
+   overwritten leaked the old string until scope exit, and
+   the scope-exit drop only freed the latest pointer. The
+   bug was masked because no example exercised the
+   field-overwrite pattern. Closure #132. C backend now
+   emits `free((void*)<lvalue>)` or
+   `intent_vec_<T>__free(<lvalue>)` before the assign;
+   LLVM loads the old pointer/struct via the same GEP and
+   calls `@free` or the matching vec `__free`. Verified
+   leak-free under `-fsanitize=address,leak`. See updated
+   [examples/struct_owned_field.intent](examples/struct_owned_field.intent).
 
    **Cross-backend parity runner covers all examples done 2026-05-22**:
    the `llvm_backend_run_produces_same_output_as_c` runner

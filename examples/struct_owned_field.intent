@@ -50,5 +50,16 @@ fn main() -> i64 {
     Tag { id: 2, name: "second" + "", active: false }
   );
   print "Vec<Tag> per-element drop OK";
+
+  // Closure #132: overwriting an OwnedStr struct field frees
+  // the previous heap string before storing the new one,
+  // both for plain field-assign (`t.name = …`) and through a
+  // `mut ref` borrow (handled the same way by the codegen).
+  let renamed: Tag = Tag { id: 11, name: "before" + "", active: true };
+  print "before overwrite: name=", renamed.name;
+  renamed.name = "after" + "";
+  print "after overwrite:  name=", renamed.name;
+  assert renamed.id == 11;
+
   return 0;
 }

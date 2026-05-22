@@ -1416,6 +1416,39 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
                 elem_p, struct_ty, struct_ty, obj_addr, field_index
             ));
+            // Heap-shaped field overwrite: free the old slot
+            // value before storing the new one, otherwise the
+            // previous heap allocation leaks. Mirrors the
+            // leaf-Drop logic for IndexAssign (closure #126).
+            // Closure #132.
+            match &value.ty {
+                Type::OwnedStr => {
+                    let old = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = load i8*, i8** {}\n",
+                        old, elem_p
+                    ));
+                    out.push_str(&format!(
+                        "  call void @free(i8* {})\n",
+                        old
+                    ));
+                }
+                Type::Vec(element) => {
+                    let s_ty = vec_struct_name(element);
+                    let old = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = load {}, {}* {}\n",
+                        old, s_ty, s_ty, elem_p
+                    ));
+                    let free_name =
+                        format!("@intent_vec_{}__free", vec_struct_tag(element));
+                    out.push_str(&format!(
+                        "  call void {}({} {})\n",
+                        free_name, s_ty, old
+                    ));
+                }
+                _ => {}
+            }
             out.push_str(&format!(
                 "  store {} {}, {}* {}\n",
                 value_ty, v, value_ty, elem_p
