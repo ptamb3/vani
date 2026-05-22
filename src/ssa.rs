@@ -915,6 +915,28 @@ fn lower_stmt(
                 })
                 .unwrap_or_default();
             for (i, item) in items.iter().enumerate() {
+                // For OwnedStr items, track whether the operand
+                // came from a heap-producing expression we own.
+                // Conservative whitelist: Call returning
+                // OwnedStr (intent_str_concat / user fn) and
+                // Binary `+` (string concat) are the v1 ways
+                // to produce a fresh heap-allocated OwnedStr
+                // with no other owner. Var / FieldAccess /
+                // TupleAccess all reference a value owned by
+                // some binding (whose scope-exit Drop frees
+                // the heap) — freeing after print would
+                // double-free. Closure #135.
+                let needs_drop_after_print = match item {
+                    crate::ir::TypedPrintItem::Expr(e) => {
+                        matches!(e.ty, Type::OwnedStr)
+                            && matches!(
+                                e.kind,
+                                TypedExprKind::Call { .. }
+                                    | TypedExprKind::Binary { .. }
+                            )
+                    }
+                    crate::ir::TypedPrintItem::Str(_) => false,
+                };
                 let op = match item {
                     crate::ir::TypedPrintItem::Expr(e) => {
                         lower_expr_to_operand(e, b, locals)?
@@ -933,9 +955,20 @@ fn lower_stmt(
                     span,
                     InstrKind::Call {
                         name: "intent_print_item".to_string(),
-                        args: vec![op],
+                        args: vec![op.clone()],
                     },
                 );
+                if needs_drop_after_print {
+                    b.emit(
+                        Type::I64,
+                        span,
+                        InstrKind::Drop {
+                            source: op,
+                            name: "_".to_string(),
+                            ty: Type::OwnedStr,
+                        },
+                    );
+                }
                 if i + 1 < items.len() {
                     b.emit(
                         Type::I64,

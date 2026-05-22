@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 817 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 820 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,28 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`print` of fresh OwnedStr expression frees heap done 2026-05-22**:
+   `print make_owned_str();` was silently leaking the
+   returned heap string. All three print emit paths —
+   SSA (which routes both SSA-C and SSA-LLVM via
+   `intent_print_item`), tree-C `emit_print_expr_no_newline`,
+   and tree-LLVM `emit_print_expr_no_newline` — handled
+   OwnedStr as a borrowed read (the right thing for
+   `print s;` where `s: OwnedStr`) but never freed the
+   heap when the printed value came from a fresh
+   expression with no other owner. The fix uses a
+   conservative whitelist: free after print only when the
+   item's TypedExprKind is `Call { … }` or `Binary { … }`
+   (the v1 OwnedStr heap-producers). Var / FieldAccess /
+   TupleAccess and any other variant skip the free so the
+   binding's scope-exit Drop still has the only handle —
+   freeing eagerly there would double-free (e.g. the
+   `print t.name` pattern in
+   `examples/struct_owned_field.intent`). Closure #135.
+   Verified leak-free under `-fsanitize=address,leak` on
+   both the fresh-call and binding-owned shapes. See
+   updated [examples/strings_concat.intent](examples/strings_concat.intent).
 
    **`let _ = …` discard of OwnedStr frees heap done 2026-05-22**:
    `let _ = make_owned_str();` (and the bare-call form

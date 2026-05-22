@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #134)
+## ⏳ Resume here (paused 2026-05-22, after closure #135)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -74,7 +74,14 @@ bare `make();`) was silently leaking — tree-C, tree-LLVM,
 and SSA Discard handlers all only knew about Vec. All
 three now free the heap. SSA Reassign also extended to
 lower `drop_old` for OwnedStr / Vec (was a hard reject).
-Test totals: 817 lib + 47 e2e passing.
+#135 `print` of fresh OwnedStr frees heap: SSA / tree-C /
+tree-LLVM print emit handlers now free OwnedStr printed
+from a Call or Binary `+` expression (the v1
+heap-producers); Var / FieldAccess / TupleAccess and
+other variants stay non-consuming so the binding's
+scope-exit Drop still owns the free (avoids double-free
+on patterns like `print t.name`). Test totals: 820 lib
++ 47 e2e passing.
 
 ### Recommended next (pick one)
 

@@ -3386,6 +3386,82 @@ mod tests {
     }
 
     #[test]
+    fn print_of_fresh_owned_str_call_frees_heap() {
+        // Closure #135: `print make_owned_str();` would leak
+        // because the print emitters all treated OwnedStr
+        // values as borrowed reads. Now Call / Binary `+`
+        // OwnedStr expressions emit a free after print; Var /
+        // FieldAccess / TupleAccess (binding-owned) still
+        // don't.
+        let source = r#"
+            fn make() -> OwnedStr {
+              return "hello " + "world";
+            }
+            fn main() -> i64 {
+              print make();
+              return 0;
+            }
+        "#;
+        compile(source).expect("print of fresh OwnedStr should compile");
+        let c = compile_to_c(source).expect("emits C");
+        assert!(
+            c.contains("free((void*)_intent_print_tmp)"),
+            "expected free of printed OwnedStr, got:\n{c}"
+        );
+    }
+
+    #[test]
+    fn print_of_owned_str_var_does_not_double_free() {
+        // Closure #135 must NOT free when the OwnedStr came
+        // from a binding (the binding's scope-exit Drop
+        // already frees the heap; freeing again would crash).
+        let source = r#"
+            fn main() -> i64 {
+              let s: OwnedStr = "hello " + "world";
+              print s;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("emits C");
+        // No `_intent_print_tmp` brace block; print of Var
+        // OwnedStr stays a bare `fputs`.
+        assert!(
+            !c.contains("_intent_print_tmp"),
+            "expected bare fputs for Var-OwnedStr print, got:\n{c}"
+        );
+        assert!(
+            c.contains("fputs(v_s, stdout);"),
+            "expected direct fputs of v_s, got:\n{c}"
+        );
+    }
+
+    #[test]
+    fn print_of_owned_str_struct_field_does_not_double_free() {
+        // Closure #135 regression guard: `print t.name` for a
+        // struct with an OwnedStr field must NOT free the
+        // field's pointer — the struct's scope-exit drop
+        // takes care of it. The earlier (over-aggressive)
+        // version of this closure tried to free after every
+        // non-Var OwnedStr print, which double-freed
+        // FieldAccess results.
+        let source = r#"
+            struct Tag { name: OwnedStr }
+            fn main() -> i64 {
+              let t: Tag = Tag { name: "a" + "b" };
+              print t.name;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("emits C");
+        // The print site should not contain a free of the
+        // field pointer.
+        assert!(
+            !c.contains("free((void*)_intent_print_tmp)"),
+            "expected no free of FieldAccess OwnedStr, got:\n{c}"
+        );
+    }
+
+    #[test]
     fn discarded_owned_str_via_bare_call_frees_heap() {
         // Also exercise the bare-call form (`make();`) which
         // the parser sugars to `let _ = make();`. Same free

@@ -2340,10 +2340,38 @@ fn emit_print_expr_no_newline(expr: &TypedExpr, out: &mut String) {
             out.push_str(&emit_expr(expr));
             out.push_str("));\n");
         }
-        Type::Str | Type::OwnedStr => {
+        Type::Str => {
             out.push_str("  fputs(");
             out.push_str(&emit_expr(expr));
             out.push_str(", stdout);\n");
+        }
+        Type::OwnedStr => {
+            // Conservative whitelist: only Call returning
+            // OwnedStr (intent_str_concat / user fn) and
+            // Binary `+` (string concat) are guaranteed-fresh
+            // heap-producers in v1. Var / FieldAccess /
+            // TupleAccess reference a value owned by some
+            // binding (whose scope-exit Drop frees the heap)
+            // — freeing after print would double-free. Bind
+            // to a brace-scoped tmp so the free has a stable
+            // handle and consecutive prints don't collide.
+            // Closure #135.
+            let is_fresh = matches!(
+                expr.kind,
+                TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
+            );
+            if is_fresh {
+                out.push_str("  {\n    char* _intent_print_tmp = ");
+                out.push_str(&emit_expr(expr));
+                out.push_str(";\n");
+                out.push_str("    fputs(_intent_print_tmp, stdout);\n");
+                out.push_str("    free((void*)_intent_print_tmp);\n");
+                out.push_str("  }\n");
+            } else {
+                out.push_str("  fputs(");
+                out.push_str(&emit_expr(expr));
+                out.push_str(", stdout);\n");
+            }
         }
         Type::Array { .. } | Type::Vec(_) => {
             out.push_str("  /* aggregate print not supported */\n");

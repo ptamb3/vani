@@ -3940,7 +3940,7 @@ fn emit_print_expr_no_newline(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut Strin
                 fmt, dbl
             ));
         }
-        Type::Str | Type::OwnedStr => {
+        Type::Str => {
             let fmt = ctx.fresh_tmp();
             out.push_str(&format!(
                 "  {} = getelementptr [3 x i8], [3 x i8]* @.fmt.s, i64 0, i64 0\n",
@@ -3950,6 +3950,34 @@ fn emit_print_expr_no_newline(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut Strin
                 "  call i32 (i8*, ...) @printf(i8* {}, i8* {})\n",
                 fmt, value
             ));
+        }
+        Type::OwnedStr => {
+            // Conservative whitelist: only Call returning
+            // OwnedStr (intent_str_concat / user fn) and
+            // Binary `+` (string concat) are guaranteed-fresh
+            // heap-producers in v1. Var / FieldAccess /
+            // TupleAccess reference a value owned by some
+            // binding whose scope-exit Drop frees it —
+            // freeing after print would double-free. Closure
+            // #135.
+            let fmt = ctx.fresh_tmp();
+            out.push_str(&format!(
+                "  {} = getelementptr [3 x i8], [3 x i8]* @.fmt.s, i64 0, i64 0\n",
+                fmt
+            ));
+            out.push_str(&format!(
+                "  call i32 (i8*, ...) @printf(i8* {}, i8* {})\n",
+                fmt, value
+            ));
+            if matches!(
+                expr.kind,
+                TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
+            ) {
+                out.push_str(&format!(
+                    "  call void @free(i8* {})\n",
+                    value
+                ));
+            }
         }
         // The checker emits a diagnostic for `print` of arrays /
         // Vecs and the parser/checker reject ref types in print

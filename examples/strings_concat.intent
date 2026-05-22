@@ -43,5 +43,13 @@ fn main() -> i64 {
   // OwnedStr return value.
   let _ = greet("carol");
   print "discarded greet OK";
+
+  // Closure #135: `print make_owned_str();` and
+  // `print "a" + "b";` now free the printed heap string
+  // after the write. Print of a Var-OwnedStr (or any
+  // binding-owned OwnedStr — e.g. a struct field access)
+  // stays a non-consuming read, since the binding's
+  // scope-exit Drop frees the heap.
+  print greet("dan");
   return 0;
 }
