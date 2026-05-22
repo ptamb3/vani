@@ -6592,39 +6592,49 @@ fn check_expr(
                 // VariantWithBinding patterns. Used both to
                 // populate the arm's binding field and to push
                 // the binding into env scope before checking the
-                // arm body.
+                // arm body. Non-Copy heap payloads (OwnedStr)
+                // are exposed to the body as their Copy
+                // borrowed-view counterpart (Str) so the
+                // scrutinee retains ownership and its existing
+                // scope-exit Drop frees the heap exactly once.
+                // The binding is a read-only view in v1 —
+                // escaping the borrow past the scrutinee's
+                // scope is the same dangling-Str hazard that
+                // already exists for any Str produced from an
+                // OwnedStr in this language. Closure #128 / D3.
                 let arm_binding: Option<(String, Type)> = match &arm.pattern {
                     crate::ast::Pattern::VariantWithBinding {
                         enum_name: pat_enum,
                         variant: pat_variant,
                         binding,
                     } => lookup_enum_variant_payload(env, pat_enum, pat_variant)
-                        .map(|ty| (binding.clone(), ty)),
+                        .map(|ty| {
+                            let view_ty = match ty {
+                                Type::OwnedStr => Type::Str,
+                                other => other,
+                            };
+                            (binding.clone(), view_ty)
+                        }),
                     _ => None,
                 };
-                // Gate non-Copy payload bindings. The
-                // alias-vs-Drop interaction (binding `s` shares
-                // the heap pointer with the enum's `payload`)
-                // isn't tracked yet — extracting a non-Copy
-                // payload from a binding pattern would lead to
-                // a use-after-free at the enum's scope-exit
-                // Drop or to a double-free if both run. v1
-                // requires matching without a binding for
-                // non-Copy payloads. T1.3 + T1.2 phase 2b.
+                // Closure #128 / D3: the binding's exposed type
+                // was already remapped to Str for OwnedStr
+                // payloads above (borrow-view), so it's
+                // always Copy here. Other non-Copy payload
+                // types (Vec<T>, structs with owning fields,
+                // …) still need their own borrow-view design
+                // and remain rejected.
                 if let Some((_, bty)) = &arm_binding {
                     if !bty.is_copy() {
                         diagnostics.push(Diagnostic::new(
                             arm.pattern_span,
                             format!(
                                 "destructure binding for non-Copy payload type {} \
-                                 is not supported in v1 — match the variant \
-                                 tag without a binding (e.g. `{}.{}` instead \
-                                 of `{}.{}(_)`)",
+                                 is not supported in v1 — only OwnedStr payloads \
+                                 admit a binding (exposed as Str view); other \
+                                 affine payload types need explicit borrow-view \
+                                 wiring",
                                 bty,
-                                enum_name_opt.as_deref().unwrap_or("?"),
-                                variant_name_opt.as_deref().unwrap_or("?"),
-                                enum_name_opt.as_deref().unwrap_or("?"),
-                                variant_name_opt.as_deref().unwrap_or("?"),
                             ),
                         ));
                     }

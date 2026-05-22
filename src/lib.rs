@@ -2792,22 +2792,58 @@ mod tests {
     }
 
     #[test]
-    fn enum_non_copy_payload_binding_rejected() {
-        // Destructure-binding patterns for non-Copy payloads
-        // are rejected in v1 (would alias the enum's payload
-        // with the binding, causing double-free / UAF).
+    fn enum_owned_str_payload_binding_exposes_str_view() {
+        // Closure #128 / D3: OwnedStr payload bindings are
+        // now admitted, exposed to the arm body as a Str
+        // (Copy borrowed-view). The scrutinee keeps ownership
+        // and its scope-exit Drop frees the heap. Other
+        // non-Copy payload types still need their own
+        // borrow-view wiring and remain rejected.
         let source = r#"
             enum Maybe { Some(OwnedStr), None }
             fn main() -> i64 {
-              let m: Maybe = Maybe.Some("hi");
+              let m: Maybe = Maybe.Some("a" + "b");
               return match m {
-                Maybe.Some(s) then 1,
+                Maybe.Some(s) then len(s) as i64,
                 Maybe.None then 0,
               };
             }
         "#;
-        let errors = compile(source)
-            .expect_err("non-Copy payload binding should be rejected");
+        compile(source).expect("OwnedStr payload destructure should compile");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        // Binding rendered as `const char*` (Str view), not
+        // `char*` (OwnedStr).
+        assert!(
+            c.contains("const char* v_s ="),
+            "expected Str-view binding, got:\n{}",
+            c
+        );
+        // Scrutinee's scope-exit Drop still fires.
+        assert!(
+            c.contains("free((void*)v_m.payload)"),
+            "expected scrutinee scope-exit free, got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn enum_non_copy_non_str_payload_binding_rejected() {
+        // Closure #128 / D3: payload types other than
+        // OwnedStr (e.g. Vec<T>) don't yet have a borrow-
+        // view; binding patterns on them stay rejected.
+        let source = r#"
+            enum Wrap { V(Vec<i64>), Empty }
+            fn main() -> i64 {
+              let w: Wrap = Wrap.V(vec(1, 2, 3));
+              return match w {
+                Wrap.V(xs) then 1,
+                Wrap.Empty then 0,
+              };
+            }
+        "#;
+        let errors = compile(source).expect_err(
+            "Vec<T> payload binding without borrow-view should be rejected",
+        );
         assert!(
             errors.iter().any(|e| e.message.contains("non-Copy payload type")),
             "expected non-Copy-binding diagnostic, got: {:?}",

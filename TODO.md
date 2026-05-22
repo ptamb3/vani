@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #127)
+## ⏳ Resume here (paused 2026-05-22, after closure #128)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -33,7 +33,13 @@ its owning resources for `S = OwnedStr`, `S = Vec<U>`, and
 outer buffer. Closes a pre-existing leak in
 `Vec<Struct{OwnedStr…}>` and `Vec<OwnedStr>` at scope
 exit. Verified clean under `-fsanitize=address,leak`.
-Test totals: 806 lib + 47 e2e passing.
+#128 OwnedStr enum payload destructure (D3): match arms
+`Msg.Text(s) then …` admit OwnedStr-payload bindings; the
+binding is exposed to the arm body as `Str` (Copy
+borrowed-view), the scrutinee keeps ownership, and its
+scope-exit Drop frees the heap exactly once. Vec / other
+non-Copy payload bindings still rejected. Test totals:
+807 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

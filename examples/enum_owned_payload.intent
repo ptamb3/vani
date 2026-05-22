@@ -6,12 +6,13 @@ intent "Enum with OwnedStr payload — heap-aware Drop";
 // frees the payload only for variants that carry one. Plain
 // (payload-less) variants are no-ops at Drop time.
 //
-// v1 restriction: destructure-binding patterns (`Some(x)`)
-// require the payload to be Copy — the alias-vs-Drop
-// interaction for non-Copy payloads isn't tracked yet. Match
-// the variant tag without a binding for OwnedStr payloads;
-// extracting the heap string out of the enum waits on a
-// later closure.
+// Closure #128 (D3) opens destructure-binding patterns for
+// `OwnedStr` payloads: `Maybe.Some(s) then …` exposes the
+// payload to the arm body as a `Str` (read-only borrowed
+// view), so the scrutinee's existing scope-exit Drop still
+// frees the heap exactly once. Other non-Copy payload types
+// (`Vec<T>`, structs with owning fields, …) still need their
+// own borrow-view wiring and remain rejected.
 
 enum Maybe { Some(OwnedStr), None }
 
@@ -23,8 +24,21 @@ fn make(use_value: bool) -> Maybe {
 }
 
 fn classify(m: Maybe) -> i64 {
+  // Tag-only match — no binding, payload stays inside the
+  // enum and is freed by the parameter's scope-exit Drop.
   return match m {
     Maybe.Some then 1,
+    Maybe.None then 0,
+  };
+}
+
+fn describe_len(m: Maybe) -> i64 {
+  // Destructure-binding: the OwnedStr payload is exposed as
+  // a `Str` view, so the arm body can compute `len(s)`. The
+  // scrutinee `m` retains ownership and frees the heap at
+  // parameter scope-exit.
+  return match m {
+    Maybe.Some(s) then len(s) as i64,
     Maybe.None then 0,
   };
 }
@@ -32,13 +46,18 @@ fn classify(m: Maybe) -> i64 {
 fn main() -> i64 {
   let a: Maybe = make(true);
   let b: Maybe = make(false);
-  // a goes out of scope as `m` parameter inside classify;
-  // its Some payload gets freed once at the parameter's
-  // scope exit. No leak, no double-free.
   let r1: i64 = classify(a);
   let r2: i64 = classify(b);
-  print "a yields", r1, " b yields", r2;
+  print "tag-only: a yields", r1, " b yields", r2;
   assert r1 == 1;
   assert r2 == 0;
+
+  let c: Maybe = make(true);
+  let d: Maybe = make(false);
+  let len1: i64 = describe_len(c);
+  let len2: i64 = describe_len(d);
+  print "with-binding: c.len=", len1, " d.len=", len2;
+  assert len1 == 11;
+  assert len2 == 0;
   return 0;
 }

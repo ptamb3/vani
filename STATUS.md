@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 806 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 807 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,18 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **OwnedStr enum payload destructure done 2026-05-22**:
+   `match m { Msg.Text(s) then … }` now compiles when the
+   variant payload is `OwnedStr`. The binding `s` is
+   exposed to the arm body as a `Str` (Copy borrowed view),
+   so the scrutinee retains ownership and its existing
+   scope-exit Drop frees the heap exactly once. Other
+   non-Copy payload types (`Vec<T>`, structs with owning
+   fields, …) still need their own borrow-view wiring and
+   stay rejected. Closure #128 / D3. Verified leak-free
+   under `-fsanitize=address,leak`. See updated
+   [examples/enum_owned_payload.intent](examples/enum_owned_payload.intent).
 
    **Vec element drops walk owning fields done 2026-05-22**:
    `intent_vec_<S>__free` now iterates every live element
