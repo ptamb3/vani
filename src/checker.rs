@@ -7424,6 +7424,133 @@ fn check_equality(
         Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)
     );
     if lhs_is_aggregate || rhs_is_aggregate {
+        // Tuple auto-`==`: compiler-derived field-by-field
+        // equality. `(a, b) == (c, d)` → `a == c && b == d`.
+        // Tuples are anonymous so there's no user impl path;
+        // each element must itself be comparable (primitive
+        // or a nominal type with an Eq impl). T1.5 phase 2
+        // follow-up.
+        if let (Type::Tuple(l_elems), Type::Tuple(r_elems)) = (lhs.ty(), rhs.ty()) {
+            if l_elems.len() == r_elems.len() && l_elems == r_elems {
+                let lhs_ty = lhs.ty().clone();
+                let elems = l_elems.clone();
+                let lhs_expr = lhs.expr.clone();
+                let rhs_expr = rhs.expr.clone();
+                let mut chain: Option<TypedExpr> = None;
+                for (idx, elem_ty) in elems.iter().enumerate() {
+                    let l_access = TypedExpr {
+                        kind: TypedExprKind::TupleAccess {
+                            tuple: Box::new(lhs_expr.clone()),
+                            index: idx as u32,
+                        },
+                        ty: elem_ty.clone(),
+                        constant: None,
+                        span,
+                        binding_decl_span: None,
+                    };
+                    let r_access = TypedExpr {
+                        kind: TypedExprKind::TupleAccess {
+                            tuple: Box::new(rhs_expr.clone()),
+                            index: idx as u32,
+                        },
+                        ty: elem_ty.clone(),
+                        constant: None,
+                        span,
+                        binding_decl_span: None,
+                    };
+                    // Per-element comparison: primitive types
+                    // use built-in `==`; nominal types route
+                    // through `<T>_eq` (must exist).
+                    let elem_eq: TypedExpr = match elem_ty {
+                        Type::Struct(name) | Type::Enum(name) => {
+                            let eq_fn = format!("{}_eq", name);
+                            match signatures.get(&eq_fn) {
+                                Some(sig)
+                                    if sig.return_type == Type::Bool
+                                        && sig.params.len() == 2 =>
+                                {
+                                    TypedExpr {
+                                        kind: TypedExprKind::Call {
+                                            name: eq_fn,
+                                            name_span: span,
+                                            args: vec![l_access, r_access],
+                                        },
+                                        ty: Type::Bool,
+                                        constant: None,
+                                        span,
+                                        binding_decl_span: None,
+                                    }
+                                }
+                                _ => {
+                                    diagnostics.push(Diagnostic::new(
+                                        span,
+                                        format!(
+                                            "tuple `==` element at index {} has \
+                                             type {}, but no `implement Eq for {}` \
+                                             is in scope",
+                                            idx, elem_ty, name
+                                        ),
+                                    ));
+                                    return CheckedExpr::new(
+                                        TypedExprKind::Bool(false),
+                                        Type::Bool,
+                                        None,
+                                        span,
+                                    );
+                                }
+                            }
+                        }
+                        _ => TypedExpr {
+                            kind: TypedExprKind::Binary {
+                                op: BinaryOp::Eq,
+                                left: Box::new(l_access),
+                                right: Box::new(r_access),
+                                checked: true,
+                            },
+                            ty: Type::Bool,
+                            constant: None,
+                            span,
+                            binding_decl_span: None,
+                        },
+                    };
+                    chain = Some(match chain {
+                        None => elem_eq,
+                        Some(prev) => TypedExpr {
+                            kind: TypedExprKind::Binary {
+                                op: BinaryOp::And,
+                                left: Box::new(prev),
+                                right: Box::new(elem_eq),
+                                checked: true,
+                            },
+                            ty: Type::Bool,
+                            constant: None,
+                            span,
+                            binding_decl_span: None,
+                        },
+                    });
+                }
+                let _ = lhs_ty;
+                let eq_chain = chain.unwrap_or(TypedExpr {
+                    kind: TypedExprKind::Bool(true),
+                    ty: Type::Bool,
+                    constant: Some(TypedConst::Bool(true)),
+                    span,
+                    binding_decl_span: None,
+                });
+                if op == BinaryOp::Eq {
+                    return CheckedExpr::new(eq_chain.kind, Type::Bool, None, span);
+                }
+                return CheckedExpr::new(
+                    TypedExprKind::Unary {
+                        op: crate::ast::UnaryOp::Not,
+                        expr: Box::new(eq_chain),
+                    },
+                    Type::Bool,
+                    None,
+                    span,
+                );
+            }
+        }
         let same_nominal = match (lhs.ty(), rhs.ty()) {
             (Type::Struct(l), Type::Struct(r)) if l == r => Some(l.clone()),
             (Type::Enum(l), Type::Enum(r)) if l == r => Some(l.clone()),
@@ -7464,7 +7591,8 @@ fn check_equality(
                 name, name, name, name
             ),
             (Type::Tuple(_), _) | (_, Type::Tuple(_)) => {
-                "tuples have no built-in `==` — compare each component via `.0` / `.1` / …".to_string()
+                "tuple `==` requires both operands to be tuples of the same \
+                 shape — use matching arities and element types".to_string()
             }
             (Type::Enum(name), _) | (_, Type::Enum(name)) => format!(
                 "enum '{}' has no built-in `==` — declare \

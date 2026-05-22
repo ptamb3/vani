@@ -2676,23 +2676,51 @@ mod tests {
     }
 
     #[test]
-    fn tuple_equality_rejected_with_targeted_diagnostic() {
+    fn tuple_equality_field_by_field_desugar() {
+        // Tuple `==` desugars to a field-by-field AND-chain
+        // of per-element comparisons. Primitives use built-in
+        // `==`; nominal element types route through `<T>_eq`.
         let source = r#"
             fn main() -> i64 {
               let t1: (i64, i64) = (1, 2);
               let t2: (i64, i64) = (1, 2);
-              if t1 == t2 { return 1; }
+              let t3: (i64, i64) = (1, 3);
+              assert t1 == t2;
+              assert t1 != t3;
               return 0;
             }
         "#;
-        let errors = compile(source)
-            .expect_err("tuple == is rejected");
+        compile(source)
+            .expect("tuple field-by-field equality should compile");
+    }
+
+    #[test]
+    fn tuple_equality_of_struct_routes_through_eq_impl() {
+        // Tuple of structs: each element comparison dispatches
+        // through the element's `<T>_eq` impl. (Point, Point)
+        // == (Point, Point) → Point_eq(a, c) && Point_eq(b, d).
+        let source = r#"
+            interface Eq { fn eq(self: Point, other: Point) -> bool; }
+            struct Point { x: i64, y: i64 }
+            implement Eq for Point {
+              fn eq(self: Point, other: Point) -> bool {
+                if self.x != other.x { return false; }
+                if self.y != other.y { return false; }
+                return true;
+              }
+            }
+            fn main() -> i64 {
+              let s: (Point, Point) = (Point { x: 1, y: 2 }, Point { x: 3, y: 4 });
+              let t: (Point, Point) = (Point { x: 1, y: 2 }, Point { x: 3, y: 4 });
+              assert s == t;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("tuple-of-struct == should compile");
+        let calls = c.matches("fn_Point_eq(").count();
         assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("tuples have no built-in")),
-            "expected tuple-specific diagnostic, got: {:?}",
-            errors
+            calls >= 2,
+            "expected at least 2 fn_Point_eq calls in C output, got {calls}:\n{c}"
         );
     }
 

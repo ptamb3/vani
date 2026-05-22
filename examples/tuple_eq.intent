@@ -1,0 +1,48 @@
+intent "Tuple auto-equality — compiler-derived field-by-field `==`";
+
+// Tuples are anonymous, so there's no user `implement Eq for
+// (i64, i64)` path. The checker derives equality by walking
+// the element types and AND-chaining per-element comparisons:
+//   (a, b) == (c, d)  →  a == c && b == d
+// Primitive elements use built-in `==`; nominal element types
+// (Struct / Enum with `Eq`) dispatch through the hoisted
+// `<T>_eq` method. v1 requires both operands to be tuples of
+// the same shape (matching arity + matching element types).
+
+interface Eq { fn eq(self: Point, other: Point) -> bool; }
+
+struct Point { x: i64, y: i64 }
+
+implement Eq for Point {
+  fn eq(self: Point, other: Point) -> bool {
+    if self.x != other.x { return false; }
+    if self.y != other.y { return false; }
+    return true;
+  }
+}
+
+fn main() -> i64 {
+  // Tuples of primitives — direct `==`/`!=` per element.
+  let a: (i64, i64) = (3, 4);
+  let b: (i64, i64) = (3, 4);
+  let c: (i64, i64) = (3, 5);
+  assert a == b;
+  assert a != c;
+
+  let p: (bool, i64, i64) = (true, 10, 20);
+  let q: (bool, i64, i64) = (true, 10, 20);
+  let r: (bool, i64, i64) = (false, 10, 20);
+  assert p == q;
+  assert p != r;
+
+  // Tuple of structs — recursive dispatch through each
+  // element's `Eq` impl.
+  let s: (Point, Point) = (Point { x: 1, y: 2 }, Point { x: 3, y: 4 });
+  let t: (Point, Point) = (Point { x: 1, y: 2 }, Point { x: 3, y: 4 });
+  let u: (Point, Point) = (Point { x: 1, y: 2 }, Point { x: 9, y: 9 });
+  assert s == t;
+  assert s != u;
+
+  print "Tuple equality works";
+  return 0;
+}

@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 779 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 780 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,15 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Tuple auto-equality done 2026-05-22**: tuples are
+   anonymous so they can't have a user `Eq` impl, but the
+   checker synthesizes an AND-chain of per-element
+   comparisons: `(a, b) == (c, d)` → `a == c && b == d`.
+   Primitive elements use built-in `==`; nominal element
+   types (struct/enum) dispatch through the element's
+   `<T>_eq` impl. See
+   [examples/tuple_eq.intent](examples/tuple_eq.intent).
+
    **Enum `==` desugar + partial-then-whole-move done
    2026-05-22**: `check_equality` matches `(Enum, Enum)` of
    the same nominal type in addition to struct-struct, so

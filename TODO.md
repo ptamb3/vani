@@ -3,14 +3,15 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #106)
+## ⏳ Resume here (paused 2026-05-22, after closure #107)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
 expressions, #103 reverse-declaration field drop order, #104
 user-Eq desugar for struct `==`, #105 partial-move tracking,
-#106 enum `==` desugar + partial-then-whole-move diagnostic.
-Test totals: 779 lib + 47 e2e passing.
+#106 enum `==` desugar + partial-then-whole-move diagnostic,
+#107 tuple auto-equality. Test totals: 780 lib + 47 e2e
+passing.
 
 ### Recommended next (pick one)
 
@@ -608,6 +609,46 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+107. ~~**Tuple auto-equality (compiler-derived `==`)**~~ — done
+     2026-05-22. Closes the last of the
+     struct/enum/tuple `==` triad — tuples are anonymous so
+     they can't have a user `Eq` impl, but the checker can
+     synthesize an AND-chain of per-element comparisons.
+     - **`check_equality`** in [src/checker.rs](src/checker.rs):
+       new branch matches `(Type::Tuple(l), Type::Tuple(r))`
+       with equal arity AND equal element types. Walks the
+       element types and synthesizes a chain of
+       `TupleAccess(lhs, i) == TupleAccess(rhs, i)`
+       comparisons, AND-joined into a single typed-IR
+       expression. The chain returns the final `&&` result
+       (or a single comparison for arity 1, or `true` for
+       arity 0).
+     - **Recursive dispatch** for nominal element types:
+       when an element is a `Struct` or `Enum`, the
+       per-element comparison emits `Call { "<T>_eq", [a,
+       b] }` directly (must have a matching `Eq` impl in
+       scope; missing impl surfaces a clean per-element
+       diagnostic). Primitive element types use the
+       built-in `TypedExprKind::Binary { Eq }` form.
+     - **Tuple-diagnostic refreshed**: the "tuples have
+       no built-in `==`" path now only fires when shapes
+       don't match (different arity or element types).
+       The default case is success.
+     - **2 lib tests added**:
+       `tuple_equality_field_by_field_desugar` (the
+       (i64, i64) case) and
+       `tuple_equality_of_struct_routes_through_eq_impl`
+       (asserts the C output contains 2 `fn_Point_eq`
+       calls for `(Point, Point)` equality). The old
+       `tuple_equality_rejected_with_targeted_diagnostic`
+       was replaced.
+     - **New example**
+       [examples/tuple_eq.intent](examples/tuple_eq.intent)
+       exercises three shapes: `(i64, i64)`,
+       `(bool, i64, i64)`, and `(Point, Point)`. Wired
+       into the cross-backend e2e test.
+     779 → 780 lib tests; 47 e2e stable.
+
 106. ~~**Enum `==` desugar + partial-then-whole-move diagnostic**~~ —
      done 2026-05-22. Two follow-ups in one closure.
      - **Enum `==` via user Eq**: `check_equality` now matches
