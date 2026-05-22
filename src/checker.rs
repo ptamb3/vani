@@ -467,6 +467,26 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
         }
         crate::ast::set_non_copy_structs(non_copy);
     }
+    // Parallel pass: register enums whose payload includes a
+    // heap-shaped type (OwnedStr in v1) so the scope-exit Drop
+    // pass treats them as affine. T1.3 + T1.2 phase 2b.
+    {
+        let mut non_copy_enums: Vec<String> = Vec::new();
+        for decl in &program.enums {
+            let has_heap = decl
+                .variants
+                .iter()
+                .any(|v| {
+                    v.payload
+                        .first()
+                        .map_or(false, |t| matches!(t, Type::OwnedStr))
+                });
+            if has_heap {
+                non_copy_enums.push(decl.name.clone());
+            }
+        }
+        crate::ast::set_non_copy_enums(non_copy_enums);
+    }
 
     let mut struct_registry: BTreeMap<String, StructInfo> = BTreeMap::new();
     for decl in &program.structs {
@@ -675,13 +695,23 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
                 ));
             }
             if let Some(payload_ty) = decl.variants[i].payload.first() {
-                if !payload_ty.is_copy() {
+                // T1.2 phase 2 struct RAII landed in closures
+                // #98 / #100. Lift the enum-payload Copy gate
+                // to admit `OwnedStr` (heap-allocated string;
+                // free at Drop) alongside Copy types. Other
+                // affine payload types (Vec / [T;N] / Task /
+                // Atomic) need more work and stay rejected.
+                let allowed = payload_ty.is_copy()
+                    || matches!(payload_ty, Type::OwnedStr);
+                if !allowed {
                     diagnostics.push(Diagnostic::new(
                         decl.variants[i].name_span,
                         format!(
-                            "enum '{}' variant '{}' payload type {} is not Copy — \
-                             v1 enum payloads are Copy-only (RAII chains for \
-                             enum payloads land with T1.2 phase 2 struct RAII work)",
+                            "enum '{}' variant '{}' payload type {} is not \
+                             Copy and not OwnedStr — v1 enum payloads \
+                             accept Copy types and OwnedStr; other affine \
+                             payload types (Vec / [T;N] / Task / Atomic) \
+                             need more codegen work",
                             decl.name,
                             decl.variants[i].name,
                             payload_ty
@@ -6407,6 +6437,33 @@ fn check_expr(
                         .map(|ty| (binding.clone(), ty)),
                     _ => None,
                 };
+                // Gate non-Copy payload bindings. The
+                // alias-vs-Drop interaction (binding `s` shares
+                // the heap pointer with the enum's `payload`)
+                // isn't tracked yet — extracting a non-Copy
+                // payload from a binding pattern would lead to
+                // a use-after-free at the enum's scope-exit
+                // Drop or to a double-free if both run. v1
+                // requires matching without a binding for
+                // non-Copy payloads. T1.3 + T1.2 phase 2b.
+                if let Some((_, bty)) = &arm_binding {
+                    if !bty.is_copy() {
+                        diagnostics.push(Diagnostic::new(
+                            arm.pattern_span,
+                            format!(
+                                "destructure binding for non-Copy payload type {} \
+                                 is not supported in v1 — match the variant \
+                                 tag without a binding (e.g. `{}.{}` instead \
+                                 of `{}.{}(_)`)",
+                                bty,
+                                enum_name_opt.as_deref().unwrap_or("?"),
+                                variant_name_opt.as_deref().unwrap_or("?"),
+                                enum_name_opt.as_deref().unwrap_or("?"),
+                                variant_name_opt.as_deref().unwrap_or("?"),
+                            ),
+                        ));
+                    }
+                }
                 let body_checked = if let Some((bname, bty)) = &arm_binding {
                     env.push_scope();
                     env.insert_current(bname.clone(), VarInfo {

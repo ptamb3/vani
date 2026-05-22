@@ -71,6 +71,14 @@ thread_local! {
     /// when the type has no owning fields. T2.7 phase 2.
     static USER_DROP_REGISTRY: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Per-enum list of variant tags that carry a payload.
+    /// Populated alongside `ENUM_PAYLOAD_REGISTRY` at the start
+    /// of `emit_c`. The Drop handler reads this to switch on
+    /// the active tag and free the heap payload only when one
+    /// of the listed variants is in scope. T1.3 + T1.2 phase 2b.
+    static ENUM_PAYLOAD_TAGS_REGISTRY:
+        std::cell::RefCell<std::collections::HashMap<String, Vec<u32>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 /// Per-name C struct typedef for a payloaded enum. Prefixed
@@ -106,6 +114,21 @@ pub fn emit_c(program: &TypedProgram) -> String {
         for decl in &program.enums {
             if let Some(payload_ty) = enum_common_payload_ty(decl) {
                 reg.insert(decl.name.clone(), payload_ty);
+            }
+        }
+    });
+    ENUM_PAYLOAD_TAGS_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        reg.clear();
+        for decl in &program.enums {
+            let tags: Vec<u32> = decl
+                .payload_types
+                .iter()
+                .enumerate()
+                .filter_map(|(i, p)| p.as_ref().map(|_| i as u32))
+                .collect();
+            if !tags.is_empty() {
+                reg.insert(decl.name.clone(), tags);
             }
         }
     });
@@ -1610,6 +1633,41 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                             out.push_str(");\n");
                         }
                         _ => {}
+                    }
+                }
+            }
+            Type::Enum(enum_name) => {
+                // Payloaded enums with a heap-shaped payload
+                // free the payload when the active variant
+                // matches. The payload type is uniform across
+                // payloaded variants (checker enforces this),
+                // so we read the tag, branch on the variants
+                // that hold the heap payload, and free.
+                // T1.3 + T1.2 phase 2b.
+                let payload_ty = ENUM_PAYLOAD_REGISTRY
+                    .with(|r| r.borrow().get(enum_name).cloned());
+                if !matches!(&payload_ty, Some(Type::OwnedStr)) {
+                    // No heap payload — nothing to do.
+                } else {
+                    let local = local_name(name);
+                    let payload_tags: Vec<u32> =
+                        ENUM_PAYLOAD_TAGS_REGISTRY.with(|r| {
+                            r.borrow()
+                                .get(enum_name)
+                                .cloned()
+                                .unwrap_or_default()
+                        });
+                    if !payload_tags.is_empty() {
+                        let cases: Vec<String> = payload_tags
+                            .iter()
+                            .map(|t| format!("case {}", t))
+                            .collect();
+                        out.push_str(&format!(
+                            "  switch ({}.tag) {{ {}: free((void*){}.payload); break; default: break; }}\n",
+                            local,
+                            cases.join(": "),
+                            local
+                        ));
                     }
                 }
             }

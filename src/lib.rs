@@ -2631,6 +2631,63 @@ mod tests {
     }
 
     #[test]
+    fn enum_owned_str_payload_compiles_and_drops() {
+        // T1.3 + T1.2 phase 2b: enum payloads admit OwnedStr.
+        // The aggregate is affine; both backends emit a
+        // tag-conditional free for the heap payload at scope
+        // exit.
+        let source = r#"
+            enum Maybe { Some(OwnedStr), None }
+            fn make(c: bool) -> Maybe {
+              if c { return Maybe.Some("a" + "b"); }
+              return Maybe.None;
+            }
+            fn classify(m: Maybe) -> i64 {
+              return match m {
+                Maybe.Some then 1,
+                Maybe.None then 0,
+              };
+            }
+            fn main() -> i64 {
+              let a: Maybe = make(true);
+              let b: Maybe = make(false);
+              assert classify(a) == 1;
+              assert classify(b) == 0;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("enum with OwnedStr payload should compile");
+        assert!(
+            c.contains("free((void*)v_") && c.contains(".payload"),
+            "expected tag-conditional payload free in C output:\n{c}"
+        );
+    }
+
+    #[test]
+    fn enum_non_copy_payload_binding_rejected() {
+        // Destructure-binding patterns for non-Copy payloads
+        // are rejected in v1 (would alias the enum's payload
+        // with the binding, causing double-free / UAF).
+        let source = r#"
+            enum Maybe { Some(OwnedStr), None }
+            fn main() -> i64 {
+              let m: Maybe = Maybe.Some("hi");
+              return match m {
+                Maybe.Some(s) then 1,
+                Maybe.None then 0,
+              };
+            }
+        "#;
+        let errors = compile(source)
+            .expect_err("non-Copy payload binding should be rejected");
+        assert!(
+            errors.iter().any(|e| e.message.contains("non-Copy payload type")),
+            "expected non-Copy-binding diagnostic, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
     fn match_str_dispatch_with_wildcard() {
         // T1.3 follow-up: Str-typed scrutinee desugars to a
         // nested if-expr chain using `==` on Str (strcmp).

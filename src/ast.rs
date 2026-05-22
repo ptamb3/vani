@@ -29,6 +29,29 @@ pub fn struct_has_non_copy_field(name: &str) -> bool {
     STRUCT_NON_COPY_REGISTRY.with(|cell| cell.borrow().contains(name))
 }
 
+thread_local! {
+    /// Names of enums declared with at least one non-Copy
+    /// payload type (in v1, that means an `OwnedStr` payload).
+    /// Populated by the checker so `Type::Enum(name)` reports
+    /// `false` from `is_copy()` for affine aggregates.
+    /// Backends emit per-variant free calls when one of these
+    /// enums is dropped. T1.3 + T1.2 phase 2b.
+    pub(crate) static ENUM_NON_COPY_REGISTRY: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+pub fn set_non_copy_enums<I: IntoIterator<Item = String>>(names: I) {
+    ENUM_NON_COPY_REGISTRY.with(|cell| {
+        let mut set = cell.borrow_mut();
+        set.clear();
+        set.extend(names);
+    });
+}
+
+pub fn enum_has_non_copy_payload(name: &str) -> bool {
+    ENUM_NON_COPY_REGISTRY.with(|cell| cell.borrow().contains(name))
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     pub intents: Vec<Intent>,
@@ -401,6 +424,10 @@ impl Type {
             // are themselves affine — copying would alias the heap
             // buffer and double-free at scope exit. T1.2 phase 2b.
             Type::Struct(name) => !struct_has_non_copy_field(name),
+            // Enums with at least one heap-shaped payload
+            // (OwnedStr in v1) are also affine; the Drop
+            // emission switches on the tag to free.
+            Type::Enum(name) => !enum_has_non_copy_payload(name),
             _ => true,
         }
     }

@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #112)
+## ⏳ Resume here (paused 2026-05-22, after closure #113)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -13,8 +13,9 @@ user-Eq desugar for struct `==`, #105 partial-move tracking,
 #107 tuple auto-equality, #108 in-place
 `push(mut ref xs, v)`, #109 `xs[i].field = v` mixed-place
 assignment, #110 match on bool scrutinee, #111 match on Str
-scrutinee, #112 deep field paths for mixed-place assign.
-Test totals: 786 lib + 47 e2e passing.
+scrutinee, #112 deep field paths for mixed-place assign,
+#113 enum payloads admit OwnedStr (heap-aware Drop). Test
+totals: 788 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -612,6 +613,65 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+113. ~~**Enum payloads admit OwnedStr (heap-aware Drop)**~~ —
+     done 2026-05-22. Closes a soundness gap: previously the
+     enum-payload validation rejected any non-Copy type with
+     "v1 enum payloads are Copy-only", citing the unfinished
+     T1.2 struct RAII work — which has since landed (closures
+     #98 / #100). This closure lifts OwnedStr through the
+     gate and wires the heap-conditional Drop in both
+     backends.
+     - **Checker gate lifted** in
+       [src/checker.rs](src/checker.rs): `OwnedStr` now
+       passes the per-variant payload validation. Other
+       affine payload types (Vec / [T;N] / Task / Atomic)
+       remain rejected.
+     - **`ENUM_NON_COPY_REGISTRY`** added to
+       [src/ast.rs](src/ast.rs) (parallel to the existing
+       `STRUCT_NON_COPY_REGISTRY`). `Type::Enum(name)` now
+       consults it for `is_copy()`, so enums with a heap
+       payload are correctly affine and the scope-exit Drop
+       pass fires on them.
+     - **C backend Drop emission** in
+       [src/backend_c.rs](src/backend_c.rs) gains a
+       `Type::Enum(name)` arm that emits a `switch (v.tag) {
+       case <i>: free((void*)v.payload); break; default:
+       break; }` for the variant tags that carry a payload.
+       Tag list comes from a new `ENUM_PAYLOAD_TAGS_REGISTRY`
+       thread-local populated at emit start.
+     - **LLVM backend Drop emission** in
+       [src/backend_llvm.rs](src/backend_llvm.rs) gains the
+       same arm: extract tag + payload via `extractvalue`,
+       OR-fold per-tag `icmp eq` comparisons into a single
+       i1, branch to a free-then-done block. Mirror
+       `LLVM_ENUM_PAYLOAD_TAGS_REGISTRY` thread-local.
+     - **LLVM payload-zero fix**: `EnumVariant` for a
+       payload-less variant of a payloaded enum was emitting
+       `insertvalue ... i8* 0, 1` for OwnedStr (i8*) — LLVM
+       requires `null` not `0` for pointer literals. Fixed.
+     - **v1 limitation**: destructure-binding patterns
+       (`Some(s)`) for non-Copy payloads are rejected with
+       a clean diagnostic. Match the variant tag without a
+       binding (`Maybe.Some` not `Maybe.Some(s)`) for
+       OwnedStr payloads. The alias-vs-Drop interaction
+       (binding `s` shares the heap pointer with the enum's
+       payload) would cause double-free / UAF without
+       chained move tracking, which is deferred.
+     - **2 lib tests added**:
+       `enum_owned_str_payload_compiles_and_drops` (positive
+       case + asserts the tag-conditional `free` in C
+       output) and `enum_non_copy_payload_binding_rejected`
+       (the destructure restriction).
+     - **New example**
+       [examples/enum_owned_payload.intent](examples/enum_owned_payload.intent)
+       exercises a `Maybe<OwnedStr>`-style pattern flowing
+       through `make()` → consume in `classify()` → scope-
+       exit Drop. Wired into the cross-backend e2e test.
+     - **Still pending**: Vec / [T;N] / Task / Atomic
+       payload types; destructure-binding extraction for
+       non-Copy payloads (needs chained move tracking).
+     786 → 788 lib tests; 47 e2e stable.
+
 112. ~~**Deep field paths for `xs[i].a.b = v`**~~ — done
      2026-05-22. Closure #109 shipped single-level paths;
      this lifts the depth restriction. The existing

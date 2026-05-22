@@ -1,0 +1,44 @@
+intent "Enum with OwnedStr payload — heap-aware Drop";
+
+// Enum payloads can now hold `OwnedStr` (a heap-allocated
+// string). The compiler tracks the aggregate as affine; at
+// scope exit, the Drop pass switches on the active tag and
+// frees the payload only for variants that carry one. Plain
+// (payload-less) variants are no-ops at Drop time.
+//
+// v1 restriction: destructure-binding patterns (`Some(x)`)
+// require the payload to be Copy — the alias-vs-Drop
+// interaction for non-Copy payloads isn't tracked yet. Match
+// the variant tag without a binding for OwnedStr payloads;
+// extracting the heap string out of the enum waits on a
+// later closure.
+
+enum Maybe { Some(OwnedStr), None }
+
+fn make(use_value: bool) -> Maybe {
+  if use_value {
+    return Maybe.Some("hello" + " world");
+  }
+  return Maybe.None;
+}
+
+fn classify(m: Maybe) -> i64 {
+  return match m {
+    Maybe.Some then 1,
+    Maybe.None then 0,
+  };
+}
+
+fn main() -> i64 {
+  let a: Maybe = make(true);
+  let b: Maybe = make(false);
+  // a goes out of scope as `m` parameter inside classify;
+  // its Some payload gets freed once at the parameter's
+  // scope exit. No leak, no double-free.
+  let r1: i64 = classify(a);
+  let r2: i64 = classify(b);
+  print "a yields", r1, " b yields", r2;
+  assert r1 == 1;
+  assert r2 == 0;
+  return 0;
+}

@@ -200,6 +200,14 @@ thread_local! {
     pub(crate) static LLVM_USER_DROP_REGISTRY:
         std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Per-enum list of variant tags that carry a payload.
+    /// Populated at the start of `emit_llvm` alongside the
+    /// payload-type registry. The Drop handler reads this to
+    /// emit a tag-conditional free for enums with a heap-
+    /// shaped payload. T1.3 + T1.2 phase 2b.
+    pub(crate) static LLVM_ENUM_PAYLOAD_TAGS_REGISTRY:
+        std::cell::RefCell<std::collections::HashMap<String, Vec<u32>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 pub fn emit_llvm(program: &TypedProgram) -> String {
@@ -214,6 +222,21 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         for decl in &program.enums {
             if let Some(payload_ty) = decl.payload_types.iter().find_map(|p| p.clone()) {
                 reg.insert(decl.name.clone(), payload_ty);
+            }
+        }
+    });
+    LLVM_ENUM_PAYLOAD_TAGS_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        reg.clear();
+        for decl in &program.enums {
+            let tags: Vec<u32> = decl
+                .payload_types
+                .iter()
+                .enumerate()
+                .filter_map(|(i, p)| p.as_ref().map(|_| i as u32))
+                .collect();
+            if !tags.is_empty() {
+                reg.insert(decl.name.clone(), tags);
             }
         }
     });
@@ -1034,6 +1057,68 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                             }
                             _ => {}
                         }
+                    }
+                }
+            } else if let Type::Enum(enum_name) = ty {
+                // Payloaded enums with a heap-shaped payload
+                // free the payload when the active variant
+                // tag matches one of the payloaded variants.
+                // T1.3 + T1.2 phase 2b.
+                let payload_ty = LLVM_ENUM_PAYLOAD_REGISTRY
+                    .with(|r| r.borrow().get(enum_name).cloned());
+                if matches!(&payload_ty, Some(Type::OwnedStr)) {
+                    let payload_tags: Vec<u32> = LLVM_ENUM_PAYLOAD_TAGS_REGISTRY
+                        .with(|r| r.borrow().get(enum_name).cloned().unwrap_or_default());
+                    if let Some((_, addr)) = ctx.locals.get(name).cloned() {
+                        let s_ty = format!("%Enum_{}", enum_name);
+                        let loaded = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = load {}, {}* {}\n",
+                            loaded, s_ty, s_ty, addr
+                        ));
+                        let tag = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = extractvalue {} {}, 0\n",
+                            tag, s_ty, loaded
+                        ));
+                        let payload = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = extractvalue {} {}, 1\n",
+                            payload, s_ty, loaded
+                        ));
+                        let free_lbl = ctx.fresh_label("enum_drop_free");
+                        let done_lbl = ctx.fresh_label("enum_drop_done");
+                        // Synthesize an i1 "is_payloaded_tag"
+                        // by OR-ing each per-tag equality.
+                        let mut prev = "i1 false".to_string();
+                        for t in &payload_tags {
+                            let cmp = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = icmp eq i32 {}, {}\n",
+                                cmp, tag, t
+                            ));
+                            let or_v = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = or {}, {}\n",
+                                or_v, prev, cmp
+                            ));
+                            prev = format!("i1 {}", or_v);
+                        }
+                        // Strip the leading "i1 " for the
+                        // branch condition.
+                        let cond = prev.trim_start_matches("i1 ").to_string();
+                        out.push_str(&format!(
+                            "  br i1 {}, label %{}, label %{}\n",
+                            cond, free_lbl, done_lbl
+                        ));
+                        out.push_str(&format!("{}:\n", free_lbl));
+                        out.push_str(&format!(
+                            "  call void @free(i8* {})\n",
+                            payload
+                        ));
+                        out.push_str(&format!("  br label %{}\n", done_lbl));
+                        out.push_str(&format!("{}:\n", done_lbl));
+                        ctx.current_block = done_lbl;
                     }
                 }
             } else if matches!(ty, Type::Guard(_)) {
@@ -3287,6 +3372,9 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             let payload_zero = match &payload_ty {
                 Type::F32 | Type::F64 => "0.0",
                 Type::Bool => "false",
+                // Pointer payloads (OwnedStr lowers to i8*)
+                // need LLVM's `null` literal, not `0`.
+                Type::OwnedStr => "null",
                 _ => "0",
             };
             let s0 = ctx.fresh_tmp();

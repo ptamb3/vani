@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 786 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 788 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,19 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Enum payloads admit OwnedStr done 2026-05-22**: enums
+   like `enum Maybe { Some(OwnedStr), None }` are now valid
+   in v1. The aggregate is affine; both backends emit a
+   tag-conditional `free` at scope exit, only for variants
+   that carry a heap payload. New `ENUM_NON_COPY_REGISTRY`
+   in [src/ast.rs](src/ast.rs) parallels the struct one;
+   `LLVM_/(C)_ENUM_PAYLOAD_TAGS_REGISTRY` thread-locals
+   drive the per-variant dispatch. v1 limitation: matching
+   without a binding only — destructure-binding patterns
+   for non-Copy payloads are rejected (alias-vs-Drop
+   tracking is deferred). See
+   [examples/enum_owned_payload.intent](examples/enum_owned_payload.intent).
+
    **Deep field paths for `xs[i].a.b = v` done 2026-05-22**:
    the depth gate in the checker was lifted; the existing
    loop already validates each segment with per-step type
