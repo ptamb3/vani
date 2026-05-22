@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 803 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 806 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,22 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **Vec element drops walk owning fields done 2026-05-22**:
+   `intent_vec_<S>__free` now iterates every live element
+   and drops its owning resources before freeing the buffer,
+   for `S = OwnedStr`, `S = Struct{…}` with owning fields,
+   and `S = Vec<U>` (was already handled). Closes a
+   pre-existing leak where `Vec<Struct{OwnedStr…}>` and
+   `Vec<OwnedStr>` left their element heaps unfreed at
+   scope exit. C: `c_element_drop_old` extended with
+   `OwnedStr` and `Struct` arms (the latter via
+   `emit_struct_field_drops`); LLVM: per-element loop body
+   emits per-field GEP + load + `@free` /
+   `@intent_vec_<tag>__free` driven by a slim local
+   counter. Closure #127. Verified leak-free under
+   `-fsanitize=address,leak`. See updated
+   [examples/struct_owned_field.intent](examples/struct_owned_field.intent).
 
    **Match on `Str` / `OwnedStr` scrutinee done 2026-05-22**:
    string-literal patterns desugar at the checker level to a

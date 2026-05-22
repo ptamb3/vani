@@ -1411,6 +1411,43 @@ pub(crate) fn c_element_drop_old(slot: &str, ty: &Type) -> String {
             helper = vec_helper(inner, "free"),
             slot = slot,
         ),
+        Type::OwnedStr => format!("\n        free((void*){slot});", slot = slot),
+        Type::Struct(name) => {
+            // Drop each owning field of the struct slot via the
+            // shared `emit_struct_field_drops` helper. If the
+            // struct has no owning fields (or isn't registered),
+            // emit nothing — matches the previous behavior.
+            // Closure #127.
+            let fields = STRUCT_FIELDS_REGISTRY
+                .with(|r| r.borrow().get(name).cloned())
+                .unwrap_or_default();
+            if fields.is_empty() {
+                return String::new();
+            }
+            let mut body = String::new();
+            let empty: std::collections::HashSet<&String> =
+                std::collections::HashSet::new();
+            emit_struct_field_drops(slot, name, &fields, &empty, &mut body);
+            if body.is_empty() {
+                return String::new();
+            }
+            // `emit_struct_field_drops` emits each line with a
+            // leading two-space indent. The Vec __free body
+            // expects each statement to be indented by 8 spaces
+            // (inside a 4-space-indented `for` block in a 4-space
+            // indented helper). Re-indent and prepend a leading
+            // newline so we slot cleanly in.
+            let mut reindented = String::new();
+            for line in body.lines() {
+                let trimmed = line.trim_start();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                reindented.push_str("\n        ");
+                reindented.push_str(trimmed);
+            }
+            reindented
+        }
         _ => String::new(),
     }
 }

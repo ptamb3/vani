@@ -556,11 +556,14 @@ Notes:
 - The built-in names `vec`, `push`, `set`, and `clone` cannot be redefined as
   user functions.
 - `vec()` with zero arguments is supported (empty Vec).
-- `Vec<T>` accepts non-`Copy` elements: `Vec<Vec<T>>`, `Vec<[T; N]>`, and
-  `Vec<Struct>` all work. Reading a non-Copy slot into a binding requires
-  `clone_at(ref xs, i)` — bare `let inner = xs[i]` would alias the owner's
-  slot and double-free, so the checker rejects it with a hint pointing at
-  `clone_at`.
+- `Vec<T>` accepts non-`Copy` elements: `Vec<Vec<T>>`, `Vec<[T; N]>`,
+  `Vec<OwnedStr>`, and `Vec<Struct>` all work. Reading a non-Copy slot into a
+  binding requires `clone_at(ref xs, i)` — bare `let inner = xs[i]` would alias
+  the owner's slot and double-free, so the checker rejects it with a hint
+  pointing at `clone_at`. At scope exit the Vec's `__free` helper walks every
+  live element and drops its owning resources before releasing the buffer, so
+  `Vec<OwnedStr>` and `Vec<Struct{…OwnedStr / Vec…}>` don't leak their
+  per-element heaps.
 
 Under the hood, the backend monomorphizes one C struct + helper bundle per
 distinct element type used:

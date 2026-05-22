@@ -5717,6 +5717,81 @@ mod tests {
     }
 
     #[test]
+    fn vec_struct_with_owned_str_field_drops_each_slot() {
+        // Closure #127: `intent_vec_<S>__free` must walk
+        // each live element and drop its owning fields,
+        // otherwise a Vec<Struct{OwnedStr}> leaks the
+        // per-element heap strings at scope exit. The C
+        // backend emits `free((void*)xs.data[k].name)`
+        // inside the helper's per-element loop body.
+        let source = r#"
+            struct Tag { name: OwnedStr }
+            fn main() -> i64 {
+              let ts: Vec<Tag> = vec(
+                Tag { name: "a" + "1" },
+                Tag { name: "b" + "2" }
+              );
+              return 0;
+            }
+        "#;
+        compile(source).expect("Vec<Struct{OwnedStr}> should compile");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        assert!(
+            c.contains("free((void*)xs.data[k].name)"),
+            "expected per-element OwnedStr free inside Vec __free, got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn vec_struct_with_vec_field_drops_each_slot() {
+        // Closure #127: when the struct element has a Vec
+        // field, the per-element drop body must call the
+        // inner Vec's __free on that field. Verifies the
+        // Vec-field arm of c_element_drop_old.
+        let source = r#"
+            struct Bag { items: Vec<i64> }
+            fn main() -> i64 {
+              let bs: Vec<Bag> = vec(
+                Bag { items: vec(1, 2, 3) },
+                Bag { items: vec(4, 5) }
+              );
+              return 0;
+            }
+        "#;
+        compile(source).expect("Vec<Struct{Vec<i64>}> should compile");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        assert!(
+            c.contains("intent_vec_int64_t__free(xs.data[k].items)"),
+            "expected per-element vec-free inside Vec __free, got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn vec_of_owned_str_drops_each_slot() {
+        // Closure #127: also covers the OwnedStr-element
+        // case directly (Vec<OwnedStr>). Each slot is an
+        // i8* that must be freed before the buffer goes.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<OwnedStr> = vec("a" + "1", "b" + "2");
+              return 0;
+            }
+        "#;
+        compile(source).expect("Vec<OwnedStr> should compile");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        // The per-element drop in intent_vec_OwnedStr__free
+        // becomes `free((void*)xs.data[k])` (no field
+        // suffix — the slot IS the i8*).
+        assert!(
+            c.contains("free((void*)xs.data[k])"),
+            "expected per-element OwnedStr free inside Vec __free, got:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn index_assign_to_struct_array_element() {
         // Index-assign a whole struct value into a
         // `[Struct; N]` slot, e.g. `pts[1] = Point{…};`.

@@ -4309,18 +4309,72 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
 
     // ---- free(xs): release the heap buffer (+ recursively
     // free each element when the element type owns heap of
-    // its own, e.g. `Vec<U>`). Always emitted so callers can
-    // use a uniform interface and not branch on `is_copy`
-    // at Drop sites.
+    // its own). Element types handled: `Vec<U>` (calls inner
+    // Vec __free), `OwnedStr` (per-slot @free), `Struct{…}`
+    // with owning fields (per-field drop walk via the LLVM
+    // struct-field registry, mirrors `emit_llvm_struct_field_drops`).
+    // Always emitted so callers can use a uniform interface and
+    // not branch on `is_copy` at Drop sites. Closure #127.
     out.push_str(&format!(
         "define void {}({} %xs) {{\n",
         free_name, s_ty
     ));
     out.push_str(&format!("  %data = extractvalue {} %xs, 0\n", s_ty));
     if !element_is_copy {
-        if let Type::Vec(inner) = element {
-            let inner_free =
-                format!("@intent_vec_{}__free", vec_struct_tag(inner));
+        let mut needs_loop = false;
+        let mut body = String::new();
+        let mut tmp_counter: usize = 0;
+        let next_tmp = |c: &mut usize| -> String {
+            let n = format!("%fd{}", *c);
+            *c += 1;
+            n
+        };
+        match element {
+            Type::Vec(inner) => {
+                needs_loop = true;
+                let inner_free =
+                    format!("@intent_vec_{}__free", vec_struct_tag(inner));
+                let v = next_tmp(&mut tmp_counter);
+                body.push_str(&format!(
+                    "  {} = load {}, {}* %elt_p\n",
+                    v, elt_ty, elt_ty
+                ));
+                body.push_str(&format!(
+                    "  call void {}({} {})\n",
+                    inner_free, elt_ty, v
+                ));
+            }
+            Type::OwnedStr => {
+                needs_loop = true;
+                let v = next_tmp(&mut tmp_counter);
+                body.push_str(&format!(
+                    "  {} = load i8*, i8** %elt_p\n",
+                    v
+                ));
+                body.push_str(&format!(
+                    "  call void @free(i8* {})\n",
+                    v
+                ));
+            }
+            Type::Struct(name) => {
+                let fields = LLVM_STRUCT_FIELDS_REGISTRY
+                    .with(|r| r.borrow().get(name).cloned())
+                    .unwrap_or_default();
+                if !fields.is_empty() {
+                    needs_loop = true;
+                    let s_struct = format!("%Struct_{}", name);
+                    emit_vec_element_struct_drop(
+                        &s_struct,
+                        "%elt_p",
+                        &fields,
+                        &mut tmp_counter,
+                        &mut body,
+                    );
+                }
+            }
+            _ => {}
+        }
+        if needs_loop {
             out.push_str(&format!("  %len = extractvalue {} %xs, 1\n", s_ty));
             out.push_str("  br label %fr_check\n");
             out.push_str("fr_check:\n");
@@ -4332,14 +4386,7 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
                 "  %elt_p = getelementptr {}, {}* %data, i64 %fi\n",
                 elt_ty, elt_ty
             ));
-            out.push_str(&format!(
-                "  %elt_v = load {}, {}* %elt_p\n",
-                elt_ty, elt_ty
-            ));
-            out.push_str(&format!(
-                "  call void {}({} %elt_v)\n",
-                inner_free, elt_ty
-            ));
+            out.push_str(&body);
             out.push_str("  %fi_next = add i64 %fi, 1\n");
             out.push_str("  br label %fr_check\n");
             out.push_str("fr_done:\n");
@@ -4352,6 +4399,79 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
     out.push_str("  call void @free(i8* %data8)\n");
     out.push_str("  ret void\n");
     out.push_str("}\n\n");
+}
+
+/// Emit per-field drop statements for a struct slot pointed at
+/// by `addr`. Mirrors `emit_llvm_struct_field_drops` but takes a
+/// plain counter instead of a `FnCtx` so it can be invoked from
+/// the module-level `intent_vec_<S>__free` emitter (which has no
+/// function context). Closure #127.
+fn emit_vec_element_struct_drop(
+    s_ty: &str,
+    addr: &str,
+    fields: &[(String, Type)],
+    counter: &mut usize,
+    out: &mut String,
+) {
+    let next = |c: &mut usize| -> String {
+        let n = format!("%fd{}", *c);
+        *c += 1;
+        n
+    };
+    for (idx, (_field_name, field_ty)) in fields.iter().enumerate().rev() {
+        match field_ty {
+            Type::OwnedStr => {
+                let fp = next(counter);
+                out.push_str(&format!(
+                    "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
+                    fp, s_ty, s_ty, addr, idx
+                ));
+                let v = next(counter);
+                out.push_str(&format!("  {} = load i8*, i8** {}\n", v, fp));
+                out.push_str(&format!("  call void @free(i8* {})\n", v));
+            }
+            Type::Vec(element) => {
+                let v_struct = vec_struct_name(element);
+                let fp = next(counter);
+                out.push_str(&format!(
+                    "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
+                    fp, s_ty, s_ty, addr, idx
+                ));
+                let v = next(counter);
+                out.push_str(&format!(
+                    "  {} = load {}, {}* {}\n",
+                    v, v_struct, v_struct, fp
+                ));
+                let free_name =
+                    format!("@intent_vec_{}__free", vec_struct_tag(element));
+                out.push_str(&format!(
+                    "  call void {}({} {})\n",
+                    free_name, v_struct, v
+                ));
+            }
+            Type::Struct(inner_name) => {
+                let inner_fields = LLVM_STRUCT_FIELDS_REGISTRY
+                    .with(|r| r.borrow().get(inner_name).cloned())
+                    .unwrap_or_default();
+                if !inner_fields.is_empty() {
+                    let fp = next(counter);
+                    out.push_str(&format!(
+                        "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
+                        fp, s_ty, s_ty, addr, idx
+                    ));
+                    let inner_s_ty = format!("%Struct_{}", inner_name);
+                    emit_vec_element_struct_drop(
+                        &inner_s_ty,
+                        &fp,
+                        &inner_fields,
+                        counter,
+                        out,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// In-buffer LLVM value spelling for a Vec's element type.

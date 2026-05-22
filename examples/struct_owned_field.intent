@@ -39,5 +39,16 @@ fn main() -> i64 {
 
   // `t` and `u` both go out of scope here; the runtime
   // performs `free` on each owning field.
+
+  // Closure #127: a `Vec<Tag>` of structs with an
+  // `OwnedStr` field. At scope exit the Vec's `__free`
+  // helper walks every live element and frees its `name`
+  // field before releasing the buffer — so the per-element
+  // heap strings don't leak.
+  let tags: Vec<Tag> = vec(
+    Tag { id: 1, name: "first" + "", active: true },
+    Tag { id: 2, name: "second" + "", active: false }
+  );
+  print "Vec<Tag> per-element drop OK";
   return 0;
 }
