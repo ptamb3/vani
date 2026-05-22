@@ -666,12 +666,17 @@ fn format_stmt(s: &Stmt, depth: usize, ctx: &mut FmtCtx, out: &mut String) {
             out.push_str(&pad);
             out.push_str("continue;\n");
         }
-        Stmt::IndexAssign { name, index, value, .. } => {
+        Stmt::IndexAssign { name, index, field_path, value, .. } => {
             out.push_str(&pad);
             out.push_str(name);
             out.push('[');
             format_expr(index, false, out);
-            out.push_str("] = ");
+            out.push(']');
+            for f in field_path {
+                out.push('.');
+                out.push_str(f);
+            }
+            out.push_str(" = ");
             format_expr(value, false, out);
             out.push_str(";\n");
         }
@@ -918,6 +923,14 @@ fn format_expr(e: &Expr, parens_if_binary: bool, out: &mut String) {
                     }
                     crate::ast::Pattern::Int(v) => {
                         out.push_str(&v.to_string());
+                    }
+                    crate::ast::Pattern::Bool(b) => {
+                        out.push_str(if *b { "true" } else { "false" });
+                    }
+                    crate::ast::Pattern::Str(s) => {
+                        out.push('"');
+                        out.push_str(s);
+                        out.push('"');
                     }
                     crate::ast::Pattern::Wildcard => {
                         out.push('_');

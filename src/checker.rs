@@ -5956,18 +5956,20 @@ fn check_expr(
                     Some(d)
                 }
                 t if t.is_integer() => None,
+                Type::Bool => None,
                 other => {
                     diagnostics.push(Diagnostic::new(
                         scrutinee.span,
                         format!(
-                            "match scrutinee must be an enum or integer type, got {}",
+                            "match scrutinee must be an enum, integer, or bool type, got {}",
                             other
                         ),
                     ));
                     return CheckedExpr::fallback_integer(expr.span);
                 }
             };
-            let is_int_dispatch = enum_decl_opt.is_none();
+            let is_int_dispatch = enum_decl_opt.is_none() && scrut_ty != Type::Bool;
+            let is_bool_dispatch = scrut_ty == Type::Bool;
             let enum_name_opt: Option<String> = match &scrut_ty {
                 Type::Enum(name) => Some(name.clone()),
                 _ => None,
@@ -5978,6 +5980,7 @@ fn check_expr(
             let mut typed_arms: Vec<crate::ir::TypedMatchArm> = Vec::new();
             let mut seen_variants: Vec<&str> = Vec::new();
             let mut seen_ints: Vec<i128> = Vec::new();
+            let mut seen_bools: Vec<bool> = Vec::new();
             let mut result_ty: Option<Type> = None;
             // A wildcard arm covers every remaining variant. v1
             // requires it to appear last — once seen, arms after
@@ -6036,6 +6039,38 @@ fn check_expr(
                         }
                         seen_ints.push(*v);
                         (None, None, Some(*v))
+                    }
+                    crate::ast::Pattern::Bool(b) => {
+                        if !is_bool_dispatch {
+                            diagnostics.push(Diagnostic::new(
+                                arm.pattern_span,
+                                format!(
+                                    "bool pattern in match arm but scrutinee is of type {}",
+                                    scrut_ty
+                                ),
+                            ));
+                            continue;
+                        }
+                        if seen_bools.contains(b) {
+                            diagnostics.push(Diagnostic::new(
+                                arm.pattern_span,
+                                format!("match arm for bool pattern '{}' appears twice", b),
+                            ));
+                            continue;
+                        }
+                        seen_bools.push(*b);
+                        // Encode bool as 0/1 integer dispatch
+                        // so the existing backend switch logic
+                        // works uniformly.
+                        (None, None, Some(if *b { 1 } else { 0 }))
+                    }
+                    crate::ast::Pattern::Str(_) => {
+                        diagnostics.push(Diagnostic::new(
+                            arm.pattern_span,
+                            "string literal match patterns are not yet supported \
+                             in v1 — use if/else chains with `==` on Str/OwnedStr",
+                        ));
+                        continue;
                     }
                     crate::ast::Pattern::Variant {
                         enum_name: pat_enum,
@@ -6241,6 +6276,21 @@ fn check_expr(
                          `_ then …` arm to cover values not explicitly listed"
                             .to_string(),
                     ));
+                } else if is_bool_dispatch {
+                    // Bool exhaustiveness: need both `true`
+                    // and `false` arms, or a wildcard.
+                    if !seen_bools.contains(&true) {
+                        diagnostics.push(Diagnostic::new(
+                            expr.span,
+                            "non-exhaustive match: missing arm for 'true'".to_string(),
+                        ));
+                    }
+                    if !seen_bools.contains(&false) {
+                        diagnostics.push(Diagnostic::new(
+                            expr.span,
+                            "non-exhaustive match: missing arm for 'false'".to_string(),
+                        ));
+                    }
                 } else if let Some(enum_decl) = &enum_decl_opt {
                     let enum_name = enum_name_opt.as_deref().unwrap_or("");
                     for v in &enum_decl.variants {

@@ -2631,22 +2631,35 @@ mod tests {
     }
 
     #[test]
-    fn match_bool_pattern_rejected() {
-        // Pattern matching on bool scrutinee with `true` /
-        // `false` literal patterns is gated — patterns
-        // accept integer literals + variant paths + `_`
-        // (see closure #65 sweep). Use `if/else` instead.
+    fn match_bool_compiles_and_dispatches() {
+        // Bool scrutinee with `true` / `false` literal
+        // patterns is supported. Exhaustiveness requires both
+        // arms or a wildcard. T1.3 follow-up (closure #110).
         let source = r#"
             fn main() -> i64 {
               let b: bool = true;
               return match b { true then 10, false then 20 };
             }
         "#;
+        compile(source).expect("match on bool should compile");
+    }
+
+    #[test]
+    fn match_bool_nonexhaustive_rejected() {
+        // Missing the `false` arm triggers the exhaustiveness
+        // check unless a wildcard is present.
+        let source = r#"
+            fn main() -> i64 {
+              let b: bool = true;
+              return match b { true then 10 };
+            }
+        "#;
         let errors = compile(source)
-            .expect_err("bool patterns are gated");
+            .expect_err("non-exhaustive bool match should fail");
         assert!(
-            !errors.is_empty(),
-            "expected at least one diagnostic for bool patterns"
+            errors.iter().any(|e| e.message.contains("missing arm for 'false'")),
+            "expected missing-false diagnostic, got: {:?}",
+            errors
         );
     }
 

@@ -1,0 +1,36 @@
+intent "Match on bool scrutinee — `true` / `false` patterns";
+
+// `match` now accepts a `bool` scrutinee in addition to enum
+// tags and integer values. The patterns are the literals
+// `true` and `false`; exhaustiveness requires both arms OR a
+// wildcard. The dispatch lowers to the same switch shape as
+// integer-pattern dispatch with `true = 1`, `false = 0`.
+
+fn describe(b: bool) -> i64 {
+  return match b {
+    true then 1,
+    false then 0,
+  };
+}
+
+fn classify(n: i64) -> i64 {
+  // Mix bool match with the existing if-as-expression form.
+  let positive: bool = n > 0;
+  return match positive {
+    true then n,
+    _ then 0,
+  };
+}
+
+fn main() -> i64 {
+  let a: i64 = describe(true);
+  let b: i64 = describe(false);
+  assert a == 1;
+  assert b == 0;
+  let c: i64 = classify(5);
+  let d: i64 = classify(-3);
+  assert c == 5;
+  assert d == 0;
+  print "bool match works:", a, b, c, d;
+  return 0;
+}

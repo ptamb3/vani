@@ -902,6 +902,15 @@ pub enum Pattern {
     /// wildcard arm is required to cover the open set of
     /// integer values).
     Int(i128),
+    /// `true then …` / `false then …` — bool literal
+    /// pattern. Scrutinee must be `bool`. Exhaustiveness
+    /// requires both arms OR a wildcard. T1.3 follow-up.
+    Bool(bool),
+    /// `"foo" then …` — string literal pattern. Scrutinee
+    /// must be `Str` or `OwnedStr`; dispatch is via
+    /// `strcmp`. A wildcard arm is required since the
+    /// string space is open. T1.3 follow-up.
+    Str(String),
     /// `_ then …` — catch-all that covers every remaining
     /// variant; must appear last in the arm list.
     Wildcard,

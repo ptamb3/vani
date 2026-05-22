@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 783 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 784 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,17 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Match on `bool` scrutinee done 2026-05-22**:
+   `match b { true then …, false then …, _ then … }` works.
+   Exhaustiveness requires both arms OR a wildcard. Bool
+   patterns lower as int_value=0/1 so the existing
+   integer-switch shape handles dispatch uniformly across
+   both backends. New `Pattern::Bool` + `Pattern::Str`
+   variants on the AST; Str still surfaces a "not yet
+   supported" diagnostic (strcmp-dispatch is the natural
+   follow-up). See
+   [examples/match_bool.intent](examples/match_bool.intent).
+
    **`xs[i].field = v` mixed-place assign done 2026-05-22**:
    single-level field path on the indexed element. Parser
    builds an `IndexAssign` with a non-empty `field_path`;

@@ -2078,15 +2078,34 @@ impl Parser {
                 self.expect_keyword("'{'", |k| matches!(k, TokenKind::LBrace))?;
                 let mut arms = Vec::new();
                 while !self.check(|k| matches!(k, TokenKind::RBrace | TokenKind::Eof)) {
-                    // Three pattern shapes in v1:
+                    // Five pattern shapes in v1:
                     //   - `_` wildcard
                     //   - `42` / `-1` integer literal
+                    //   - `true` / `false` bool literal
+                    //   - `"foo"` string literal
                     //   - `EnumName.VariantName` variant
                     // Dispatch on the first token: Minus or
-                    // Int → integer pattern; identifier `_` →
-                    // wildcard; any other identifier → variant.
+                    // Int → integer; True/False → bool; Str
+                    // → string; identifier `_` → wildcard;
+                    // any other identifier → variant.
                     // T1.3 wildcard + integer-literal pattern.
                     let (pattern, pat_span) = if self
+                        .check(|k| matches!(k, TokenKind::True))
+                    {
+                        let tok = self.bump();
+                        (Pattern::Bool(true), tok.span)
+                    } else if self.check(|k| matches!(k, TokenKind::False)) {
+                        let tok = self.bump();
+                        (Pattern::Bool(false), tok.span)
+                    } else if self.check(|k| matches!(k, TokenKind::Str(_))) {
+                        let tok = self.bump();
+                        let span = tok.span;
+                        let text = match tok.kind {
+                            TokenKind::Str(s) => s,
+                            _ => unreachable!(),
+                        };
+                        (Pattern::Str(text), span)
+                    } else if self
                         .check(|k| matches!(k, TokenKind::Minus | TokenKind::Int(_)))
                     {
                         let pat_start = self.current().span;

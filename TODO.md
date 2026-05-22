@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #109)
+## ⏳ Resume here (paused 2026-05-22, after closure #110)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -12,7 +12,8 @@ user-Eq desugar for struct `==`, #105 partial-move tracking,
 #106 enum `==` desugar + partial-then-whole-move diagnostic,
 #107 tuple auto-equality, #108 in-place
 `push(mut ref xs, v)`, #109 `xs[i].field = v` mixed-place
-assignment. Test totals: 783 lib + 47 e2e passing.
+assignment, #110 match on bool scrutinee. Test totals: 784
+lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -610,6 +611,53 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+110. ~~**Match on `bool` scrutinee**~~ — done 2026-05-22.
+     `match b { true then …, false then …, _ then … }` now
+     works. Exhaustiveness requires both arms OR a wildcard.
+     The dispatch reuses the existing integer-switch shape
+     (true=1, false=0) so no backend changes were needed.
+     - **`Pattern::Bool(bool)`** added to [src/ast.rs](src/ast.rs)
+       alongside the existing Int/Variant/Wildcard variants.
+       Also added `Pattern::Str(String)` for the upcoming
+       string-match work; currently the checker emits a
+       "not yet supported" diagnostic for Str patterns.
+     - **Parser** recognizes `true` / `false` / `"…"` tokens
+       as patterns in match arms.
+     - **Checker** in [src/checker.rs](src/checker.rs):
+       new dispatch kind `is_bool_dispatch` accepts a `bool`
+       scrutinee; `Pattern::Bool` patterns are encoded into
+       `int_value=0/1` so the backends switch uniformly.
+       Exhaustiveness checks both `true` and `false` arms
+       are present (or a wildcard). Duplicate-arm detection
+       and unreachable-after-wildcard diagnostics carry
+       over verbatim.
+     - **No backend changes** — the switch lowering already
+       handles any integer-typed scrutinee, and
+       `llvm_type_string(Type::Bool)` is `i1` which is a
+       legal switch scrutinee type. C `switch (bool)` is
+       fine too.
+     - **Format pass** (`format.rs`) prints `true`/`false`
+       and `"text"` patterns.
+     - **SMT encoder** in `src/smt.rs` rejects Bool/Str
+       patterns with a clean "not yet supported" message.
+       Bool exhaustiveness via `if/else` substitution can
+       be added later if there's a real proof need.
+     - **2 lib tests added**:
+       `match_bool_compiles_and_dispatches` (positive case)
+       and `match_bool_nonexhaustive_rejected` (missing-arm
+       diagnostic). The old `match_bool_pattern_rejected`
+       test was rewritten — the rejected case no longer
+       exists.
+     - **New example**
+       [examples/match_bool.intent](examples/match_bool.intent)
+       exercises both explicit `true`/`false` arms and
+       `true`/`_` (wildcard) arms. Wired into the
+       cross-backend e2e test.
+     - **Str patterns** (`"foo" then …`) still surface a
+       gated "not yet supported" diagnostic; the strcmp-
+       dispatch lowering is the natural follow-up closure.
+     783 → 784 lib tests; 47 e2e stable.
+
 109. ~~**`xs[i].field = v` mixed-place assignment**~~ — done
      2026-05-22. The parser was already gated with a workaround
      diagnostic; this closure replaces the gate with real

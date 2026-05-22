@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (783 lib + 47 e2e tests passing):
+Supported today (784 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -1955,7 +1955,7 @@ lands.
 - ✅ Empty `vec()` supported
 - ✅ Vec-of-Vec / Vec-of-Struct end-to-end via `clone_at(ref xs, i)`
 - ✅ `methods on T { fn m(self: T) … }` with field assignment + auto-ref
-- ✅ Match: wildcards + integer patterns + enum-to-int cast
+- ✅ Match: wildcards + integer patterns + bool patterns + enum-to-int cast
 - ✅ `if`-as-expression + `else if` chaining + Match phi fix
 - ✅ Format polish: trailing commas everywhere, struct/methods round-trips
 - ✅ Const decls + type aliases + const overflow check
@@ -1993,8 +1993,9 @@ deliberately deferred as v1 trade-offs.
   end-to-end; deeper paths (`xs[i].a.b = v`) still need a workaround.
 - ⏳ Generic function call sites — parses, gated diagnostic, lands with T1.4.
 - ⏳ Enum payload variants — parses, gated diagnostic, lands with T1.3 phase 2b.
-- ⏳ Match on bool / Str / float scrutinee — patterns accept ints / variants /
-  `_` in v1.
+- ⏳ Match on Str / float scrutinee — `bool` ships today (see
+  [examples/match_bool.intent](examples/match_bool.intent)); Str needs
+  a strcmp-dispatch chain; float comparison is the usual gnarly case.
 (Tuple / struct / enum `==` all ship today — see the
 "Generics & interfaces" section above.)
 

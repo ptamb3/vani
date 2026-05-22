@@ -1335,6 +1335,16 @@ fn encode_expr(
                             )),
                         });
                     }
+                    crate::ast::Pattern::Bool(_) => {
+                        return Err(EncodeError::Unsupported(
+                            "bool match patterns not yet supported in SMT".into(),
+                        ));
+                    }
+                    crate::ast::Pattern::Str(_) => {
+                        return Err(EncodeError::Unsupported(
+                            "string match patterns not yet supported in SMT".into(),
+                        ));
+                    }
                     crate::ast::Pattern::Variant { .. } => {
                         return Err(EncodeError::Unsupported(
                             "enum-variant match patterns not yet supported in SMT".into(),
