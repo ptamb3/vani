@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 790 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 791 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,12 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **SSA bool-print parity done 2026-05-22**: bool prints
+   through both SSA backends now render as "true"/"false"
+   instead of "1"/"0". SSA-C uses `fputs(v ? "true" :
+   "false", stdout)`; SSA-LLVM uses `select i1` over two
+   private string globals + `printf("%s", …)`.
+
    **Empty struct + bare-block scope-stmt done 2026-05-22**:
    `struct E {}` is now accepted for marker/zero-sized
    types; struct-lit lookahead handles `Type {}`. Bare

@@ -5132,6 +5132,29 @@ mod tests {
     }
 
     #[test]
+    fn ssa_bool_print_renders_true_false() {
+        // Closure #117: bool prints render as "true"/"false"
+        // through both SSA backends (previously rendered as
+        // 1/0 through the SSA path).
+        let source = r#"
+            fn main() -> i64 {
+              let t: bool = true;
+              let f: bool = false;
+              print t, f;
+              return 0;
+            }
+        "#;
+        // The compiled C output uses the fputs path with
+        // the literal "true"/"false" strings; assert one of
+        // them appears.
+        let c = compile_to_c(source).expect("bool print should compile");
+        assert!(
+            c.contains("\"true\"") || c.contains("? \"true\" :"),
+            "expected `true` string literal in C output:\n{c}"
+        );
+    }
+
+    #[test]
     fn empty_struct_compiles() {
         // Closure #116: empty structs (`struct E {}`) are now
         // accepted for marker / zero-sized types.

@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #116)
+## ⏳ Resume here (paused 2026-05-22, after closure #117)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -17,7 +17,8 @@ scrutinee, #112 deep field paths for mixed-place assign,
 #113 enum payloads admit OwnedStr (heap-aware Drop), #114
 type-associated functions (`Type.helper(args)`), #115
 unit-return functions, #116 empty struct + bare-block
-scope-stmt. Test totals: 790 lib + 47 e2e passing.
+scope-stmt, #117 SSA bool-print parity. Test totals: 791
+lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -615,6 +616,26 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+117. ~~**SSA bool-print parity**~~ — done 2026-05-22. Bool
+     prints through both SSA backends now render as
+     "true"/"false" (was: "1"/"0"). Closes the last
+     SSA-vs-tree print divergence noted in the README
+     small-items list.
+     - **SSA-C** (`src/ssa_backend_c.rs`): the `Type::Bool`
+       branch of `intent_print_item` now emits
+       `fputs((v) ? "true" : "false", stdout)` instead of
+       `printf("%d", (int)v)`. Mirrors tree-C.
+     - **SSA-LLVM** (`src/ssa_backend_llvm.rs`): synthesizes
+       two private string globals `@.bool_true` /
+       `@.bool_false` (idempotent within a module), then
+       uses `select i1 %v, i8* @.bool_true, i8* @.bool_false`
+       to pick the right pointer and `printf("%s", …)` to
+       print. Mirrors tree-LLVM.
+     - **1 lib test added**:
+       `ssa_bool_print_renders_true_false` asserts the C
+       output contains the `"true"` literal.
+     790 → 791 lib tests; 47 e2e stable.
+
 116. ~~**Empty struct + bare-block scope-stmt**~~ — done
      2026-05-22. Two small README items in one closure.
      - **Empty struct (`struct E {}`)**: checker no longer

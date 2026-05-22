@@ -2470,25 +2470,44 @@ fn emit_instr(
                 let aty = operand_type(arg, value_types).unwrap_or(Type::I64);
                 let (fmt_text, conv_ty, arg_expr) = match &aty {
                     Type::Bool => {
-                        // Print bool as 0/1 here — the SSA path's
-                        // value_types doesn't always track bool
-                        // for literals (a bool true upstream
-                        // arrives here typed as i64 in some
-                        // shapes). The tree backend prints
-                        // "true"/"false" correctly via its own
-                        // string-pointer select path; programs
-                        // that mix structs/enums/match fall back
-                        // to the tree backend anyway. SSA-print
-                        // of bool literals stays as 0/1 for now;
-                        // unifying behavior requires SSA-side
-                        // type-tracking work.
-                        let z = format!("%v_{}.pz", instr.result.0);
+                        // Render bool as "true" / "false" via
+                        // a `select` between two string-literal
+                        // globals. Mirrors the tree-LLVM path
+                        // (closure #117). The globals are
+                        // registered idempotently by
+                        // `STR_GLOBALS`.
+                        STR_GLOBALS.with(|b| {
+                            let mut buf = b.borrow_mut();
+                            if !buf.contains("@.bool_true") {
+                                buf.push_str(
+                                    "@.bool_true = private unnamed_addr constant [5 x i8] c\"true\\00\"\n",
+                                );
+                            }
+                            if !buf.contains("@.bool_false") {
+                                buf.push_str(
+                                    "@.bool_false = private unnamed_addr constant [6 x i8] c\"false\\00\"\n",
+                                );
+                            }
+                        });
+                        let t_ptr = format!("%v_{}.pt", instr.result.0);
+                        let f_ptr = format!("%v_{}.pf", instr.result.0);
+                        let sel = format!("%v_{}.psel", instr.result.0);
                         out.push_str(&format!(
-                            "  {} = zext i1 {} to i32\n",
-                            z,
-                            operand_str(arg)
+                            "  {} = getelementptr [5 x i8], [5 x i8]* @.bool_true, i64 0, i64 0\n",
+                            t_ptr
                         ));
-                        ("%d", "i32".to_string(), z)
+                        out.push_str(&format!(
+                            "  {} = getelementptr [6 x i8], [6 x i8]* @.bool_false, i64 0, i64 0\n",
+                            f_ptr
+                        ));
+                        out.push_str(&format!(
+                            "  {} = select i1 {}, i8* {}, i8* {}\n",
+                            sel,
+                            operand_str(arg),
+                            t_ptr,
+                            f_ptr
+                        ));
+                        ("%s", "i8*".to_string(), sel)
                     }
                     Type::F32 => {
                         let d = format!("%v_{}.pd", instr.result.0);

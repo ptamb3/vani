@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (790 lib + 47 e2e tests passing):
+Supported today (791 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -1995,8 +1995,8 @@ deliberately deferred as v1 trade-offs.
   See [examples/type_associated_fn.intent](examples/type_associated_fn.intent).
 - ⏳ `bool ↔ int` cast — different semantic domains, forces explicit
   `if cond { 1 } else { 0 }` and vice versa. Trade-off, may stay deferred.
-- ⏳ SSA bool-print gap — bool literals via SSA path render as `1`/`0`
-  instead of `true`/`false`. Tree-LLVM path correct.
+- ✅ SSA bool-print parity — bool prints render as `true`/`false`
+  through both SSA backends (closure #117 fixed the `1`/`0` gap).
 - ✅ Bare `{ … }` as scope-stmt — provides an explicit nested scope
   for binding visibility. Desugars to `if true { … }` at parse time.
 - ✅ `xs[i].field = v` mixed-place assign — including deep paths

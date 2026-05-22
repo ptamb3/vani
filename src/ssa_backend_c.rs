@@ -1266,14 +1266,26 @@ fn emit_instr(
                     Operand::Const(_) => None,
                 }
                 .unwrap_or(Type::I64);
+                // Bool prints as the human-readable
+                // `true`/`false` (parallel to tree-C / tree-
+                // LLVM). The branch picks the string via
+                // `?:` and emits via fputs to avoid printf's
+                // varargs overhead.
+                if matches!(aty, Type::Bool) {
+                    writeln!(
+                        out,
+                        "  fputs(({}) ? \"true\" : \"false\", stdout);",
+                        c_operand(arg)
+                    )
+                    .unwrap();
+                    return Ok(());
+                }
                 let fmt = match aty {
-                    Type::Bool => "%d",
                     Type::F32 | Type::F64 => "%g",
                     Type::Str | Type::OwnedStr => "%s",
                     _ => "%lld",
                 };
                 let cast = match aty {
-                    Type::Bool => "(int)",
                     Type::F32 | Type::F64 => "(double)",
                     Type::Str | Type::OwnedStr => "",
                     _ => "(long long)",
