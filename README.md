@@ -1,5 +1,9 @@
 # vāṇī (वाणी) — VANI
 
+<p align="center">
+  <img src="vani_logo.png" alt="vāṇī logo" width="240">
+</p>
+
 **Verbose Alternative Natural Interface — code like you speak.**
 
 Pronounced **vaa-NEE** (Sanskrit *vāṇī* — long-a, retroflex-n, long-i;
