@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (793 lib + 47 e2e tests passing):
+Supported today (794 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -1979,8 +1979,8 @@ lands.
 These either land naturally with a queued multi-session item, or are
 deliberately deferred as v1 trade-offs.
 
-- ⏳ `const N` as array length `[T; N]` — parser requires integer literal
-  (lands cheaply with block expressions if we want to allow const-eval).
+- ✅ `const N` as array length `[T; N]` — works for previously-declared
+  consts with an integer-literal initializer.
 - ⏳ Const initializer with arithmetic (`const B: i64 = A + 1;`) — literal-only
   in v1; needs a const-eval pass (would land with block expressions).
 - ⏳ Array types in fn return position — SSA layer lacks by-value-array return;

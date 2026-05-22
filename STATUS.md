@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 793 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 794 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,15 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **`const N` as array length done 2026-05-22**: users
+   can now declare `const SIZE: i64 = 8;` and reference
+   SIZE in array types (`[i64; SIZE]`) across let
+   annotations, fn params, struct fields, and array
+   literals. The parser stashes integer-literal const
+   values during `parse_const_decl` and resolves them in
+   the array-length slot at parse time. Forward references
+   and non-literal const initializers still error cleanly.
+
    **`[T; N]` enum payload done 2026-05-22**: arrays of
    Copy elements are now valid as enum payloads. No Drop
    needed (stack lifetime). C-side uses an inline `T name[N]`

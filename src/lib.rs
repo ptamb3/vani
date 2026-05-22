@@ -2984,10 +2984,10 @@ mod tests {
     }
 
     #[test]
-    fn const_cannot_be_array_length() {
-        // `let xs: [i64; N]` where N is a const — currently
-        // rejected (parser requires integer literal for
-        // array length). v1 limitation worth pinning.
+    fn const_as_array_length_compiles() {
+        // Closure #120: `let xs: [i64; N]` where N is a
+        // previously-declared const with an integer-literal
+        // initializer now compiles.
         let source = r#"
             const N: i64 = 3;
             fn main() -> i64 {
@@ -2995,13 +2995,26 @@ mod tests {
               return xs[2];
             }
         "#;
+        compile(source).expect("const-N as array length should compile");
+    }
+
+    #[test]
+    fn unknown_const_in_array_length_rejected() {
+        // Forward / undeclared references still error.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: [i64; UNDECLARED] = [1, 2, 3];
+              return xs[0];
+            }
+        "#;
         let errors = compile(source)
-            .expect_err("const as array length is rejected");
+            .expect_err("unknown const reference should fail");
         assert!(
             errors
                 .iter()
-                .any(|e| e.message.contains("integer literal for array length")),
-            "expected array-length-literal diagnostic, got: {:?}",
+                .any(|e| e.message.contains("'UNDECLARED'")
+                    && e.message.contains("must be a literal integer")),
+            "expected unknown-const diagnostic, got: {:?}",
             errors
         );
     }

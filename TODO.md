@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #119)
+## ⏳ Resume here (paused 2026-05-22, after closure #120)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -18,8 +18,8 @@ scrutinee, #112 deep field paths for mixed-place assign,
 type-associated functions (`Type.helper(args)`), #115
 unit-return functions, #116 empty struct + bare-block
 scope-stmt, #117 SSA bool-print parity, #118 Vec<T> enum
-payload, #119 [T;N] enum payload. Test totals: 793 lib +
-47 e2e passing.
+payload, #119 [T;N] enum payload, #120 const-N as array
+length. Test totals: 794 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -617,6 +617,30 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+120. ~~**`const N` as `[T; N]` array length**~~ — done
+     2026-05-22. Closes a long-standing README small-item.
+     Users can declare `const SIZE: i64 = 8;` and use it in
+     array types: `let xs: [i64; SIZE] = …`.
+     - **Parser** in [src/parser.rs](src/parser.rs) gained
+       a `const_int_values: HashMap<String, i128>` map.
+       Populated by `parse_const_decl` when the initializer
+       is an integer literal (including the `-N` form).
+       `parse_type` consults the map when the array-length
+       slot has an identifier; falls back to a clean
+       "must be a literal integer or a previously-declared
+       const" error for unknown / forward references /
+       non-literal const initializers.
+     - **Works across all type-position contexts**: `let`
+       annotations, fn params, struct fields, and array
+       literals are all parsed via the same `parse_type`
+       so they pick up const-N uniformly.
+     - **2 lib tests rewritten / added**: the legacy
+       `const_cannot_be_array_length` became
+       `const_as_array_length_compiles` (positive case);
+       a new `unknown_const_in_array_length_rejected`
+       pins the diagnostic for undeclared identifiers.
+     793 → 794 lib tests; 47 e2e stable.
+
 119. ~~**`[T; N]` enum payload**~~ — done 2026-05-22.
      Closes another follow-up from #113. Arrays of Copy
      elements as enum payloads need no Drop (stack

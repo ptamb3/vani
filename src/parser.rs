@@ -22,6 +22,15 @@ struct Parser {
     /// bare uppercase identifier resolves to `Type::Param`
     /// instead of `Type::Struct`. Refines T1.4.
     current_type_params: std::collections::HashSet<String>,
+    /// Const declarations seen so far in the source, mapped
+    /// to their literal i128 value. Populated by
+    /// `parse_const_decl` when the initializer is an integer
+    /// literal (including negative literals via the `Minus`
+    /// prefix). Consulted by `parse_type` when an identifier
+    /// appears in an array-length slot (`[T; SIZE]`). Forward
+    /// references and non-literal const initializers aren't
+    /// supported here. T0.0 follow-up (closure #120).
+    const_int_values: std::collections::HashMap<String, i128>,
 }
 
 impl Parser {
@@ -31,6 +40,7 @@ impl Parser {
             pos: 0,
             errors: Vec::new(),
             current_type_params: std::collections::HashSet::new(),
+            const_int_values: std::collections::HashMap::new(),
         }
     }
 
@@ -205,6 +215,13 @@ impl Parser {
         self.expect_keyword("'='", |k| matches!(k, TokenKind::Equal))?;
         let value = self.parse_expr()?;
         let semi = self.expect_keyword("';'", |k| matches!(k, TokenKind::Semicolon))?;
+        // Stash the integer-valued initializer so `parse_type`
+        // can resolve a later `[T; NAME]` length reference.
+        // Only literal forms (`42`, `-1`) qualify. T0.0
+        // follow-up (closure #120).
+        if let Some(v) = expr_as_int_literal(&value) {
+            self.const_int_values.insert(name.clone(), v);
+        }
         Ok(ConstDecl {
             name,
             name_span,
@@ -779,11 +796,31 @@ impl Parser {
             let element = self.parse_type()?;
             self.expect_keyword("';'", |kind| matches!(kind, TokenKind::Semicolon))?;
             let length_token = self.bump();
-            let TokenKind::Int(raw_length) = length_token.kind else {
-                return Err(Diagnostic::new(
-                    length_token.span,
-                    "expected integer literal for array length",
-                ));
+            // Accept either an integer literal or an
+            // identifier naming a previously-declared
+            // integer-literal const. T0.0 follow-up (closure
+            // #120).
+            let raw_length = match &length_token.kind {
+                TokenKind::Int(v) => *v,
+                TokenKind::Ident(name) => match self.const_int_values.get(name) {
+                    Some(v) => *v,
+                    None => {
+                        return Err(Diagnostic::new(
+                            length_token.span,
+                            format!(
+                                "array length '{}' must be a literal integer or a \
+                                 previously-declared `const NAME: i64 = <int>;`",
+                                name
+                            ),
+                        ));
+                    }
+                },
+                _ => {
+                    return Err(Diagnostic::new(
+                        length_token.span,
+                        "expected integer literal or const identifier for array length",
+                    ));
+                }
             };
             if raw_length < 0 {
                 return Err(Diagnostic::new(
@@ -2512,5 +2549,23 @@ fn ident_text(token: Token) -> String {
     match token.kind {
         TokenKind::Ident(name) => name,
         _ => unreachable!("expected identifier"),
+    }
+}
+
+/// Recognize integer-literal initializers (including the
+/// `-N` form from a `Minus` unary applied to an `Int`). Used
+/// by `parse_const_decl` to stash literal int values for the
+/// `[T; SIZE]` array-length resolver. T0.0 follow-up.
+fn expr_as_int_literal(expr: &Expr) -> Option<i128> {
+    match &expr.kind {
+        ExprKind::Int(v) => Some(*v),
+        ExprKind::Unary { op: UnaryOp::Neg, expr: inner } => {
+            if let ExprKind::Int(v) = &inner.kind {
+                v.checked_neg()
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
