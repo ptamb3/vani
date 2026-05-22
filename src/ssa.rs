@@ -1791,6 +1791,25 @@ fn lower_expr_to_operand(
                         | crate::ast::BinaryOp::Ge
                 );
             if is_str_cmp {
+                // Fresh-OwnedStr operands (Call / Binary `+`
+                // returning OwnedStr) own a heap allocation
+                // with no other binding. `intent_str_cmp` is
+                // just `strcmp`; it doesn't free anything.
+                // Track which operands need a Drop after the
+                // comparison and emit it. Closure #138 mirrors
+                // closure #135's print whitelist.
+                let l_needs_drop = matches!(left.ty, Type::OwnedStr)
+                    && matches!(
+                        left.kind,
+                        TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
+                    );
+                let r_needs_drop = matches!(right.ty, Type::OwnedStr)
+                    && matches!(
+                        right.kind,
+                        TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
+                    );
+                let l_for_drop = l.clone();
+                let r_for_drop = r.clone();
                 let cmp = b.emit(
                     Type::I64,
                     expr.span,
@@ -1799,6 +1818,28 @@ fn lower_expr_to_operand(
                         args: vec![l, r],
                     },
                 );
+                if l_needs_drop {
+                    b.emit(
+                        Type::I64,
+                        expr.span,
+                        InstrKind::Drop {
+                            source: l_for_drop,
+                            name: "_".to_string(),
+                            ty: Type::OwnedStr,
+                        },
+                    );
+                }
+                if r_needs_drop {
+                    b.emit(
+                        Type::I64,
+                        expr.span,
+                        InstrKind::Drop {
+                            source: r_for_drop,
+                            name: "_".to_string(),
+                            ty: Type::OwnedStr,
+                        },
+                    );
+                }
                 let v = b.emit(
                     expr.ty.clone(),
                     expr.span,

@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 823 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 825 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,23 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`strcmp` of fresh OwnedStr drops heap done 2026-05-22**:
+   `make_owned_str() == "literal"` (and `!=`, `<`, `<=`,
+   `>`, `>=`) was silently leaking — `intent_str_cmp` /
+   `strcmp` doesn't consume its arguments, so a fresh
+   OwnedStr operand (Call / Binary `+`) had no other owner
+   after the comparison. Fixed in both the SSA lowering of
+   string comparison (emits a `Drop` instruction after the
+   strcmp call for each fresh operand) and the tree-LLVM
+   Binary-strcmp branch (emits `call void @free(i8* %v)`
+   after the compare). Var / FieldAccess operands skip
+   the drop — same whitelist as closure #135's print
+   handling and closure #137's match scrutinee, so the
+   outer binding's scope-exit Drop owns the heap and
+   nothing double-frees. Closure #138. Verified leak-free
+   under `-fsanitize=address,leak`. See updated
+   [examples/strings_concat.intent](examples/strings_concat.intent).
 
    **`match make_owned_str() { … }` drops temp scrutinee done 2026-05-22**:
    `match` on a fresh OwnedStr scrutinee (Call or `+`

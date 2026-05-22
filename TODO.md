@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #137)
+## ⏳ Resume here (paused 2026-05-22, after closure #138)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -94,8 +94,14 @@ the synthetic Block to wrap the if-chain through a
 the result var. Tree-C / tree-LLVM Block codegen also
 extended to emit Drop stmts. Var / FieldAccess
 scrutinees stay unwrapped (would double-free with the
-outer binding's existing Drop). Test totals: 823 lib +
-47 e2e passing.
+outer binding's existing Drop). #138 `strcmp` of fresh
+OwnedStr drops heap: `make_owned_str() == "literal"`
+(and other comparison ops) was leaking — strcmp doesn't
+consume its arguments, so a fresh Call / Binary `+`
+OwnedStr operand had no other owner. Fixed both the
+SSA lowering and the tree-LLVM strcmp branch. Var /
+FieldAccess operands skip the drop (existing
+whitelist). Test totals: 825 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

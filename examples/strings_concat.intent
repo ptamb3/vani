@@ -64,5 +64,14 @@ fn main() -> i64 {
     "third" + "-name"
   );
   print "Vec<OwnedStr> built OK";
+
+  // Closure #138: `make() == "literal"` and similar
+  // strcmp shapes now free a fresh OwnedStr operand
+  // after the comparison. Was leaking — strcmp doesn't
+  // consume args, and Call / Binary `+` produce a heap
+  // with no other owner.
+  if greet("ed") == "Hello, ed" {
+    print "strcmp branch hit";
+  }
   return 0;
 }

@@ -1977,6 +1977,29 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 "  {} = call i32 @strcmp(i8* {}, i8* {})\n",
                 cmp, l, r
             ));
+            // Free fresh-OwnedStr operands after the
+            // comparison — strcmp doesn't consume its
+            // arguments and `Call` / `Binary +` produce a
+            // heap allocation with no other owner. Var /
+            // FieldAccess operands skip the free so the
+            // outer binding's scope-exit Drop still owns
+            // the heap. Closure #138.
+            if matches!(left.ty, Type::OwnedStr)
+                && matches!(
+                    left.kind,
+                    TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
+                )
+            {
+                out.push_str(&format!("  call void @free(i8* {})\n", l));
+            }
+            if matches!(right.ty, Type::OwnedStr)
+                && matches!(
+                    right.kind,
+                    TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
+                )
+            {
+                out.push_str(&format!("  call void @free(i8* {})\n", r));
+            }
             let dest = ctx.fresh_tmp();
             let pred = match op {
                 BinaryOp::Eq => "eq",
