@@ -1911,15 +1911,20 @@ fn desugar_try_let_in_program(
         if !matches!(&function.body[last_idx], Stmt::Return { .. }) {
             continue;
         }
-        // Intermediate stmts must all be `let`.
+        // Intermediate stmts must be either `let` (passed
+        // through into the Some-arm block's stmts) or
+        // `print` (also accepted by block expressions since
+        // closure #129). Anything else surfaces a clean
+        // diagnostic — control flow and reassignment still
+        // need surrounding-stmt handling we don't model.
         let intermediate_ok = function.body[1..last_idx]
             .iter()
-            .all(|s| matches!(s, Stmt::Let { .. }));
+            .all(|s| matches!(s, Stmt::Let { .. } | Stmt::Print { .. }));
         if !intermediate_ok {
             diagnostics.push(Diagnostic::new(
                 function.body[0].span(),
-                "`try` desugar in v1 requires only `let` statements between \
-                 the `try`-let and the final `return`; control flow / \
+                "`try` desugar in v1 requires only `let` and `print` statements \
+                 between the `try`-let and the final `return`; control flow / \
                  assignments between aren't supported yet (T2.6 phase 2 follow-up)",
             ));
             continue;

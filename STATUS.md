@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 809 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 811 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,22 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`try` desugar admits intermediate `print` done 2026-05-22**:
+   the `let v = try opt; …; return X;` desugar's
+   intermediate-stmt check was relaxed from Let-only to
+   Let + Print, riding on closure #129's extension of
+   block expressions. Useful for tracing the happy path
+   while the desugar still short-circuits the None case.
+   This closure also fixed a pre-existing C-backend codegen
+   bug surfaced by trying to emit the OFFICIAL example
+   end-to-end: match expressions with a payloaded-enum
+   result type were using `c_element_storage` (returns the
+   bare `int32_t` tag for any enum) instead of `c_type_name`
+   (returns `Enum_<Name>` for payloaded enums); the bug
+   never showed up in unit tests because they stopped at
+   `compile()` and didn't `emit`+`cc`. Closure #130. See
+   updated [examples/try_keyword.intent](examples/try_keyword.intent).
 
    **Block expressions admit print stmts done 2026-05-22**:
    `let r = { let a = …; print "log", a; tail }` now

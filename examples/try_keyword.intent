@@ -33,6 +33,19 @@ fn pipeline(o: Opt) -> Opt {
   return Opt.Some(plus_hundred);
 }
 
+// Closure #130: `print` stmts between the try-let and the
+// return are also supported (they flow through to the
+// Some-arm's block expression, which #129 taught to accept
+// print stmts). Useful for tracing the happy path while
+// the desugar still short-circuits the None case.
+fn traced(o: Opt) -> Opt {
+  let v: i64 = try o;
+  print "  traced(): got v=", v;
+  let next: i64 = v + 7;
+  print "  traced(): computed next=", next;
+  return Opt.Some(next);
+}
+
 fn unwrap_or(o: Opt, def: i64) -> i64 {
   return match o {
     Opt.Some(v) then v,
@@ -61,5 +74,12 @@ fn main() -> i64 {
   print "doubled(None) defaulted to", unwrap_or(b, 99);
   print "pipeline(Some(5)) =", unwrap_or(c, 0);
   print "pipeline(None) defaulted to", unwrap_or(d, 99);
+
+  let e: Opt = traced(Opt.Some(5));
+  assert unwrap_or(e, 0) == 12;
+  let f: Opt = traced(Opt.None);
+  assert unwrap_or(f, 99) == 99;
+  print "traced(Some(5)) =", unwrap_or(e, 0);
+  print "traced(None) defaulted to", unwrap_or(f, 99);
   return 0;
 }

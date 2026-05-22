@@ -2139,6 +2139,73 @@ mod tests {
     }
 
     #[test]
+    fn try_keyword_desugar_admits_intermediate_print_stmts() {
+        // Closure #130 extends the try desugar to admit
+        // `print` stmts between the try-let and the final
+        // return (Let was the only intermediate shape before).
+        // The print flows through to the Some-arm's block
+        // expression, which #129 already taught to accept
+        // print stmts.
+        let source = r#"
+            enum Opt { Some(i64), None }
+            fn doit(o: Opt) -> Opt {
+              let v: i64 = try o;
+              print "doit got v=", v;
+              return Opt.Some(v + 1);
+            }
+            fn main() -> i64 {
+              let r: Opt = doit(Opt.Some(42));
+              let s: Opt = doit(Opt.None);
+              return 0;
+            }
+        "#;
+        compile(source).expect("try with intermediate print should desugar");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        // The print's `fputs` must appear inside the
+        // desugared Some-arm's block-expression body,
+        // i.e. somewhere between `case 0:` and the `break;`
+        // that closes that arm.
+        let some_arm = c.find("case 0:").expect("Some arm");
+        let print_site = c.find("fputs(\"doit got v=\"")
+            .expect("intermediate print emitted");
+        assert!(
+            print_site > some_arm,
+            "print should be emitted inside the Some-arm block:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn try_keyword_desugar_rejects_intermediate_assign() {
+        // Closure #130: the relaxation admits Let + Print
+        // only. Reassignment / control flow still falls
+        // through to the Phase 1 gate (control flow between
+        // try and return needs surrounding-stmt handling we
+        // don't model in v1).
+        let source = r#"
+            enum Opt { Some(i64), None }
+            fn doit(o: Opt) -> Opt {
+              let v: i64 = try o;
+              let mut w: i64 = 0;
+              w = v + 1;
+              return Opt.Some(w);
+            }
+            fn main() -> i64 { return 0; }
+        "#;
+        let errors = compile(source).expect_err(
+            "try with intermediate reassign should be rejected",
+        );
+        assert!(
+            errors.iter().any(|e| {
+                e.message.contains("only `let` and `print`")
+                    || e.message.contains("`try EXPR` is reserved")
+            }),
+            "expected relax-diagnostic or fallback gate, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
     fn try_keyword_in_unsupported_shape_surfaces_phase_1_gate() {
         // The Phase 2 desugar only fires for the restricted
         // `[Let(try), Let*, Return]` shape. A `try` outside

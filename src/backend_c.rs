@@ -2489,7 +2489,14 @@ fn emit_expr(expr: &TypedExpr) -> String {
             // the default aborts so out-of-spec values trip
             // loudly. With a wildcard arm, the default
             // branch *is* its body. T1.3 (wildcard).
-            let result_ty = c_element_storage(&expr.ty);
+            // Use `c_type_name` so payloaded-enum result
+            // types render as `Enum_<Name>` rather than the
+            // bare `int32_t` tag (the latter would mismatch
+            // the arm bodies' struct literals when the match
+            // returns a payloaded enum). Closure #130
+            // (`try` follow-up + Match-on-Enum-result C
+            // codegen fix).
+            let result_ty = c_type_name(&expr.ty);
             // T1.3 phase 2b: detect whether scrutinee is a
             // payloaded enum so dispatch can use `.tag` and
             // payload bindings can be extracted via `.payload`.

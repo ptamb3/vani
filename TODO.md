@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #129)
+## ⏳ Resume here (paused 2026-05-22, after closure #130)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -43,8 +43,16 @@ expressions admit `print` stmts in the Let-prefix:
 `{ let a = …; print "log", a; tail }` is now legal so
 intermediate values can be logged inside block-expression
 initializers (parser, checker, tree-C, tree-LLVM all
-extended; SSA Block routing unchanged). Test totals:
-809 lib + 47 e2e passing.
+extended; SSA Block routing unchanged). #130 `try` desugar
+admits intermediate `print` stmts and fixes a pre-existing
+C codegen bug for payloaded-enum match results: the
+`let v = try opt; …; return X;` desugar's intermediate
+stmts can now include `print` (was Let-only). The C match
+emitter was also using `c_element_storage` for the match
+result type, which collapsed every enum to `int32_t` and
+mismatched the arm bodies' struct literals; switched to
+`c_type_name` so payloaded enums render as `Enum_<Name>`.
+Test totals: 811 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
