@@ -543,8 +543,20 @@ impl Parser {
             }
         }
         self.expect_keyword("')'", |kind| matches!(kind, TokenKind::RParen))?;
-        self.expect_keyword("'->'", |kind| matches!(kind, TokenKind::Arrow))?;
-        let return_type = self.parse_type()?;
+        // Unit-return shorthand: `fn name() { body }` (no
+        // `->` arrow) is sugar for `fn name() -> i64 { body
+        // return 0; }`. The parser auto-fills the i64 return
+        // type and the body-rewrite pass appends a synthetic
+        // `return 0;` if no explicit return is present. The
+        // caller can ignore the i64 (use bare `f();` or
+        // `let _ = f();`). T1.0 follow-up (closure #115).
+        let unit_return = !self.check(|k| matches!(k, TokenKind::Arrow));
+        let return_type = if unit_return {
+            Type::I64
+        } else {
+            self.expect_keyword("'->'", |kind| matches!(kind, TokenKind::Arrow))?;
+            self.parse_type()?
+        };
 
         // Optional `where T is Iface, U is Hash, …` bounds.
         // T1.5 phase 1: syntax accepted; checker emits a WIP
@@ -623,6 +635,23 @@ impl Parser {
             }
         }
         let close = self.expect_keyword("'}'", |kind| matches!(kind, TokenKind::RBrace))?;
+
+        // Unit-return shorthand: append a synthetic `return 0;`
+        // if the body didn't end with one. Idempotent — if
+        // the user wrote `return 0;` themselves it would
+        // already be there.
+        if unit_return {
+            let last_is_return = matches!(body.last(), Some(Stmt::Return { .. }));
+            if !last_is_return {
+                body.push(Stmt::Return {
+                    expr: Expr {
+                        kind: ExprKind::Int(0),
+                        span: close.span,
+                    },
+                    span: close.span,
+                });
+            }
+        }
 
         self.current_type_params = saved_tp;
         Ok(Function {

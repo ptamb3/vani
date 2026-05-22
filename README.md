@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (788 lib + 47 e2e tests passing):
+Supported today (790 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -1985,8 +1985,10 @@ deliberately deferred as v1 trade-offs.
 - ⏳ Nested arrays `[[T; N]; M]` and `[Vec<T>; N]` — SSA path doesn't lower
   by-value element loads of these shapes yet.
 - ⏳ Empty struct `struct E {}` — parser requires ≥1 field.
-- ⏳ Unit-return functions (`fn f() { … }` without `-> Type`) — every fn
-  needs a return type in v1.
+- ✅ Unit-return functions — `fn f() { … }` without `-> Type` is sugar
+  for `-> i64` with an implicit `return 0;` appended. Callers invoke as
+  a bare statement (`f();`) or via `let _ = f();`. See
+  [examples/unit_return.intent](examples/unit_return.intent).
 - ✅ Type-associated functions `Type.helper(args)` — declare with
   `methods on T { fn helper(args) -> R { … } }` (no `self`); call as
   `T.helper(args)`. Constructors and other type-namespaced helpers.

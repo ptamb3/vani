@@ -3457,6 +3457,41 @@ mod tests {
     }
 
     #[test]
+    fn unit_return_function_compiles_and_runs() {
+        // Closure #115: `fn name() { … }` without `-> Type`
+        // parses as sugar for `-> i64` with an implicit
+        // `return 0;` appended.
+        let source = r#"
+            fn greet() {
+              print "hello";
+            }
+            fn main() -> i64 {
+              greet();
+              return 0;
+            }
+        "#;
+        compile(source).expect("unit-return function should compile");
+    }
+
+    #[test]
+    fn unit_return_function_already_has_return() {
+        // If the body already ends with a `return`, no
+        // synthetic `return 0;` is appended (idempotent).
+        let source = r#"
+            fn early_exit(x: i64) {
+              if x < 0 { return 0; }
+              print "non-negative:", x;
+            }
+            fn main() -> i64 {
+              early_exit(-1);
+              early_exit(5);
+              return 0;
+            }
+        "#;
+        compile(source).expect("unit-return with explicit return should compile");
+    }
+
+    #[test]
     fn type_associated_function_compiles_and_dispatches() {
         // `methods on B { fn make() -> B { … } }` (no self)
         // is now valid — it becomes a type-associated

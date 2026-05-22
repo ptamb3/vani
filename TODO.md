@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #114)
+## ⏳ Resume here (paused 2026-05-22, after closure #115)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -15,8 +15,9 @@ user-Eq desugar for struct `==`, #105 partial-move tracking,
 assignment, #110 match on bool scrutinee, #111 match on Str
 scrutinee, #112 deep field paths for mixed-place assign,
 #113 enum payloads admit OwnedStr (heap-aware Drop), #114
-type-associated functions (`Type.helper(args)`). Test
-totals: 788 lib + 47 e2e passing.
+type-associated functions (`Type.helper(args)`), #115
+unit-return functions. Test totals: 790 lib + 47 e2e
+passing.
 
 ### Recommended next (pick one)
 
@@ -614,6 +615,33 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+115. ~~**Unit-return functions: `fn f() { … }`**~~ — done
+     2026-05-22. Procedures (side-effect-only functions)
+     no longer need `-> i64` + `return 0;` boilerplate.
+     Closes a README small-item.
+     - **Parser** in [src/parser.rs](src/parser.rs):
+       `parse_function` detects the missing `->` arrow
+       after the closing `)` and falls back to
+       `return_type = Type::I64`. After parsing the body,
+       it appends a synthetic `Stmt::Return { Int(0) }`
+       if the last stmt isn't already a Return — idempotent.
+     - **No IR / checker / backend changes**: the
+       resulting Function carries `return_type: I64` and a
+       body ending with `return 0;`, indistinguishable
+       from a user-written `fn f() -> i64 { …; return 0;
+       }`. The user-facing surface is the sugar.
+     - **2 lib tests added**:
+       `unit_return_function_compiles_and_runs` (positive
+       basic case) and
+       `unit_return_function_already_has_return` (early-
+       exit + idempotent synthesis).
+     - **New example**
+       [examples/unit_return.intent](examples/unit_return.intent)
+       demonstrates a few procedure shapes (`greet()`,
+       `announce(label, n)`, `run_demo()`). Wired into
+       the cross-backend e2e test.
+     788 → 790 lib tests; 47 e2e stable.
+
 114. ~~**Type-associated functions `Type.helper(args)`**~~ —
      done 2026-05-22. Closes the README small-item "no
      syntax for `Type.helper()`". Constructors and other

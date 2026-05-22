@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 788 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 790 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,13 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Unit-return functions done 2026-05-22**: `fn f() { … }`
+   without `-> Type` is parser sugar for `-> i64` with an
+   implicit `return 0;` appended. Callers invoke as bare
+   statement or via `let _ = f();`. Idempotent synthesis —
+   if the user already ends with `return`, no extra is added.
+   See [examples/unit_return.intent](examples/unit_return.intent).
+
    **Type-associated functions done 2026-05-22**:
    `methods on T { fn helper(args) -> R { … } }` (without
    `self`) declares a type-associated function, callable

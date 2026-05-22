@@ -1,0 +1,31 @@
+intent "Unit-return functions: `fn name() { … }` without `-> Type`";
+
+// Functions that exist only for their side effects (printing,
+// asserting, calling other procedures) can omit the return
+// type. The parser treats this as sugar for `-> i64` with an
+// implicit `return 0;` appended to the body. Callers can
+// invoke the function as a bare statement (`f();`) or with
+// the discarded-let form (`let _ = f();`).
+//
+// Functions that need to return a value still use the
+// explicit `-> Type` form.
+
+fn announce(label: Str, n: i64) {
+  print label, ":", n;
+}
+
+fn separator() {
+  print "----------";
+}
+
+fn run_demo() {
+  separator();
+  announce("answer", 42);
+  announce("magic", 17);
+  separator();
+}
+
+fn main() -> i64 {
+  run_demo();
+  return 0;
+}
