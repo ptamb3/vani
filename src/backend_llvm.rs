@@ -982,7 +982,10 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 }
                 if let Some((_, addr)) = ctx.locals.get(name).cloned() {
                     let s_ty = format!("%Struct_{}", struct_name);
-                    for (idx, (_, field_ty)) in fields.iter().enumerate() {
+                    // Fields are freed in reverse declaration
+                    // order so destruction mirrors construction
+                    // (Rust's RAII convention). T1.2 phase 2b.
+                    for (idx, (_, field_ty)) in fields.iter().enumerate().rev() {
                         match field_ty {
                             Type::OwnedStr => {
                                 let fp = ctx.fresh_tmp();
@@ -3085,6 +3088,28 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ),
             }
         }
+        TypedExprKind::RefField { object, field_index, .. }
+        | TypedExprKind::RefMutField { object, field_index, .. } => {
+            // `ref t.x` / `mut ref t.x` — GEP into the struct's
+            // alloca to get a pointer to the field, then return
+            // that pointer as the SSA value of the borrow.
+            // T1.2 phase 2b follow-up.
+            let (obj_ty, obj_addr) = ctx
+                .locals
+                .get(object)
+                .cloned()
+                .unwrap_or_else(|| unreachable!(
+                    "checker: field-borrow on undeclared binding '{}'",
+                    object
+                ));
+            let struct_ty_str = llvm_type_string(&obj_ty);
+            let p = ctx.fresh_tmp();
+            out.push_str(&format!(
+                "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
+                p, struct_ty_str, struct_ty_str, obj_addr, field_index
+            ));
+            p
+        }
         TypedExprKind::FnRef { name, .. } => {
             // Taking the address of a top-level function: LLVM
             // exposes it as `@function_name`. The type is the
@@ -4350,6 +4375,8 @@ fn collect_strings_in_expr<F>(
         | TypedExprKind::Var(_)
         | TypedExprKind::Ref { .. }
         | TypedExprKind::RefMut { .. }
+        | TypedExprKind::RefField { .. }
+        | TypedExprKind::RefMutField { .. }
         | TypedExprKind::FnRef { .. }
         | TypedExprKind::EnumVariant { .. } => {}
     }
@@ -4609,6 +4636,11 @@ pub(crate) fn walk_expr(
         TypedExprKind::Len { array, .. } => walk_expr(array, declared, order, seen),
         TypedExprKind::Ref { name } | TypedExprKind::RefMut { name } => {
             note_capture(name, declared, order, seen);
+        }
+        TypedExprKind::RefField { object, .. } | TypedExprKind::RefMutField { object, .. } => {
+            // Capture the struct binding; the GEP into its
+            // field lives inside the outlined body.
+            note_capture(object, declared, order, seen);
         }
         TypedExprKind::FnRef { .. } => {
             // Function references aren't captured locals;

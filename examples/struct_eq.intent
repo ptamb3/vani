@@ -1,0 +1,36 @@
+intent "User-defined `==` via `implement Eq for T`";
+
+// Aggregate types (struct / tuple / enum) have no built-in
+// `==`; the user opts in by declaring an `Eq` impl with the
+// shape `fn eq(self: T, other: T) -> bool`. The checker
+// rewrites `a == b` to `<T>_eq(a, b)` and `a != b` to
+// `!<T>_eq(a, b)` whenever both sides are the same struct
+// type. The hoisted `<T>_eq` function is the same statically-
+// dispatched method as `recv.eq(...)`.
+//
+// v1 limits: struct types only (tuples / enums TBD); both
+// sides must be the same nominal struct.
+
+interface Eq {
+  fn eq(self: Point, other: Point) -> bool;
+}
+
+struct Point { x: i64, y: i64 }
+
+implement Eq for Point {
+  fn eq(self: Point, other: Point) -> bool {
+    if self.x != other.x { return false; }
+    if self.y != other.y { return false; }
+    return true;
+  }
+}
+
+fn main() -> i64 {
+  let a: Point = Point { x: 1, y: 2 };
+  let b: Point = Point { x: 1, y: 2 };
+  let c: Point = Point { x: 3, y: 4 };
+  assert a == b;
+  assert a != c;
+  print "Point equality works";
+  return 0;
+}

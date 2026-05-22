@@ -1553,8 +1553,11 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 // fields go through the per-element-type
                 // `intent_vec_<T>__free` helper. Stack-shaped
                 // affine fields ([T;N], Task, Atomic) need no
-                // runtime drop. T1.2 phase 2b.
-                for (field_name, field_ty) in fields {
+                // runtime drop. Fields are freed in reverse
+                // declaration order so destruction mirrors the
+                // construction order (Rust's RAII convention).
+                // T1.2 phase 2b.
+                for (field_name, field_ty) in fields.into_iter().rev() {
                     match field_ty {
                         Type::OwnedStr => {
                             out.push_str("  free((void*)");
@@ -2093,6 +2096,21 @@ fn emit_expr(expr: &TypedExpr) -> String {
             match &**inner_ty {
                 Type::Array { .. } => local_name(name),
                 _ => format!("&{}", local_name(name)),
+            }
+        }
+        TypedExprKind::RefField { object, field, .. }
+        | TypedExprKind::RefMutField { object, field, .. } => {
+            // `ref t.x` / `mut ref t.x` — take the address of
+            // the struct field. C array-decay applies the same
+            // way as for plain `Ref { name }`: passing
+            // `v_t.field` works without `&` for array fields.
+            let inner_ty = match &expr.ty {
+                Type::Ref(inner) | Type::RefMut(inner) => inner,
+                _ => unreachable!("RefField/RefMutField must have ref type"),
+            };
+            match &**inner_ty {
+                Type::Array { .. } => format!("{}.{}", local_name(object), field),
+                _ => format!("&{}.{}", local_name(object), field),
             }
         }
         TypedExprKind::FnRef { name, .. } => {

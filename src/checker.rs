@@ -6239,10 +6239,87 @@ fn check_ref_mut(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CheckedExpr {
+    // `mut ref t.field` — single-level field-borrow. The base
+    // binding must be an owned struct and have a field of the
+    // given name. T1.2 phase 2b follow-up.
+    if let ExprKind::FieldAccess { object, field, .. } = &inner.kind {
+        if let ExprKind::Var(obj_name) = &object.kind {
+            let Some(info) = env.lookup(obj_name) else {
+                diagnostics.push(Diagnostic::new(
+                    object.span,
+                    format!("unknown variable '{}'", obj_name),
+                ));
+                return CheckedExpr::fallback_integer(span);
+            };
+            let Type::Struct(struct_name) = info.ty.deref() else {
+                diagnostics.push(Diagnostic::new(
+                    object.span,
+                    format!(
+                        "field-borrow base '{}' must be a struct binding (got {})",
+                        obj_name, info.ty
+                    ),
+                ));
+                return CheckedExpr::fallback_integer(span);
+            };
+            let Some(struct_info) = env.lookup_struct(struct_name) else {
+                diagnostics.push(Diagnostic::new(
+                    object.span,
+                    format!("unknown struct type '{}'", struct_name),
+                ));
+                return CheckedExpr::fallback_integer(span);
+            };
+            let Some((field_index, (_, field_ty))) = struct_info
+                .fields
+                .iter()
+                .enumerate()
+                .find(|(_, (n, _))| n == field)
+            else {
+                diagnostics.push(Diagnostic::new(
+                    inner.span,
+                    format!(
+                        "struct '{}' has no field named '{}'",
+                        struct_name, field
+                    ),
+                ));
+                return CheckedExpr::fallback_integer(span);
+            };
+            if info.moved.is_some() {
+                diagnostics.push(Diagnostic::new(
+                    inner.span,
+                    format!(
+                        "cannot mutably borrow field of '{}' after it was moved",
+                        obj_name
+                    ),
+                ));
+            }
+            if info.ty.is_ref() {
+                diagnostics.push(Diagnostic::new(
+                    inner.span,
+                    format!(
+                        "cannot take 'mut ref' on a field of '{}' because the base \
+                         is borrowed immutably (&T)",
+                        obj_name
+                    ),
+                ));
+            }
+            let ref_ty = Type::RefMut(Box::new(field_ty.clone()));
+            return CheckedExpr::new(
+                TypedExprKind::RefMutField {
+                    object: obj_name.clone(),
+                    field: field.clone(),
+                    field_index: field_index as u32,
+                },
+                ref_ty,
+                None,
+                span,
+            );
+        }
+    }
     let ExprKind::Var(name) = &inner.kind else {
         diagnostics.push(Diagnostic::new(
             inner.span,
-            "'&mut' can only borrow a named variable; e.g. `&mut xs`",
+            "'mut ref' can only borrow a named variable or a struct field; \
+             e.g. `mut ref xs` or `mut ref t.field`",
         ));
         return CheckedExpr::fallback_integer(span);
     };
@@ -6286,10 +6363,77 @@ fn check_ref(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CheckedExpr {
+    // `ref t.field` — single-level field-borrow. Mirrors
+    // `check_ref_mut`'s field-borrow arm. T1.2 phase 2b
+    // follow-up.
+    if let ExprKind::FieldAccess { object, field, .. } = &inner.kind {
+        if let ExprKind::Var(obj_name) = &object.kind {
+            let Some(info) = env.lookup(obj_name) else {
+                diagnostics.push(Diagnostic::new(
+                    object.span,
+                    format!("unknown variable '{}'", obj_name),
+                ));
+                return CheckedExpr::fallback_integer(span);
+            };
+            let Type::Struct(struct_name) = info.ty.deref() else {
+                diagnostics.push(Diagnostic::new(
+                    object.span,
+                    format!(
+                        "field-borrow base '{}' must be a struct binding (got {})",
+                        obj_name, info.ty
+                    ),
+                ));
+                return CheckedExpr::fallback_integer(span);
+            };
+            let Some(struct_info) = env.lookup_struct(struct_name) else {
+                diagnostics.push(Diagnostic::new(
+                    object.span,
+                    format!("unknown struct type '{}'", struct_name),
+                ));
+                return CheckedExpr::fallback_integer(span);
+            };
+            let Some((field_index, (_, field_ty))) = struct_info
+                .fields
+                .iter()
+                .enumerate()
+                .find(|(_, (n, _))| n == field)
+            else {
+                diagnostics.push(Diagnostic::new(
+                    inner.span,
+                    format!(
+                        "struct '{}' has no field named '{}'",
+                        struct_name, field
+                    ),
+                ));
+                return CheckedExpr::fallback_integer(span);
+            };
+            if info.moved.is_some() {
+                diagnostics.push(Diagnostic::new(
+                    inner.span,
+                    format!(
+                        "cannot borrow field of '{}' after it was moved",
+                        obj_name
+                    ),
+                ));
+            }
+            let ref_ty = Type::Ref(Box::new(field_ty.clone()));
+            return CheckedExpr::new(
+                TypedExprKind::RefField {
+                    object: obj_name.clone(),
+                    field: field.clone(),
+                    field_index: field_index as u32,
+                },
+                ref_ty,
+                None,
+                span,
+            );
+        }
+    }
     let ExprKind::Var(name) = &inner.kind else {
         diagnostics.push(Diagnostic::new(
             inner.span,
-            "'&' can only borrow a named variable; e.g. `&xs`",
+            "'ref' can only borrow a named variable or a struct field; \
+             e.g. `ref xs` or `ref t.field`",
         ));
         return CheckedExpr::fallback_integer(span);
     };
@@ -6740,7 +6884,7 @@ fn check_binary(
             }
             check_numeric_comparison(op, lhs, rhs, span, diagnostics)
         }
-        BinaryOp::Eq | BinaryOp::Ne => check_equality(op, lhs, rhs, span, diagnostics),
+        BinaryOp::Eq | BinaryOp::Ne => check_equality(op, lhs, rhs, span, signatures, diagnostics),
         BinaryOp::And | BinaryOp::Or => check_boolean_binary(op, lhs, rhs, span, diagnostics),
     }
 }
@@ -7065,6 +7209,7 @@ fn check_equality(
     lhs: CheckedExpr,
     rhs: CheckedExpr,
     span: Span,
+    signatures: &HashMap<String, Signature>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CheckedExpr {
     if *lhs.ty() == Type::Bool || *rhs.ty() == Type::Bool {
@@ -7133,10 +7278,11 @@ fn check_equality(
     }
 
     // Aggregate types (struct, tuple, enum) don't have built-in
-    // `==`/`!=` — surface a targeted diagnostic before falling
-    // through to the generic "operand must be numeric" message.
-    // User-defined equality lands with the interface-dispatch
-    // work in T1.5 phase 2.
+    // `==`/`!=` — but if the user has declared an `Eq` impl
+    // (`implement Eq for T { fn eq(self: T, other: T) -> bool }`),
+    // the hoisted `<T>_eq` function dispatches the operation.
+    // `a == b` desugars to `<T>_eq(a, b)`; `a != b` to
+    // `!<T>_eq(a, b)`. T1.5 phase 2 follow-up.
     let lhs_is_aggregate = matches!(
         lhs.ty(),
         Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)
@@ -7146,10 +7292,43 @@ fn check_equality(
         Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)
     );
     if lhs_is_aggregate || rhs_is_aggregate {
+        if let (Type::Struct(lhs_name), Type::Struct(rhs_name)) = (lhs.ty(), rhs.ty()) {
+            if lhs_name == rhs_name {
+                let eq_fn = format!("{}_eq", lhs_name);
+                if let Some(sig) = signatures.get(&eq_fn) {
+                    let bool_return = sig.return_type == Type::Bool;
+                    let two_args = sig.params.len() == 2;
+                    if bool_return && two_args {
+                        let lhs_ty = lhs.ty().clone();
+                        let call_kind = TypedExprKind::Call {
+                            name: eq_fn,
+                            name_span: span,
+                            args: vec![lhs.expr, rhs.expr],
+                        };
+                        let call = CheckedExpr::new(call_kind, Type::Bool, None, span);
+                        if op == BinaryOp::Eq {
+                            let _ = lhs_ty;
+                            return call;
+                        }
+                        return CheckedExpr::new(
+                            TypedExprKind::Unary {
+                                op: crate::ast::UnaryOp::Not,
+                                expr: Box::new(call.expr),
+                            },
+                            Type::Bool,
+                            None,
+                            span,
+                        );
+                    }
+                }
+            }
+        }
         let hint = match (lhs.ty(), rhs.ty()) {
             (Type::Struct(name), _) | (_, Type::Struct(name)) => format!(
-                "struct '{}' has no built-in `==` — compare field-by-field, or wait for user-defined equality (T1.5 phase 2)",
-                name
+                "struct '{}' has no built-in `==` — declare \
+                 `implement Eq for {} {{ fn eq(self: {}, other: {}) -> bool {{ … }} }}` \
+                 to define equality, or compare field-by-field",
+                name, name, name, name
             ),
             (Type::Tuple(_), _) | (_, Type::Tuple(_)) => {
                 "tuples have no built-in `==` — compare each component via `.0` / `.1` / …".to_string()
@@ -10079,6 +10258,8 @@ fn verify_pure_body(
             | TypedExprKind::Var(_)
             | TypedExprKind::Ref { .. }
             | TypedExprKind::RefMut { .. }
+            | TypedExprKind::RefField { .. }
+            | TypedExprKind::RefMutField { .. }
             | TypedExprKind::FnRef { .. } => {}
             TypedExprKind::CallIndirect { callee, args } => {
                 // The name-based purity gate above can't see
@@ -11289,6 +11470,30 @@ fn typed_to_expr(t: &TypedExpr) -> Expr {
         TypedExprKind::RefMut { name } => ExprKind::RefMut {
             inner: Box::new(Expr {
                 kind: ExprKind::Var(name.clone()),
+                span: t.span,
+            }),
+        },
+        TypedExprKind::RefField { object, field, .. } => ExprKind::Ref {
+            inner: Box::new(Expr {
+                kind: ExprKind::FieldAccess {
+                    object: Box::new(Expr {
+                        kind: ExprKind::Var(object.clone()),
+                        span: t.span,
+                    }),
+                    field: field.clone(),
+                },
+                span: t.span,
+            }),
+        },
+        TypedExprKind::RefMutField { object, field, .. } => ExprKind::RefMut {
+            inner: Box::new(Expr {
+                kind: ExprKind::FieldAccess {
+                    object: Box::new(Expr {
+                        kind: ExprKind::Var(object.clone()),
+                        span: t.span,
+                    }),
+                    field: field.clone(),
+                },
                 span: t.span,
             }),
         },

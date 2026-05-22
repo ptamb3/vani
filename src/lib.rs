@@ -6223,6 +6223,115 @@ mod tests {
     }
 
     #[test]
+    fn struct_eq_via_user_impl() {
+        // User-defined equality: `implement Eq for Point {
+        // fn eq(self: Point, other: Point) -> bool { … } }`
+        // makes `a == b` and `a != b` work on Point bindings
+        // by routing through the hoisted `Point_eq` function.
+        let source = r#"
+            interface Eq { fn eq(self: Point, other: Point) -> bool; }
+            struct Point { x: i64, y: i64 }
+            implement Eq for Point {
+              fn eq(self: Point, other: Point) -> bool {
+                if self.x != other.x { return false; }
+                if self.y != other.y { return false; }
+                return true;
+              }
+            }
+            fn main() -> i64 {
+              let a: Point = Point { x: 1, y: 2 };
+              let b: Point = Point { x: 1, y: 2 };
+              let c: Point = Point { x: 3, y: 4 };
+              assert a == b;
+              assert a != c;
+              return 0;
+            }
+        "#;
+        compile(source).expect("Point equality should compile via user Eq impl");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        assert!(
+            c.contains("fn_Point_eq("),
+            "expected dispatch to Point_eq in C output:\n{c}"
+        );
+    }
+
+    #[test]
+    fn struct_drop_reverse_field_order() {
+        // T1.2 phase 2b polish: heap-shaped fields are freed
+        // in reverse declaration order so destruction mirrors
+        // construction (Rust's RAII convention). Probe with a
+        // struct carrying two OwnedStr fields named `first` and
+        // `second`; the per-field free pass must emit `second`
+        // before `first`.
+        let source = r#"
+            struct Pair { first: OwnedStr, second: OwnedStr }
+            fn main() -> i64 {
+              let p: Pair = Pair { first: "a" + "1", second: "b" + "2" };
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("Pair struct should compile");
+        let first_idx = c
+            .find("free((void*)v_p.first)")
+            .expect("expected free of v_p.first");
+        let second_idx = c
+            .find("free((void*)v_p.second)")
+            .expect("expected free of v_p.second");
+        assert!(
+            second_idx < first_idx,
+            "expected reverse-declaration drop order \
+             (`second` before `first`):\n{c}"
+        );
+    }
+
+    #[test]
+    fn field_borrow_unlocks_atomic_through_struct() {
+        // T1.2 phase 2b follow-up: `ref t.f` / `mut ref t.f`
+        // takes a borrow of a struct field. The checker
+        // produces TypedExprKind::RefField / RefMutField; the
+        // backends GEP into the field. Combined with the
+        // Atomic<T> struct field gate from closure #100, this
+        // unlocks `atomic_*(ref c.hits)` patterns through a
+        // struct.
+        let source = r#"
+            struct Counter { hits: Atomic<i64> }
+            fn main() -> i64 {
+              let c: Counter = Counter { hits: atomic_new(0) };
+              atomic_store(mut ref c.hits, 42);
+              let v: i64 = atomic_load(ref c.hits);
+              assert v == 42;
+              return 0;
+            }
+        "#;
+        compile(source).expect("atomic through struct field should compile");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        assert!(
+            c.contains("&v_c.hits"),
+            "expected field-address emission in C output:\n{c}"
+        );
+    }
+
+    #[test]
+    fn field_borrow_rejects_non_struct_base() {
+        let source = r#"
+            fn main() -> i64 {
+              let x: i64 = 5;
+              let r: i64 = atomic_load(ref x.foo);
+              return r;
+            }
+        "#;
+        let errors = compile(source)
+            .expect_err("field-borrow on non-struct should fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("must be a struct binding")),
+            "expected struct-base diagnostic, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
     fn user_drop_auto_call_at_scope_exit() {
         // T2.7 phase 2: `implement Drop for T { fn drop(self:
         // T) -> i64 { … } }` runs automatically at every scope

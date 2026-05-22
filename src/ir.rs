@@ -286,6 +286,23 @@ pub enum TypedExprKind {
     RefMut {
         name: String,
     },
+    /// Borrow of a struct field — `ref t.x` / `mut ref t.x`.
+    /// `object` is the binding name; `field` and `field_index`
+    /// identify the field. Result type is `Type::Ref(field_ty)`
+    /// / `Type::RefMut(field_ty)` on the wrapper. v1 supports
+    /// single-level field-borrow only (no `ref a.b.c`); deeper
+    /// paths can be added when the use cases surface.
+    /// T1.2 phase 2b follow-up.
+    RefField {
+        object: String,
+        field: String,
+        field_index: u32,
+    },
+    RefMutField {
+        object: String,
+        field: String,
+        field_index: u32,
+    },
     /// Reference to a top-level function as a first-class
     /// value. Produced when an identifier in value position
     /// resolves to a function (not a binding). The result type

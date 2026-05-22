@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-21
-**Test totals:** 771 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 775 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,31 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **User-Eq desugar for struct `==` done 2026-05-21**:
+   `a == b` and `a != b` on two bindings of the same struct
+   type desugar to `<T>_eq(a, b)` / `!<T>_eq(a, b)` whenever
+   an `implement Eq for T { fn eq(self: T, other: T) -> bool }`
+   is in scope. The hoisted method is the same statically-
+   dispatched path used by the `recv.eq(...)` MethodCall
+   form. Tuple / enum auto-equality can use the same recipe
+   when needed. See
+   [examples/struct_eq.intent](examples/struct_eq.intent).
+
+   **Reverse-declaration field drop order done 2026-05-21**:
+   struct Drop walks fields in reverse declaration order so
+   destruction mirrors construction (Rust's RAII convention).
+   Pure code-shape change in both backends' Drop emit.
+
+   **Field-borrow expressions done 2026-05-21**: `ref t.f`
+   and `mut ref t.f` now work, single-level. Two new
+   `TypedExprKind` variants (`RefField` / `RefMutField`)
+   carry the (object, field, field_index) triple; tree-C
+   emits `&v_t.f`; tree-LLVM GEPs into the struct. The
+   immediate unlock is atomic operations through a struct
+   field (`atomic_store(mut ref c.hits, 42)`). Vec push
+   through field still needs partial-move tracking. See
+   [examples/struct_atomic_field.intent](examples/struct_atomic_field.intent).
+
    **T2.7 phase 2 — user-Drop auto-call at scope exit done 2026-05-21**:
    `implement Drop for T { fn drop(self: T) -> i64 }` now runs
    automatically at every scope exit where a non-moved binding

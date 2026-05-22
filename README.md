@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (771 lib + 47 e2e tests passing):
+Supported today (775 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -251,6 +251,18 @@ Supported today (771 lib + 47 e2e tests passing):
   instead (the user's drop is then invoked explicitly when richer
   behavior is needed). See
   [examples/drop_interface.intent](examples/drop_interface.intent).
+- **User-defined `==` via `implement Eq for T`** — `a == b` and `a != b`
+  on struct bindings desugar to the hoisted `<T>_eq(a, b)` / `!<T>_eq(a, b)`
+  whenever both sides are the same struct type. Convention is
+  `fn eq(self: T, other: T) -> bool`. See
+  [examples/struct_eq.intent](examples/struct_eq.intent).
+- **Field-borrow expressions** — `ref t.f` and `mut ref t.f` take a borrow
+  of a struct field. The result type is `&<field_ty>` / `&mut <field_ty>`;
+  backends GEP into the struct's storage. Unlocks atomic operations
+  through a struct that owns the cell (`atomic_*(ref c.hits)` /
+  `atomic_*(mut ref c.hits)`). Single-level only in v1
+  (no `ref t.a.b`). See
+  [examples/struct_atomic_field.intent](examples/struct_atomic_field.intent).
 - **Structs with affine fields** — `OwnedStr`, `Vec<T>`, `[T; N]` of Copy
   elements, `Task`, and `Atomic<T>` are valid struct field types in v1.
   Heap-shaped fields (OwnedStr, Vec) are freed at scope exit; stack-shaped
@@ -1964,8 +1976,9 @@ deliberately deferred as v1 trade-offs.
 - ⏳ Enum payload variants — parses, gated diagnostic, lands with T1.3 phase 2b.
 - ⏳ Match on bool / Str / float scrutinee — patterns accept ints / variants /
   `_` in v1.
-- ⏳ Struct / tuple / enum `==` — targeted diagnostic; user-defined equality
-  lands with T1.5 phase 2 interface dispatch.
+- ⏳ Tuple / enum `==` — targeted diagnostic; struct `==` now ships via
+  `implement Eq for T`. Tuple / enum auto-equality lands when a matching
+  desugar is added (mirrors the struct case).
 
 **Trade-offs (working as intended, not on the queue):**
 

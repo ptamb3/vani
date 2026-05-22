@@ -165,6 +165,10 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
         // Block expressions route through tree backends in
         // v1 (SSA lowering can be added in a follow-up).
         TypedExprKind::Block { .. } => false,
+        // Struct field-borrow routes through tree backends —
+        // SSA doesn't model field-paths yet. T1.2 phase 2b
+        // follow-up.
+        TypedExprKind::RefField { .. } | TypedExprKind::RefMutField { .. } => false,
     }
 }
 

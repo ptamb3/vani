@@ -1,0 +1,35 @@
+intent "Field-borrow expressions — `ref t.f` / `mut ref t.f`";
+
+// `ref t.f` and `mut ref t.f` take a borrow of a struct field.
+// The checker resolves the field by name, computes the
+// resulting ref type from the field's declared type, and the
+// backends GEP into the struct's storage to produce the
+// field's address. Combined with the affine-struct-field
+// work in T1.2 phase 2b, this unlocks atomic operations
+// through a struct that owns the cell.
+//
+// v1 supports single-level field-borrow only: `ref t.f`. Deeper
+// paths (`ref t.a.b`) can be added when use cases surface.
+
+struct Counter { hits: Atomic<i64> }
+
+fn main() -> i64 {
+  let c: Counter = Counter { hits: atomic_new(0) };
+
+  // Atomic operations take `ref Atomic<T>` / `mut ref Atomic<T>`
+  // — `ref c.hits` resolves to that reference type since
+  // `Counter.hits: Atomic<i64>` and the field-borrow promotes
+  // the field's type to the matching ref shape.
+  atomic_store(mut ref c.hits, 42);
+  let v: i64 = atomic_load(ref c.hits);
+  print "value =", v;
+  assert v == 42;
+
+  let prev: i64 = atomic_fetch_add(mut ref c.hits, 8);
+  let now: i64 = atomic_load(ref c.hits);
+  print "prev =", prev, " now =", now;
+  assert prev == 42;
+  assert now == 50;
+
+  return 0;
+}

@@ -3,12 +3,13 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-21, after closure #101)
+## ⏳ Resume here (paused 2026-05-21, after closure #104)
 
-All multi-session items #1-#9 now have Phase 1 / MVP shipping;
-bounded generics done (#99); affine struct fields expanded
-(#100); user-Drop auto-call at scope exit done (#101). Test
-totals: 771 lib + 47 e2e passing.
+Closures landed this session: #99 bounded generics, #100 affine
+struct fields broadened, #101 user-Drop auto-call, #102
+field-borrow expressions, #103 reverse-declaration field drop
+order, #104 user-Eq desugar for struct `==`. Test totals:
+775 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -23,15 +24,15 @@ totals: 771 lib + 47 e2e passing.
       `a.eq(ref b)` when an `implement Eq for T` is in scope.
   Effort: medium/high.
 
-- **B. #3 polish — Vec field methods + partial-move tracking.**
-  Struct affine fields ship in closures #98/#100. Remaining
-  gaps:
-    - **Field-borrow expressions**: `ref t.xs`, `mut ref t.xs`
-      reject with "can only borrow a named variable" today.
-      Needed for `atomic_*(ref c.hits)` and `push(mut ref t.xs)`.
+- **B. #3 polish — partial-move tracking + Vec field methods.**
+  Field-borrow shipped (#102), so `atomic_*(ref c.hits)` works.
+  Remaining gaps:
     - **Partial-move tracking**: `let y = t.xs;` moves the whole
       struct; we want it to move only the field and leave the
       rest valid. Per-field `moved` map on `BindingInfo`.
+      Unlocks `push(mut ref t.xs)` (currently rejected because
+      Vec push takes Vec by value, and field-borrow gives
+      `mut ref Vec<T>` which doesn't match).
     - **Multi-field drop order**: reverse-declaration order
       (Rust convention) — today the field list is walked in
       declaration order.
@@ -606,6 +607,111 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+104. ~~**Auto `==` for structs via `implement Eq for T`**~~ —
+     done 2026-05-21. `a == b` and `a != b` on two bindings
+     of the same struct type desugar to a call to the
+     hoisted `<T>_eq` function. Convention is `fn eq(self: T,
+     other: T) -> bool`. Tuple / enum auto-equality follow
+     the same recipe and can be added when the use cases
+     surface.
+     - **Checker desugar** in [src/checker.rs](src/checker.rs):
+       `check_equality` now takes `signatures` and, when
+       both operands are the same struct type, looks up
+       `<T>_eq` in the signature table. If found with
+       signature `(T, T) -> bool`, the operator is rewritten:
+       `Eq` → `Call { name: "<T>_eq", args: [lhs, rhs] }`;
+       `Ne` → `Unary { Not, Call { … } }`. Falls through to
+       the existing diagnostic when no impl exists.
+     - **Diagnostic refreshed**: the struct-equality
+       message now points at `implement Eq for T { fn eq…
+       }` as the canonical recipe (was: "wait for user-
+       defined equality").
+     - **1 lib test added**: `struct_eq_via_user_impl` pins
+       end-to-end `a == b` / `a != b` resolving through
+       `Point_eq`. Existing
+       `struct_equality_rejected_with_targeted_diagnostic`
+       still asserts the no-impl path.
+     - **New example**
+       [examples/struct_eq.intent](examples/struct_eq.intent)
+       exercises the pattern; wired into the cross-backend
+       e2e test.
+     774 → 775 lib tests; 47 e2e stable.
+
+103. ~~**Reverse-declaration field drop order**~~ — done
+     2026-05-21. Struct Drop now walks fields in reverse
+     declaration order, mirroring construction (Rust's
+     RAII convention). Pure code-shape change in both
+     backends' Drop emit (`fields.into_iter().rev()` /
+     `.iter().enumerate().rev()`). One new lib test
+     `struct_drop_reverse_field_order` asserts a Pair
+     with two OwnedStr fields emits `free(v_p.second)`
+     before `free(v_p.first)`.
+     773 → 774 lib tests; 47 e2e stable.
+
+102. ~~**Field-borrow expressions — `ref t.f` / `mut ref t.f`**~~ —
+     done 2026-05-21. Single-level borrow of a struct field
+     so atomic operations work through a struct that owns
+     the cell. T1.2 phase 2b follow-up.
+     - **Parser unchanged** — it was already producing
+       `ExprKind::Ref { inner: FieldAccess(Var, "f") }` for
+       `ref t.f`. Only the checker rejected it ("can only
+       borrow a named variable").
+     - **Checker** in [src/checker.rs](src/checker.rs):
+       `check_ref` and `check_ref_mut` gained a branch that
+       inspects `inner.kind` for `FieldAccess { object:
+       Var(name), field, ... }`. Validates the base is a
+       struct binding, the field exists, the base isn't
+       moved (and for mut ref, not behind a `ref T`).
+       Returns the new typed variants.
+     - **IR**: two new `TypedExprKind` variants in
+       [src/ir.rs](src/ir.rs) — `RefField { object, field,
+       field_index }` and `RefMutField { same shape }`.
+       Wrapper type carries `Type::Ref(field_ty)` /
+       `Type::RefMut(field_ty)`. Single-level only in v1
+       (no `ref a.b.c`); deeper paths land later.
+     - **Tree-C backend** in
+       [src/backend_c.rs](src/backend_c.rs): emit `&v_t.f`
+       for primitive/aggregate field types or just
+       `v_t.f` for array fields (C array-decay applies).
+     - **Tree-LLVM backend** in
+       [src/backend_llvm.rs](src/backend_llvm.rs): GEP into
+       the struct's alloca with `i64 0, i32 <field_index>`
+       and return the resulting field pointer as the SSA
+       operand. The `walk_expr` capture helper picks up
+       the base binding (so an outlined parallel-for body
+       can carry the struct address through its ctx
+       struct).
+     - **SSA path** in [src/ssa.rs](src/ssa.rs): surfaces
+       `LowerError` to route programs through the tree
+       backend (parallel to other struct-related
+       lowerings). The SSA `expr_kind_name` debug helper
+       gained the matching arms.
+     - **Other walkers updated**: `typed_to_expr` in
+       [src/checker.rs](src/checker.rs) (round-trips
+       `RefField` back to `Expr::Ref { FieldAccess(...) }`);
+       `expr_ssa_supported` in [src/main.rs](src/main.rs)
+       (routes these through the tree backend); the LLVM
+       string-interning pre-pass's no-op arm.
+     - **2 lib tests added**:
+       `field_borrow_unlocks_atomic_through_struct` (the
+       end-to-end Atomic-through-struct example);
+       `field_borrow_rejects_non_struct_base` (the
+       diagnostic when the base isn't a struct).
+     - **New example**
+       [examples/struct_atomic_field.intent](examples/struct_atomic_field.intent)
+       exercises `atomic_store(mut ref c.hits, …)`,
+       `atomic_load(ref c.hits)`, and `atomic_fetch_add`
+       through the field-borrow. Wired into the cross-
+       backend e2e test.
+     - **Vec field push still blocked**: `push(mut ref
+       b.xs, 30)` fails because `push` expects `Vec<T>`
+       by value (consuming). Unblocking it needs either
+       partial-move tracking on struct fields (let
+       expressions split `let xs = t.xs; ... t.xs = xs;`)
+       or a new mutating-ref vec API. Tracked as a #3
+       polish follow-up.
+     771 → 773 lib tests; 47 e2e stable.
+
 101. ~~**#8 Phase 2: user-Drop auto-call at scope exit**~~ —
      done 2026-05-21. Wires `implement Drop for T` into the
      existing scope-exit drop machinery so the user's
