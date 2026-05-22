@@ -2631,6 +2631,31 @@ mod tests {
     }
 
     #[test]
+    fn enum_vec_payload_compiles_and_drops() {
+        // Closure #118: enum payloads admit `Vec<T>` in
+        // addition to OwnedStr. The aggregate is affine and
+        // both backends emit a tag-conditional
+        // `intent_vec_<T>__free` for the heap payload.
+        let source = r#"
+            enum Bag { Items(Vec<i64>), Empty }
+            fn build(c: bool) -> Bag {
+              if c { return Bag.Items(vec(1, 2, 3)); }
+              return Bag.Empty;
+            }
+            fn main() -> i64 {
+              let a: Bag = build(true);
+              let b: Bag = build(false);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("Vec enum payload should compile");
+        assert!(
+            c.contains("intent_vec_int64_t__free"),
+            "expected Vec __free helper in C output:\n{c}"
+        );
+    }
+
+    #[test]
     fn enum_owned_str_payload_compiles_and_drops() {
         // T1.3 + T1.2 phase 2b: enum payloads admit OwnedStr.
         // The aggregate is affine; both backends emit a

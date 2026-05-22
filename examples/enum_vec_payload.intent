@@ -1,0 +1,40 @@
+intent "Enum with Vec<T> payload — heap-aware Drop on the Vec";
+
+// Building on closure #113 (OwnedStr enum payload), enum
+// variants can now hold a `Vec<T>` payload. The aggregate
+// is affine; both backends emit a tag-conditional
+// `intent_vec_<T>__free` for the active variant at scope
+// exit. The empty/payload-less variant uses a
+// zero-initialized placeholder.
+//
+// Same v1 restrictions as closure #113: destructure-binding
+// patterns (`Items(xs)`) require Copy payloads — for non-
+// Copy Vec, match the variant tag without a binding. The
+// payload extraction story waits on chained move tracking.
+
+enum Bag { Items(Vec<i64>), Empty }
+
+fn build(use_items: bool) -> Bag {
+  if use_items {
+    return Bag.Items(vec(10, 20, 30));
+  }
+  return Bag.Empty;
+}
+
+fn classify(b: Bag) -> i64 {
+  return match b {
+    Bag.Items then 1,
+    Bag.Empty then 0,
+  };
+}
+
+fn main() -> i64 {
+  let a: Bag = build(true);
+  let z: Bag = build(false);
+  let r1: i64 = classify(a);
+  let r2: i64 = classify(z);
+  print "a yields", r1, " z yields", r2;
+  assert r1 == 1;
+  assert r2 == 0;
+  return 0;
+}

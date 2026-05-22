@@ -1062,11 +1062,17 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
             } else if let Type::Enum(enum_name) = ty {
                 // Payloaded enums with a heap-shaped payload
                 // free the payload when the active variant
-                // tag matches one of the payloaded variants.
+                // tag matches. Supported: `OwnedStr` (free
+                // i8*) and `Vec<T>` (intent_vec_<T>__free).
                 // T1.3 + T1.2 phase 2b.
                 let payload_ty = LLVM_ENUM_PAYLOAD_REGISTRY
                     .with(|r| r.borrow().get(enum_name).cloned());
-                if matches!(&payload_ty, Some(Type::OwnedStr)) {
+                let heap_kind = match &payload_ty {
+                    Some(Type::OwnedStr) => Some("owned_str"),
+                    Some(Type::Vec(_)) => Some("vec"),
+                    _ => None,
+                };
+                if let Some(kind) = heap_kind {
                     let payload_tags: Vec<u32> = LLVM_ENUM_PAYLOAD_TAGS_REGISTRY
                         .with(|r| r.borrow().get(enum_name).cloned().unwrap_or_default());
                     if let Some((_, addr)) = ctx.locals.get(name).cloned() {
@@ -1112,10 +1118,28 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                             cond, free_lbl, done_lbl
                         ));
                         out.push_str(&format!("{}:\n", free_lbl));
-                        out.push_str(&format!(
-                            "  call void @free(i8* {})\n",
-                            payload
-                        ));
+                        match kind {
+                            "owned_str" => {
+                                out.push_str(&format!(
+                                    "  call void @free(i8* {})\n",
+                                    payload
+                                ));
+                            }
+                            "vec" => {
+                                if let Some(Type::Vec(element)) = &payload_ty {
+                                    let free_name = format!(
+                                        "@intent_vec_{}__free",
+                                        vec_struct_tag(element)
+                                    );
+                                    let v_struct = vec_struct_name(element);
+                                    out.push_str(&format!(
+                                        "  call void {}({} {})\n",
+                                        free_name, v_struct, payload
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
                         out.push_str(&format!("  br label %{}\n", done_lbl));
                         out.push_str(&format!("{}:\n", done_lbl));
                         ctx.current_block = done_lbl;
@@ -3375,6 +3399,11 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 // Pointer payloads (OwnedStr lowers to i8*)
                 // need LLVM's `null` literal, not `0`.
                 Type::OwnedStr => "null",
+                // Aggregate Vec / Tuple / Struct payloads
+                // use `zeroinitializer` for the all-zero
+                // placeholder when the variant has no
+                // user-provided payload.
+                Type::Vec(_) | Type::Tuple(_) | Type::Struct(_) => "zeroinitializer",
                 _ => "0",
             };
             let s0 = ctx.fresh_tmp();

@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 791 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 792 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,16 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **Vec<T> enum payload done 2026-05-22**: extends #113's
+   OwnedStr work — enum variants can now hold `Vec<T>`
+   payloads. Both backends emit a tag-conditional
+   `intent_vec_<T>__free` at scope exit. C ordering pre-
+   pass walks enum payload types alongside struct fields
+   so the Vec typedef lands before the enum typedef. LLVM
+   uses `zeroinitializer` (C uses `{0}`) for payload-less
+   variants of aggregate-payloaded enums. See
+   [examples/enum_vec_payload.intent](examples/enum_vec_payload.intent).
+
    **SSA bool-print parity done 2026-05-22**: bool prints
    through both SSA backends now render as "true"/"false"
    instead of "1"/"0". SSA-C uses `fputs(v ? "true" :

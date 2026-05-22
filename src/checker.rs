@@ -479,7 +479,7 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
                 .any(|v| {
                     v.payload
                         .first()
-                        .map_or(false, |t| matches!(t, Type::OwnedStr))
+                        .map_or(false, |t| matches!(t, Type::OwnedStr | Type::Vec(_)))
                 });
             if has_heap {
                 non_copy_enums.push(decl.name.clone());
@@ -696,21 +696,20 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
             }
             if let Some(payload_ty) = decl.variants[i].payload.first() {
                 // T1.2 phase 2 struct RAII landed in closures
-                // #98 / #100. Lift the enum-payload Copy gate
-                // to admit `OwnedStr` (heap-allocated string;
-                // free at Drop) alongside Copy types. Other
-                // affine payload types (Vec / [T;N] / Task /
-                // Atomic) need more work and stay rejected.
+                // #98 / #100; #113 added OwnedStr; #118 adds
+                // Vec<T>. Other affine payload types ([T;N],
+                // Task, Atomic) still need more work and stay
+                // rejected.
                 let allowed = payload_ty.is_copy()
-                    || matches!(payload_ty, Type::OwnedStr);
+                    || matches!(payload_ty, Type::OwnedStr | Type::Vec(_));
                 if !allowed {
                     diagnostics.push(Diagnostic::new(
                         decl.variants[i].name_span,
                         format!(
                             "enum '{}' variant '{}' payload type {} is not \
-                             Copy and not OwnedStr — v1 enum payloads \
-                             accept Copy types and OwnedStr; other affine \
-                             payload types (Vec / [T;N] / Task / Atomic) \
+                             Copy / OwnedStr / Vec<T> — v1 enum payloads \
+                             accept Copy types, OwnedStr, and Vec<T>; other \
+                             affine payload types ([T;N] / Task / Atomic) \
                              need more codegen work",
                             decl.name,
                             decl.variants[i].name,

@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (791 lib + 47 e2e tests passing):
+Supported today (792 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -283,12 +283,14 @@ Supported today (791 lib + 47 e2e tests passing):
   `atomic_*(mut ref c.hits)`). Single-level only in v1
   (no `ref t.a.b`). See
   [examples/struct_atomic_field.intent](examples/struct_atomic_field.intent).
-- **Enums with affine payloads** — `enum Maybe { Some(OwnedStr), None }` now
-  works. The aggregate is affine; both backends emit a tag-conditional free
-  for the heap payload at scope exit. v1 restriction: destructure-binding
-  patterns (`Some(s)`) require Copy payloads; match the variant tag without
-  a binding for OwnedStr payloads. See
-  [examples/enum_owned_payload.intent](examples/enum_owned_payload.intent).
+- **Enums with affine payloads** — `enum Maybe { Some(OwnedStr), None }` and
+  `enum Bag { Items(Vec<i64>), Empty }` both work. The aggregate is affine;
+  both backends emit a tag-conditional `free` (OwnedStr) or
+  `intent_vec_<T>__free` (Vec) for the heap payload at scope exit. v1
+  restriction: destructure-binding patterns (`Some(s)`) require Copy
+  payloads — match the variant tag without a binding for heap payloads.
+  See [examples/enum_owned_payload.intent](examples/enum_owned_payload.intent)
+  and [examples/enum_vec_payload.intent](examples/enum_vec_payload.intent).
 - **Structs with affine fields** — `OwnedStr`, `Vec<T>`, `[T; N]` of Copy
   elements, `Task`, and `Atomic<T>` are valid struct field types in v1.
   Heap-shaped fields (OwnedStr, Vec) are freed at scope exit; stack-shaped

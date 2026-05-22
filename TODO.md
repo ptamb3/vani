@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #117)
+## ⏳ Resume here (paused 2026-05-22, after closure #118)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -17,8 +17,8 @@ scrutinee, #112 deep field paths for mixed-place assign,
 #113 enum payloads admit OwnedStr (heap-aware Drop), #114
 type-associated functions (`Type.helper(args)`), #115
 unit-return functions, #116 empty struct + bare-block
-scope-stmt, #117 SSA bool-print parity. Test totals: 791
-lib + 47 e2e passing.
+scope-stmt, #117 SSA bool-print parity, #118 Vec<T> enum
+payload. Test totals: 792 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
@@ -616,6 +616,54 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+118. ~~**Vec<T> enum payload (heap-aware Drop)**~~ — done
+     2026-05-22. Extends closure #113 (OwnedStr enum
+     payload) to admit `Vec<T>`. Closes one of the four
+     follow-ups noted in #113.
+     - **Checker gate lifted** in [src/checker.rs](src/checker.rs):
+       `Vec<T>` joins `OwnedStr` as a permitted enum
+       payload. Other affine types (`[T;N]` / `Task` /
+       `Atomic`) still need more work.
+     - **`ENUM_NON_COPY_REGISTRY`** population extended:
+       enums with a Vec payload are also registered as
+       affine.
+     - **C backend Drop emission** in
+       [src/backend_c.rs](src/backend_c.rs) gained a Vec
+       branch in the enum-Drop dispatch — uses
+       `intent_vec_<T>__free(.payload)` instead of
+       `free((void*).payload)` for Vec payloads.
+     - **LLVM backend Drop emission** in
+       [src/backend_llvm.rs](src/backend_llvm.rs) parallel:
+       extract the Vec struct via `extractvalue`, call
+       `@intent_vec_<tag>__free` on it.
+     - **C struct-typedef ordering** pre-pass extended:
+       enum payload types may also reference Vec; the
+       `struct_field_vec_elements` collector now walks
+       `program.enums` payload types too so the Vec
+       typedef lands before the enum typedef that
+       references it. (Same shape as the closure #100 fix
+       for struct field Vec.)
+     - **LLVM payload-zero literal**: `EnumVariant` for a
+       payload-less variant of a Vec-payloaded enum now
+       uses `zeroinitializer` instead of `0` (which LLVM
+       rejects for aggregate types). Same fix applies to
+       Tuple / Struct payload aggregates.
+     - **C payload-zero literal**: `EnumVariant` for a
+       payload-less variant uses `{0}` (empty designated
+       initializer) for aggregate payloads instead of bare
+       `0` (C can't init a struct from an integer).
+     - **1 lib test added**:
+       `enum_vec_payload_compiles_and_drops` asserts the
+       Vec free helper appears in C output.
+     - **New example**
+       [examples/enum_vec_payload.intent](examples/enum_vec_payload.intent)
+       exercises a `Bag { Items(Vec<i64>), Empty }`-style
+       flow. Wired into the cross-backend e2e test.
+     - **Still pending**: [T;N] / Task / Atomic enum
+       payloads; destructure-binding extraction for non-
+       Copy payloads (chained move tracking).
+     791 → 792 lib tests; 47 e2e stable.
+
 117. ~~**SSA bool-print parity**~~ — done 2026-05-22. Bool
      prints through both SSA backends now render as
      "true"/"false" (was: "1"/"0"). Closes the last

@@ -196,6 +196,19 @@ pub fn emit_c(program: &TypedProgram) -> String {
             collect_vec_elements(fty, &mut struct_field_vec_seen, &mut struct_field_vec_elements);
         }
     }
+    // Enum payload types may also be Vec<T>. Walk
+    // `program.enums` for each payloaded variant and queue
+    // any Vec element types so the bundle is in scope when
+    // the `typedef struct { int32_t tag; intent_vec_<T>
+    // payload; } Enum_<Name>;` line lands further below.
+    // Closure #118.
+    for decl in &program.enums {
+        for payload in &decl.payload_types {
+            if let Some(ty) = payload {
+                collect_vec_elements(ty, &mut struct_field_vec_seen, &mut struct_field_vec_elements);
+            }
+        }
+    }
     let mut emitted_vec_bundles: BTreeSet<String> = BTreeSet::new();
     for element in &struct_field_vec_elements {
         emit_vec_bundle(element, &mut body);
@@ -1640,15 +1653,26 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 // Payloaded enums with a heap-shaped payload
                 // free the payload when the active variant
                 // matches. The payload type is uniform across
-                // payloaded variants (checker enforces this),
-                // so we read the tag, branch on the variants
-                // that hold the heap payload, and free.
-                // T1.3 + T1.2 phase 2b.
+                // payloaded variants (checker enforces this).
+                // Supported heap shapes: `OwnedStr` (free) and
+                // `Vec<T>` (per-element-type
+                // `intent_vec_<T>__free` helper). T1.3 +
+                // T1.2 phase 2b.
                 let payload_ty = ENUM_PAYLOAD_REGISTRY
                     .with(|r| r.borrow().get(enum_name).cloned());
-                if !matches!(&payload_ty, Some(Type::OwnedStr)) {
-                    // No heap payload — nothing to do.
-                } else {
+                let free_expr: Option<String> = match &payload_ty {
+                    Some(Type::OwnedStr) => Some(format!(
+                        "free((void*){}.payload)",
+                        local_name(name)
+                    )),
+                    Some(Type::Vec(element)) => Some(format!(
+                        "{}({}.payload)",
+                        vec_helper(element, "free"),
+                        local_name(name)
+                    )),
+                    _ => None,
+                };
+                if let Some(free_call) = free_expr {
                     let local = local_name(name);
                     let payload_tags: Vec<u32> =
                         ENUM_PAYLOAD_TAGS_REGISTRY.with(|r| {
@@ -1663,10 +1687,10 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                             .map(|t| format!("case {}", t))
                             .collect();
                         out.push_str(&format!(
-                            "  switch ({}.tag) {{ {}: free((void*){}.payload); break; default: break; }}\n",
+                            "  switch ({}.tag) {{ {}: {}; break; default: break; }}\n",
                             local,
                             cases.join(": "),
-                            local
+                            free_call
                         ));
                     }
                 }
@@ -2282,13 +2306,25 @@ fn emit_expr(expr: &TypedExpr) -> String {
             // Plain (payload-less) variant: just the tag.
             // Payloaded enum's payload-less variant: build a
             // tagged-union struct with `.tag` set and the
-            // `.payload` field zero-initialized. T1.3 phase 2b.
+            // `.payload` field zero-initialized. Aggregate
+            // payload types (Vec / struct / tuple) need an
+            // empty designated-initializer `{ 0 }` instead
+            // of bare `0` since C can't init a struct from
+            // an integer. T1.3 phase 2b.
             let payloaded = ENUM_PAYLOAD_REGISTRY.with(|r| r.borrow().contains_key(enum_name));
             if payloaded {
+                let payload_ty = ENUM_PAYLOAD_REGISTRY
+                    .with(|r| r.borrow().get(enum_name).cloned())
+                    .expect("just checked payloaded");
+                let payload_zero = match &payload_ty {
+                    Type::Vec(_) | Type::Tuple(_) | Type::Struct(_) => "{0}",
+                    _ => "0",
+                };
                 format!(
-                    "(({}){{ .tag = (int32_t){}, .payload = 0 }})",
+                    "(({}){{ .tag = (int32_t){}, .payload = {} }})",
                     enum_c_name(enum_name),
-                    tag
+                    tag,
+                    payload_zero
                 )
             } else {
                 format!("((int32_t){})", tag)
