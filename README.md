@@ -162,7 +162,7 @@ Mixing scripts in the same file is supported by design — a student can
 write the keywords in Devanagari and the identifiers in English, or vice
 versa.
 
-Supported today (767 lib + 47 e2e tests passing):
+Supported today (771 lib + 47 e2e tests passing):
 
 ### Types
 - Scalars: `i8`/`i16`/`i32`/`i64`, `u8`/`u16`/`u32`/`u64`, `f32`/`f64`, `bool`
@@ -244,16 +244,23 @@ Supported today (767 lib + 47 e2e tests passing):
   every interface method; signatures must match exactly. See
   [examples/interfaces.intent](examples/interfaces.intent).
 - **Drop interface** `implement Drop for T { fn drop(self: T) -> i64 { … } }`
-  — recognized + signature-validated. Users call `t.drop()` manually for
-  now; auto-call at scope exit lands with T2.7 phase 2 (depends on the
-  remaining T1.2 phase 2b non-Copy aggregate fields). See
+  — auto-called at every scope exit where a non-moved binding of T goes
+  out of scope. Users can also call `t.drop()` manually; affine tracking
+  marks the binding as moved so the auto-call won't double-fire. When T
+  has heap-shaped fields (OwnedStr / Vec), the per-field free pass runs
+  instead (the user's drop is then invoked explicitly when richer
+  behavior is needed). See
   [examples/drop_interface.intent](examples/drop_interface.intent).
-- **Structs with an `OwnedStr` field** are now affine. Both backends free
-  the field at scope exit; struct-literal init from a `Var` moves the
-  source binding so a heap string flows `caller → struct field → drop`
-  without a double-free. Other affine field types (`Vec<T>`, `[T;N]`,
-  `Task`, `Atomic`) still need deeper backend work. See
-  [examples/struct_owned_field.intent](examples/struct_owned_field.intent).
+- **Structs with affine fields** — `OwnedStr`, `Vec<T>`, `[T; N]` of Copy
+  elements, `Task`, and `Atomic<T>` are valid struct field types in v1.
+  Heap-shaped fields (OwnedStr, Vec) are freed at scope exit; stack-shaped
+  fields (arrays, Task, Atomic) need no runtime drop. Struct-literal init
+  from a `Var` moves the source binding so a heap value flows `caller →
+  struct field → drop` without a double-free. Field-path indexing
+  (`t.data[i]`) works through both backends. Mutex / Guard / Channel still
+  need explicit wiring. See
+  [examples/struct_owned_field.intent](examples/struct_owned_field.intent),
+  [examples/struct_mixed_fields.intent](examples/struct_mixed_fields.intent).
 
 ### Verification & contracts
 - `requires` / `ensures` clauses (terminated with `;`, before the body).
@@ -1977,12 +1984,12 @@ roadmap surface and unblocks the items below it.
 |---|---|---|---|---|
 | 1 | ✅ **Block expressions** `let r = { stmts; tail-expr };` | — | low/medium | done 2026-05-21; see [examples/block_expressions.intent](examples/block_expressions.intent) |
 | 2 | ✅ **SMT modeling — if-expr, match, struct field access, method calls** | — | medium | done 2026-05-21 (#82 + #84 — full coverage) |
-| 3 | ✅ **T1.2 phase 2b (MVP): OwnedStr struct fields** | — | medium/high | done 2026-05-21 — `struct { name: OwnedStr }` works; both backends free the field at scope exit and struct-literal init from a `Var` moves the source binding; see [examples/struct_owned_field.intent](examples/struct_owned_field.intent). Other affine fields (`Vec<T>`, `[T;N]`, `Task`, `Atomic`) + multi-field drop order still pending. |
+| 3 | ✅ **T1.2 phase 2b: affine struct fields** | — | medium/high | done 2026-05-21 — `struct { … }` admits `OwnedStr`, `Vec<T>`, `[T;N]` of Copy elements, `Task`, `Atomic<T>` as fields; both backends free heap fields (OwnedStr, Vec) at scope exit; struct-literal init moves the source binding; `t.data[i]` indexing works. See [examples/struct_owned_field.intent](examples/struct_owned_field.intent), [examples/struct_mixed_fields.intent](examples/struct_mixed_fields.intent). Mutex/Guard/Channel still need explicit wiring. |
 | 4 | ✅ **T1.3 phase 2b: tagged-union codegen + pattern bindings** | — | high | done 2026-05-21 — see [examples/option_types.intent](examples/option_types.intent); both backends |
 | 5 | ✅ **T2.6: `try` keyword sugar for Option-like enums** | T1.3 phase 2b | low/medium | done 2026-05-21 — see [examples/try_keyword.intent](examples/try_keyword.intent). Generic Option<T> / Result<T, E> wait on #6 monomorphization. |
 | 6 | ✅ **T1.4 phase 2: generic call-site monomorphization** | — | high | done 2026-05-21 — pass-through generics specialize per call-site literal type; see [examples/generic_functions.intent](examples/generic_functions.intent). Var-arg inference + interface bounds pending. |
-| 7 | ✅ **T1.5 phase 2: interface dispatch (static)** | T1.4 phase 2 | medium/high | done 2026-05-21 — `interface` + `implement` + `recv.method()` dispatch; see [examples/interfaces.intent](examples/interfaces.intent). Dynamic dispatch (vtables) + bounded generics pending. |
-| 8 | ✅ **T2.7 Phase 1: Drop interface validation (manual call)** | T1.5 phase 2 | low/medium | done 2026-05-21 — signature validated, manual `t.drop()` works; see [examples/drop_interface.intent](examples/drop_interface.intent). Auto-call at scope exit (Phase 2) depends on #3. |
+| 7 | ✅ **T1.5 phase 2: interface dispatch (static) + bounded generics** | T1.4 phase 2 | medium/high | done 2026-05-21 — `interface` + `implement` + `recv.method()` dispatch; `fn min<T>(...) where T is Cmp` monomorphizes with bound-existence check; see [examples/interfaces.intent](examples/interfaces.intent), [examples/bounded_generics.intent](examples/bounded_generics.intent). Dynamic dispatch (vtables) still pending. |
+| 8 | ✅ **T2.7: user-defined Drop interface (auto-call at scope exit)** | T1.5 phase 2, #3 | low/medium | done 2026-05-21 — `implement Drop for T` runs automatically at scope exit; `t.drop()` still works manually; auto-call suppressed for T with heap fields (those route through per-field free). See [examples/drop_interface.intent](examples/drop_interface.intent). |
 | 9 | ✅ **Devanagari keyword aliases — Sanskrit / Hindi / Marathi (MVP)** | — | medium | done 2026-05-21; see [examples/hindi_keywords.intent](examples/hindi_keywords.intent), [examples/sanskrit_keywords.intent](examples/sanskrit_keywords.intent), [examples/marathi_keywords.intent](examples/marathi_keywords.intent). Multi-word aliases + script-aware diagnostics deferred. |
 
 **Devanagari aliases (#9) — granular sketch:**

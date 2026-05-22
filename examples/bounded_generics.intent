@@ -1,0 +1,51 @@
+intent "T1.5 phase 2: bounded generics — fn min<T> where T is Cmp";
+
+// `where T is Cmp` declares an interface bound on the type
+// parameter. The monomorphizer verifies at each call site
+// that the concrete type has a matching `implement Cmp for
+// <T>` in scope; the specialization then dispatches to that
+// impl's `<T>_cmp` directly.
+//
+// v1 limits: one bound per type parameter, struct/enum
+// concrete types only (primitive impls land later), call-
+// site inference picks T from the first argument's type
+// (literal or annotated-let / fn-param binding).
+
+interface Cmp {
+  fn cmp(self: Score, other: Score) -> i64;
+}
+
+struct Score { value: i64 }
+
+implement Cmp for Score {
+  fn cmp(self: Score, other: Score) -> i64 {
+    if self.value < other.value { return -1; }
+    if self.value > other.value { return 1; }
+    return 0;
+  }
+}
+
+fn min<T>(a: T, b: T) -> T where T is Cmp {
+  if a.cmp(b) <= 0 { return a; }
+  return b;
+}
+
+fn max<T>(a: T, b: T) -> T where T is Cmp {
+  if a.cmp(b) >= 0 { return a; }
+  return b;
+}
+
+fn main() -> i64 {
+  let a: Score = Score { value: 7 };
+  let b: Score = Score { value: 3 };
+  let m: Score = min(a, b);
+  print "min.value =", m.value;
+  assert m.value == 3;
+
+  let c: Score = Score { value: 9 };
+  let d: Score = Score { value: 4 };
+  let x: Score = max(c, d);
+  print "max.value =", x.value;
+  assert x.value == 9;
+  return 0;
+}

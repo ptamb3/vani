@@ -341,16 +341,19 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // for signature validation; impl method signatures must
     // match the interface's declared shape exactly.
     hoist_impls_into_functions(&mut program, &mut diagnostics);
+    // After monomorphization + impl hoisting, no function in
+    // the program should still carry an unresolved
+    // where-clause. If any does, it means a non-generic
+    // function declared a where-bound that has no effect.
     for func in &program.functions {
-        if !func.where_clauses.is_empty() {
+        if !func.where_clauses.is_empty() && func.type_params.is_empty() {
             let clause = &func.where_clauses[0];
             diagnostics.push(Diagnostic::new(
                 clause.span,
                 format!(
-                    "`where {} is {}` parses but bounded-generic checking \
-                     is still in progress (T1.5 phase 2). Specialize manually \
-                     by writing a non-generic copy for each concrete type.",
-                    clause.type_param, clause.interface_name
+                    "non-generic function '{}' carries `where {} is {}` — \
+                     where-bounds apply only to generic type parameters",
+                    func.name, clause.type_param, clause.interface_name
                 ),
             ));
         }
@@ -420,15 +423,36 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // still be Copy + non-reference (RAII chains for
     // non-Copy fields land in T1.2 phase 2b).
     // Pre-pass: register every struct that directly carries a
-    // non-Copy field (OwnedStr in v1) so `Type::is_copy()` reports
-    // the aggregate as affine. Must run before the validation loop
-    // below, because that loop calls `field.ty.is_copy()` to decide
-    // whether the field type is acceptable. T1.2 phase 2b.
+    // non-Copy field (so `Type::is_copy()` reports the
+    // aggregate as affine) plus every struct/enum that has a
+    // user-declared `implement Drop for T` impl (so the auto-
+    // call at scope exit fires even when fields are all Copy).
+    // Must run before the validation loop below, because that
+    // loop calls `field.ty.is_copy()` to decide whether the
+    // field type is acceptable. T1.2 phase 2b + T2.7 phase 2.
     {
         let mut non_copy: Vec<String> = Vec::new();
         for decl in &program.structs {
-            if decl.fields.iter().any(|f| matches!(f.ty, Type::OwnedStr)) {
+            if decl.fields.iter().any(|f| !f.ty.is_copy()) {
                 non_copy.push(decl.name.clone());
+            }
+        }
+        // `hoist_impls_into_functions` (which already ran) drains
+        // `program.impls` after appending the hoisted methods.
+        // Detect user Drop impls via the hoisted function names
+        // instead. T2.7 phase 2.
+        let struct_names: std::collections::HashSet<String> = program
+            .structs
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        for f in &program.functions {
+            if let Some(type_name) = f.name.strip_suffix("_drop") {
+                if struct_names.contains(type_name)
+                    && !non_copy.iter().any(|m| m == type_name)
+                {
+                    non_copy.push(type_name.to_string());
+                }
             }
         }
         crate::ast::set_non_copy_structs(non_copy);
@@ -456,19 +480,34 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
                     ),
                 ));
             }
-            // T1.2 phase 2b (narrow MVP): allow `OwnedStr` as a
-            // struct field. Other non-Copy types (Vec, [T;N],
-            // Task, Atomic, etc.) need deeper backend work
-            // and stay rejected.
-            let field_allowed = field.ty.is_copy() || matches!(field.ty, Type::OwnedStr);
+            // T1.2 phase 2b: allow most affine types as struct
+            // fields. The Drop emission in both backends walks
+            // the owning-field list and frees heap-shaped
+            // fields (OwnedStr, Vec) at scope exit; stack-shaped
+            // fields ([T;N] of Copy, Task, Atomic) need no
+            // runtime drop. Mutex/Guard/Channel still need
+            // explicit wiring (their RAII shape is bespoke) and
+            // remain rejected. Vec field indexing / mutation
+            // through `t.xs[i]` and method calls on a Vec field
+            // (`t.xs.push(...)`) are still WIP — for now, the
+            // struct carries the Vec and frees it; operating on
+            // it requires moving the Vec out via a let binding.
+            let field_allowed = field.ty.is_copy()
+                || matches!(field.ty, Type::OwnedStr | Type::Task)
+                || matches!(&field.ty, Type::Atomic(_) | Type::Vec(_))
+                || matches!(
+                    &field.ty,
+                    Type::Array { element, .. } if element.is_copy()
+                );
             if !field_allowed {
                 diagnostics.push(Diagnostic::new(
                     field.span,
                     format!(
                         "struct field '{}::{}' has non-Copy type {} — \
-                         v1 supports Copy types and OwnedStr as struct \
-                         fields; other affine types (Vec / [T;N] / Task / \
-                         Atomic) need more codegen work",
+                         v1 supports Copy types, OwnedStr, Vec<T>, \
+                         [T; N] of Copy elements, Task, and Atomic<T> as \
+                         struct fields; Mutex / Guard / Channel still need \
+                         explicit wiring",
                         decl.name, field.name, field.ty
                     ),
                 ));
@@ -1980,42 +2019,56 @@ fn monomorphize_generics_in_program(
         if !f.type_params.is_empty() {
             continue; // skip generic templates
         }
+        // Seed a per-fn local-binding map with the function's
+        // parameters. The walker extends it as it sees
+        // annotated `let` bindings so a generic call with a
+        // Var first argument can resolve the binding's type.
+        let mut scope: std::collections::HashMap<String, Type> = std::collections::HashMap::new();
+        for p in &f.params {
+            scope.insert(p.name.clone(), p.ty.clone());
+        }
         for stmt in &f.body {
-            collect_generic_calls_in_stmt(stmt, &generic_templates, &mut needed, diagnostics);
+            collect_generic_calls_in_stmt(
+                stmt, &generic_templates, &mut needed, &mut scope, diagnostics);
         }
     }
-    // Emit the bounded-generic gate for any template with
-    // `where T is Iface` clauses BEFORE specializing — those
-    // need interface dispatch (T1.5 phase 2). Skip
-    // specialization for them so we don't silently produce
-    // wrong code.
-    let mut bounded_skip: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
-    for (name, template) in &generic_templates {
-        if !template.where_clauses.is_empty() {
-            let clause = &template.where_clauses[0];
-            diagnostics.push(Diagnostic::new(
-                clause.span,
-                format!(
-                    "`where {} is {}` parses but bounded-generic checking \
-                     is still in progress (T1.5 phase 2). Specialize manually \
-                     by writing a non-generic copy for each concrete type.",
-                    clause.type_param, clause.interface_name
-                ),
-            ));
-            bounded_skip.insert(name.clone());
-        }
-    }
-    // Generate specialized fns.
+    // Generate specialized fns. For templates carrying
+    // `where T is Iface` bounds, verify the concrete type
+    // satisfies each bound (i.e. the program has a matching
+    // `implement Iface for <concrete>` decl) before
+    // specializing. T1.5 phase 2.
     let mut specialized: Vec<Function> = Vec::new();
     for (fn_name, concrete_ty) in &needed {
-        if bounded_skip.contains(fn_name) {
-            continue;
-        }
         let template = match generic_templates.get(fn_name) {
             Some(t) => t,
             None => continue,
         };
+        let mut bound_violation = false;
+        for clause in &template.where_clauses {
+            let satisfied = program.impls.iter().any(|impl_decl| {
+                impl_decl.interface_name == clause.interface_name
+                    && &impl_decl.for_type == concrete_ty
+            });
+            if !satisfied {
+                diagnostics.push(Diagnostic::new(
+                    clause.span,
+                    format!(
+                        "generic function '{}' requires `{} is {}`, but no \
+                         `implement {} for {}` is in scope. Add the impl or \
+                         pick a type that satisfies the bound.",
+                        fn_name,
+                        clause.type_param,
+                        clause.interface_name,
+                        clause.interface_name,
+                        concrete_ty
+                    ),
+                ));
+                bound_violation = true;
+            }
+        }
+        if bound_violation {
+            continue;
+        }
         if template.type_params.len() != 1 {
             diagnostics.push(Diagnostic::new(
                 template.span,
@@ -2033,6 +2086,10 @@ fn monomorphize_generics_in_program(
         let mut clone = template.clone();
         clone.name = specialized_name.clone();
         clone.type_params.clear();
+        // Bounds have been satisfied by the impl-existence
+        // check above; the specialized fn is no longer
+        // generic so drop the where-clauses too.
+        clone.where_clauses.clear();
         // Substitute Type::Param(t_name) → concrete in params,
         // return type, and body.
         for p in clone.params.iter_mut() {
@@ -2049,8 +2106,12 @@ fn monomorphize_generics_in_program(
         if !f.type_params.is_empty() {
             continue;
         }
+        let mut scope: std::collections::HashMap<String, Type> = std::collections::HashMap::new();
+        for p in &f.params {
+            scope.insert(p.name.clone(), p.ty.clone());
+        }
         for stmt in f.body.iter_mut() {
-            rewrite_generic_calls_in_stmt(stmt, &generic_templates);
+            rewrite_generic_calls_in_stmt(stmt, &generic_templates, &mut scope);
         }
     }
     // Surface dead-generic diagnostic for any generic
@@ -2080,37 +2141,46 @@ fn monomorphize_generics_in_program(
 }
 
 /// Walk a stmt and collect (generic-fn-name, inferred-T) pairs
-/// from any call sites.
+/// from any call sites. The `scope` map tracks local
+/// bindings (params + annotated lets) so a generic call with
+/// a Var first argument can resolve the binding's type.
 fn collect_generic_calls_in_stmt(
     stmt: &Stmt,
     generics: &std::collections::HashMap<String, Function>,
     needed: &mut Vec<(String, Type)>,
+    scope: &mut std::collections::HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match stmt {
-        Stmt::Let { expr, .. } | Stmt::Assign { expr, .. } | Stmt::Return { expr, .. } => {
-            collect_generic_calls_in_expr(expr, generics, needed, diagnostics);
+        Stmt::Let { name, annotation, expr, .. } => {
+            collect_generic_calls_in_expr(expr, generics, needed, scope, diagnostics);
+            if let Some(ty) = annotation {
+                scope.insert(name.clone(), ty.clone());
+            }
+        }
+        Stmt::Assign { expr, .. } | Stmt::Return { expr, .. } => {
+            collect_generic_calls_in_expr(expr, generics, needed, scope, diagnostics);
         }
         Stmt::Print { items, .. } => {
             for it in items {
                 if let crate::ast::PrintItem::Expr(e) = it {
-                    collect_generic_calls_in_expr(e, generics, needed, diagnostics);
+                    collect_generic_calls_in_expr(e, generics, needed, scope, diagnostics);
                 }
             }
         }
         Stmt::If { cond, then_body, else_body, .. } => {
-            collect_generic_calls_in_expr(cond, generics, needed, diagnostics);
+            collect_generic_calls_in_expr(cond, generics, needed, scope, diagnostics);
             for s in then_body {
-                collect_generic_calls_in_stmt(s, generics, needed, diagnostics);
+                collect_generic_calls_in_stmt(s, generics, needed, scope, diagnostics);
             }
             for s in else_body {
-                collect_generic_calls_in_stmt(s, generics, needed, diagnostics);
+                collect_generic_calls_in_stmt(s, generics, needed, scope, diagnostics);
             }
         }
         Stmt::While { cond, body, .. } => {
-            collect_generic_calls_in_expr(cond, generics, needed, diagnostics);
+            collect_generic_calls_in_expr(cond, generics, needed, scope, diagnostics);
             for s in body {
-                collect_generic_calls_in_stmt(s, generics, needed, diagnostics);
+                collect_generic_calls_in_stmt(s, generics, needed, scope, diagnostics);
             }
         }
         _ => {}
@@ -2121,12 +2191,15 @@ fn collect_generic_calls_in_expr(
     expr: &Expr,
     generics: &std::collections::HashMap<String, Function>,
     needed: &mut Vec<(String, Type)>,
+    scope: &std::collections::HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match &expr.kind {
         ExprKind::Call { name, args, .. } => {
             if generics.contains_key(name) {
-                if let Some(t) = infer_concrete_type_for_call(args, diagnostics, expr.span) {
+                if let Some(t) =
+                    infer_concrete_type_for_call(args, scope, diagnostics, expr.span)
+                {
                     let pair = (name.clone(), t);
                     if !needed.contains(&pair) {
                         needed.push(pair);
@@ -2134,24 +2207,27 @@ fn collect_generic_calls_in_expr(
                 }
             }
             for a in args {
-                collect_generic_calls_in_expr(a, generics, needed, diagnostics);
+                collect_generic_calls_in_expr(a, generics, needed, scope, diagnostics);
             }
         }
         ExprKind::Binary { left, right, .. } => {
-            collect_generic_calls_in_expr(left, generics, needed, diagnostics);
-            collect_generic_calls_in_expr(right, generics, needed, diagnostics);
+            collect_generic_calls_in_expr(left, generics, needed, scope, diagnostics);
+            collect_generic_calls_in_expr(right, generics, needed, scope, diagnostics);
         }
         ExprKind::Unary { expr: inner, .. } => {
-            collect_generic_calls_in_expr(inner, generics, needed, diagnostics);
+            collect_generic_calls_in_expr(inner, generics, needed, scope, diagnostics);
         }
         _ => {}
     }
 }
 
 /// Infer the concrete type for a generic call from its first
-/// argument. v1 supports literal arguments only (Int/Float/Bool).
+/// argument. v1 supports literal arguments (Int/Float/Bool)
+/// plus Var arguments that resolve through the local scope
+/// map (annotated lets + function params).
 fn infer_concrete_type_for_call(
     args: &[Expr],
+    scope: &std::collections::HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
     span: Span,
 ) -> Option<Type> {
@@ -2160,13 +2236,30 @@ fn infer_concrete_type_for_call(
         ExprKind::Int(_) => Some(Type::I64),
         ExprKind::Float(_) => Some(Type::F64),
         ExprKind::Bool(_) => Some(Type::Bool),
+        ExprKind::Var(name) => {
+            if let Some(ty) = scope.get(name) {
+                Some(ty.clone())
+            } else {
+                diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "cannot infer generic type parameter from variable '{}' \
+                         — the monomorphizer pre-pass only resolves bindings \
+                         declared with a let-annotation or as a function \
+                         parameter at the call site",
+                        name
+                    ),
+                ));
+                None
+            }
+        }
         _ => {
             diagnostics.push(Diagnostic::new(
                 span,
-                "v1 generic-call inference supports only literal arguments \
-                 (integer / float / bool) at the first position — variable \
-                 arguments need type-checking context that the monomorphizer \
-                 pre-pass doesn't have yet (T1.4 phase 2 follow-up).",
+                "v1 generic-call inference supports literal arguments \
+                 (integer / float / bool) or annotated variable bindings \
+                 at the first position. More complex first-arg expressions \
+                 need full type-checking context.",
             ));
             None
         }
@@ -2178,31 +2271,38 @@ fn infer_concrete_type_for_call(
 fn rewrite_generic_calls_in_stmt(
     stmt: &mut Stmt,
     generics: &std::collections::HashMap<String, Function>,
+    scope: &mut std::collections::HashMap<String, Type>,
 ) {
     match stmt {
-        Stmt::Let { expr, .. } | Stmt::Assign { expr, .. } | Stmt::Return { expr, .. } => {
-            rewrite_generic_calls_in_expr(expr, generics);
+        Stmt::Let { name, annotation, expr, .. } => {
+            rewrite_generic_calls_in_expr(expr, generics, scope);
+            if let Some(ty) = annotation {
+                scope.insert(name.clone(), ty.clone());
+            }
+        }
+        Stmt::Assign { expr, .. } | Stmt::Return { expr, .. } => {
+            rewrite_generic_calls_in_expr(expr, generics, scope);
         }
         Stmt::Print { items, .. } => {
             for it in items.iter_mut() {
                 if let crate::ast::PrintItem::Expr(e) = it {
-                    rewrite_generic_calls_in_expr(e, generics);
+                    rewrite_generic_calls_in_expr(e, generics, scope);
                 }
             }
         }
         Stmt::If { cond, then_body, else_body, .. } => {
-            rewrite_generic_calls_in_expr(cond, generics);
+            rewrite_generic_calls_in_expr(cond, generics, scope);
             for s in then_body.iter_mut() {
-                rewrite_generic_calls_in_stmt(s, generics);
+                rewrite_generic_calls_in_stmt(s, generics, scope);
             }
             for s in else_body.iter_mut() {
-                rewrite_generic_calls_in_stmt(s, generics);
+                rewrite_generic_calls_in_stmt(s, generics, scope);
             }
         }
         Stmt::While { cond, body, .. } => {
-            rewrite_generic_calls_in_expr(cond, generics);
+            rewrite_generic_calls_in_expr(cond, generics, scope);
             for s in body.iter_mut() {
-                rewrite_generic_calls_in_stmt(s, generics);
+                rewrite_generic_calls_in_stmt(s, generics, scope);
             }
         }
         _ => {}
@@ -2212,14 +2312,15 @@ fn rewrite_generic_calls_in_stmt(
 fn rewrite_generic_calls_in_expr(
     expr: &mut Expr,
     generics: &std::collections::HashMap<String, Function>,
+    scope: &std::collections::HashMap<String, Type>,
 ) {
     if let ExprKind::Call { name, args, .. } = &mut expr.kind {
         if generics.contains_key(name) {
-            // Infer T from first arg, then rename.
             let inferred = args.first().and_then(|a| match &a.kind {
                 ExprKind::Int(_) => Some(Type::I64),
                 ExprKind::Float(_) => Some(Type::F64),
                 ExprKind::Bool(_) => Some(Type::Bool),
+                ExprKind::Var(n) => scope.get(n).cloned(),
                 _ => None,
             });
             if let Some(t) = inferred {
@@ -2227,16 +2328,16 @@ fn rewrite_generic_calls_in_expr(
             }
         }
         for a in args.iter_mut() {
-            rewrite_generic_calls_in_expr(a, generics);
+            rewrite_generic_calls_in_expr(a, generics, scope);
         }
     } else {
         match &mut expr.kind {
             ExprKind::Binary { left, right, .. } => {
-                rewrite_generic_calls_in_expr(left, generics);
-                rewrite_generic_calls_in_expr(right, generics);
+                rewrite_generic_calls_in_expr(left, generics, scope);
+                rewrite_generic_calls_in_expr(right, generics, scope);
             }
             ExprKind::Unary { expr: inner, .. } => {
-                rewrite_generic_calls_in_expr(inner, generics);
+                rewrite_generic_calls_in_expr(inner, generics, scope);
             }
             _ => {}
         }
@@ -2259,7 +2360,11 @@ fn type_mangle(ty: &Type) -> String {
         Type::F32 => "f32".to_string(),
         Type::Bool => "bool".to_string(),
         Type::Str => "Str".to_string(),
-        other => format!("{:?}", other).replace([' ', '<', '>', ','], "_"),
+        Type::OwnedStr => "OwnedStr".to_string(),
+        Type::Struct(name) => format!("Struct_{}", name),
+        Type::Enum(name) => format!("Enum_{}", name),
+        other => format!("{:?}", other)
+            .replace([' ', '<', '>', ',', '(', ')', '"', '{', '}', ':'], "_"),
     }
 }
 
@@ -2420,6 +2525,14 @@ fn check_function(
                     format!("parameter '{}' is already defined", param.name),
                 ));
             }
+            // Inside a hoisted `<T>_drop` impl, the `self`
+            // parameter must NOT trigger another auto-Drop at
+            // scope exit (would infinite-recurse). Mark
+            // `no_drop` so the scope-exit pass skips it while
+            // the body can still read the fields. T2.7 phase 2.
+            let suppress_self_drop = param.name == "self"
+                && function.name.ends_with("_drop")
+                && matches!(&param.ty, Type::Struct(_) | Type::Enum(_));
             env.insert_current(
                 param.name.clone(),
                 VarInfo {
@@ -2430,7 +2543,7 @@ fn check_function(
                     vec_literal_elements: None,
                     array_version: 0,
                     guarded_mutex: None,
-                    no_drop: false,
+                    no_drop: suppress_self_drop,
                     is_const: false,
                     struct_literal_fields: None,
                 },
@@ -3378,7 +3491,7 @@ fn check_one_stmt(
 
             let drop_names: Vec<(String, Type)> = env
                 .all_bindings()
-                .filter(|(_, info)| !info.ty.is_copy() && info.moved.is_none())
+                .filter(|(_, info)| !info.ty.is_copy() && info.moved.is_none() && !info.no_drop)
                 .map(|(name, info)| (name.clone(), info.ty.clone()))
                 .collect();
             for (drop_name, drop_ty) in drop_names {

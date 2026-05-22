@@ -1,0 +1,40 @@
+intent "T1.2 phase 2b: structs with mixed affine fields";
+
+// v1 admits as struct fields: Copy types, OwnedStr, Vec<T>,
+// [T; N] of Copy elements, Task, and Atomic<T>. Both backends
+// emit a `free` (heap fields) or no-op (stack-shaped fields)
+// per affine field at scope exit. Mutex / Guard / Channel
+// still need explicit wiring and remain rejected.
+//
+// This example exercises a Frame with Copy, [i64;8], and
+// OwnedStr fields side-by-side, plus a Bag with a Vec field
+// constructed from a moved binding.
+
+struct Frame {
+  id: i64,
+  pixels: [i64; 8],
+  label: OwnedStr,
+}
+
+struct Bag { contents: Vec<i64> }
+
+fn main() -> i64 {
+  let f: Frame = Frame {
+    id: 7,
+    pixels: [10, 20, 30, 40, 50, 60, 70, 80],
+    label: "frame-" + "7",
+  };
+  print "frame id=", f.id, " label=", f.label;
+  print "pixel[0]=", f.pixels[0], " pixel[7]=", f.pixels[7];
+  assert f.pixels[0] == 10;
+  assert f.pixels[7] == 80;
+
+  // Vec field: heap-allocated; the Vec moves from `xs` into
+  // the struct field, and the struct's scope-exit Drop calls
+  // `intent_vec_int64_t__free` on the field.
+  let xs: Vec<i64> = vec(100, 200, 300);
+  let bag: Bag = Bag { contents: xs };
+  print "bag built";
+
+  return 0;
+}

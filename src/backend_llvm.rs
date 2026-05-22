@@ -191,6 +191,15 @@ thread_local! {
     pub(crate) static LLVM_STRUCT_FIELDS_REGISTRY:
         std::cell::RefCell<std::collections::HashMap<String, Vec<(String, Type)>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Names of structs / enums that have an `implement Drop
+    /// for T` impl in the program (hoisted to `T_drop`).
+    /// Populated at the start of `emit_llvm` from the function
+    /// table. Consulted by the `TypedStmt::Drop` handler to
+    /// auto-call the user's `drop(self)` method at scope exit
+    /// when the type has no owning fields. T2.7 phase 2.
+    pub(crate) static LLVM_USER_DROP_REGISTRY:
+        std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
 pub fn emit_llvm(program: &TypedProgram) -> String {
@@ -213,6 +222,15 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         reg.clear();
         for decl in &program.structs {
             reg.insert(decl.name.clone(), decl.fields.clone());
+        }
+    });
+    LLVM_USER_DROP_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        reg.clear();
+        for f in &program.functions {
+            if let Some(type_name) = f.name.strip_suffix("_drop") {
+                reg.insert(type_name.to_string());
+            }
         }
     });
     // No `target triple` line — `lli` and `llc` use the host triple
@@ -934,30 +952,76 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                     out.push_str(&format!("  call void @free(i8* {})\n", ptr));
                 }
             } else if let Type::Struct(struct_name) = ty {
-                // Free each owning field of the struct. v1 only
-                // permits OwnedStr as a non-Copy field. T1.2
-                // phase 2b.
+                // Auto-call the user's `Drop` impl if one exists
+                // and the struct has no owning fields (so the
+                // value-by-self consume can't conflict with
+                // per-field cleanup). T2.7 phase 2.
                 let fields = LLVM_STRUCT_FIELDS_REGISTRY
                     .with(|r| r.borrow().get(struct_name).cloned())
                     .unwrap_or_default();
+                let has_user_drop = LLVM_USER_DROP_REGISTRY
+                    .with(|r| r.borrow().contains(struct_name));
+                let has_owning_field = fields.iter().any(|(_, fty)| {
+                    matches!(fty, Type::OwnedStr | Type::Vec(_))
+                });
+                if has_user_drop && !has_owning_field {
+                    if let Some((_, addr)) = ctx.locals.get(name).cloned() {
+                        let s_ty = format!("%Struct_{}", struct_name);
+                        let loaded = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = load {}, {}* {}\n",
+                            loaded, s_ty, s_ty, addr
+                        ));
+                        let ret = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = call i64 @fn_{}_drop({} {})\n",
+                            ret, struct_name, s_ty, loaded
+                        ));
+                    }
+                    return;
+                }
                 if let Some((_, addr)) = ctx.locals.get(name).cloned() {
                     let s_ty = format!("%Struct_{}", struct_name);
                     for (idx, (_, field_ty)) in fields.iter().enumerate() {
-                        if matches!(field_ty, Type::OwnedStr) {
-                            let fp = ctx.fresh_tmp();
-                            out.push_str(&format!(
-                                "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
-                                fp, s_ty, s_ty, addr, idx
-                            ));
-                            let s_ptr = ctx.fresh_tmp();
-                            out.push_str(&format!(
-                                "  {} = load i8*, i8** {}\n",
-                                s_ptr, fp
-                            ));
-                            out.push_str(&format!(
-                                "  call void @free(i8* {})\n",
-                                s_ptr
-                            ));
+                        match field_ty {
+                            Type::OwnedStr => {
+                                let fp = ctx.fresh_tmp();
+                                out.push_str(&format!(
+                                    "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
+                                    fp, s_ty, s_ty, addr, idx
+                                ));
+                                let s_ptr = ctx.fresh_tmp();
+                                out.push_str(&format!(
+                                    "  {} = load i8*, i8** {}\n",
+                                    s_ptr, fp
+                                ));
+                                out.push_str(&format!(
+                                    "  call void @free(i8* {})\n",
+                                    s_ptr
+                                ));
+                            }
+                            Type::Vec(element) => {
+                                let v_struct = vec_struct_name(element);
+                                let fp = ctx.fresh_tmp();
+                                out.push_str(&format!(
+                                    "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
+                                    fp, s_ty, s_ty, addr, idx
+                                ));
+                                let v_loaded = ctx.fresh_tmp();
+                                out.push_str(&format!(
+                                    "  {} = load {}, {}* {}\n",
+                                    v_loaded, v_struct, v_struct, fp
+                                ));
+                                let free_name = format!(
+                                    "@intent_vec_{}__free",
+                                    vec_struct_tag(element)
+                                );
+                                out.push_str(&format!(
+                                    "  call void {}({} {})\n",
+                                    free_name, v_struct, v_loaded
+                                ));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -2951,10 +3015,32 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     }
                 }
             }
+            // `t.data[i]` — array-typed struct field. Reuse the
+            // lvalue address machinery to get a pointer to the
+            // field's array aggregate, then GEP into it. T1.2
+            // phase 2b.
+            if let TypedExprKind::FieldAccess { .. } = &array.kind {
+                if let Type::Array { element, .. } = array.ty.deref().clone() {
+                    let agg = llvm_type_string(array.ty.deref());
+                    let elt_ty = llvm_type_string(&element);
+                    let base_addr = emit_lvalue_addr(array, ctx, out);
+                    let idx_v = emit_expr(index, ctx, out);
+                    let idx_i64 = widen_index_to_64(&idx_v, &index.ty, ctx, out);
+                    let p = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = getelementptr {}, {}* {}, i64 0, i64 {}\n",
+                        p, agg, agg, base_addr, idx_i64
+                    ));
+                    let v = ctx.fresh_tmp();
+                    out.push_str(&format!("  {} = load {}, {}* {}\n", v, elt_ty, elt_ty, p));
+                    return v;
+                }
+            }
             // The Index arms above cover Var-base on Vec, Array
-            // (consuming or via reference), and Str. Anything else
-            // hitting this point is a checker bug (or a new type
-            // landed without backend support); surface it loudly.
+            // (consuming or via reference), Str, plus struct-
+            // field array bases. Anything else hitting this
+            // point is a checker bug (or a new type landed
+            // without backend support); surface it loudly.
             unreachable!(
                 "backend: Index on unsupported base — kind={:?}, ty={:?}",
                 array.kind, array.ty
@@ -4423,6 +4509,34 @@ fn collect_vec_elements_in_expr(
             collect_vec_elements_in_expr(index, seen, out);
         }
         TypedExprKind::Len { array, .. } => collect_vec_elements_in_expr(array, seen, out),
+        TypedExprKind::Tuple { elements } => {
+            for e in elements { collect_vec_elements_in_expr(e, seen, out); }
+        }
+        TypedExprKind::StructLit { fields, .. } => {
+            for (_, e) in fields { collect_vec_elements_in_expr(e, seen, out); }
+        }
+        TypedExprKind::FieldAccess { object, .. } => {
+            collect_vec_elements_in_expr(object, seen, out);
+        }
+        TypedExprKind::TupleAccess { tuple, .. } => {
+            collect_vec_elements_in_expr(tuple, seen, out);
+        }
+        TypedExprKind::EnumVariantWithPayload { payload, .. } => {
+            collect_vec_elements_in_expr(payload, seen, out);
+        }
+        TypedExprKind::Match { scrutinee, arms } => {
+            collect_vec_elements_in_expr(scrutinee, seen, out);
+            for arm in arms { collect_vec_elements_in_expr(&arm.body, seen, out); }
+        }
+        TypedExprKind::IfExpr { cond, then_value, else_value } => {
+            collect_vec_elements_in_expr(cond, seen, out);
+            collect_vec_elements_in_expr(then_value, seen, out);
+            collect_vec_elements_in_expr(else_value, seen, out);
+        }
+        TypedExprKind::Block { stmts, tail } => {
+            for s in stmts { collect_vec_elements_in_stmt(s, seen, out); }
+            collect_vec_elements_in_expr(tail, seen, out);
+        }
         _ => {}
     }
 }

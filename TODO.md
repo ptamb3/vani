@@ -3,63 +3,53 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-21, after closure #98)
+## ⏳ Resume here (paused 2026-05-21, after closure #101)
 
-All multi-session items #1-#9 now have Phase 1 / MVP shipping.
-Test totals: 767 lib + 47 e2e passing. Pick **one** of the two
-highest-leverage standalone items below to start the next session.
+All multi-session items #1-#9 now have Phase 1 / MVP shipping;
+bounded generics done (#99); affine struct fields expanded
+(#100); user-Drop auto-call at scope exit done (#101). Test
+totals: 771 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
-- **A. #7 Phase 2 — dynamic dispatch (vtables) + bounded generics.**
-  Unlocks user-defined `==` and brings the generics/interfaces axis
-  to feature-complete. Touches checker (parse + propagate
-  `where T is Cmp` bounds, validate call-site impls), IR (interface-
-  object representation), both backends (vtable layout — C: `struct
-  { fn_ptr_t cmp; … }`; LLVM: `%vtable_<I> = type { i8* ... }`).
+- **A. Dynamic dispatch (vtables) — completes #7 Phase 2.**
+  Bounded generics shipped. Remaining piece is first-class
+  interface objects.
   Concrete entry points:
-    - Parser already accepts `where T is Iface` shape (closure #95);
-      checker needs to thread the bound into `Signature` and check
-      at monomorphization time that the call-site type has a
-      matching `implement Iface for T` impl.
     - Add a `Type::Object(iface_name)` variant for first-class
       interface objects; backends emit a `{ &vtable, &data }` fat
       pointer.
     - Auto-`==` for structs/tuples/enums by lowering `a == b` to
       `a.eq(ref b)` when an `implement Eq for T` is in scope.
-  Effort: medium/high (one session if scoped to bounded generics
-  only; two sessions including object/vtable dispatch).
+  Effort: medium/high.
 
-- **B. #3 follow-up — Vec / Array / Task / Atomic struct fields.**
-  Brings struct RAII to feature-complete. The MVP (closure #98)
-  already wired:
-    - `STRUCT_NON_COPY_REGISTRY` + per-backend
-      `STRUCT_FIELDS_REGISTRY`
-    - `TypedStmt::Drop { ty: Type::Struct(name) }` arm that walks
-      the field list
-    - Move tracking through `StructLit` initializers
-  Remaining:
-    - Lift the gate in `src/checker.rs:448` to accept `Vec<T>`,
-      `Array { … }`, `Task`, `Atomic<T>` as struct fields.
-    - Backend Drop arms for the new field types: C calls the
-      existing `intent_vec_<T>__free` per-element helper through
-      `v_t.<field>`; LLVM emits the same call against the GEP'd
-      field pointer.
-    - **The hard part**: tree-LLVM lacks `FieldAccess` as `Index`
-      base — i.e. `t.xs[0]` where `t.xs: Vec<T>`. The previous
-      attempt this session (closure #85, reverted) failed here.
-      Either lift this in the LLVM `emit_lvalue_addr` /
-      `emit_expr` Index arm, or document the gap and route users
-      through a copy-out (`let xs = clone_at(ref t.xs, 0);`).
-    - Partial-move tracking: today, `let y = t.xs;` moves the
-      whole struct; we want it to move only the field and leave
-      `t.id` valid. Needs a per-field `moved` map on
-      `BindingInfo` and updates everywhere `info.moved` is
-      consulted.
-    - Multi-field drop order: when a struct has two affine
-      fields, free in reverse declaration order (Rust convention).
-  Effort: medium/high (one session for Vec fields without
-  FieldAccess-as-Index-base; two sessions for the full surface).
+- **B. #3 polish — Vec field methods + partial-move tracking.**
+  Struct affine fields ship in closures #98/#100. Remaining
+  gaps:
+    - **Field-borrow expressions**: `ref t.xs`, `mut ref t.xs`
+      reject with "can only borrow a named variable" today.
+      Needed for `atomic_*(ref c.hits)` and `push(mut ref t.xs)`.
+    - **Partial-move tracking**: `let y = t.xs;` moves the whole
+      struct; we want it to move only the field and leave the
+      rest valid. Per-field `moved` map on `BindingInfo`.
+    - **Multi-field drop order**: reverse-declaration order
+      (Rust convention) — today the field list is walked in
+      declaration order.
+    - **Mutex / Guard / Channel struct fields**: bespoke RAII
+      shape; need per-backend Drop dispatch.
+  Effort: medium per item; can interleave.
+
+- **C. Drop for structs with heap fields.**
+  Today the auto-call is suppressed for structs with OwnedStr /
+  Vec fields (per-field free runs instead). Two designs would
+  unblock the combined case:
+    - Change Drop signature to `fn drop(mut self: T)` so the user
+      can mutate fields before the per-field free runs.
+    - Or run user Drop FIRST (still consuming self), then
+      synthesise a separate field-free pass that operates on a
+      shadow copy. Requires the affine system to model
+      "consumed but field-resources still owned".
+  Effort: medium (design call first).
 
 ### Other queued follow-ups (smaller, can interleave)
 
@@ -616,6 +606,214 @@ highest-leverage first.
    (`constant_tracking_survives_unrelated_if_else`,
    `constant_tracking_cleared_when_body_reassigns`) pin the
    precision boundary. 441 → 443 lib tests; 47 e2e unchanged.
+101. ~~**#8 Phase 2: user-Drop auto-call at scope exit**~~ —
+     done 2026-05-21. Wires `implement Drop for T` into the
+     existing scope-exit drop machinery so the user's
+     `T_drop(self)` runs automatically. Closes the last
+     pending follow-up of multi-session item #8.
+     - **Affine-aggregate registry** in [src/checker.rs](src/checker.rs)
+       extended: any struct/enum with an `_drop` hoisted impl
+       is registered as non-Copy alongside structs that carry
+       non-Copy fields. Without this, a Copy-only struct
+       (`struct Resource { id: i64, open: bool }`) would report
+       `is_copy() = true` and the scope-exit pass would skip
+       Drop emission entirely. The registry consults the
+       hoisted function table (`<T>_drop`) rather than
+       `program.impls`, which is drained by
+       `hoist_impls_into_functions` before this pre-pass runs.
+     - **`no_drop` flag on `self` inside `<T>_drop`**: a hoisted
+       Drop impl's `self: T` parameter must NOT trigger another
+       auto-Drop at scope exit (would infinite-recurse).
+       `check_function` now sets `VarInfo.no_drop = true` for
+       the `self` param when the enclosing function name ends
+       with `_drop` and the param is a struct/enum type. The
+       existing `no_drop` semantics (designed for iteration-
+       view aliasing) cleanly extends here — body reads still
+       resolve normally; the scope-exit pass skips the auto-
+       Drop.
+     - **Two drop-emit sites consult `no_drop`**: the existing
+       scope-exit pass (~line 3082) and the Return-path
+       cleanup (~line 3498). The latter was previously
+       filtering only on `is_copy + moved` and would re-emit a
+       Drop on `self` immediately before the user's `return
+       self.id;` — re-introducing the recursion. Both sites
+       now check `info.no_drop` first.
+     - **Per-backend user-Drop registries**: new thread-local
+       `USER_DROP_REGISTRY` in [src/backend_c.rs](src/backend_c.rs)
+       and `LLVM_USER_DROP_REGISTRY` in
+       [src/backend_llvm.rs](src/backend_llvm.rs) populated at
+       emit start by scanning `program.functions` for names
+       ending `_drop`. Each backend's `TypedStmt::Drop {
+       ty: Type::Struct(name) }` arm now consults the registry
+       and conditionally emits `(void)fn_<T>_drop(v_<binding>);`
+       (C) or the equivalent `call i64 @fn_<T>_drop(%Struct_<T>
+       %loaded)` (LLVM) instead of the per-field-free pass.
+     - **Per-field free skipped when user Drop auto-called**:
+       to avoid double-free, the auto-call runs ONLY when the
+       struct has no heap-shaped fields (no OwnedStr, no
+       Vec<T>). Structs with both a user Drop AND heap fields
+       still get the per-field free pass; users must invoke
+       `t.drop()` manually if they want richer behavior. A
+       future closure can lift this by changing the Drop
+       signature to `fn drop(mut self: T)` so the user can
+       observe/mutate fields before the per-field free runs.
+     - **1 lib test added**:
+       `user_drop_auto_call_at_scope_exit` pins the auto-call
+       emission for a Copy-only struct (no heap fields).
+       Existing test
+       `drop_interface_validates_signature` still pins the
+       signature-validation half of the Drop interface.
+     - **Example updated**:
+       [examples/drop_interface.intent](examples/drop_interface.intent)
+       no longer threads through a manual `r.drop()` call; the
+       binding goes out of scope at the end of `use_resource`
+       and the runtime prints "releasing resource" thanks to
+       the auto-call. Wired into the cross-backend e2e test.
+     - **Remaining**: user Drop for structs with heap fields
+       (design call needed — `mut self` vs shadow-copy split);
+       Drop on enum payloads; Drop chaining when struct
+       contains another Drop-implementing struct.
+     770 → 771 lib tests; 47 e2e stable.
+
+100. ~~**#3 expanded: affine struct fields — Vec / [T;N] / Task /
+     Atomic**~~ — done 2026-05-21. Builds on closure #98's
+     OwnedStr-field MVP to admit the remaining affine field
+     types short of Mutex / Guard / Channel.
+     - **Checker gate lifted** in [src/checker.rs](src/checker.rs)
+       to accept `[T; N]` of Copy elements, `Vec<T>`, `Task`,
+       and `Atomic<T>` as struct fields. The diagnostic for
+       still-rejected types now reads "Mutex / Guard / Channel
+       need explicit wiring" instead of the broader earlier
+       list.
+     - **STRUCT_NON_COPY_REGISTRY** population generalized from
+       the OwnedStr-only check to "any non-Copy field" so the
+       aggregate correctly reports affine for any of the new
+       supported field types.
+     - **C backend Drop emission** in
+       [src/backend_c.rs](src/backend_c.rs) gains a `Type::Vec`
+       arm that routes through the existing
+       `intent_vec_<T>__free` helper against `v_<binding>.<field>`.
+       Array / Atomic / Task fields stay no-op at Drop time —
+       they're stack-shaped and the surrounding affine binding's
+       move tracking is the only resource discipline they need.
+     - **C struct typedef ordering fix**: a struct with a Vec
+       field needs `intent_vec_<T>__from`'s typedef in scope by
+       the time the struct typedef is parsed. A new pre-struct
+       pass walks `program.structs` for Vec element types and
+       emits those bundles before the struct typedefs; the
+       existing post-struct Vec emission tracks an
+       `emitted_vec_bundles` set so it doesn't re-emit the
+       same bundle for the function-body pass. `Vec<Struct>`
+       ordering is preserved (the post-struct emission still
+       handles those).
+     - **C struct field array layout**: struct fields of
+       `[T; N]` type now use `format_declarator` (inline `T
+       name[N]` declarator) instead of the `intent_arr<N>_<T>`
+       typedef. C forbids assigning a compound-literal array
+       value to a struct member of array type; the StructLit
+       emit detects an inline `ArrayLit` field initializer and
+       emits a bare-brace `{e1, e2, …}` initializer
+       (designated-init compatible) instead of going through
+       ArrayLit's `((T[N]){…})` compound-literal form.
+     - **LLVM Drop emission** in
+       [src/backend_llvm.rs](src/backend_llvm.rs) gains the
+       Vec arm parallel to the C side: GEP the field, load the
+       Vec struct value, call `@intent_vec_<T>__free`. Stack-
+       shaped fields no-op.
+     - **LLVM FieldAccess-as-Index-base**: the existing Index
+       lowering only handled `Var` bases. Added a new
+       FieldAccess-base arm that reuses `emit_lvalue_addr` to
+       get a pointer to the field's aggregate, then GEPs into
+       it with `i64 0, i64 <idx>` and loads the element. Fixes
+       the long-standing `t.data[i]` panic that blocked the
+       previous attempt (closure #85, reverted).
+     - **String / Vec collectors recurse into all sub-expressions**:
+       `collect_vec_elements_in_expr` in both backends gained
+       the same StructLit / Tuple / FieldAccess / Match /
+       IfExpr / Block / EnumVariantWithPayload arms that the
+       LLVM string-interning fix (closure #98) added. Without
+       these, a Vec constructed inside a nested expression
+       position (e.g. struct field initialized via match arm)
+       wouldn't have its `intent_vec_<T>` helper bundle
+       generated.
+     - **3 lib tests added**: `struct_array_field_compiles_and_indexes`
+       (inline `T name[N]` declarator + FieldAccess-base
+       indexing), `struct_vec_field_compiles_and_drops` (Vec
+       typedef hoisted, per-field free in C output),
+       `struct_mutex_field_still_rejected` (Mutex / Guard /
+       Channel still rejected with the new diagnostic
+       wording — replaces the obsolete
+       `struct_non_copy_field_rejected` test).
+     - **New example**
+       [examples/struct_mixed_fields.intent](examples/struct_mixed_fields.intent)
+       exercises a Frame with mixed Copy + [i64;8] + OwnedStr
+       fields plus a Bag with a Vec field. Wired into the
+       cross-backend e2e test. 768 → 770 lib tests; 47 e2e
+       stable.
+     - **Remaining for #3 polish**: field-borrow expressions
+       (`ref t.xs`, `mut ref c.hits`), partial-move tracking,
+       reverse-declaration drop order, Mutex / Guard / Channel
+       struct fields.
+
+99. ~~**#7 Phase 2 (half): bounded generics —
+    `fn min<T>(…) where T is Cmp`**~~ — done 2026-05-21.
+    First half of the #7 Phase 2 closure. Vtables + first-
+    class interface objects deferred to a follow-up.
+    - **WIP gate removed** from
+      `monomorphize_generics_in_program` in
+      [src/checker.rs](src/checker.rs). Templates with
+      where-clauses now flow through the specializer
+      instead of surfacing a "T1.5 phase 2 still in
+      progress" diagnostic at parse-clean programs.
+    - **Bound-existence check** at monomorphization time:
+      for each `(template, concrete_type)` pair needing
+      specialization, the checker walks
+      `program.impls` and verifies a matching
+      `implement <Iface> for <concrete_type>` decl exists.
+      Missing impls surface a targeted diagnostic
+      ("generic function 'min' requires `T is Cmp`, but
+      no `implement Cmp for Score` is in scope. Add the
+      impl or pick a type that satisfies the bound.")
+      pointing at the where-clause span.
+    - **Scope-aware first-arg inference**: the previous
+      monomorphizer pre-pass only inferred T from
+      literal first args (Int / Float / Bool). It now
+      threads a per-fn local-binding map (function
+      params + annotated `let` bindings) through both
+      the collector and the rewriter, so a call like
+      `let m: Score = min(a, b);` where `a: Score` is a
+      bound variable correctly infers `T = Score` and
+      both pre-passes agree on the specialization name.
+    - **`type_mangle` extended** to handle
+      `Type::Struct(name)` / `Type::Enum(name)` (return
+      `Struct_<Name>` / `Enum_<Name>`) so the
+      specialization symbol is a valid LLVM/C
+      identifier instead of falling through to the
+      `Debug`-with-replace fallback that emitted
+      illegal characters.
+    - **Non-generic-fn where-clause gate** clarified:
+      keeps a diagnostic for `fn f(...) where T is X`
+      where `f` has no `<T>`, but with a different
+      message ("where-bounds apply only to generic type
+      parameters") since the old WIP wording no longer
+      fits.
+    - **2 lib tests added**: `where_bound_satisfied_compiles`
+      (end-to-end compile of `min<T> where T is Cmp` against
+      `implement Cmp for Score`); `where_bound_unsatisfied_rejected`
+      (missing impl produces the right diagnostic).
+      Two existing tests (`where_bound_parses_but_gated`,
+      `where_clause_trailing_comma_accepted`) were updated to
+      assert the new ship state.
+    - **New example**
+      [examples/bounded_generics.intent](examples/bounded_generics.intent)
+      exercises `min<T>` and `max<T>` against
+      `implement Cmp for Score`, run end-to-end through
+      both backends. Wired into the cross-backend
+      e2e test. 767 → 768 lib tests; 47 e2e stable.
+    - **Remaining for #7 Phase 2**: vtables / dynamic
+      dispatch (first-class interface objects), auto-`==`
+      via `Eq` impls for struct/tuple/enum.
+
 98. ~~**#3 MVP: OwnedStr struct fields with auto-drop +
     LLVM string-interning bug fix**~~ — done 2026-05-21.
     Closes multi-session item #3 at the MVP level. The

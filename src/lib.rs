@@ -1614,19 +1614,60 @@ mod tests {
     }
 
     #[test]
-    fn where_bound_parses_but_gated() {
+    fn where_bound_satisfied_compiles() {
+        // T1.5 phase 2: a generic with `where T is Iface`
+        // monomorphizes when the call site's concrete type
+        // has a matching `implement Iface for <T>` impl.
         let source = r#"
-            fn pick<T>(x: T, y: T) -> T where T is Cmp { return x; }
-            fn main() -> i64 { return 0; }
+            interface Cmp { fn cmp(self: Score, other: Score) -> i64; }
+            struct Score { value: i64 }
+            implement Cmp for Score {
+              fn cmp(self: Score, other: Score) -> i64 {
+                if self.value < other.value { return -1; }
+                if self.value > other.value { return 1; }
+                return 0;
+              }
+            }
+            fn pick<T>(x: T, y: T) -> T where T is Cmp {
+              if x.cmp(y) <= 0 { return x; }
+              return y;
+            }
+            fn main() -> i64 {
+              let a: Score = Score { value: 7 };
+              let b: Score = Score { value: 3 };
+              let m: Score = pick(a, b);
+              return m.value;
+            }
+        "#;
+        compile(source)
+            .expect("bounded generic with satisfying impl should compile");
+    }
+
+    #[test]
+    fn where_bound_unsatisfied_rejected() {
+        // T1.5 phase 2: a generic call with no matching impl
+        // for the bound surfaces a clear diagnostic at the
+        // monomorphizer.
+        let source = r#"
+            interface Cmp { fn cmp(self: Score, other: Score) -> i64; }
+            struct Score { value: i64 }
+            fn pick<T>(x: T, y: T) -> T where T is Cmp {
+              if x.cmp(y) <= 0 { return x; }
+              return y;
+            }
+            fn main() -> i64 {
+              let a: Score = Score { value: 7 };
+              let b: Score = Score { value: 3 };
+              let m: Score = pick(a, b);
+              return m.value;
+            }
         "#;
         let errors = compile(source)
-            .expect_err("where bound should fail with WIP diagnostic");
+            .expect_err("missing impl should fail the bound check");
         assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("T1.5 phase 2")
-                    && e.message.contains("bounded-generic")),
-            "expected T1.5-phase-2 bounded-generic diagnostic, got: {:?}",
+            errors.iter().any(|e| e.message.contains("requires `T is Cmp`")
+                && e.message.contains("implement Cmp for Score")),
+            "expected bound-violation diagnostic, got: {:?}",
             errors
         );
     }
@@ -1885,15 +1926,22 @@ mod tests {
 
     #[test]
     fn where_clause_trailing_comma_accepted() {
+        // The parser accepts a trailing comma after the
+        // final `T is Iface` bound. With bounded generics
+        // shipping (T1.5 phase 2), an uncalled generic now
+        // hits the dead-generic diagnostic rather than the
+        // old WIP gate.
         let source = r#"
             fn id<T>(x: T) -> T where T is Cmp, { return x; }
             fn main() -> i64 { return 0; }
         "#;
         let errors = compile(source)
-            .expect_err("bounded generic hits T1.5 phase 2 gate");
+            .expect_err("dead generic with where-clause still rejected");
         assert!(
-            errors.iter().any(|e| e.message.contains("T1.5 phase 2")),
-            "expected T1.5 gate, got: {:?}",
+            errors
+                .iter()
+                .any(|e| e.message.contains("never called with concrete")),
+            "expected dead-generic diagnostic, got: {:?}",
             errors
         );
     }
@@ -6104,20 +6152,110 @@ mod tests {
     }
 
     #[test]
-    fn struct_non_copy_field_rejected() {
+    fn struct_mutex_field_still_rejected() {
+        // T1.2 phase 2b admits OwnedStr, Vec<T>, [T;N], Task,
+        // and Atomic<T> as struct fields. Mutex / Guard /
+        // Channel remain rejected — their RAII shape is more
+        // bespoke and not yet wired through the struct Drop
+        // path.
         let source = r#"
-            struct Bag { contents: Vec<i64> }
+            struct Locked { m: Mutex<i64> }
             fn main() -> i64 { return 0; }
         "#;
         let errors = compile(source)
-            .expect_err("non-Copy field should fail in v1");
+            .expect_err("Mutex field should fail in v1");
         assert!(
             errors
                 .iter()
                 .any(|e| e.message.contains("non-Copy")
-                    && e.message.contains("Vec / [T;N] / Task / Atomic")),
+                    && e.message.contains("Mutex / Guard / Channel")),
             "expected non-Copy struct-field diagnostic, got: {:?}",
             errors
+        );
+    }
+
+    #[test]
+    fn struct_array_field_compiles_and_indexes() {
+        // T1.2 phase 2b: `[T; N]` of Copy elements is a valid
+        // struct field. The C side renders it as `T name[N]`
+        // (declarator form); the LLVM side handles
+        // FieldAccess-as-Index-base by GEP'ing into the field
+        // aggregate and then into the element.
+        let source = r#"
+            struct Buf { data: [i64; 4] }
+            fn main() -> i64 {
+              let b: Buf = Buf { data: [1, 2, 3, 4] };
+              assert b.data[0] == 1;
+              assert b.data[3] == 4;
+              return 0;
+            }
+        "#;
+        compile(source)
+            .expect("[T;N] struct field with FieldAccess index should compile");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        assert!(
+            c.contains("int64_t data[4]"),
+            "expected inline C array declarator in struct typedef:\n{c}"
+        );
+    }
+
+    #[test]
+    fn struct_vec_field_compiles_and_drops() {
+        // T1.2 phase 2b: `Vec<T>` struct field is accepted;
+        // the Vec typedef is hoisted above the struct typedef
+        // and the struct Drop emits the per-element-type
+        // `__free` helper.
+        let source = r#"
+            struct Bag { contents: Vec<i64> }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let b: Bag = Bag { contents: xs };
+              return 0;
+            }
+        "#;
+        compile(source)
+            .expect("struct with Vec field should type-check");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        assert!(
+            c.contains("intent_vec_int64_t__free(v_b.contents)"),
+            "expected per-field Vec free in C output:\n{c}"
+        );
+    }
+
+    #[test]
+    fn user_drop_auto_call_at_scope_exit() {
+        // T2.7 phase 2: `implement Drop for T { fn drop(self:
+        // T) -> i64 { … } }` runs automatically at every scope
+        // exit where the binding hasn't been moved out. The
+        // hoisted `T_drop` is in the function table; both
+        // backends emit a call to it through the existing
+        // `TypedStmt::Drop` lowering.
+        let source = r#"
+            struct Resource { id: i64, open: bool }
+            interface Drop {
+              fn drop(self: Resource) -> i64;
+            }
+            implement Drop for Resource {
+              fn drop(self: Resource) -> i64 {
+                return self.id;
+              }
+            }
+            fn use_resource(id: i64) -> i64 {
+              let r: Resource = Resource { id: id, open: true };
+              return id;
+            }
+            fn main() -> i64 {
+              let a: i64 = use_resource(7);
+              assert a == 7;
+              return 0;
+            }
+        "#;
+        compile(source)
+            .expect("user-Drop auto-call should compile");
+        let c = compile_to_c(source).expect("C backend emits a program");
+        assert!(
+            c.contains("fn_Resource_drop(v_r)"),
+            "expected auto-call to user Drop at scope exit:\n{c}"
         );
     }
 

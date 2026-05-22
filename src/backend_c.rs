@@ -63,6 +63,14 @@ thread_local! {
     /// scope. T1.2 phase 2b.
     static STRUCT_FIELDS_REGISTRY: std::cell::RefCell<std::collections::HashMap<String, Vec<(String, Type)>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Names of structs / enums that have an `implement Drop
+    /// for T` impl in the program (hoisted to `T_drop`).
+    /// Populated at the start of `emit_c` from the function
+    /// table. Consulted by the `TypedStmt::Drop` handler to
+    /// auto-call the user's `drop(self)` method at scope exit
+    /// when the type has no owning fields. T2.7 phase 2.
+    static USER_DROP_REGISTRY: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
 /// Per-name C struct typedef for a payloaded enum. Prefixed
@@ -108,6 +116,15 @@ pub fn emit_c(program: &TypedProgram) -> String {
             reg.insert(decl.name.clone(), decl.fields.clone());
         }
     });
+    USER_DROP_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        reg.clear();
+        for f in &program.functions {
+            if let Some(type_name) = f.name.strip_suffix("_drop") {
+                reg.insert(type_name.to_string());
+            }
+        }
+    });
     // Emit the body first (Vec bundles + intents + functions + main),
     // then prepend includes + only the runtime helpers it actually
     // references. Keeps the generated C tidy when SMT elision discharges
@@ -143,10 +160,30 @@ pub fn emit_c(program: &TypedProgram) -> String {
             collect_tuple_shapes_in_stmt(stmt, &mut tuple_seen, &mut tuple_shapes);
         }
     }
-    // Emit user-declared struct typedefs first (before tuples
-    // and vecs) so other shapes can reference them by name.
-    // Declaration order is preserved so a struct can reference
-    // a previously-declared struct as a field. T1.2 phase 1.
+    // Collect any Vec element types referenced from struct
+    // fields and emit those Vec bundles BEFORE the struct
+    // typedefs, so a `struct Bag { contents: Vec<i64> }`
+    // resolves `intent_vec_int64_t` at its own declaration.
+    // Track the early-emitted set so the post-struct pass
+    // doesn't re-emit the same bundle. T1.2 phase 2b.
+    let mut struct_field_vec_seen = BTreeSet::<String>::new();
+    let mut struct_field_vec_elements: Vec<Type> = Vec::new();
+    for decl in &program.structs {
+        for (_, fty) in &decl.fields {
+            collect_vec_elements(fty, &mut struct_field_vec_seen, &mut struct_field_vec_elements);
+        }
+    }
+    let mut emitted_vec_bundles: BTreeSet<String> = BTreeSet::new();
+    for element in &struct_field_vec_elements {
+        emit_vec_bundle(element, &mut body);
+        emitted_vec_bundles.insert(element_tag(element));
+    }
+    if !struct_field_vec_elements.is_empty() {
+        body.push('\n');
+    }
+    // Emit user-declared struct typedefs. Declaration order
+    // is preserved so a struct can reference a previously-
+    // declared struct as a field. T1.2 phase 1.
     for decl in &program.structs {
         emit_struct_bundle(decl, &mut body);
     }
@@ -202,6 +239,12 @@ pub fn emit_c(program: &TypedProgram) -> String {
         body.push('\n');
     }
     for element in &element_types {
+        // Skip Vec bundles already emitted in the pre-struct
+        // pass for fields like `struct Bag { contents: Vec<i64> }`.
+        // T1.2 phase 2b.
+        if emitted_vec_bundles.contains(&element_tag(element)) {
+            continue;
+        }
         emit_vec_bundle(element, &mut body);
     }
 
@@ -614,6 +657,42 @@ fn collect_vec_elements_in_expr(
             collect_vec_elements_in_expr(index, seen, out);
         }
         TypedExprKind::Len { array, .. } => collect_vec_elements_in_expr(array, seen, out),
+        TypedExprKind::Tuple { elements } => {
+            for e in elements {
+                collect_vec_elements_in_expr(e, seen, out);
+            }
+        }
+        TypedExprKind::StructLit { fields, .. } => {
+            for (_, e) in fields {
+                collect_vec_elements_in_expr(e, seen, out);
+            }
+        }
+        TypedExprKind::FieldAccess { object, .. } => {
+            collect_vec_elements_in_expr(object, seen, out);
+        }
+        TypedExprKind::TupleAccess { tuple, .. } => {
+            collect_vec_elements_in_expr(tuple, seen, out);
+        }
+        TypedExprKind::EnumVariantWithPayload { payload, .. } => {
+            collect_vec_elements_in_expr(payload, seen, out);
+        }
+        TypedExprKind::Match { scrutinee, arms } => {
+            collect_vec_elements_in_expr(scrutinee, seen, out);
+            for arm in arms {
+                collect_vec_elements_in_expr(&arm.body, seen, out);
+            }
+        }
+        TypedExprKind::IfExpr { cond, then_value, else_value } => {
+            collect_vec_elements_in_expr(cond, seen, out);
+            collect_vec_elements_in_expr(then_value, seen, out);
+            collect_vec_elements_in_expr(else_value, seen, out);
+        }
+        TypedExprKind::Block { stmts, tail } => {
+            for s in stmts {
+                collect_vec_elements_in_stmt(s, seen, out);
+            }
+            collect_vec_elements_in_expr(tail, seen, out);
+        }
         _ => {}
     }
 }
@@ -1447,20 +1526,53 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 out.push_str(");\n");
             }
             Type::Struct(struct_name) => {
-                // Free every owning field of the struct. v1 only
-                // permits OwnedStr as a non-Copy field; later
-                // phases recurse into nested non-Copy structs.
-                // T1.2 phase 2b.
+                // Auto-call the user's `Drop` impl if one exists
+                // AND the struct has no owning fields (so the
+                // value-by-self consume can't conflict with
+                // per-field cleanup). T2.7 phase 2.
                 let fields = STRUCT_FIELDS_REGISTRY
                     .with(|r| r.borrow().get(struct_name).cloned())
                     .unwrap_or_default();
+                let has_user_drop = USER_DROP_REGISTRY
+                    .with(|r| r.borrow().contains(struct_name));
+                let has_owning_field = fields.iter().any(|(_, ty)| {
+                    matches!(ty, Type::OwnedStr | Type::Vec(_))
+                });
+                if has_user_drop && !has_owning_field {
+                    out.push_str("  (void)");
+                    out.push_str(&function_name(&format!("{}_drop", struct_name)));
+                    out.push_str("(");
+                    out.push_str(&local_name(name));
+                    out.push_str(");\n");
+                    // User drop consumed the value; skip the
+                    // per-field free pass below.
+                    return;
+                }
+                // Free every owning field of the struct.
+                // OwnedStr fields free their heap buffer; Vec
+                // fields go through the per-element-type
+                // `intent_vec_<T>__free` helper. Stack-shaped
+                // affine fields ([T;N], Task, Atomic) need no
+                // runtime drop. T1.2 phase 2b.
                 for (field_name, field_ty) in fields {
-                    if matches!(field_ty, Type::OwnedStr) {
-                        out.push_str("  free((void*)");
-                        out.push_str(&local_name(name));
-                        out.push('.');
-                        out.push_str(&field_name);
-                        out.push_str(");\n");
+                    match field_ty {
+                        Type::OwnedStr => {
+                            out.push_str("  free((void*)");
+                            out.push_str(&local_name(name));
+                            out.push('.');
+                            out.push_str(&field_name);
+                            out.push_str(");\n");
+                        }
+                        Type::Vec(ref element) => {
+                            out.push_str("  ");
+                            out.push_str(&vec_helper(element, "free"));
+                            out.push('(');
+                            out.push_str(&local_name(name));
+                            out.push('.');
+                            out.push_str(&field_name);
+                            out.push_str(");\n");
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -2018,9 +2130,22 @@ fn emit_expr(expr: &TypedExpr) -> String {
         TypedExprKind::StructLit { type_name, fields } => {
             // `(Struct_<Name>){ .field1 = …, .field2 = … }`
             // designated-initializer compound literal. T1.2.
+            // Array-typed fields with an inline `[…]` ArrayLit
+            // initializer use a bare-brace `{e1, e2, …}` form
+            // since C forbids assigning a compound-literal-array
+            // to a struct member of array type. T1.2 phase 2b.
             let parts: Vec<String> = fields
                 .iter()
-                .map(|(n, e)| format!(".{} = {}", n, emit_expr(e)))
+                .map(|(n, e)| {
+                    let rhs = match (&e.ty, &e.kind) {
+                        (Type::Array { .. }, TypedExprKind::ArrayLit { elements }) => {
+                            let parts: Vec<String> = elements.iter().map(emit_expr).collect();
+                            format!("{{ {} }}", parts.join(", "))
+                        }
+                        _ => emit_expr(e),
+                    };
+                    format!(".{} = {}", n, rhs)
+                })
                 .collect();
             format!("({}){{ {} }}", struct_c_name(type_name), parts.join(", "))
         }
@@ -2729,8 +2854,21 @@ pub(crate) fn emit_struct_bundle(
     let cname = struct_c_name(&decl.name);
     out.push_str("typedef struct {\n");
     for (fname, fty) in &decl.fields {
-        let storage = c_element_storage(fty);
-        out.push_str(&format!("    {} {};\n", storage, fname));
+        // `format_declarator` handles arrays natively — `[T;N]`
+        // becomes `T fname[N]` so the field is a real C array,
+        // not a missing typedef ref. Other field types fall
+        // through to their normal storage spelling.
+        match fty {
+            Type::Array { .. } => {
+                out.push_str("    ");
+                out.push_str(&format_declarator(fty, fname));
+                out.push_str(";\n");
+            }
+            _ => {
+                let storage = c_element_storage(fty);
+                out.push_str(&format!("    {} {};\n", storage, fname));
+            }
+        }
     }
     out.push_str(&format!("}} {};\n", cname));
 }

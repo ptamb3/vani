@@ -1,22 +1,24 @@
-intent "T2.7 phase 1: user-defined Drop interface (manual call)";
+intent "T2.7 phase 2: user-defined Drop interface (auto-call at scope exit)";
 
 // `implement Drop for T { fn drop(self: T) -> i64 { ... } }` declares
-// a user-defined destructor contract for type T. V1 validates the
-// signature (must be `fn drop(self: T) -> i64`) and hoists the
-// implementation as `T_drop` so the existing method-dispatch path
-// can resolve `t.drop()` statically.
-//
-// Auto-call at scope exit is deferred to T2.7 phase 2, which needs
-// the RAII-chains work for non-Copy struct fields (#3) to land
-// first. Until then, users call `drop()` explicitly where they
-// want the destructor to run.
+// a user-defined destructor for type T. The compiler validates the
+// signature (must be `fn drop(self: T) -> i64`), hoists the
+// implementation as `T_drop`, and inserts an auto-call at every
+// scope exit where a non-moved binding of type T goes out of
+// scope. Users can still call `t.drop()` manually; the affine
+// system marks the binding as moved so the scope-exit auto-call
+// won't double-fire.
 //
 // V1 restrictions on Drop impls:
 // - Exactly one method named `drop`
 // - Signature: `fn drop(self: T) -> i64`
 // - Return value is conventionally the "release status" (e.g. 0
 //   for success). The wider Drop return-type story (unit / Result)
-//   waits on phase 2.
+//   waits on a later phase.
+// - When T also has heap-shaped fields (OwnedStr / Vec), the auto-
+//   call is suppressed and the per-field free pass runs instead —
+//   the user's drop can be invoked explicitly if richer behavior
+//   is needed.
 
 struct Resource {
   id: i64,
@@ -36,21 +38,20 @@ implement Drop for Resource {
   }
 }
 
-fn use_and_release(id: i64) -> i64 {
+fn use_resource(id: i64) -> i64 {
   let r: Resource = Resource { id: id, open: true };
   print "  using resource", r.id;
-  // Manual call — Phase 2 will make this automatic at scope exit
-  // for types with an `implement Drop`.
-  return r.drop();
+  return id;
+  // `r` goes out of scope here — Resource_drop fires automatically.
 }
 
 fn main() -> i64 {
   print "fn 1 starts";
-  let a: i64 = use_and_release(7);
-  print "fn 1 ends, dropped =", a;
+  let a: i64 = use_resource(7);
+  print "fn 1 ends, used =", a;
   print "fn 2 starts";
-  let b: i64 = use_and_release(13);
-  print "fn 2 ends, dropped =", b;
+  let b: i64 = use_resource(13);
+  print "fn 2 ends, used =", b;
   assert a == 7;
   assert b == 13;
   return 0;

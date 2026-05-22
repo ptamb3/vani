@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-21
-**Test totals:** 767 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 771 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -389,6 +389,49 @@ fn main() returns i64 {
    (value-self, ref-self, ref-self reading consts,
    value-self returning a new instance) end-to-end
    and is included in the `intentc test` pass.
+   **T2.7 phase 2 — user-Drop auto-call at scope exit done 2026-05-21**:
+   `implement Drop for T { fn drop(self: T) -> i64 }` now runs
+   automatically at every scope exit where a non-moved binding
+   of T goes out of scope. The auto-call is suppressed when
+   T also has heap-shaped fields (OwnedStr / Vec) — those
+   route through the per-field free pass; users invoke
+   `t.drop()` explicitly for richer behavior. Two key wiring
+   pieces: (1) the affine-aggregate registry now picks up
+   any struct with a hoisted `<T>_drop` function (so the
+   scope-exit pass doesn't short-circuit on `is_copy()=true`
+   for Copy-only structs), and (2) `self` inside `<T>_drop`
+   bodies gets `VarInfo.no_drop = true` to break the
+   otherwise-infinite recursion (both the scope-exit pass and
+   the Return-path cleanup consult this flag). See
+   [examples/drop_interface.intent](examples/drop_interface.intent).
+
+   **T1.2 phase 2b — affine struct fields expanded 2026-05-21**:
+   Structs now accept `OwnedStr`, `Vec<T>`, `[T;N]` of Copy
+   elements, `Task`, and `Atomic<T>` as fields. Both backends
+   emit per-field `free` (heap fields) or no-op (stack-shaped
+   fields) on struct Drop. Tree-LLVM gained a FieldAccess-as-
+   Index-base arm so `t.data[i]` works. Tree-C reorders to
+   emit Vec typedefs before struct typedefs for `struct {
+   xs: Vec<T> }` to resolve at its declaration. Struct field
+   `[T;N]` uses an inline `T name[N]` declarator and a bare-
+   brace `{…}` initializer for the StructLit field path
+   (C forbids compound-literal-array assignment into struct
+   members). See
+   [examples/struct_mixed_fields.intent](examples/struct_mixed_fields.intent).
+
+   **T1.5 phase 2 — bounded generics done 2026-05-21**:
+   `fn min<T>(a: T, b: T) -> T where T is Cmp` now monomorphizes
+   when the call-site concrete type has a matching
+   `implement Cmp for <T>` decl. The previous WIP gate in
+   `monomorphize_generics_in_program` has been replaced by an
+   impl-existence check that walks `program.impls` for each
+   (template, concrete) pair and surfaces a clean diagnostic
+   if no satisfying impl is in scope. Scope-aware first-arg
+   inference (annotated `let` + fn params) means calls like
+   `let m: Score = min(a, b);` resolve correctly. Vtables /
+   dynamic dispatch still pending. See
+   [examples/bounded_generics.intent](examples/bounded_generics.intent).
+
    **Phase 2b (OwnedStr fields) done 2026-05-21**: structs
    may now carry an `OwnedStr` field. The aggregate is
    automatically affine; both backends emit a `free` of the
