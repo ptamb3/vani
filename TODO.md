@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #130)
+## ⏳ Resume here (paused 2026-05-22, after closure #131)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -52,7 +52,12 @@ emitter was also using `c_element_storage` for the match
 result type, which collapsed every enum to `int32_t` and
 mismatched the arm bodies' struct literals; switched to
 `c_type_name` so payloaded enums render as `Enum_<Name>`.
-Test totals: 811 lib + 47 e2e passing.
+#131 Cross-backend parity runner covers all examples:
+the runner was missing 14 of the 57 example programs (the
+gap that allowed #130's C-side bug to ship undetected).
+All 57 examples now run identically on both backends.
+Test totals: 811 lib + 47 e2e passing (the e2e runner
+itself iterates over 57 examples now instead of 43).
 
 ### Recommended next (pick one)
 

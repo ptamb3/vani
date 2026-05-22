@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 811 lib + 47 end-to-end tests passing. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 811 lib + 47 end-to-end tests passing; the cross-backend parity runner now covers 57 of the 57 examples under `examples/` (was 43). (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,24 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **Cross-backend parity runner covers all examples done 2026-05-22**:
+   the `llvm_backend_run_produces_same_output_as_c` runner
+   in [tests/run_end_to_end.rs](tests/run_end_to_end.rs)
+   was missing 14 of the 57 examples — including
+   `try_keyword.intent`, `block_expressions.intent`,
+   `option_types.intent`, `option_error_propagation.intent`,
+   `interfaces.intent`, `generic_functions.intent`,
+   `composite_types.intent`, `fn_pointers.intent`,
+   `methods.intent`, `assert_messages.intent`,
+   `tracker.intent`, and the three Devanagari keyword
+   examples (`hindi_keywords.intent`,
+   `marathi_keywords.intent`, `sanskrit_keywords.intent`).
+   Closure #130 surfaced this gap by hitting a pre-existing
+   C codegen bug that the parity runner would have caught
+   at landing time had `try_keyword.intent` been listed.
+   All 57 examples now run identically on both backends.
+   Closure #131.
 
    **`try` desugar admits intermediate `print` done 2026-05-22**:
    the `let v = try opt; …; return X;` desugar's
