@@ -3004,6 +3004,26 @@ mod tests {
     }
 
     #[test]
+    fn vec_set_owned_str_frees_old_element_in_llvm() {
+        // Closure #157: LLVM's per-shape Vec __set helper
+        // only freed the old slot for `Type::Vec(inner)`
+        // element types. `set(Vec<OwnedStr>, i, v)` and
+        // similar leaked the previous slot's heap.
+        // Extended for OwnedStr, Struct (with owning
+        // fields), and Enum (with OwnedStr / Vec payload)
+        // element types — mirrors closure #127's tree-C
+        // `c_element_drop_old` extension.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<OwnedStr> = vec("a" + "1", "b" + "2");
+              let ys: Vec<OwnedStr> = set(xs, 0, "c" + "3");
+              return 0;
+            }
+        "#;
+        compile(source).expect("set(Vec<OwnedStr>) should compile");
+    }
+
+    #[test]
     fn clone_at_enum_with_owned_str_payload_works() {
         // Closure #156: `clone_at(ref Vec<Msg>, i)` where
         // `Msg.Text(OwnedStr)` was panicking in tree-LLVM

@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #156)
+## ⏳ Resume here (paused 2026-05-23, after closure #157)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -218,8 +218,14 @@ OR-chain-checks the tag against payloaded tags,
 branches to a deep-clone path
 (`intent_str_concat` of the OwnedStr payload +
 insertvalue into a new enum struct) vs a tag-only
-path (pass slot through), phi-joins. Test totals:
-848 lib + 47 e2e passing.
+path (pass slot through), phi-joins. #157 LLVM
+Vec `__set` frees old element: the per-shape Vec
+__set helper only freed for `Type::Vec(inner)`
+elements; `set(Vec<OwnedStr|Struct|Enum>, …)`
+leaked the previous slot's heap. Closure #127 had
+extended tree-C; #157 closes LLVM with OwnedStr /
+Struct / Enum arms. Test totals: 849 lib + 47 e2e
+passing.
 
 ### Recommended next (pick one)
 

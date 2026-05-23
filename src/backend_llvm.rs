@@ -4646,19 +4646,114 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
     // an in-place set leaks the prior inner-Vec's heap
     // buffer. Refines #7.
     if !element_is_copy {
-        if let Type::Vec(inner) = element {
-            let inner_free = format!(
-                "@intent_vec_{}__free",
-                vec_struct_tag(inner)
-            );
-            out.push_str(&format!(
-                "  %old = load {}, {}* %p\n",
-                elt_ty, elt_ty
-            ));
-            out.push_str(&format!(
-                "  call void {}({} %old)\n",
-                inner_free, elt_ty
-            ));
+        // Closure #157: extend the per-shape Vec __set
+        // helper's old-element drop to also handle
+        // OwnedStr, Struct (with owning fields), and
+        // payloaded Enum element types. Was Vec-only —
+        // `set(Vec<OwnedStr>, …)` and friends leaked the
+        // previous slot's heap.
+        match element {
+            Type::Vec(inner) => {
+                let inner_free = format!(
+                    "@intent_vec_{}__free",
+                    vec_struct_tag(inner)
+                );
+                out.push_str(&format!(
+                    "  %old = load {}, {}* %p\n",
+                    elt_ty, elt_ty
+                ));
+                out.push_str(&format!(
+                    "  call void {}({} %old)\n",
+                    inner_free, elt_ty
+                ));
+            }
+            Type::OwnedStr => {
+                out.push_str("  %old = load i8*, i8** %p\n");
+                out.push_str("  call void @free(i8* %old)\n");
+            }
+            Type::Struct(name) => {
+                let fields = LLVM_STRUCT_FIELDS_REGISTRY
+                    .with(|r| r.borrow().get(name).cloned())
+                    .unwrap_or_default();
+                let has_owning = fields.iter().any(|(_, ty)| !ty.is_copy());
+                if has_owning {
+                    let s_struct = format!("%Struct_{}", name);
+                    let mut tmp_counter: usize = 0;
+                    emit_vec_element_struct_drop(
+                        &s_struct,
+                        "%p",
+                        &fields,
+                        &mut tmp_counter,
+                        out,
+                    );
+                }
+            }
+            Type::Enum(name) => {
+                let payload_ty = LLVM_ENUM_PAYLOAD_REGISTRY
+                    .with(|r| r.borrow().get(name).cloned());
+                let payload_tags: Vec<u32> = LLVM_ENUM_PAYLOAD_TAGS_REGISTRY
+                    .with(|r| r.borrow().get(name).cloned().unwrap_or_default());
+                let heap_kind = match &payload_ty {
+                    Some(Type::OwnedStr) => Some("owned_str"),
+                    Some(Type::Vec(_)) => Some("vec"),
+                    _ => None,
+                };
+                if heap_kind.is_some() && !payload_tags.is_empty() {
+                    let s_enum = format!("%Enum_{}", name);
+                    out.push_str(&format!(
+                        "  %old = load {}, {}* %p\n",
+                        s_enum, s_enum
+                    ));
+                    out.push_str(&format!(
+                        "  %old_tag = extractvalue {} %old, 0\n",
+                        s_enum
+                    ));
+                    out.push_str(&format!(
+                        "  %old_payload = extractvalue {} %old, 1\n",
+                        s_enum
+                    ));
+                    let mut prev = "i1 false".to_string();
+                    for (idx, t) in payload_tags.iter().enumerate() {
+                        out.push_str(&format!(
+                            "  %set_cmp_{} = icmp eq i32 %old_tag, {}\n",
+                            idx, t
+                        ));
+                        out.push_str(&format!(
+                            "  %set_or_{} = or {}, %set_cmp_{}\n",
+                            idx, prev, idx
+                        ));
+                        prev = format!("i1 %set_or_{}", idx);
+                    }
+                    let cond = prev.trim_start_matches("i1 ").to_string();
+                    out.push_str(&format!(
+                        "  br i1 {}, label %set_enum_free, label %set_enum_done\n",
+                        cond
+                    ));
+                    out.push_str("set_enum_free:\n");
+                    match heap_kind {
+                        Some("owned_str") => {
+                            out.push_str("  call void @free(i8* %old_payload)\n");
+                        }
+                        Some("vec") => {
+                            if let Some(Type::Vec(inner)) = &payload_ty {
+                                let free_name = format!(
+                                    "@intent_vec_{}__free",
+                                    vec_struct_tag(inner)
+                                );
+                                let v_struct = vec_struct_name(inner);
+                                out.push_str(&format!(
+                                    "  call void {}({} %old_payload)\n",
+                                    free_name, v_struct
+                                ));
+                            }
+                        }
+                        _ => {}
+                    }
+                    out.push_str("  br label %set_enum_done\n");
+                    out.push_str("set_enum_done:\n");
+                }
+            }
+            _ => {}
         }
     }
     out.push_str(&format!("  store {} %v, {}* %p\n", elt_ty, elt_ty));

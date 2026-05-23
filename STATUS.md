@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 848 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 849 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,19 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **LLVM Vec `__set` frees old element done 2026-05-23**:
+   The per-shape Vec `__set` helper in LLVM only freed
+   the old slot for `Type::Vec(inner)` element types —
+   `set(Vec<OwnedStr>, …)`, `set(Vec<Struct{heap}>, …)`
+   and `set(Vec<Enum{OwnedStr}>, …)` leaked the previous
+   slot's heap. Closure #127 had extended the analogous
+   tree-C `c_element_drop_old`; this closes the LLVM
+   parallel by adding `Type::OwnedStr` (direct `@free`),
+   `Type::Struct` (per-field `emit_vec_element_struct_drop`)
+   and `Type::Enum` (extract tag/payload, OR-chain over
+   payloaded tags, branch to free vs done block) arms.
+   Closure #157.
 
    **`clone_at` Enum element done 2026-05-23**:
    tree-LLVM's `clone_at` panicked for Enum element
