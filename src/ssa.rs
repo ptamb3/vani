@@ -1846,18 +1846,53 @@ fn lower_expr_to_operand(
             Ok(Operand::Value(v))
         }
         TypedExprKind::Call { name, args, .. } => {
+            // For `clone(xs)` specifically: the checker
+            // treats clone as borrow-semantics (xs stays
+            // live for the caller), so a fresh-Vec /
+            // fresh-OwnedStr argument has no owner after the
+            // call and leaks. Emit a Drop for each fresh
+            // non-Copy arg AFTER the clone call returns. Var
+            // / FieldAccess args skip — the binding owns the
+            // value. Closure #143. Other builtins (push,
+            // set, vec) either consume args at the checker
+            // level (so their fresh-arg cases are already
+            // handled via the consume path) or are
+            // construction-only (vec literal).
+            let needs_drop_after_call: Vec<bool> = args
+                .iter()
+                .map(|a| {
+                    name == "clone" && crate::ir::is_fresh_non_copy(a)
+                })
+                .collect();
             let lowered: Result<Vec<Operand>, LowerError> = args
                 .iter()
                 .map(|a| lower_expr_to_operand(a, b, locals))
                 .collect();
+            let lowered_args = lowered?;
+            let args_for_drop = lowered_args.clone();
             let v = b.emit(
                 expr.ty.clone(),
                 expr.span,
                 InstrKind::Call {
                     name: name.clone(),
-                    args: lowered?,
+                    args: lowered_args,
                 },
             );
+            for (i, (arg, &needs_drop)) in
+                args.iter().zip(needs_drop_after_call.iter()).enumerate()
+            {
+                if needs_drop {
+                    b.emit(
+                        Type::I64,
+                        expr.span,
+                        InstrKind::Drop {
+                            source: args_for_drop[i].clone(),
+                            name: "_".to_string(),
+                            ty: arg.ty.clone(),
+                        },
+                    );
+                }
+            }
             Ok(Operand::Value(v))
         }
         TypedExprKind::Cast { expr: inner, ty } => {

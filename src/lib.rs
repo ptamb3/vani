@@ -3004,6 +3004,31 @@ mod tests {
     }
 
     #[test]
+    fn clone_of_fresh_vec_drops_borrowed_arg() {
+        // Closure #143: `clone(vec(1, 2, 3))` was leaking
+        // the fresh Vec passed in. The checker treats
+        // `clone(xs)` as borrow-semantics (xs continues to
+        // be readable after the call — useful when you
+        // want a deep copy without consuming the source),
+        // but for a fresh-Vec argument there's no other
+        // binding to own the heap. SSA Call lowering now
+        // emits a `Drop` after the `clone` call for each
+        // fresh non-Copy argument. Var / FieldAccess args
+        // skip — the binding owns the value.
+        let source = r#"
+            fn main() -> i64 {
+              let i: i64 = 0;
+              while i < 5 {
+                let c: Vec<i64> = clone(vec(1, 2, 3));
+                i = i + 1;
+              }
+              return 0;
+            }
+        "#;
+        compile(source).expect("clone(fresh Vec) should compile");
+    }
+
+    #[test]
     fn index_of_fresh_vec_drops_buffer() {
         // Closure #142: `vec(1, 2, 3)[0]` (and other
         // fresh-Vec index shapes) was silently leaking the

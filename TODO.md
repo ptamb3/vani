@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #142)
+## ⏳ Resume here (paused 2026-05-22, after closure #143)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -124,7 +124,12 @@ leaked). #142 `Index` of fresh Vec drops buffer:
 `vec(1, 2, 3)[0]` was leaking the same way as
 `len(vec(...))`. SSA + tree-C Index for Vec now
 free a fresh-Vec operand after reading `.data[i]`.
-Test totals: 830 lib + 47 e2e passing.
+#143 `clone(fresh_vec)` drops borrowed arg: the
+checker treats `clone(xs)` as borrow-semantics; for
+a fresh-Vec arg the buffer had no other owner. SSA
+Call lowering now emits a Drop after the clone for
+each fresh non-Copy argument. Test totals: 831 lib
++ 47 e2e passing.
 
 ### Recommended next (pick one)
 
