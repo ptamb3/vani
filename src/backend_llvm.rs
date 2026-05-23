@@ -1234,6 +1234,84 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                         out,
                     );
                 }
+            } else if let Type::Enum(enum_name) = &expr.ty {
+                // Closure #146: enums with heap-shaped payload
+                // (OwnedStr / Vec) need their payload freed
+                // at discard. Tag-only enums fall through to
+                // a bare emit. Mirrors the scope-exit Drop
+                // logic for enums above.
+                let payload_ty = LLVM_ENUM_PAYLOAD_REGISTRY
+                    .with(|r| r.borrow().get(enum_name).cloned());
+                let value = emit_expr(expr, ctx, out);
+                let heap_kind = match &payload_ty {
+                    Some(Type::OwnedStr) => Some("owned_str"),
+                    Some(Type::Vec(_)) => Some("vec"),
+                    _ => None,
+                };
+                if let Some(kind) = heap_kind {
+                    let payload_tags: Vec<u32> = LLVM_ENUM_PAYLOAD_TAGS_REGISTRY
+                        .with(|r| r.borrow().get(enum_name).cloned().unwrap_or_default());
+                    if !payload_tags.is_empty() {
+                        let s_ty = format!("%Enum_{}", enum_name);
+                        let tag = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = extractvalue {} {}, 0\n",
+                            tag, s_ty, value
+                        ));
+                        let payload = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = extractvalue {} {}, 1\n",
+                            payload, s_ty, value
+                        ));
+                        let free_lbl = ctx.fresh_label("disc_enum_free");
+                        let done_lbl = ctx.fresh_label("disc_enum_done");
+                        let mut prev = "i1 false".to_string();
+                        for t in &payload_tags {
+                            let cmp = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = icmp eq i32 {}, {}\n",
+                                cmp, tag, t
+                            ));
+                            let or_v = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = or {}, {}\n",
+                                or_v, prev, cmp
+                            ));
+                            prev = format!("i1 {}", or_v);
+                        }
+                        let cond = prev.trim_start_matches("i1 ").to_string();
+                        out.push_str(&format!(
+                            "  br i1 {}, label %{}, label %{}\n",
+                            cond, free_lbl, done_lbl
+                        ));
+                        out.push_str(&format!("{}:\n", free_lbl));
+                        match kind {
+                            "owned_str" => {
+                                out.push_str(&format!(
+                                    "  call void @free(i8* {})\n",
+                                    payload
+                                ));
+                            }
+                            "vec" => {
+                                if let Some(Type::Vec(element)) = &payload_ty {
+                                    let free_name = format!(
+                                        "@intent_vec_{}__free",
+                                        vec_struct_tag(element)
+                                    );
+                                    let v_struct = vec_struct_name(element);
+                                    out.push_str(&format!(
+                                        "  call void {}({} {})\n",
+                                        free_name, v_struct, payload
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
+                        out.push_str(&format!("  br label %{}\n", done_lbl));
+                        out.push_str(&format!("{}:\n", done_lbl));
+                        ctx.current_block = done_lbl;
+                    }
+                }
             } else if is_scalar(&expr.ty) {
                 let _ = emit_expr(expr, ctx, out);
             } else if let Type::Vec(element) = &expr.ty {

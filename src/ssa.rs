@@ -820,6 +820,10 @@ fn lower_stmt(
             let needs_drop = match &ty {
                 Type::OwnedStr | Type::Vec(_) => true,
                 Type::Struct(_) => !ty.is_copy(),
+                // Closure #146: enums with heap-shaped
+                // payloads (OwnedStr / Vec) need their
+                // payload freed at discard.
+                Type::Enum(_) => !ty.is_copy(),
                 _ => false,
             };
             if needs_drop {

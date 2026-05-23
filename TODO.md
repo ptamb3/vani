@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #145)
+## ⏳ Resume here (paused 2026-05-23, after closure #146)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -142,8 +142,15 @@ silently leaking — Discard handlers only matched
 OwnedStr/Vec. Tree-C, tree-LLVM, and SSA Discard
 extended to also drop Struct values (spill + per-field
 walk). Tree-LLVM arm also reordered ahead of
-`is_scalar` (which treats structs as scalars). Test
-totals: 834 lib + 47 e2e passing.
+`is_scalar` (which treats structs as scalars). #146
+`let _ = make_enum()` frees heap payload: same shape
+for enums with OwnedStr / Vec<T> payloads. Tree-C
+spills to `Enum_<Name> _intent_discard` and switches
+on the tag. Tree-LLVM mirrors the scope-exit Drop
+logic for enums (extract tag/payload, OR-chain of
+icmp eq, conditional free branch). SSA Discard emits
+Drop for non-Copy enums. Test totals: 835 lib + 47
+e2e passing.
 
 ### Recommended next (pick one)
 

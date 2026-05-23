@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 834 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 835 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,21 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`let _ = make_enum()` frees heap payload done 2026-05-23**:
+   `let _ = make_enum();` for an enum with a heap-shaped
+   payload (OwnedStr / Vec<T>) was leaking. Same shape
+   as closure #145's struct discard fix — Tree-C, tree-
+   LLVM, and SSA Discard handlers only matched
+   OwnedStr / Vec / Struct; `Type::Enum(_)` fell
+   through. Tree-C spills to `Enum_<Name> _intent_discard`,
+   switches on the tag, and frees the payload for the
+   payloaded variants. Tree-LLVM mirrors the scope-exit
+   Drop logic for enums (extractvalue tag / extractvalue
+   payload, OR-chain of `icmp eq` tags, conditional
+   branch to the free block, `@free` or
+   `@intent_vec_<tag>__free`). SSA Discard emits
+   `InstrKind::Drop` for non-Copy enums. Closure #146.
 
    **`let _ = make_struct()` frees heap fields done 2026-05-23**:
    `let _ = make_struct();` for a struct with heap-shaped

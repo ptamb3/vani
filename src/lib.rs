@@ -3004,6 +3004,43 @@ mod tests {
     }
 
     #[test]
+    fn discard_of_enum_with_heap_payload_frees_payload() {
+        // Closure #146: `let _ = make_enum();` for an enum
+        // with a heap-shaped payload (OwnedStr / Vec<T>)
+        // was leaking. Tree-C, tree-LLVM, and SSA Discard
+        // handlers only matched OwnedStr / Vec / Struct —
+        // `Type::Enum(_)` fell through to `(void) expr`
+        // (tree-C) or bare emit_expr (LLVM / SSA), never
+        // freeing the payload for active payloaded variants.
+        // Mirrors the scope-exit Drop logic for enums.
+        let source = r#"
+            enum Msg { Empty, Text(OwnedStr) }
+            fn make() -> Msg { return Msg.Text("hi" + ""); }
+            fn main() -> i64 {
+              let i: i64 = 0;
+              while i < 5 {
+                let _ = make();
+                i = i + 1;
+              }
+              return 0;
+            }
+        "#;
+        compile(source).expect("discard of enum should compile");
+        let c = compile_to_c(source).expect("emits C");
+        // Tree-C must spill the discarded enum and switch
+        // on the tag, freeing the payload for payloaded
+        // variants.
+        assert!(
+            c.contains("Enum_Msg _intent_discard ="),
+            "expected enum spill in discard, got:\n{c}"
+        );
+        assert!(
+            c.contains("free((void*)_intent_discard.payload)"),
+            "expected payload free in discard, got:\n{c}"
+        );
+    }
+
+    #[test]
     fn discard_of_struct_with_heap_field_frees_fields() {
         // Closure #145: `let _ = make_struct();` for a struct
         // whose fields hold heap-owning values (OwnedStr,

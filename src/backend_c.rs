@@ -1849,6 +1849,60 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                     out.push_str(");\n");
                 }
             }
+            Type::Enum(enum_name) => {
+                // Closure #146: `let _ = make_enum();` for an
+                // enum with a heap-shaped payload (OwnedStr,
+                // Vec<T>) was leaking. Mirror the scope-exit
+                // Drop logic from `TypedStmt::Drop`'s
+                // `Type::Enum` arm: bind to a brace-scoped
+                // tmp, switch on the tag, and free the
+                // payload for variants that carry one.
+                let payload_ty = ENUM_PAYLOAD_REGISTRY
+                    .with(|r| r.borrow().get(enum_name).cloned());
+                let free_expr: Option<String> = match &payload_ty {
+                    Some(Type::OwnedStr) => Some(
+                        "free((void*)_intent_discard.payload)".to_string(),
+                    ),
+                    Some(Type::Vec(element)) => Some(format!(
+                        "{}(_intent_discard.payload)",
+                        vec_helper(element, "free")
+                    )),
+                    _ => None,
+                };
+                if let Some(free_call) = free_expr {
+                    let payload_tags: Vec<u32> =
+                        ENUM_PAYLOAD_TAGS_REGISTRY.with(|r| {
+                            r.borrow()
+                                .get(enum_name)
+                                .cloned()
+                                .unwrap_or_default()
+                        });
+                    if !payload_tags.is_empty() {
+                        let cases: Vec<String> = payload_tags
+                            .iter()
+                            .map(|t| format!("case {}", t))
+                            .collect();
+                        out.push_str("  {\n    ");
+                        out.push_str(&enum_c_name(enum_name));
+                        out.push_str(" _intent_discard = ");
+                        out.push_str(&emit_expr(expr));
+                        out.push_str(";\n");
+                        out.push_str(&format!(
+                            "    switch (_intent_discard.tag) {{ {}: {}; break; default: break; }}\n  }}\n",
+                            cases.join(": "),
+                            free_call
+                        ));
+                    } else {
+                        out.push_str("  (void)(");
+                        out.push_str(&emit_expr(expr));
+                        out.push_str(");\n");
+                    }
+                } else {
+                    out.push_str("  (void)(");
+                    out.push_str(&emit_expr(expr));
+                    out.push_str(");\n");
+                }
+            }
             _ => {
                 out.push_str("  (void)(");
                 out.push_str(&emit_expr(expr));
