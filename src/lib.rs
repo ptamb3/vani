@@ -3004,6 +3004,32 @@ mod tests {
     }
 
     #[test]
+    fn clone_at_owned_str_vec_works() {
+        // Closure #154: `clone_at(ref xs, i)` for
+        // `Vec<OwnedStr>` was broken in two places:
+        // - SSA-C had no `clone_at` handler — fell through
+        //   to the `fn_clone_at(...)` user-fn shape, which
+        //   produced an undeclared identifier and failed at
+        //   link time ("undefined reference to fn_clone_at").
+        // - tree-LLVM's `clone_at` only handled Copy + Vec
+        //   element types — OwnedStr / Struct panicked with
+        //   "not yet supported in tree-LLVM".
+        // Both backends now route through the per-element
+        // deep-clone shape: SSA-C uses the existing
+        // `c_element_deep_clone` helper; tree-LLVM loads
+        // the i8* slot and calls `intent_str_concat` with
+        // the `@.empty_str_clone` empty literal.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<OwnedStr> = vec("a" + "1", "b" + "2");
+              let elt: OwnedStr = clone_at(ref xs, 0);
+              return 0;
+            }
+        "#;
+        compile(source).expect("clone_at(Vec<OwnedStr>) should compile");
+    }
+
+    #[test]
     fn clone_vec_struct_with_heap_field_deep_copies() {
         // Closure #153: `clone(Vec<Struct{heap-field}>)` was
         // shallow-copying the per-element struct, so every

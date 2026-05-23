@@ -3223,6 +3223,27 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                         "  {} = call {} {}({} {})\n",
                         dest, elt_ty, clone_name, elt_ty, slot_v
                     ));
+                } else if matches!(element_ty, Type::OwnedStr) {
+                    // Closure #154: OwnedStr element — load
+                    // the slot's i8*, round-trip through
+                    // `intent_str_concat` with the empty
+                    // string global to produce a deep clone.
+                    // Was previously panicking ("not yet
+                    // supported in tree-LLVM").
+                    let slot_v = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = load i8*, i8** {}\n",
+                        slot_v, slot_p
+                    ));
+                    let empty_p = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = getelementptr [1 x i8], [1 x i8]* @.empty_str_clone, i64 0, i64 0\n",
+                        empty_p
+                    ));
+                    out.push_str(&format!(
+                        "  {} = call i8* @intent_str_concat(i8* {}, i32 0, i8* {}, i32 0)\n",
+                        dest, slot_v, empty_p
+                    ));
                 } else {
                     unreachable!(
                         "clone_at on element type {:?} not yet supported in tree-LLVM",

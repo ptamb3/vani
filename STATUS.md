@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 845 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 846 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,19 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`clone_at(ref xs, i)` for OwnedStr / Struct slots done 2026-05-23**:
+   `clone_at(ref Vec<OwnedStr>, i)` was broken in two
+   places: (1) SSA-C had no `clone_at` handler — fell
+   through to the `fn_clone_at(...)` user-fn shape and
+   failed at link time with an undefined-reference; (2)
+   tree-LLVM's `clone_at` only handled Copy and `Vec<U>`
+   element types — OwnedStr / Struct panicked with "not
+   yet supported in tree-LLVM". Both backends now produce
+   per-element deep clones: SSA-C routes through the
+   existing `c_element_deep_clone` helper; tree-LLVM
+   loads the i8* slot and calls `intent_str_concat` with
+   the `@.empty_str_clone` empty literal. Closure #154.
 
    **`clone(Vec<Struct{heap-field}>)` deep-copies done 2026-05-23**:
    `clone(Vec<Tag>)` where `Tag` carries an OwnedStr field

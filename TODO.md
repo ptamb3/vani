@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #153)
+## ⏳ Resume here (paused 2026-05-23, after closure #154)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -201,8 +201,14 @@ deep clones (was only handling Vec<U>; OwnedStr /
 Enum payloads fell through to an uninitialized
 buffer that crashed lli). #153 same shape for
 `clone(Vec<Struct{heap-field}>)` — adds the Struct
-arm to both backends' deep-clone paths. Test totals:
-845 lib + 47 e2e passing.
+arm to both backends' deep-clone paths. #154
+`clone_at(ref xs, i)` for OwnedStr was broken: SSA-C
+had no handler (fell through to undefined
+`fn_clone_at`); tree-LLVM panicked with "not yet
+supported". Both backends now do per-element deep
+clones (SSA-C via `c_element_deep_clone`, tree-LLVM
+inline via `intent_str_concat`). Test totals: 846
+lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

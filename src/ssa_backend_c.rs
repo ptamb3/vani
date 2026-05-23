@@ -1720,6 +1720,62 @@ fn emit_instr(
                     return Ok(());
                 }
             }
+            // Closure #154: `clone_at(xs, i)` returns a deep
+            // copy of slot i. Was falling through to the
+            // `fn_clone_at(...)` user-fn shape (undeclared
+            // identifier, link error). Resolve the element
+            // type from the xs operand's Vec / &Vec / &mut
+            // Vec type, then route the slot expression
+            // through `c_element_deep_clone` (the same
+            // helper tree-C uses).
+            if name == "clone_at" {
+                let xs_arg = args.get(0).ok_or_else(|| EmitError {
+                    message: "clone_at expects 2 args".to_string(),
+                })?;
+                let i_arg = args.get(1).ok_or_else(|| EmitError {
+                    message: "clone_at expects 2 args".to_string(),
+                })?;
+                let xs_ty = operand_type(xs_arg, value_types).ok_or_else(|| {
+                    EmitError {
+                        message: "clone_at xs operand has unknown type".to_string(),
+                    }
+                })?;
+                let (element_ty, via_ref) = match &xs_ty {
+                    Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
+                        Type::Vec(e) => ((**e).clone(), true),
+                        other => {
+                            return Err(EmitError {
+                                message: format!(
+                                    "clone_at expects &Vec<T> or Vec<T>, got {:?}",
+                                    other
+                                ),
+                            });
+                        }
+                    },
+                    Type::Vec(e) => ((**e).clone(), false),
+                    other => {
+                        return Err(EmitError {
+                            message: format!(
+                                "clone_at expects &Vec<T> or Vec<T>, got {:?}",
+                                other
+                            ),
+                        });
+                    }
+                };
+                let xs_str = c_operand(xs_arg);
+                let i_str = c_operand(i_arg);
+                let slot = if via_ref {
+                    format!("({})->data[{}]", xs_str, i_str)
+                } else {
+                    format!("({}).data[{}]", xs_str, i_str)
+                };
+                let cloned = crate::backend_c::c_element_deep_clone(
+                    &slot,
+                    &element_ty,
+                );
+                writeln!(out, "  v_{} = {};", instr.result.0, cloned).unwrap();
+                return Ok(());
+            }
             writeln!(
                 out,
                 "  v_{} = fn_{}({});",
