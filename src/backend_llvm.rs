@@ -3082,7 +3082,11 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 // (matching existing behavior). T1.2 +
                 // Vec<Struct> LLVM.
                 let raw = ctx.fresh_tmp();
-                if matches!(element.as_ref(), Type::Struct(_) | Type::Tuple(_)) {
+                let payloaded_enum = matches!(element.as_ref(), Type::Enum(name)
+                    if LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| r.borrow().contains_key(name)));
+                if matches!(element.as_ref(), Type::Struct(_) | Type::Tuple(_))
+                    || payloaded_enum
+                {
                     let size_expr = vec_element_size_expr(element);
                     let bytes_v = ctx.fresh_tmp();
                     out.push_str(&format!(
@@ -3884,9 +3888,17 @@ fn emit_vec_let_from_literal(
     // Refines #7 (phase 2c collapses the array-ptr form).
     let elt_ty = vec_element_value_str(element);
     let raw = ctx.fresh_tmp();
-    if matches!(element, Type::Struct(_) | Type::Tuple(_)) {
-        // Struct/tuple element: runtime sizeof via
-        // GEP-null trick. T1.2 + Vec<Struct> LLVM.
+    let payloaded_enum = matches!(element, Type::Enum(name)
+        if LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| r.borrow().contains_key(name)));
+    if matches!(element, Type::Struct(_) | Type::Tuple(_)) || payloaded_enum {
+        // Struct/tuple/payloaded-enum element: runtime
+        // sizeof via GEP-null trick. T1.2 + Vec<Struct>
+        // LLVM. Closure #151 added the payloaded-enum
+        // case — was using `vec_element_byte_size` which
+        // returned 8 for enums (treating them as i64),
+        // under-allocating by half for the 16-byte tagged
+        // union and triggering an invalid-pointer crash
+        // at lli time.
         let size_expr = vec_element_size_expr(element);
         let count_max = n.max(1);
         let bytes_v = ctx.fresh_tmp();
@@ -4597,13 +4609,110 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
                     );
                 }
             }
+            Type::Enum(name) => {
+                // Per-element enum drop: load the enum,
+                // extract tag + payload, OR-chain over the
+                // payloaded tags, branch to a free block for
+                // payloaded variants. Mirrors the scope-exit
+                // Drop emission for enums. Closure #151
+                // (`Vec<PayloadedEnum>` was leaking each
+                // element's payload at outer __free time;
+                // LLVM crashed with invalid free).
+                let payload_ty = LLVM_ENUM_PAYLOAD_REGISTRY
+                    .with(|r| r.borrow().get(name).cloned());
+                let heap_kind = match &payload_ty {
+                    Some(Type::OwnedStr) => Some("owned_str"),
+                    Some(Type::Vec(_)) => Some("vec"),
+                    _ => None,
+                };
+                if let Some(kind) = heap_kind {
+                    let payload_tags: Vec<u32> = LLVM_ENUM_PAYLOAD_TAGS_REGISTRY
+                        .with(|r| r.borrow().get(name).cloned().unwrap_or_default());
+                    if !payload_tags.is_empty() {
+                        needs_loop = true;
+                        let s_enum = format!("%Enum_{}", name);
+                        let loaded = next_tmp(&mut tmp_counter);
+                        body.push_str(&format!(
+                            "  {} = load {}, {}* %elt_p\n",
+                            loaded, s_enum, s_enum
+                        ));
+                        let tag = next_tmp(&mut tmp_counter);
+                        body.push_str(&format!(
+                            "  {} = extractvalue {} {}, 0\n",
+                            tag, s_enum, loaded
+                        ));
+                        let payload = next_tmp(&mut tmp_counter);
+                        body.push_str(&format!(
+                            "  {} = extractvalue {} {}, 1\n",
+                            payload, s_enum, loaded
+                        ));
+                        let mut prev = "i1 false".to_string();
+                        for t in &payload_tags {
+                            let cmp = next_tmp(&mut tmp_counter);
+                            body.push_str(&format!(
+                                "  {} = icmp eq i32 {}, {}\n",
+                                cmp, tag, t
+                            ));
+                            let or_v = next_tmp(&mut tmp_counter);
+                            body.push_str(&format!(
+                                "  {} = or {}, {}\n",
+                                or_v, prev, cmp
+                            ));
+                            prev = format!("i1 {}", or_v);
+                        }
+                        let cond = prev.trim_start_matches("i1 ").to_string();
+                        body.push_str(&format!(
+                            "  br i1 {}, label %enum_free, label %enum_done\n",
+                            cond
+                        ));
+                        body.push_str("enum_free:\n");
+                        match kind {
+                            "owned_str" => {
+                                body.push_str(&format!(
+                                    "  call void @free(i8* {})\n",
+                                    payload
+                                ));
+                            }
+                            "vec" => {
+                                if let Some(Type::Vec(inner)) = &payload_ty {
+                                    let free_name = format!(
+                                        "@intent_vec_{}__free",
+                                        vec_struct_tag(inner)
+                                    );
+                                    let v_struct = vec_struct_name(inner);
+                                    body.push_str(&format!(
+                                        "  call void {}({} {})\n",
+                                        free_name, v_struct, payload
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
+                        body.push_str("  br label %enum_done\n");
+                        body.push_str("enum_done:\n");
+                    }
+                }
+            }
             _ => {}
         }
         if needs_loop {
             out.push_str(&format!("  %len = extractvalue {} %xs, 1\n", s_ty));
             out.push_str("  br label %fr_check\n");
             out.push_str("fr_check:\n");
-            out.push_str("  %fi = phi i64 [0, %0], [%fi_next, %fr_body]\n");
+            // The phi's "back" predecessor is `fr_body` when
+            // the body emits no new basic block, OR `enum_done`
+            // when the Enum-element drop appended that label.
+            // Detect by scanning the emitted body for the label
+            // marker.
+            let back_pred = if body.contains("enum_done:\n") {
+                "%enum_done"
+            } else {
+                "%fr_body"
+            };
+            out.push_str(&format!(
+                "  %fi = phi i64 [0, %0], [%fi_next, {}]\n",
+                back_pred
+            ));
             out.push_str("  %fi_lt = icmp ult i64 %fi, %len\n");
             out.push_str("  br i1 %fi_lt, label %fr_body, label %fr_done\n");
             out.push_str("fr_body:\n");
@@ -4754,6 +4863,27 @@ pub(crate) fn vec_element_size_expr(element: &Type) -> String {
                 "ptrtoint ({}* getelementptr ({}, {}* null, i32 1) to i64)",
                 t_ty, t_ty, t_ty
             )
+        }
+        // Payloaded enums are tagged-union structs whose
+        // layout (i32 + i8* with padding) depends on the
+        // host's alignment. Use the GEP-null sizeof trick
+        // for them too. Tag-only enums fall through to the
+        // byte-size literal (just 4 bytes for an i32 tag).
+        // Closure #151 (`Vec<Msg>` was under-allocating
+        // — vec literal called `malloc(16)` for 2 elements
+        // when each is 16 bytes, leaking past the buffer).
+        Type::Enum(name) => {
+            let payloaded = LLVM_ENUM_PAYLOAD_REGISTRY
+                .with(|r| r.borrow().contains_key(name));
+            if payloaded {
+                let e_ty = format!("%Enum_{}", name);
+                format!(
+                    "ptrtoint ({}* getelementptr ({}, {}* null, i32 1) to i64)",
+                    e_ty, e_ty, e_ty
+                )
+            } else {
+                format!("{}", vec_element_byte_size(element))
+            }
         }
         _ => format!("{}", vec_element_byte_size(element)),
     }

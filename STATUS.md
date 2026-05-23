@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 841 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 842 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,23 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`Vec<PayloadedEnum>` compiles + drops correctly done 2026-05-23**:
+   `Vec<Msg>` where `Msg` is a payloaded enum was broken
+   in four places: (1) C `element_tag` and (2)
+   `c_element_storage` fell through to `c_leaf_type` →
+   "int32_t" for enums, so the per-shape typedef tried to
+   store `Enum_Msg` struct literals into i32 slots (cc
+   rejected); (3) `c_element_drop_old` lacked an Enum arm,
+   so the per-element drop body was empty (payloads leaked
+   at `intent_vec_Enum_Msg__free` time); (4) LLVM vec
+   literal used `vec_element_byte_size` for enums
+   (returning 8 = i64), under-allocating the 16-byte
+   tagged union and crashing lli with "free(): invalid
+   pointer". All four sites now treat payloaded enums
+   like structs/tuples: `Enum_<Name>` tagged-union
+   typedef, GEP-null sizeof, tag-switched per-element
+   payload free. Closure #151.
 
    **IndexAssign whole-element for OwnedStr/Vec elements done 2026-05-23**:
    `Vec<OwnedStr>[i] = "x" + ""` and `Vec<Vec<i64>>[i] =

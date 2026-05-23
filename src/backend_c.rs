@@ -976,6 +976,21 @@ pub(crate) fn element_tag(element: &Type) -> String {
         // opaque `/*_struct_*/` placeholder. T1.2 +
         // Vec<Struct> support.
         Type::Struct(name) => struct_c_name(name),
+        // Payloaded enums lower to the `Enum_<Name>`
+        // tagged-union struct (see ENUM_PAYLOAD_REGISTRY).
+        // For `Vec<Msg>` the per-shape Vec typedef must
+        // reference that struct, not the int32_t tag
+        // — closure #151 (was emitting `intent_vec_int32_t`
+        // for any enum element and then trying to store
+        // `Enum_<Name>` struct literals into int32_t
+        // slots, failing at cc). Tag-only enums keep the
+        // int32_t spelling via the fallback below since
+        // they don't appear in ENUM_PAYLOAD_REGISTRY.
+        Type::Enum(name)
+            if ENUM_PAYLOAD_REGISTRY.with(|r| r.borrow().contains_key(name)) =>
+        {
+            enum_c_name(name)
+        }
         Type::Tuple(elements) => tuple_c_struct(elements),
         // `Str` / `OwnedStr` both spell as a `char*` /
         // `const char*` in C — neither is a valid C
@@ -1353,6 +1368,14 @@ pub(crate) fn c_element_storage(ty: &Type) -> String {
         Type::Array { .. } => array_c_typedef(ty),
         Type::Tuple(elements) => tuple_c_struct(elements),
         Type::Struct(name) => struct_c_name(name),
+        // Payloaded enums spell as `Enum_<Name>`; tag-only
+        // enums keep `int32_t` via the c_leaf_type fallback.
+        // Closure #151 (parallel to the element_tag fix).
+        Type::Enum(name)
+            if ENUM_PAYLOAD_REGISTRY.with(|r| r.borrow().contains_key(name)) =>
+        {
+            enum_c_name(name)
+        }
         _ => c_leaf_type(ty).to_string(),
     }
 }
@@ -1456,6 +1479,44 @@ pub(crate) fn c_element_drop_old(slot: &str, ty: &Type) -> String {
                 reindented.push_str(trimmed);
             }
             reindented
+        }
+        Type::Enum(name) => {
+            // Drop the enum's payload when the active tag is
+            // one of the payloaded variants. Mirrors the
+            // scope-exit Drop logic for enums. Closure #151
+            // (`Vec<PayloadedEnum>` was leaking each
+            // element's payload at outer __free time).
+            let payload_ty = ENUM_PAYLOAD_REGISTRY
+                .with(|r| r.borrow().get(name).cloned());
+            let free_expr: Option<String> = match &payload_ty {
+                Some(Type::OwnedStr) => {
+                    Some(format!("free((void*){slot}.payload);", slot = slot))
+                }
+                Some(Type::Vec(element)) => Some(format!(
+                    "{helper}({slot}.payload);",
+                    helper = vec_helper(element, "free"),
+                    slot = slot
+                )),
+                _ => None,
+            };
+            let Some(free_call) = free_expr else {
+                return String::new();
+            };
+            let payload_tags: Vec<u32> = ENUM_PAYLOAD_TAGS_REGISTRY
+                .with(|r| r.borrow().get(name).cloned().unwrap_or_default());
+            if payload_tags.is_empty() {
+                return String::new();
+            }
+            let cases: Vec<String> = payload_tags
+                .iter()
+                .map(|t| format!("case {}", t))
+                .collect();
+            format!(
+                "\n        switch ({slot}.tag) {{ {}: {} break; default: break; }}",
+                cases.join(": "),
+                free_call,
+                slot = slot
+            )
         }
         _ => String::new(),
     }

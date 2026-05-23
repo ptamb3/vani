@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #150)
+## ⏳ Resume here (paused 2026-05-23, after closure #151)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -178,7 +178,18 @@ Struct/Enum arms; `Vec<OwnedStr>[i] = …` and
 `Vec<Vec<i64>>[i] = …` fell through. Tree-C and
 SSA-C now free the OLD slot for OwnedStr / Vec
 element types in the whole-element overwrite case.
-Test totals: 841 lib + 47 e2e passing.
+#151 `Vec<PayloadedEnum>` compiles + drops
+correctly: was broken in four places — C
+`element_tag`/`c_element_storage` collapsed enum
+elements to `int32_t` (cc rejected struct literals
+into i32 slots); `c_element_drop_old` lacked an
+Enum arm (per-element drop body empty, payloads
+leaked); LLVM vec literal used `vec_element_byte_size`
+returning 8 for enums (under-allocated 16-byte
+tagged union, crashing lli with invalid free).
+All four sites now treat payloaded enums like
+structs/tuples. Test totals: 842 lib + 47 e2e
+passing.
 
 ### Recommended next (pick one)
 

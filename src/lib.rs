@@ -3004,6 +3004,55 @@ mod tests {
     }
 
     #[test]
+    fn vec_of_payloaded_enum_compiles_and_drops() {
+        // Closure #151: `Vec<Msg>` where Msg is a payloaded
+        // enum was broken in four places:
+        // - C `element_tag(Type::Enum(_))` fell through to
+        //   c_leaf_type → "int32_t", so the per-shape vec
+        //   typedef was `intent_vec_int32_t` and tried to
+        //   store `Enum_Msg` struct literals into i32 slots
+        //   (cc rejected with "incompatible types").
+        // - C `c_element_storage` had the same bug.
+        // - C `c_element_drop_old` didn't have an Enum arm,
+        //   so `intent_vec_Enum_Msg__free`'s per-element
+        //   drop body was empty, leaking payloads.
+        // - LLVM vec literal used `vec_element_byte_size`
+        //   for enums (returning 8 = i64) under-allocated
+        //   the `{i32, i8*}` 16-byte tagged union, crashing
+        //   lli with "free(): invalid pointer". And LLVM's
+        //   per-shape `__free` didn't iterate elements for
+        //   enum types either.
+        // All four sites now treat payloaded enums like
+        // structs / tuples (Enum_<Name> tagged-union, GEP-
+        // null sizeof, tag-switched payload free).
+        let source = r#"
+            enum Msg { Empty, Text(OwnedStr) }
+            fn main() -> i64 {
+              let i: i64 = 0;
+              while i < 3 {
+                let xs: Vec<Msg> = vec(Msg.Text("a" + "1"), Msg.Empty);
+                i = i + 1;
+              }
+              return 0;
+            }
+        "#;
+        compile(source).expect("Vec<PayloadedEnum> should compile");
+        let c = compile_to_c(source).expect("emits C");
+        // Element-tag fix: the typedef must be named
+        // `intent_vec_Enum_Msg`, not `intent_vec_int32_t`.
+        assert!(
+            c.contains("intent_vec_Enum_Msg"),
+            "expected enum-named vec typedef, got:\n{c}"
+        );
+        // c_element_drop_old fix: the per-element drop in
+        // intent_vec_Enum_Msg__free switches on the tag.
+        assert!(
+            c.contains("switch (xs.data[k].tag)"),
+            "expected per-element tag switch in vec __free, got:\n{c}"
+        );
+    }
+
+    #[test]
     fn index_assign_owned_str_element_frees_old_heap() {
         // Closure #150: `xs[i] = newstr` for a
         // `Vec<OwnedStr>` element was leaking the OLD i8*.
