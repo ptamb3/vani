@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 846 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 847 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,17 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`clone_at` Struct element done 2026-05-23**:
+   tree-LLVM's `clone_at` panicked with "Struct(…) not
+   yet supported" when the Vec element was a struct with
+   heap fields. Closure #154 only added the OwnedStr arm;
+   #155 finishes Struct: load the slot, extract each
+   field, deep-clone OwnedStr fields via
+   `intent_str_concat` with the empty literal, assemble
+   via an insertvalue chain. Tree-C was already correct
+   (closure #153 made `c_element_deep_clone` recurse
+   through Struct fields). Closure #155.
 
    **`clone_at(ref xs, i)` for OwnedStr / Struct slots done 2026-05-23**:
    `clone_at(ref Vec<OwnedStr>, i)` was broken in two

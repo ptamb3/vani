@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #154)
+## ⏳ Resume here (paused 2026-05-23, after closure #155)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -207,8 +207,12 @@ had no handler (fell through to undefined
 `fn_clone_at`); tree-LLVM panicked with "not yet
 supported". Both backends now do per-element deep
 clones (SSA-C via `c_element_deep_clone`, tree-LLVM
-inline via `intent_str_concat`). Test totals: 846
-lib + 47 e2e passing.
+inline via `intent_str_concat`). #155 `clone_at`
+Struct element: tree-LLVM also panicked for Struct
+element types; now extracts each field and deep-
+clones OwnedStr fields. Tree-C was already correct
+via `c_element_deep_clone`'s recursive Struct arm
+from #153. Test totals: 847 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

@@ -3004,6 +3004,29 @@ mod tests {
     }
 
     #[test]
+    fn clone_at_struct_with_heap_field_works() {
+        // Closure #155: `clone_at(ref Vec<Struct{OwnedStr}>, i)`
+        // was panicking in tree-LLVM with "clone_at on element
+        // type Struct(…) not yet supported". Tree-C went
+        // through `c_element_deep_clone` which closure #153
+        // had already taught to recurse over Struct fields,
+        // so the C side was fine. Tree-LLVM now matches: load
+        // the slot, extract each field, deep-clone OwnedStr
+        // fields via `intent_str_concat` with the empty
+        // literal, assemble the new struct via an insertvalue
+        // chain ending in `dest`.
+        let source = r#"
+            struct Tag { name: OwnedStr }
+            fn main() -> i64 {
+              let xs: Vec<Tag> = vec(Tag { name: "a" + "1" });
+              let elt: Tag = clone_at(ref xs, 0);
+              return 0;
+            }
+        "#;
+        compile(source).expect("clone_at(Vec<Struct{OwnedStr}>) should compile");
+    }
+
+    #[test]
     fn clone_at_owned_str_vec_works() {
         // Closure #154: `clone_at(ref xs, i)` for
         // `Vec<OwnedStr>` was broken in two places:

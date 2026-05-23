@@ -3244,6 +3244,75 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                         "  {} = call i8* @intent_str_concat(i8* {}, i32 0, i8* {}, i32 0)\n",
                         dest, slot_v, empty_p
                     ));
+                } else if let Type::Struct(struct_name) = &element_ty {
+                    // Closure #155: Struct element — load
+                    // the slot, extract each field, deep-
+                    // clone the owning fields (OwnedStr via
+                    // intent_str_concat with empty),
+                    // assemble a new struct via insertvalue
+                    // chain whose final result is `dest`.
+                    // Mirrors the per-shape Vec clone body
+                    // for Struct elements (closure #153)
+                    // but inlined against the slot pointer.
+                    let fields = LLVM_STRUCT_FIELDS_REGISTRY
+                        .with(|r| r.borrow().get(struct_name).cloned())
+                        .unwrap_or_default();
+                    let s_ty = format!("%Struct_{}", struct_name);
+                    let slot_v = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = load {}, {}* {}\n",
+                        slot_v, s_ty, s_ty, slot_p
+                    ));
+                    // For a Copy-only struct (or empty
+                    // struct), the load itself is the deep
+                    // clone. We still need to bind `dest`
+                    // — emit an insertvalue with field 0
+                    // re-extracted to round-trip the value.
+                    // For a struct with owning fields, walk
+                    // each field with the deep-clone for
+                    // OwnedStr / other types.
+                    if fields.is_empty() {
+                        out.push_str(&format!(
+                            "  {} = insertvalue {} undef, i64 0, 0\n",
+                            dest, s_ty
+                        ));
+                    } else {
+                        let mut acc = "undef".to_string();
+                        for (idx, (_, fty)) in fields.iter().enumerate() {
+                            let f_src = ctx.fresh_tmp();
+                            let f_lty = llvm_type_string(fty);
+                            out.push_str(&format!(
+                                "  {} = extractvalue {} {}, {}\n",
+                                f_src, s_ty, slot_v, idx
+                            ));
+                            let f_cloned = match fty {
+                                Type::OwnedStr => {
+                                    let empty_p = ctx.fresh_tmp();
+                                    out.push_str(&format!(
+                                        "  {} = getelementptr [1 x i8], [1 x i8]* @.empty_str_clone, i64 0, i64 0\n",
+                                        empty_p
+                                    ));
+                                    let cloned = ctx.fresh_tmp();
+                                    out.push_str(&format!(
+                                        "  {} = call i8* @intent_str_concat(i8* {}, i32 0, i8* {}, i32 0)\n",
+                                        cloned, f_src, empty_p
+                                    ));
+                                    cloned
+                                }
+                                _ => f_src.clone(),
+                            };
+                            let next_acc = if idx + 1 == fields.len() {
+                                dest.clone()
+                            } else {
+                                ctx.fresh_tmp()
+                            };
+                            out.push_str(&format!(
+                                "  {} = insertvalue {} {}, {} {}, {}\n",
+                                next_acc, s_ty, acc, f_lty, f_cloned, idx
+                            ));
+                            acc = next_acc;
+                        }
+                    }
                 } else {
                     unreachable!(
                         "clone_at on element type {:?} not yet supported in tree-LLVM",
