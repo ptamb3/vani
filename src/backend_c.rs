@@ -1631,6 +1631,97 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                         out.push_str(&tmp);
                         out.push_str(";\n  }\n");
                     }
+                    Type::Struct(struct_name) => {
+                        // Closure #147: reassigning a struct
+                        // binding that owns heap fields was
+                        // leaking the previous fields' heap.
+                        // Evaluate RHS into a tmp, walk the
+                        // OLD binding's per-field drops, then
+                        // move the tmp in.
+                        let fields = STRUCT_FIELDS_REGISTRY
+                            .with(|r| r.borrow().get(struct_name).cloned())
+                            .unwrap_or_default();
+                        let tmp = format!("_intent_tmp_{}", name);
+                        out.push_str("  {\n");
+                        out.push_str("    ");
+                        out.push_str(&struct_c_name(struct_name));
+                        out.push(' ');
+                        out.push_str(&tmp);
+                        out.push_str(" = ");
+                        out.push_str(&emit_expr(expr));
+                        out.push_str(";\n");
+                        let empty: std::collections::HashSet<&String> =
+                            std::collections::HashSet::new();
+                        emit_struct_field_drops(
+                            &local_name(name),
+                            struct_name,
+                            &fields,
+                            &empty,
+                            out,
+                        );
+                        out.push_str("    ");
+                        out.push_str(&local_name(name));
+                        out.push_str(" = ");
+                        out.push_str(&tmp);
+                        out.push_str(";\n  }\n");
+                    }
+                    Type::Enum(enum_name) => {
+                        // Closure #147: reassigning a
+                        // payloaded enum binding was leaking
+                        // the previous payload heap. Eval
+                        // RHS into a tmp, switch on the OLD
+                        // tag to free the payload, then move
+                        // the tmp in.
+                        let payload_ty = ENUM_PAYLOAD_REGISTRY
+                            .with(|r| r.borrow().get(enum_name).cloned());
+                        let free_expr: Option<String> = match &payload_ty {
+                            Some(Type::OwnedStr) => Some(format!(
+                                "free((void*){}.payload)",
+                                local_name(name)
+                            )),
+                            Some(Type::Vec(element)) => Some(format!(
+                                "{}({}.payload)",
+                                vec_helper(element, "free"),
+                                local_name(name)
+                            )),
+                            _ => None,
+                        };
+                        let tmp = format!("_intent_tmp_{}", name);
+                        out.push_str("  {\n");
+                        out.push_str("    ");
+                        out.push_str(&enum_c_name(enum_name));
+                        out.push(' ');
+                        out.push_str(&tmp);
+                        out.push_str(" = ");
+                        out.push_str(&emit_expr(expr));
+                        out.push_str(";\n");
+                        if let Some(free_call) = free_expr {
+                            let payload_tags: Vec<u32> =
+                                ENUM_PAYLOAD_TAGS_REGISTRY.with(|r| {
+                                    r.borrow()
+                                        .get(enum_name)
+                                        .cloned()
+                                        .unwrap_or_default()
+                                });
+                            if !payload_tags.is_empty() {
+                                let cases: Vec<String> = payload_tags
+                                    .iter()
+                                    .map(|t| format!("case {}", t))
+                                    .collect();
+                                out.push_str(&format!(
+                                    "    switch ({}.tag) {{ {}: {}; break; default: break; }}\n",
+                                    local_name(name),
+                                    cases.join(": "),
+                                    free_call
+                                ));
+                            }
+                        }
+                        out.push_str("    ");
+                        out.push_str(&local_name(name));
+                        out.push_str(" = ");
+                        out.push_str(&tmp);
+                        out.push_str(";\n  }\n");
+                    }
                     _ => {
                         out.push_str("  ");
                         out.push_str(&local_name(name));

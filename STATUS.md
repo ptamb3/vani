@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 835 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 837 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,19 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **Reassign of Struct / Enum with heap fields done 2026-05-23**:
+   `t = Tag { name: …}` and `m = Msg.Text(…)` for bindings
+   with heap-shaped fields / payloads were leaking the
+   previous heap. Tree-C, tree-LLVM, and SSA Reassign
+   handlers only had Vec / OwnedStr drop-old cases — Struct
+   / Enum fell through to plain assign. Tree-C now eval-
+   into-tmp, walk the old binding's per-field drops (Struct)
+   or switch-on-tag payload free (Enum), then move the tmp
+   in. SSA's drop_old whitelist extended to admit non-Copy
+   Struct / Enum; backends' `Drop` emit handlers already
+   knew how to walk those. Closure #147. Verified leak-free
+   under `-fsanitize=address,leak`.
 
    **`let _ = make_enum()` frees heap payload done 2026-05-23**:
    `let _ = make_enum();` for an enum with a heap-shaped

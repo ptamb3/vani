@@ -586,7 +586,16 @@ fn lower_stmt(
             // free. Other non-Copy reassigns still surface as
             // a LowerError (the tree backends model those
             // shapes; SSA doesn't yet).
-            if *drop_old && !matches!(ty, Type::OwnedStr | Type::Vec(_)) {
+            // Closure #147: also lower drop_old reassigns for
+            // non-Copy Struct and Enum bindings — the backends'
+            // Drop emit handlers know how to walk their fields
+            // / payload free.
+            let supported_drop_old = match ty {
+                Type::OwnedStr | Type::Vec(_) => true,
+                Type::Struct(_) | Type::Enum(_) => !ty.is_copy(),
+                _ => false,
+            };
+            if *drop_old && !supported_drop_old {
                 return Err(LowerError {
                     message: format!(
                         "reassign of '{}' over a non-Copy value is not in the v1 SSA subset",

@@ -3004,6 +3004,66 @@ mod tests {
     }
 
     #[test]
+    fn reassign_struct_with_heap_field_frees_old_fields() {
+        // Closure #147: `t = Tag { name: ... }` for a struct
+        // binding with an OwnedStr field was leaking the
+        // previous fields' heap. Tree-C, tree-LLVM, and SSA
+        // Reassign handlers only had Vec / OwnedStr cases;
+        // Struct fell through to a plain assign. Tree-C now
+        // walks the old binding's per-field drops before
+        // moving the tmp in; SSA emits a Drop instruction
+        // over the old SSA value (the backend's `Drop` handler
+        // for Struct walks the fields).
+        let source = r#"
+            struct Tag { name: OwnedStr }
+            fn main() -> i64 {
+              let t: Tag = Tag { name: "first" + "" };
+              t = Tag { name: "second" + "" };
+              return 0;
+            }
+        "#;
+        compile(source).expect("struct reassign should compile");
+        let c = compile_to_c(source).expect("emits C");
+        // Tree-C: emits a tmp then walks the old fields'
+        // drops before moving the tmp in.
+        assert!(
+            c.contains("Struct_Tag _intent_tmp_t ="),
+            "expected struct tmp in reassign, got:\n{c}"
+        );
+        assert!(
+            c.contains("free((void*)v_t.name)"),
+            "expected free of old field before move, got:\n{c}"
+        );
+    }
+
+    #[test]
+    fn reassign_enum_with_heap_payload_frees_old_payload() {
+        // Closure #147: `m = Msg.Text(...)` for an enum
+        // binding with a heap-shaped payload was leaking
+        // the previous payload heap. Tree-C now switches
+        // on the old tag and frees the payload before
+        // moving the tmp in.
+        let source = r#"
+            enum Msg { Empty, Text(OwnedStr) }
+            fn main() -> i64 {
+              let m: Msg = Msg.Text("first" + "");
+              m = Msg.Text("second" + "");
+              return 0;
+            }
+        "#;
+        compile(source).expect("enum reassign should compile");
+        let c = compile_to_c(source).expect("emits C");
+        assert!(
+            c.contains("Enum_Msg _intent_tmp_m ="),
+            "expected enum tmp in reassign, got:\n{c}"
+        );
+        assert!(
+            c.contains("switch (v_m.tag)"),
+            "expected tag switch for old payload free, got:\n{c}"
+        );
+    }
+
+    #[test]
     fn discard_of_enum_with_heap_payload_frees_payload() {
         // Closure #146: `let _ = make_enum();` for an enum
         // with a heap-shaped payload (OwnedStr / Vec<T>)

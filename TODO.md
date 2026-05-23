@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #146)
+## ⏳ Resume here (paused 2026-05-23, after closure #147)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -149,8 +149,15 @@ spills to `Enum_<Name> _intent_discard` and switches
 on the tag. Tree-LLVM mirrors the scope-exit Drop
 logic for enums (extract tag/payload, OR-chain of
 icmp eq, conditional free branch). SSA Discard emits
-Drop for non-Copy enums. Test totals: 835 lib + 47
-e2e passing.
+Drop for non-Copy enums. #147 Reassign of
+Struct / Enum with heap fields: `t = Tag { name: … }`
+and `m = Msg.Text(…)` were leaking the previous heap.
+Tree-C Reassign now spills to a tmp, walks the OLD
+binding's per-field drops (Struct) or switches on tag
+to free payload (Enum), then moves the tmp in. SSA's
+drop_old whitelist extended to admit non-Copy Struct
+/ Enum; LLVM is covered by the existing Drop emit
+machinery. Test totals: 837 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
