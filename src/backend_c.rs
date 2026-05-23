@@ -1546,6 +1546,32 @@ pub(crate) fn c_element_deep_clone(slot: &str, ty: &Type) -> String {
             "intent_str_concat({slot}, 0, \"\", 0)",
             slot = slot
         ),
+        // Closure #153: `Vec<Struct{heap-field}>` clone was
+        // shallow-copying the struct, so every heap-shaped
+        // field pointer was shared between source and clone
+        // and double-freed at scope exit. Reconstruct the
+        // struct with each owning field deep-cloned
+        // (recursive call) and Copy fields copied as-is.
+        Type::Struct(name) => {
+            let fields = STRUCT_FIELDS_REGISTRY
+                .with(|r| r.borrow().get(name).cloned())
+                .unwrap_or_default();
+            let has_owning = fields.iter().any(|(_, ty)| !ty.is_copy());
+            if !has_owning {
+                return slot.to_string();
+            }
+            let mut parts: Vec<String> = Vec::with_capacity(fields.len());
+            for (fname, fty) in &fields {
+                let field_slot = format!("({}).{}", slot, fname);
+                let field_clone = c_element_deep_clone(&field_slot, fty);
+                parts.push(format!(".{} = {}", fname, field_clone));
+            }
+            return format!(
+                "(({}){{ {} }})",
+                struct_c_name(name),
+                parts.join(", ")
+            );
+        }
         // Enum with OwnedStr payload: tag-switched ternary
         // — for payloaded tags, reconstruct the enum
         // struct with a deep-cloned payload; otherwise

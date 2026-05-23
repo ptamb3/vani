@@ -3004,6 +3004,34 @@ mod tests {
     }
 
     #[test]
+    fn clone_vec_struct_with_heap_field_deep_copies() {
+        // Closure #153: `clone(Vec<Struct{heap-field}>)` was
+        // shallow-copying the per-element struct, so every
+        // heap-shaped field's pointer was shared between
+        // the source and the clone. Both Vec's __free walked
+        // their slots and freed the same OwnedStr field
+        // pointer twice (ASan: double-free; lli: "free():
+        // double free detected").
+        //
+        // c_element_deep_clone for Type::Struct now
+        // reconstructs the struct with each owning field
+        // deep-cloned (recursive). LLVM's Vec __clone has
+        // a parallel Struct arm: extract each field, deep-
+        // clone it (OwnedStr via intent_str_concat with
+        // empty), assemble the new struct via insertvalue
+        // chain.
+        let source = r#"
+            struct Tag { name: OwnedStr }
+            fn main() -> i64 {
+              let xs: Vec<Tag> = vec(Tag { name: "a" + "1" }, Tag { name: "b" + "2" });
+              let ys: Vec<Tag> = clone(xs);
+              return 0;
+            }
+        "#;
+        compile(source).expect("clone(Vec<Struct{OwnedStr}>) should compile");
+    }
+
+    #[test]
     fn clone_vec_owned_str_deep_copies_payload() {
         // Closure #152: `clone(Vec<OwnedStr>)` was shallow-
         // copying the per-element i8* pointers, then both

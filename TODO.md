@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #152)
+## ⏳ Resume here (paused 2026-05-23, after closure #153)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -199,8 +199,10 @@ payload). LLVM's Vec __clone loops over slots for
 ANY non-Copy element type and produces per-element
 deep clones (was only handling Vec<U>; OwnedStr /
 Enum payloads fell through to an uninitialized
-buffer that crashed lli). Test totals: 844 lib + 47
-e2e passing.
+buffer that crashed lli). #153 same shape for
+`clone(Vec<Struct{heap-field}>)` — adds the Struct
+arm to both backends' deep-clone paths. Test totals:
+845 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

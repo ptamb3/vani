@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 844 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 845 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,20 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`clone(Vec<Struct{heap-field}>)` deep-copies done 2026-05-23**:
+   `clone(Vec<Tag>)` where `Tag` carries an OwnedStr field
+   was shallow-copying the struct, sharing the field's
+   heap pointer between source and clone — both __free
+   sites then freed the same heap (ASan double-free; lli
+   abort). C `c_element_deep_clone` adds a `Type::Struct`
+   arm that reconstructs the struct with each owning
+   field deep-cloned (recursive call) and Copy fields
+   copied as-is. LLVM's per-shape Vec __clone gets a
+   parallel Struct arm: extract each field, deep-clone
+   (OwnedStr via the `@.empty_str_clone`-fed
+   `intent_str_concat`), assemble the new struct via an
+   insertvalue chain. Closure #153.
 
    **`clone(Vec<OwnedStr>)` / `clone(Vec<Enum>)` deep-copies done 2026-05-23**:
    the per-shape Vec `__clone` helper was shallow-copying

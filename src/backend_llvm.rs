@@ -4628,6 +4628,53 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
                     "%src_v".to_string()
                 }
             }
+            Type::Struct(name) => {
+                // Closure #153 LLVM: deep-clone each owning
+                // field via the same shape as the OwnedStr
+                // arm. For v1 we support OwnedStr fields
+                // (the common case). Other heap field types
+                // fall through to a shallow copy and would
+                // need follow-up work.
+                let fields = LLVM_STRUCT_FIELDS_REGISTRY
+                    .with(|r| r.borrow().get(name).cloned())
+                    .unwrap_or_default();
+                let has_owning = fields.iter().any(|(_, ty)| !ty.is_copy());
+                if !has_owning {
+                    "%src_v".to_string()
+                } else {
+                    let s_ty = format!("%Struct_{}", name);
+                    let mut acc = "undef".to_string();
+                    for (idx, (_, fty)) in fields.iter().enumerate() {
+                        let f_src = format!("%f_src_{}", idx);
+                        let f_lty = llvm_type_string(fty);
+                        out.push_str(&format!(
+                            "  {} = extractvalue {} %src_v, {}\n",
+                            f_src, s_ty, idx
+                        ));
+                        let f_cloned = match fty {
+                            Type::OwnedStr => {
+                                out.push_str(
+                                    "  %f_empty_p = getelementptr [1 x i8], [1 x i8]* @.empty_str_clone, i64 0, i64 0\n",
+                                );
+                                let cloned = format!("%f_cloned_{}", idx);
+                                out.push_str(&format!(
+                                    "  {} = call i8* @intent_str_concat(i8* {}, i32 0, i8* %f_empty_p, i32 0)\n",
+                                    cloned, f_src
+                                ));
+                                cloned
+                            }
+                            _ => f_src.clone(),
+                        };
+                        let next = format!("%struct_acc_{}", idx);
+                        out.push_str(&format!(
+                            "  {} = insertvalue {} {}, {} {}, {}\n",
+                            next, s_ty, acc, f_lty, f_cloned, idx
+                        ));
+                        acc = next;
+                    }
+                    acc
+                }
+            }
             _ => "%src_v".to_string(),
         };
         out.push_str(&format!(
