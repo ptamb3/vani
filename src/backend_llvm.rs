@@ -1201,9 +1201,40 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
             // helper so nested-Vec elements get recursively
             // released. OwnedStr: heap `i8*` from concat / call;
             // free it directly (closure #134 — was leaking).
-            // Array (stack-allocated) and refs don't own a heap
-            // buffer.
-            if is_scalar(&expr.ty) {
+            // Struct with owning fields: spill to alloca + walk
+            // fields (closure #145). Array (stack-allocated)
+            // and refs don't own a heap buffer.
+            //
+            // The Struct case is checked BEFORE `is_scalar`
+            // because `is_scalar` returns true for
+            // `Type::Struct(_)` so it would skip the Struct
+            // arm entirely.
+            if let Type::Struct(struct_name) = &expr.ty {
+                let fields = LLVM_STRUCT_FIELDS_REGISTRY
+                    .with(|r| r.borrow().get(struct_name).cloned())
+                    .unwrap_or_default();
+                let has_owning = fields.iter().any(|(_, ty)| !ty.is_copy());
+                let value = emit_expr(expr, ctx, out);
+                if has_owning {
+                    let s_ty = format!("%Struct_{}", struct_name);
+                    let addr = format!("{}.{}.addr", ctx.fresh_tmp(), "_intent_discard");
+                    out.push_str(&format!("  {} = alloca {}\n", addr, s_ty));
+                    out.push_str(&format!(
+                        "  store {} {}, {}* {}\n",
+                        s_ty, value, s_ty, addr
+                    ));
+                    let empty: std::collections::HashSet<&String> =
+                        std::collections::HashSet::new();
+                    emit_llvm_struct_field_drops(
+                        &addr,
+                        struct_name,
+                        &fields,
+                        &empty,
+                        ctx,
+                        out,
+                    );
+                }
+            } else if is_scalar(&expr.ty) {
                 let _ = emit_expr(expr, ctx, out);
             } else if let Type::Vec(element) = &expr.ty {
                 let value = emit_expr(expr, ctx, out);

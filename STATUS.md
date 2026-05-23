@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 833 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 834 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,28 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`let _ = make_struct()` frees heap fields done 2026-05-23**:
+   `let _ = make_struct();` for a struct with heap-shaped
+   fields (OwnedStr, Vec<T>, nested struct) was silently
+   leaking the per-field heap. Tree-C, tree-LLVM, and SSA
+   Discard handlers all only matched `OwnedStr | Vec(_)`
+   — `Type::Struct(_)` fell through to a `(void) expr`
+   (tree-C) or bare `emit_expr` (LLVM / SSA), never
+   freeing the struct's owning fields. Tree-C now spills
+   to a brace-scoped `_intent_discard` local and walks
+   the fields via `emit_struct_field_drops`; tree-LLVM
+   spills to an alloca and walks via
+   `emit_llvm_struct_field_drops` (the existing per-field
+   helper used by scope-exit Drop). The tree-LLVM arm
+   also had to be moved BEFORE the `is_scalar` check —
+   `is_scalar(Type::Struct(_))` returns true since the
+   alloca path treats structs like scalars; without the
+   reorder the discard would skip the Struct arm. SSA
+   Discard emits an `InstrKind::Drop` for non-Copy
+   structs. Closure #145. Verified leak-free under
+   `-fsanitize=address,leak` against a 100-iter loop
+   (was leaking ~300 bytes pre-fix).
 
    **`intent_str_concat` l_owned flag fix done 2026-05-23**:
    `t.name + "-suffix"` where `t.name: OwnedStr` was

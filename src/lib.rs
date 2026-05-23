@@ -3004,6 +3004,42 @@ mod tests {
     }
 
     #[test]
+    fn discard_of_struct_with_heap_field_frees_fields() {
+        // Closure #145: `let _ = make_struct();` for a struct
+        // whose fields hold heap-owning values (OwnedStr,
+        // Vec<T>, nested struct) was silently leaking the
+        // per-field heap. Tree-C, tree-LLVM, and SSA Discard
+        // handlers all only matched `OwnedStr | Vec(_)` —
+        // `Type::Struct(_)` fell through to a `(void) expr`
+        // (tree-C) or bare `emit_expr` (tree-LLVM / SSA),
+        // never freeing the struct's owning fields.
+        let source = r#"
+            struct Tag { name: OwnedStr }
+            fn make() -> Tag { return Tag { name: "x" + "y" }; }
+            fn main() -> i64 {
+              let i: i64 = 0;
+              while i < 5 {
+                let _ = make();
+                i = i + 1;
+              }
+              return 0;
+            }
+        "#;
+        compile(source).expect("discard of struct should compile");
+        let c = compile_to_c(source).expect("emits C");
+        // Tree-C must spill the discarded struct to a local
+        // and call the per-field free chain.
+        assert!(
+            c.contains("Struct_Tag _intent_discard ="),
+            "expected struct spill in discard, got:\n{c}"
+        );
+        assert!(
+            c.contains("free((void*)_intent_discard.name)"),
+            "expected per-field free in discard, got:\n{c}"
+        );
+    }
+
+    #[test]
     fn field_access_owned_str_in_concat_no_double_free() {
         // Closure #144: `t.name + "-suffix"` where
         // `t.name: OwnedStr` was double-freeing. The

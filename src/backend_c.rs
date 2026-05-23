@@ -1812,6 +1812,43 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                     out.push_str(", sizeof(_intent_discard));\n    (void)_intent_discard;\n  }\n");
                 }
             }
+            Type::Struct(struct_name) => {
+                // Closure #145: `let _ = make_struct();` for a
+                // struct with heap-shaped fields (OwnedStr,
+                // Vec<T>, nested Struct with owning fields)
+                // was leaking the per-field heap. Bind to a
+                // brace-scoped tmp, walk the struct's fields,
+                // and emit the same per-field free chain the
+                // scope-exit Drop pass uses. Struct without
+                // owning fields → just `(void)(...)`.
+                let fields = STRUCT_FIELDS_REGISTRY
+                    .with(|r| r.borrow().get(struct_name).cloned())
+                    .unwrap_or_default();
+                let has_owning = fields.iter().any(|(_, ty)| {
+                    !ty.is_copy()
+                });
+                if has_owning {
+                    out.push_str("  {\n    ");
+                    out.push_str(&struct_c_name(struct_name));
+                    out.push_str(" _intent_discard = ");
+                    out.push_str(&emit_expr(expr));
+                    out.push_str(";\n");
+                    let empty: std::collections::HashSet<&String> =
+                        std::collections::HashSet::new();
+                    emit_struct_field_drops(
+                        "_intent_discard",
+                        struct_name,
+                        &fields,
+                        &empty,
+                        out,
+                    );
+                    out.push_str("  }\n");
+                } else {
+                    out.push_str("  (void)(");
+                    out.push_str(&emit_expr(expr));
+                    out.push_str(");\n");
+                }
+            }
             _ => {
                 out.push_str("  (void)(");
                 out.push_str(&emit_expr(expr));

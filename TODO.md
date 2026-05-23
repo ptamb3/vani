@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #144)
+## ⏳ Resume here (paused 2026-05-23, after closure #145)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -135,8 +135,15 @@ l_owned=1 for any OwnedStr-typed operand, freeing the
 field's heap inside concat AND at the struct's per-
 field Drop. Refined helper
 `owned_str_consumed_at_concat`: l_owned=1 only for
-Var (moved by op) or fresh (Call/Binary/etc.). Test
-totals: 833 lib + 47 e2e passing.
+Var (moved by op) or fresh (Call/Binary/etc.). #145
+`let _ = make_struct()` frees heap fields: discard of
+a struct with OwnedStr/Vec/nested-struct fields was
+silently leaking — Discard handlers only matched
+OwnedStr/Vec. Tree-C, tree-LLVM, and SSA Discard
+extended to also drop Struct values (spill + per-field
+walk). Tree-LLVM arm also reordered ahead of
+`is_scalar` (which treats structs as scalars). Test
+totals: 834 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

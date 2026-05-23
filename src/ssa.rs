@@ -809,12 +809,20 @@ fn lower_stmt(
             // run. Lower into an SSA value, then for non-Copy
             // heap-shaped types emit a Drop so the backend
             // releases the buffer (`free` for OwnedStr, the
-            // matching `__free` helper for Vec). Closure #134:
-            // `let _ = make_owned_str();` was silently leaking
-            // because the lowerer just forgot the value.
+            // matching `__free` helper for Vec, the per-field
+            // drop chain for `Struct{…}` with owning fields).
+            // Closure #134 covered OwnedStr/Vec; closure #145
+            // adds Struct (a struct returned by a function
+            // with heap-shaped fields was silently leaking
+            // when discarded — `let _ = make_struct();`).
             let v = lower_expr_to_value(expr, b, locals)?;
             let ty = expr.ty.clone();
-            if matches!(ty, Type::OwnedStr | Type::Vec(_)) {
+            let needs_drop = match &ty {
+                Type::OwnedStr | Type::Vec(_) => true,
+                Type::Struct(_) => !ty.is_copy(),
+                _ => false,
+            };
+            if needs_drop {
                 b.emit(
                     Type::I64,
                     expr.span,
