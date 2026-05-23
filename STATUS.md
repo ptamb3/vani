@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 828 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 829 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,23 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`len` of fresh Vec drops buffer done 2026-05-22**:
+   `len(vec(1, 2, 3))` was leaking the Vec buffer — the
+   `Len` instruction reads `.len` from the struct but
+   doesn't touch `.data`. Generalized
+   `is_fresh_owned_str` to `is_fresh_non_copy` (matches
+   both OwnedStr AND `Vec<T>` over the same
+   Call/Binary/Block/IfExpr/Match kind whitelist). SSA
+   `Len` lowering for non-Str arrays now emits a `Drop`
+   after the Len instruction when the operand is fresh.
+   Tree-C `emit_len` for Vec wraps the `.len` read in a
+   brace-scoped tmp + `intent_vec_<T>__free` for fresh
+   operands. Verified leak-free under
+   `-fsanitize=address,leak` against a 1000-iteration
+   loop (1000 × 5-element vecs previously left ~40KB
+   of leaked buffers). Closure #141. See updated
+   [examples/vectors.intent](examples/vectors.intent).
 
    **Unified fresh-OwnedStr helper + tree-C strcmp/strlen fixes done 2026-05-22**:
    The per-site `matches!(e.ty, OwnedStr) && matches!(e.kind,

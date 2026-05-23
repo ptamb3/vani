@@ -473,8 +473,27 @@ pub fn is_fresh_owned_str(expr: &TypedExpr) -> bool {
     if !matches!(expr.ty, Type::OwnedStr) {
         return false;
     }
+    is_fresh_non_copy_kind(&expr.kind)
+}
+
+/// True when `expr` is a fresh heap-owning value of ANY
+/// non-Copy type (OwnedStr OR Vec<T>) whose only owner is
+/// the use site. Same conservative kind whitelist as
+/// `is_fresh_owned_str`. Used by sites that read a value
+/// without consuming it (e.g. `len(fresh_vec)`'s Len
+/// instruction reads the `.len` field but never frees the
+/// buffer). Closure #141 generalized the helper after
+/// surfacing the `len(vec(…))` leak.
+pub fn is_fresh_non_copy(expr: &TypedExpr) -> bool {
+    if !matches!(expr.ty, Type::OwnedStr | Type::Vec(_)) {
+        return false;
+    }
+    is_fresh_non_copy_kind(&expr.kind)
+}
+
+fn is_fresh_non_copy_kind(kind: &TypedExprKind) -> bool {
     matches!(
-        expr.kind,
+        kind,
         TypedExprKind::Call { .. }
             | TypedExprKind::Binary { .. }
             | TypedExprKind::Block { .. }

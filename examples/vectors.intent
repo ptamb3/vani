@@ -9,5 +9,13 @@ fn main() -> i64 {
   assert n == 4;
   assert first == 99;
   print first;
+
+  // Closure #141: `len(fresh_vec)` (a Vec from a literal,
+  // call, or block expression with no other owner) now
+  // frees the buffer after reading `.len`. Was leaking
+  // because the `Len` instruction only reads the field
+  // without touching `.data`.
+  let m: u64 = len(vec(1, 2, 3, 4));
+  assert m == 4;
   return 0;
 }

@@ -3004,6 +3004,29 @@ mod tests {
     }
 
     #[test]
+    fn len_of_fresh_vec_drops_buffer() {
+        // Closure #141: `len(vec(1,2,3))` was silently
+        // leaking the Vec buffer — the SSA `Len` instruction
+        // reads `.len` from the struct but doesn't free the
+        // `.data` buffer, and the previous OwnedStr-only
+        // whitelist didn't cover Vec operands. Generalized
+        // `is_fresh_non_copy` now matches Vec; SSA emits a
+        // Drop after the Len, tree-C wraps the `.len` read
+        // in a brace-scoped tmp + `intent_vec_<T>__free`.
+        let source = r#"
+            fn main() -> i64 {
+              let i: i64 = 0;
+              while i < 5 {
+                let n: u64 = len(vec(1, 2, 3));
+                i = i + 1;
+              }
+              return 0;
+            }
+        "#;
+        compile(source).expect("len(fresh Vec) should compile");
+    }
+
+    #[test]
     fn len_of_block_returning_owned_str_drops_heap() {
         // Closure #140: `len({ let s = make(); s })` was
         // leaking — the previous whitelist (#139) only

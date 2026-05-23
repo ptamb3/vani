@@ -1944,6 +1944,16 @@ fn lower_expr_to_operand(
                 }
                 return Ok(Operand::Value(v));
             }
+            // Fresh-Vec operand (Call returning Vec, Block /
+            // IfExpr / Match returning Vec): the Len
+            // instruction reads `.len` from the struct but
+            // doesn't free the buffer; without a Drop the
+            // heap leaks. Var / FieldAccess Vec operands skip
+            // — the binding's scope-exit Drop owns the buffer.
+            // Closure #141.
+            let needs_vec_drop = crate::ir::is_fresh_non_copy(array)
+                && matches!(array.ty, Type::Vec(_));
+            let a_for_drop = a.clone();
             let v = b.emit(
                 expr.ty.clone(),
                 expr.span,
@@ -1952,6 +1962,17 @@ fn lower_expr_to_operand(
                     length: *length,
                 },
             );
+            if needs_vec_drop {
+                b.emit(
+                    Type::I64,
+                    expr.span,
+                    InstrKind::Drop {
+                        source: a_for_drop,
+                        name: "_".to_string(),
+                        ty: array.ty.clone(),
+                    },
+                );
+            }
             Ok(Operand::Value(v))
         }
         TypedExprKind::Ref { name } => {

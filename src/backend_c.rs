@@ -3070,8 +3070,24 @@ fn emit_len(array: &TypedExpr, static_length: u64) -> String {
     };
     match underlying {
         Type::Array { .. } => format!("((uint64_t){})", static_length),
-        Type::Vec(_) => {
+        Type::Vec(element) => {
+            // Fresh-Vec operand: bind to a brace-scoped tmp,
+            // read .len, then free the buffer via the
+            // matching `intent_vec_<T>__free` helper. Var /
+            // FieldAccess Vec operands keep the simple
+            // `(v.len)` form — binding owns the buffer.
+            // Closure #141.
             let array_str = emit_expr(array);
+            if !is_ref && crate::ir::is_fresh_non_copy(array) {
+                let struct_name = vec_c_struct(element);
+                let free_helper = vec_helper(element, "free");
+                return format!(
+                    "((uint64_t)({{ {sn} _intent_len_tmp = ({arr}); uint64_t _intent_len_r = _intent_len_tmp.len; {fh}(_intent_len_tmp); _intent_len_r; }}))",
+                    sn = struct_name,
+                    arr = array_str,
+                    fh = free_helper
+                );
+            }
             if is_ref {
                 format!("((*{}).len)", array_str)
             } else {
