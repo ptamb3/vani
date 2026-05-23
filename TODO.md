@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #155)
+## ⏳ Resume here (paused 2026-05-23, after closure #156)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -212,7 +212,14 @@ Struct element: tree-LLVM also panicked for Struct
 element types; now extracts each field and deep-
 clones OwnedStr fields. Tree-C was already correct
 via `c_element_deep_clone`'s recursive Struct arm
-from #153. Test totals: 847 lib + 47 e2e passing.
+from #153. #156 `clone_at` Enum element: same shape
+— tree-LLVM was panicking for Enum elements. Now
+OR-chain-checks the tag against payloaded tags,
+branches to a deep-clone path
+(`intent_str_concat` of the OwnedStr payload +
+insertvalue into a new enum struct) vs a tag-only
+path (pass slot through), phi-joins. Test totals:
+848 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

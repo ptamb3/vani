@@ -3313,6 +3313,108 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                             acc = next_acc;
                         }
                     }
+                } else if let Type::Enum(enum_name) = &element_ty {
+                    // Closure #156: Enum element — load the
+                    // slot, extract tag + payload, OR-chain
+                    // over payloaded tags, branch through
+                    // `cat_enum_payloaded` (reconstruct
+                    // enum with deep-cloned OwnedStr
+                    // payload) vs `cat_enum_taggy` (use
+                    // payload as-is), phi-join into `dest`.
+                    // For tag-only enums (no payloaded tags
+                    // registered) the load IS the deep
+                    // clone — emit a round-trip via
+                    // insertvalue.
+                    let payload_ty = LLVM_ENUM_PAYLOAD_REGISTRY
+                        .with(|r| r.borrow().get(enum_name).cloned());
+                    let payload_tags: Vec<u32> = LLVM_ENUM_PAYLOAD_TAGS_REGISTRY
+                        .with(|r| r.borrow().get(enum_name).cloned().unwrap_or_default());
+                    let e_ty = format!("%Enum_{}", enum_name);
+                    let slot_v = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = load {}, {}* {}\n",
+                        slot_v, e_ty, e_ty, slot_p
+                    ));
+                    let heap_kind = match &payload_ty {
+                        Some(Type::OwnedStr) => Some("owned_str"),
+                        _ => None,
+                    };
+                    if heap_kind == Some("owned_str") && !payload_tags.is_empty() {
+                        let tag_v = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = extractvalue {} {}, 0\n",
+                            tag_v, e_ty, slot_v
+                        ));
+                        let payload_v = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = extractvalue {} {}, 1\n",
+                            payload_v, e_ty, slot_v
+                        ));
+                        let mut prev = "i1 false".to_string();
+                        for t in &payload_tags {
+                            let cmp = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = icmp eq i32 {}, {}\n",
+                                cmp, tag_v, t
+                            ));
+                            let or_v = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = or {}, {}\n",
+                                or_v, prev, cmp
+                            ));
+                            prev = format!("i1 {}", or_v);
+                        }
+                        let cond = prev.trim_start_matches("i1 ").to_string();
+                        let pay_lbl = ctx.fresh_label("cat_enum_pay");
+                        let tag_lbl = ctx.fresh_label("cat_enum_tag");
+                        let join_lbl = ctx.fresh_label("cat_enum_join");
+                        out.push_str(&format!(
+                            "  br i1 {}, label %{}, label %{}\n",
+                            cond, pay_lbl, tag_lbl
+                        ));
+                        out.push_str(&format!("{}:\n", pay_lbl));
+                        let empty_p = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = getelementptr [1 x i8], [1 x i8]* @.empty_str_clone, i64 0, i64 0\n",
+                            empty_p
+                        ));
+                        let cloned_payload = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = call i8* @intent_str_concat(i8* {}, i32 0, i8* {}, i32 0)\n",
+                            cloned_payload, payload_v, empty_p
+                        ));
+                        let new_enum_p1 = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = insertvalue {} undef, i32 {}, 0\n",
+                            new_enum_p1, e_ty, tag_v
+                        ));
+                        let new_enum_p2 = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = insertvalue {} {}, i8* {}, 1\n",
+                            new_enum_p2, e_ty, new_enum_p1, cloned_payload
+                        ));
+                        out.push_str(&format!("  br label %{}\n", join_lbl));
+                        out.push_str(&format!("{}:\n", tag_lbl));
+                        out.push_str(&format!("  br label %{}\n", join_lbl));
+                        out.push_str(&format!("{}:\n", join_lbl));
+                        out.push_str(&format!(
+                            "  {} = phi {} [ {}, %{} ], [ {}, %{} ]\n",
+                            dest, e_ty, new_enum_p2, pay_lbl, slot_v, tag_lbl
+                        ));
+                        ctx.current_block = join_lbl;
+                    } else {
+                        // Tag-only enum: round-trip via
+                        // insertvalue so `dest` is bound.
+                        let tag_v = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = extractvalue {} {}, 0\n",
+                            tag_v, e_ty, slot_v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = insertvalue {} undef, i32 {}, 0\n",
+                            dest, e_ty, tag_v
+                        ));
+                    }
                 } else {
                     unreachable!(
                         "clone_at on element type {:?} not yet supported in tree-LLVM",

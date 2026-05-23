@@ -3004,6 +3004,31 @@ mod tests {
     }
 
     #[test]
+    fn clone_at_enum_with_owned_str_payload_works() {
+        // Closure #156: `clone_at(ref Vec<Msg>, i)` where
+        // `Msg.Text(OwnedStr)` was panicking in tree-LLVM
+        // with "clone_at on element type Enum(Msg) not yet
+        // supported". Closures #154 / #155 added OwnedStr
+        // and Struct arms; #156 finishes Enum with an
+        // OR-chain tag check, branching to a
+        // `cat_enum_pay` block that deep-clones the
+        // payload via intent_str_concat then reconstructs
+        // the enum, vs a `cat_enum_tag` block that uses
+        // the loaded slot as-is, and phi-joins. Tree-C
+        // was already correct via `c_element_deep_clone`'s
+        // Enum arm from closure #152.
+        let source = r#"
+            enum Msg { Empty, Text(OwnedStr) }
+            fn main() -> i64 {
+              let xs: Vec<Msg> = vec(Msg.Text("a" + "1"));
+              let elt: Msg = clone_at(ref xs, 0);
+              return 0;
+            }
+        "#;
+        compile(source).expect("clone_at(Vec<PayloadedEnum>) should compile");
+    }
+
+    #[test]
     fn clone_at_struct_with_heap_field_works() {
         // Closure #155: `clone_at(ref Vec<Struct{OwnedStr}>, i)`
         // was panicking in tree-LLVM with "clone_at on element
