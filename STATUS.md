@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 837 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 838 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,19 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **FieldAssign of Struct-typed field frees old heap done 2026-05-23**:
+   `o.inner = newInner` where Inner has heap-shaped fields
+   (OwnedStr / Vec) was leaking the previous Inner's
+   heap. FieldAssign's heap-overwrite logic (from closure
+   #132) only handled OwnedStr / Vec field types; Struct
+   fell through to a plain assign. Tree-C now also walks
+   the OLD struct field's per-field drops via
+   `emit_struct_field_drops` before storing the new
+   value. Enum-typed struct fields are still gated by
+   the checker (not yet supported), so no fix needed
+   there. Closure #148. Verified leak-free under
+   `-fsanitize=address,leak`.
 
    **Reassign of Struct / Enum with heap fields done 2026-05-23**:
    `t = Tag { name: …}` and `m = Msg.Text(…)` for bindings

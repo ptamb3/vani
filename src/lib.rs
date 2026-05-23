@@ -3004,6 +3004,34 @@ mod tests {
     }
 
     #[test]
+    fn field_assign_struct_field_frees_old_inner_fields() {
+        // Closure #148: `o.inner = newInner` where Inner has
+        // heap-shaped fields (OwnedStr) was leaking the
+        // previous Inner's heap. FieldAssign's heap-overwrite
+        // logic (closure #132) only handled OwnedStr / Vec
+        // field types; Struct fell through to a plain assign.
+        // Tree-C now walks the OLD inner field's per-field
+        // drops before storing the new value.
+        let source = r#"
+            struct Inner { name: OwnedStr }
+            struct Outer { inner: Inner }
+            fn main() -> i64 {
+              let o: Outer = Outer { inner: Inner { name: "first" + "" } };
+              o.inner = Inner { name: "second" + "" };
+              return 0;
+            }
+        "#;
+        compile(source).expect("nested struct field reassign should compile");
+        let c = compile_to_c(source).expect("emits C");
+        // Tree-C must emit the per-field free over the OLD
+        // inner field before the new struct is stored.
+        assert!(
+            c.contains("free((void*)v_o.inner.name)"),
+            "expected free of old nested OwnedStr field before assign, got:\n{c}"
+        );
+    }
+
+    #[test]
     fn reassign_struct_with_heap_field_frees_old_fields() {
         // Closure #147: `t = Tag { name: ... }` for a struct
         // binding with an OwnedStr field was leaking the

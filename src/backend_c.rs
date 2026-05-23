@@ -2105,6 +2105,68 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                         lvalue
                     ));
                 }
+                Type::Struct(struct_name) => {
+                    // Closure #148: assigning a struct-typed
+                    // field (`t.inner = newInner`) must free
+                    // the previous struct's owning fields,
+                    // otherwise the nested heap leaks.
+                    let fields = STRUCT_FIELDS_REGISTRY
+                        .with(|r| r.borrow().get(struct_name).cloned())
+                        .unwrap_or_default();
+                    let has_owning = fields.iter().any(|(_, ty)| !ty.is_copy());
+                    if has_owning {
+                        let empty: std::collections::HashSet<&String> =
+                            std::collections::HashSet::new();
+                        emit_struct_field_drops(
+                            &lvalue,
+                            struct_name,
+                            &fields,
+                            &empty,
+                            out,
+                        );
+                    }
+                }
+                Type::Enum(enum_name) => {
+                    // Closure #148: assigning a payloaded-enum-
+                    // typed field must free the previous
+                    // payload heap. Same shape as the Reassign
+                    // enum case.
+                    let payload_ty = ENUM_PAYLOAD_REGISTRY
+                        .with(|r| r.borrow().get(enum_name).cloned());
+                    let free_expr: Option<String> = match &payload_ty {
+                        Some(Type::OwnedStr) => Some(format!(
+                            "free((void*){}.payload)",
+                            lvalue
+                        )),
+                        Some(Type::Vec(element)) => Some(format!(
+                            "{}({}.payload)",
+                            vec_helper(element, "free"),
+                            lvalue
+                        )),
+                        _ => None,
+                    };
+                    if let Some(free_call) = free_expr {
+                        let payload_tags: Vec<u32> =
+                            ENUM_PAYLOAD_TAGS_REGISTRY.with(|r| {
+                                r.borrow()
+                                    .get(enum_name)
+                                    .cloned()
+                                    .unwrap_or_default()
+                            });
+                        if !payload_tags.is_empty() {
+                            let cases: Vec<String> = payload_tags
+                                .iter()
+                                .map(|t| format!("case {}", t))
+                                .collect();
+                            out.push_str(&format!(
+                                "  switch ({}.tag) {{ {}: {}; break; default: break; }}\n",
+                                lvalue,
+                                cases.join(": "),
+                                free_call
+                            ));
+                        }
+                    }
+                }
                 _ => {}
             }
             out.push_str(&format!("  {} = {};\n", lvalue, v));

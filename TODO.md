@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #147)
+## ⏳ Resume here (paused 2026-05-23, after closure #148)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -157,7 +157,14 @@ binding's per-field drops (Struct) or switches on tag
 to free payload (Enum), then moves the tmp in. SSA's
 drop_old whitelist extended to admit non-Copy Struct
 / Enum; LLVM is covered by the existing Drop emit
-machinery. Test totals: 837 lib + 47 e2e passing.
+machinery. #148 FieldAssign of Struct-typed field frees
+old heap: `o.inner = newInner` where Inner has heap
+fields was leaking the previous Inner's heap.
+FieldAssign's heap-overwrite logic (from #132) only
+handled OwnedStr / Vec field types; Struct fell
+through. Tree-C now walks the OLD struct field's
+per-field drops via `emit_struct_field_drops`. Test
+totals: 838 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
