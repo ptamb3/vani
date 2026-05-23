@@ -1533,6 +1533,46 @@ pub(crate) fn c_element_deep_clone(slot: &str, ty: &Type) -> String {
             helper = vec_helper(inner, "clone"),
             slot = slot,
         ),
+        // Closure #152: `clone(Vec<OwnedStr>)` /
+        // `clone(Vec<Enum_with_OwnedStr>)` was shallow-
+        // copying the heap pointer, then both source and
+        // clone double-freed at scope exit.
+        //
+        // OwnedStr: round-trip through `intent_str_concat`
+        // with an empty literal — the helper mallocs a
+        // fresh buffer of the source's length and memcpy's
+        // the bytes, giving us a strdup-like deep copy.
+        Type::OwnedStr => format!(
+            "intent_str_concat({slot}, 0, \"\", 0)",
+            slot = slot
+        ),
+        // Enum with OwnedStr payload: tag-switched ternary
+        // — for payloaded tags, reconstruct the enum
+        // struct with a deep-cloned payload; otherwise
+        // keep the struct as-is.
+        Type::Enum(name) => {
+            let payload_ty = ENUM_PAYLOAD_REGISTRY
+                .with(|r| r.borrow().get(name).cloned());
+            let payload_tags: Vec<u32> = ENUM_PAYLOAD_TAGS_REGISTRY
+                .with(|r| r.borrow().get(name).cloned().unwrap_or_default());
+            match (&payload_ty, payload_tags.is_empty()) {
+                (Some(Type::OwnedStr), false) => {
+                    let mut cond = String::from("0");
+                    for t in &payload_tags {
+                        cond = format!("({} || {}.tag == {})", cond, slot, t);
+                    }
+                    format!(
+                        "(({}) ? (({}){{ .tag = ({}).tag, .payload = intent_str_concat(({}).payload, 0, \"\", 0) }}) : ({}))",
+                        cond,
+                        enum_c_name(name),
+                        slot,
+                        slot,
+                        slot
+                    )
+                }
+                _ => slot.to_string(),
+            }
+        }
         _ => slot.to_string(),
     }
 }

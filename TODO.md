@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #151)
+## ⏳ Resume here (paused 2026-05-23, after closure #152)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -188,8 +188,19 @@ leaked); LLVM vec literal used `vec_element_byte_size`
 returning 8 for enums (under-allocated 16-byte
 tagged union, crashing lli with invalid free).
 All four sites now treat payloaded enums like
-structs/tuples. Test totals: 842 lib + 47 e2e
-passing.
+structs/tuples. #152 `clone(Vec<OwnedStr>)` /
+`clone(Vec<Enum>)` deep-copies: the per-shape Vec
+__clone was shallow-copying per-element heap
+pointers, double-freeing at scope exit. C
+`c_element_deep_clone` extended for OwnedStr (via
+`intent_str_concat(slot, 0, "", 0)`) and Enum (tag-
+switched ternary reconstructing with deep-cloned
+payload). LLVM's Vec __clone loops over slots for
+ANY non-Copy element type and produces per-element
+deep clones (was only handling Vec<U>; OwnedStr /
+Enum payloads fell through to an uninitialized
+buffer that crashed lli). Test totals: 844 lib + 47
+e2e passing.
 
 ### Recommended next (pick one)
 

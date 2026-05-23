@@ -136,6 +136,12 @@ pub fn emit(module: &Module) -> Result<String, EmitError> {
     out.push_str("declare i8* @memcpy(i8*, i8*, i64)\n");
     out.push_str("declare i32 @strcmp(i8*, i8*)\n");
     out.push_str("declare i64 @strlen(i8*)\n");
+    // Empty string global used by the per-element Vec
+    // clone helper (closure #152) and the payloaded-enum
+    // payload clone path to round-trip an OwnedStr
+    // through `intent_str_concat` with a zero-length right
+    // operand — gives a strdup-like deep copy.
+    out.push_str("@.empty_str_clone = private constant [1 x i8] c\"\\00\"\n");
     // Parallel-for runtime. Linux/macOS use libgomp;
     // Windows open-codes a `@CreateThread` fan-out (the
     // outlined fn reads tid/nt from a per-thread arg struct

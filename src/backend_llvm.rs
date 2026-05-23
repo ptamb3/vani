@@ -420,6 +420,11 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("@.fmt.s = private constant [3 x i8] c\"%s\\00\"\n");
     out.push_str("@.fmt.true = private constant [5 x i8] c\"true\\00\"\n");
     out.push_str("@.fmt.false = private constant [6 x i8] c\"false\\00\"\n");
+    // Empty string used by `Vec<OwnedStr>__clone` and the
+    // payloaded-enum payload clone path as the second
+    // operand of `intent_str_concat` to deep-copy an
+    // existing OwnedStr (closure #152).
+    out.push_str("@.empty_str_clone = private constant [1 x i8] c\"\\00\"\n");
     // Format string for `assert "msg"` lowering. dprintf with fd=2
     // (stderr) writes `assertion failed: <msg>\n`, matching the C
     // backend's fprintf(stderr, ...) shape.
@@ -4496,14 +4501,32 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
             elt_ty
         ));
         out.push_str("  %_ck = call i8* @memcpy(i8* %raw, i8* %src8, i64 %bytes)\n");
-    } else if let Type::Vec(inner) = element {
-        let inner_clone =
-            format!("@intent_vec_{}__clone", vec_struct_tag(inner));
-        // Loop over xs.data[0..len], call inner __clone on
-        // each, store into new_data[i].
+    } else {
+        // Non-Copy element: deep-clone each slot so the
+        // returned Vec doesn't share heap with the source
+        // (closure #143's clone-of-fresh-vec fix and
+        // closure #152's general clone bug both surfaced
+        // here for `Vec<OwnedStr>` / `Vec<EnumWithOwnedStr>`).
+        // Pattern: load src slot, produce a deep clone via
+        // the appropriate helper, store into the new
+        // buffer. Tag-only enums fall through to a shallow
+        // copy (memcpy via the Copy path above).
+        // Detect whether the per-element clone branches
+        // (Enum payload case) so the loop's phi back-
+        // predecessor matches the actual last block.
+        let enum_payloaded = matches!(element, Type::Enum(name)
+            if LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| r.borrow().contains_key(name))
+                && matches!(
+                    LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| r.borrow().get(name).cloned()),
+                    Some(Type::OwnedStr)
+                ));
+        let back_pred = if enum_payloaded { "%cln_join" } else { "%cln_body" };
         out.push_str("  br label %cln_check\n");
         out.push_str("cln_check:\n");
-        out.push_str("  %ci = phi i64 [0, %0], [%ci_next, %cln_body]\n");
+        out.push_str(&format!(
+            "  %ci = phi i64 [0, %0], [%ci_next, {}]\n",
+            back_pred
+        ));
         out.push_str("  %ci_lt = icmp ult i64 %ci, %len\n");
         out.push_str("  br i1 %ci_lt, label %cln_body, label %cln_done\n");
         out.push_str("cln_body:\n");
@@ -4515,17 +4538,105 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
             "  %src_v = load {}, {}* %src_p\n",
             elt_ty, elt_ty
         ));
-        out.push_str(&format!(
-            "  %cloned = call {} {}({} %src_v)\n",
-            elt_ty, inner_clone, elt_ty
-        ));
+        let cloned_value: String = match element {
+            Type::Vec(inner) => {
+                let inner_clone =
+                    format!("@intent_vec_{}__clone", vec_struct_tag(inner));
+                out.push_str(&format!(
+                    "  %cloned = call {} {}({} %src_v)\n",
+                    elt_ty, inner_clone, elt_ty
+                ));
+                "%cloned".to_string()
+            }
+            Type::OwnedStr => {
+                // Closure #152: deep clone via
+                // intent_str_concat with empty literal.
+                out.push_str(
+                    "  %empty_p = getelementptr [1 x i8], [1 x i8]* @.empty_str_clone, i64 0, i64 0\n",
+                );
+                out.push_str(
+                    "  %cloned = call i8* @intent_str_concat(i8* %src_v, i32 0, i8* %empty_p, i32 0)\n",
+                );
+                "%cloned".to_string()
+            }
+            Type::Enum(name)
+                if LLVM_ENUM_PAYLOAD_REGISTRY
+                    .with(|r| r.borrow().contains_key(name)) =>
+            {
+                // Tag-switched payload clone for payloaded
+                // enums. Only OwnedStr payload supported in
+                // v1; other payload kinds fall through to a
+                // shallow copy.
+                let payload_ty = LLVM_ENUM_PAYLOAD_REGISTRY
+                    .with(|r| r.borrow().get(name).cloned());
+                if matches!(payload_ty, Some(Type::OwnedStr)) {
+                    let payload_tags: Vec<u32> = LLVM_ENUM_PAYLOAD_TAGS_REGISTRY
+                        .with(|r| r.borrow().get(name).cloned().unwrap_or_default());
+                    out.push_str(&format!(
+                        "  %src_tag = extractvalue {} %src_v, 0\n",
+                        elt_ty
+                    ));
+                    out.push_str(&format!(
+                        "  %src_payload = extractvalue {} %src_v, 1\n",
+                        elt_ty
+                    ));
+                    let mut prev = "i1 false".to_string();
+                    for (idx, t) in payload_tags.iter().enumerate() {
+                        out.push_str(&format!(
+                            "  %tg{} = icmp eq i32 %src_tag, {}\n",
+                            idx, t
+                        ));
+                        out.push_str(&format!(
+                            "  %or{} = or {}, %tg{}\n",
+                            idx, prev, idx
+                        ));
+                        prev = format!("i1 %or{}", idx);
+                    }
+                    let cond = prev.trim_start_matches("i1 ").to_string();
+                    out.push_str(&format!(
+                        "  br i1 {}, label %cln_payloaded, label %cln_taggy\n",
+                        cond
+                    ));
+                    out.push_str("cln_payloaded:\n");
+                    out.push_str(
+                        "  %empty_p = getelementptr [1 x i8], [1 x i8]* @.empty_str_clone, i64 0, i64 0\n",
+                    );
+                    out.push_str(
+                        "  %payload_cloned = call i8* @intent_str_concat(i8* %src_payload, i32 0, i8* %empty_p, i32 0)\n",
+                    );
+                    out.push_str(&format!(
+                        "  %enum_p1 = insertvalue {} undef, i32 %src_tag, 0\n",
+                        elt_ty
+                    ));
+                    out.push_str(&format!(
+                        "  %enum_p2 = insertvalue {} %enum_p1, i8* %payload_cloned, 1\n",
+                        elt_ty
+                    ));
+                    out.push_str("  br label %cln_join\n");
+                    out.push_str("cln_taggy:\n");
+                    out.push_str("  br label %cln_join\n");
+                    out.push_str("cln_join:\n");
+                    out.push_str(&format!(
+                        "  %cloned = phi {} [ %enum_p2, %cln_payloaded ], [ %src_v, %cln_taggy ]\n",
+                        elt_ty
+                    ));
+                    "%cloned".to_string()
+                } else {
+                    // Shallow copy fallback for non-OwnedStr
+                    // enum payloads (Vec / Struct payloads
+                    // still pending).
+                    "%src_v".to_string()
+                }
+            }
+            _ => "%src_v".to_string(),
+        };
         out.push_str(&format!(
             "  %dst_p = getelementptr {}, {}* %new_data, i64 %ci\n",
             elt_ty, elt_ty
         ));
         out.push_str(&format!(
-            "  store {} %cloned, {}* %dst_p\n",
-            elt_ty, elt_ty
+            "  store {} {}, {}* %dst_p\n",
+            elt_ty, cloned_value, elt_ty
         ));
         out.push_str("  %ci_next = add i64 %ci, 1\n");
         out.push_str("  br label %cln_check\n");

@@ -3004,6 +3004,51 @@ mod tests {
     }
 
     #[test]
+    fn clone_vec_owned_str_deep_copies_payload() {
+        // Closure #152: `clone(Vec<OwnedStr>)` was shallow-
+        // copying the per-element i8* pointers, then both
+        // the source and the clone double-freed at scope
+        // exit (each Vec's __free walked its slots and
+        // freed the same heap twice).
+        //
+        // c_element_deep_clone now deep-clones OwnedStr via
+        // `intent_str_concat(slot, 0, "", 0)`. LLVM's
+        // per-shape Vec __clone also extended: non-Copy
+        // element types loop over slots and produce a
+        // per-element deep clone (was only handling Vec<U>
+        // elements; OwnedStr / Enum payloads fell through
+        // to an uninitialized buffer, crashing lli).
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<OwnedStr> = vec("a" + "1", "b" + "2");
+              let ys: Vec<OwnedStr> = clone(xs);
+              return 0;
+            }
+        "#;
+        compile(source).expect("clone(Vec<OwnedStr>) should compile");
+    }
+
+    #[test]
+    fn clone_vec_payloaded_enum_deep_copies_payload() {
+        // Closure #152: `clone(Vec<Msg>)` where Msg has an
+        // OwnedStr payload was double-freeing payload heaps.
+        // c_element_deep_clone for Type::Enum now emits a
+        // tag-switched ternary that reconstructs the enum
+        // with a deep-cloned payload for payloaded
+        // variants. LLVM mirrors via an OR-chain branch
+        // through cln_payloaded / cln_taggy / cln_join.
+        let source = r#"
+            enum Msg { Empty, Text(OwnedStr) }
+            fn main() -> i64 {
+              let xs: Vec<Msg> = vec(Msg.Text("a" + "1"), Msg.Empty);
+              let ys: Vec<Msg> = clone(xs);
+              return 0;
+            }
+        "#;
+        compile(source).expect("clone(Vec<PayloadedEnum>) should compile");
+    }
+
+    #[test]
     fn vec_of_payloaded_enum_compiles_and_drops() {
         // Closure #151: `Vec<Msg>` where Msg is a payloaded
         // enum was broken in four places:

@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 842 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 844 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,24 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`clone(Vec<OwnedStr>)` / `clone(Vec<Enum>)` deep-copies done 2026-05-23**:
+   the per-shape Vec `__clone` helper was shallow-copying
+   the per-element heap pointers — `clone(Vec<OwnedStr>)`
+   produced a new Vec whose i8* slots aliased the source's,
+   so the source's free + the clone's free double-freed the
+   shared heap. C `c_element_deep_clone` now deep-clones
+   `OwnedStr` via `intent_str_concat(slot, 0, "", 0)` (round-
+   trip through the concat helper with an empty literal,
+   gives a strdup-like copy) and `Enum` via a tag-switched
+   ternary that reconstructs the enum with a deep-cloned
+   OwnedStr payload for payloaded variants. LLVM's per-
+   shape `__clone` helper extended to loop over slots for
+   ANY non-Copy element type (was only handling `Vec<U>`
+   elements; `OwnedStr` / `Enum` payloads fell through to
+   an uninitialized buffer, crashing lli with "free():
+   invalid pointer"). LLVM emit also adds an
+   `@.empty_str_clone` private constant. Closure #152.
 
    **`Vec<PayloadedEnum>` compiles + drops correctly done 2026-05-23**:
    `Vec<Msg>` where `Msg` is a payloaded enum was broken
