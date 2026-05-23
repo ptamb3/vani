@@ -2551,13 +2551,28 @@ fn emit_index_assign(
                 _ => {}
             }
         } else {
-            // Whole-element overwrite (closure #149): `xs[i] =
-            // newStruct` / `xs[i] = newEnum` must free the OLD
-            // slot's heap fields / payload before the store.
+            // Whole-element overwrite (closure #149 / #150):
+            // `xs[i] = newval` for ANY heap-shaped element
+            // must free the OLD slot's heap before the store.
             // Previously only the field_path != [] case was
-            // handled — so `Vec<Tag{name: OwnedStr}>[0] =
-            // Tag{…}` was leaking the old element's name heap.
+            // handled at the leaf level, so several
+            // whole-element shapes leaked.
             match lty {
+                Type::OwnedStr => {
+                    // Closure #150: `Vec<OwnedStr>[i] = "x" + "y"`
+                    // — free the old i8* before storing the new.
+                    out.push_str(&format!("  free((void*){});\n", lv));
+                }
+                Type::Vec(elem) => {
+                    // Closure #150: `Vec<Vec<i64>>[i] = vec(…)`
+                    // — call the inner __free over the old
+                    // slot before storing the new struct.
+                    out.push_str(&format!(
+                        "  {}({});\n",
+                        vec_helper(elem, "free"),
+                        lv
+                    ));
+                }
                 Type::Struct(struct_name) => {
                     let fields = STRUCT_FIELDS_REGISTRY
                         .with(|r| r.borrow().get(struct_name).cloned())

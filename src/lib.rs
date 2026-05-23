@@ -3004,6 +3004,42 @@ mod tests {
     }
 
     #[test]
+    fn index_assign_owned_str_element_frees_old_heap() {
+        // Closure #150: `xs[i] = newstr` for a
+        // `Vec<OwnedStr>` element was leaking the OLD i8*.
+        // Closure #149 added struct/enum cases for the
+        // whole-element overwrite; this one adds OwnedStr
+        // and Vec element types (which were already
+        // handled at the leaf-with-field-path level by
+        // closure #126 but not at the whole-element level).
+        // SSA-C path also extended (the OwnedStr-vec case
+        // routes through SSA).
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<OwnedStr> = vec("a" + "1", "b" + "2");
+              xs[0] = "c" + "3";
+              return 0;
+            }
+        "#;
+        compile(source).expect("Vec<OwnedStr> index-assign should compile");
+    }
+
+    #[test]
+    fn index_assign_nested_vec_element_frees_old_heap() {
+        // Closure #150: same shape for `Vec<Vec<i64>>[i] =
+        // vec(...)`. Tree-C handles via the leaf-Drop arms;
+        // SSA-C IndexAssign emit also extended.
+        let source = r#"
+            fn main() -> i64 {
+              let xss: Vec<Vec<i64>> = vec(vec(1, 2), vec(3, 4));
+              xss[0] = vec(99, 88, 77);
+              return 0;
+            }
+        "#;
+        compile(source).expect("Vec<Vec<i64>> index-assign should compile");
+    }
+
+    #[test]
     fn index_assign_struct_element_frees_old_heap() {
         // Closure #149: `xs[i] = newStruct` for a
         // `Vec<Struct{heap-field}>` element was leaking the

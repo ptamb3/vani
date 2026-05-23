@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 839 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 841 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,19 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **IndexAssign whole-element for OwnedStr/Vec elements done 2026-05-23**:
+   `Vec<OwnedStr>[i] = "x" + ""` and `Vec<Vec<i64>>[i] =
+   vec(…)` were leaking the OLD element's heap. Closure
+   #149's IndexAssign whole-element extension only added
+   the Struct/Enum element-type arms; OwnedStr and Vec
+   element types fell through to a plain store. Tree-C
+   `emit_index_assign` now also frees the OLD slot for
+   `Type::OwnedStr` (`free((void*)<lv>)`) and `Type::Vec`
+   (`intent_vec_<T>__free(<lv>)`) leaf cases. SSA-C's
+   `InstrKind::IndexAssign` emitter extended in parallel
+   (the `Vec<OwnedStr>` case routes through SSA, not
+   tree-C). Closure #150.
 
    **IndexAssign of Struct/Enum element frees old heap done 2026-05-23**:
    `xs[i] = newStruct` for a `Vec<Struct{heap-field}>`

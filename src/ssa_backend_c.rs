@@ -1893,7 +1893,7 @@ fn emit_instr(
             // pointer-decayed name.
             let array_ty = operand_type(array, value_types);
             match array_ty.as_ref().map(|t| t.deref().clone()) {
-                Some(Type::Vec(_)) => {
+                Some(Type::Vec(element)) => {
                     let dot = if matches!(
                         array_ty.as_ref().unwrap(),
                         Type::Ref(_) | Type::RefMut(_)
@@ -1902,15 +1902,33 @@ fn emit_instr(
                     } else {
                         "."
                     };
-                    writeln!(
-                        out,
-                        "  {}{}data[{}] = {};",
+                    // Closure #150 (SSA-C): when the element
+                    // type is heap-shaped, free the OLD slot
+                    // before storing the new value. Same
+                    // shape as tree-C's emit_index_assign
+                    // whole-element drop.
+                    let lv = format!(
+                        "{}{}data[{}]",
                         c_operand(array),
                         dot,
-                        c_operand(index),
-                        c_operand(value)
-                    )
-                    .unwrap();
+                        c_operand(index)
+                    );
+                    match element.as_ref() {
+                        Type::OwnedStr => {
+                            writeln!(out, "  free((void*){});", lv).unwrap();
+                        }
+                        Type::Vec(inner) => {
+                            writeln!(
+                                out,
+                                "  {}({});",
+                                crate::backend_c::vec_helper(inner, "free"),
+                                lv
+                            )
+                            .unwrap();
+                        }
+                        _ => {}
+                    }
+                    writeln!(out, "  {} = {};", lv, c_operand(value)).unwrap();
                 }
                 _ => {
                     writeln!(
