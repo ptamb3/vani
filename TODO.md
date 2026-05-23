@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #143)
+## ⏳ Resume here (paused 2026-05-23, after closure #144)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -128,8 +128,15 @@ free a fresh-Vec operand after reading `.data[i]`.
 checker treats `clone(xs)` as borrow-semantics; for
 a fresh-Vec arg the buffer had no other owner. SSA
 Call lowering now emits a Drop after the clone for
-each fresh non-Copy argument. Test totals: 831 lib
-+ 47 e2e passing.
+each fresh non-Copy argument. #144 intent_str_concat
+l_owned flag for FieldAccess operand: was double-
+freeing `t.name + "-suffix"` — the concat flag set
+l_owned=1 for any OwnedStr-typed operand, freeing the
+field's heap inside concat AND at the struct's per-
+field Drop. Refined helper
+`owned_str_consumed_at_concat`: l_owned=1 only for
+Var (moved by op) or fresh (Call/Binary/etc.). Test
+totals: 833 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

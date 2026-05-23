@@ -3153,15 +3153,22 @@ fn emit_binary(
     // helper that mallocs a fresh buffer of size strlen(a) +
     // strlen(b) + 1, copies both, and returns the new pointer.
     // OwnedStr operands are consumed (their backing buffer is
-    // freed by the helper before it returns the new buffer); the
-    // checker has already marked the underlying bindings as moved
-    // so they can't be used afterward.
+    // freed by the helper before it returns the new buffer);
+    // the checker has already marked the underlying bindings
+    // as moved so they can't be used afterward. The owned
+    // flag uses the same conservative whitelist as the rest
+    // of the fresh-OwnedStr handlers (Call / Binary / Block
+    // / IfExpr / Match) — Var / FieldAccess operands share
+    // their buffer with a live binding and would double-free
+    // at the binding's scope-exit Drop. Closure #144 widened
+    // the previous `matches!(ty, OwnedStr)` check that
+    // double-freed `t.name + "x"` (FieldAccess + Str).
     if matches!(op, BinaryOp::Add)
         && matches!(left.ty, Type::Str | Type::OwnedStr)
         && matches!(right.ty, Type::Str | Type::OwnedStr)
     {
-        let lhs_owned = matches!(left.ty, Type::OwnedStr);
-        let rhs_owned = matches!(right.ty, Type::OwnedStr);
+        let lhs_owned = crate::ir::owned_str_consumed_at_concat(left);
+        let rhs_owned = crate::ir::owned_str_consumed_at_concat(right);
         return format!(
             "intent_str_concat({}, {}, {}, {})",
             emit_expr(left),

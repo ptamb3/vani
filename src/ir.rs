@@ -501,3 +501,26 @@ fn is_fresh_non_copy_kind(kind: &TypedExprKind) -> bool {
             | TypedExprKind::Match { .. }
     )
 }
+
+/// True when an OwnedStr value will be CONSUMED at the use
+/// site — either because it's a fresh allocation with no
+/// other owner (Call / Binary / Block / IfExpr / Match) OR
+/// because it's a `Var` that the checker has marked as
+/// moved at this position (e.g. as the operand of
+/// `intent_str_concat`, which consumes its arguments by
+/// design). The Var case is the difference between this
+/// and `is_fresh_owned_str`: the consuming-binary-op
+/// (`g1 + "!"` where `g1: OwnedStr`) MUST free `g1`'s heap
+/// in the concat helper because the binding's scope-exit
+/// Drop is suppressed once moved.
+///
+/// Excludes FieldAccess / TupleAccess / Ref / RefMut — these
+/// share a buffer with a live binding whose scope-exit Drop
+/// owns the heap; freeing inside the concat helper would
+/// double-free at the binding's later Drop. Closure #144.
+pub fn owned_str_consumed_at_concat(expr: &TypedExpr) -> bool {
+    if !matches!(expr.ty, Type::OwnedStr) {
+        return false;
+    }
+    matches!(expr.kind, TypedExprKind::Var(_)) || is_fresh_non_copy_kind(&expr.kind)
+}

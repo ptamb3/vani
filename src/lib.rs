@@ -3004,6 +3004,65 @@ mod tests {
     }
 
     #[test]
+    fn field_access_owned_str_in_concat_no_double_free() {
+        // Closure #144: `t.name + "-suffix"` where
+        // `t.name: OwnedStr` was double-freeing. The
+        // pre-fix `l_owned = matches!(left.ty, OwnedStr)`
+        // unconditionally set l_owned=1 for any OwnedStr
+        // operand, so `intent_str_concat` freed
+        // `t.name`'s heap. Then the struct's per-field
+        // scope-exit Drop fired and freed it again. New
+        // `owned_str_consumed_at_concat` helper allows
+        // l_owned=1 only when the operand is a Var (moved
+        // by concat) or fresh (Call / Binary / Block /
+        // IfExpr / Match) — FieldAccess / TupleAccess
+        // keep l_owned=0 so the binding's Drop owns the
+        // free.
+        let source = r#"
+            struct Tag { name: OwnedStr }
+            fn main() -> i64 {
+              let t: Tag = Tag { name: "first-" + "name" };
+              let s: OwnedStr = t.name + "-suffix";
+              print s;
+              return 0;
+            }
+        "#;
+        compile(source).expect("FieldAccess in concat should compile");
+        let c = compile_to_c(source).expect("emits C");
+        // The concat call for `t.name + ...` must use
+        // l_owned=0 (i.e. `intent_str_concat((v_t).name, 0, …)`).
+        assert!(
+            c.contains("intent_str_concat((v_t).name, 0,"),
+            "expected l_owned=0 for FieldAccess operand, got:\n{c}"
+        );
+    }
+
+    #[test]
+    fn var_owned_str_in_concat_still_freed_inside_helper() {
+        // Closure #144 regression guard: `let s = g + "!"`
+        // where `g` is a Var-bound OwnedStr must STILL pass
+        // l_owned=1 to the concat helper. The checker marks
+        // `g` as moved by the binary operator, so the
+        // binding's scope-exit Drop is suppressed — concat
+        // must do the free.
+        let source = r#"
+            fn make() -> OwnedStr { return "g" + ""; }
+            fn main() -> i64 {
+              let g: OwnedStr = make();
+              let s: OwnedStr = g + "!";
+              print s;
+              return 0;
+            }
+        "#;
+        compile(source).expect("Var in concat should compile");
+        let c = compile_to_c(source).expect("emits C");
+        assert!(
+            c.contains("intent_str_concat(v_g, 1,"),
+            "expected l_owned=1 for Var operand (checker moves it), got:\n{c}"
+        );
+    }
+
+    #[test]
     fn clone_of_fresh_vec_drops_borrowed_arg() {
         // Closure #143: `clone(vec(1, 2, 3))` was leaking
         // the fresh Vec passed in. The checker treats

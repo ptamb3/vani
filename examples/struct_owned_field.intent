@@ -61,5 +61,15 @@ fn main() -> i64 {
   print "after overwrite:  name=", renamed.name;
   assert renamed.id == 11;
 
+  // Closure #144: concatenating a struct's `OwnedStr` field
+  // with a literal (`renamed.name + "-suffix"`) no longer
+  // double-frees the field's heap. The concat helper's
+  // l_owned flag now respects whether the operand is
+  // binding-owned (FieldAccess / TupleAccess → l_owned=0,
+  // binding's Drop runs later) vs consumed (Var moved by
+  // the binary op, or fresh Call / Binary expression →
+  // l_owned=1, concat frees).
+  let labeled: OwnedStr = renamed.name + "-tail";
+  print "concat with field:", labeled;
   return 0;
 }

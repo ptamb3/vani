@@ -1754,8 +1754,22 @@ fn lower_expr_to_operand(
                 && matches!(left.ty, Type::Str | Type::OwnedStr)
                 && matches!(right.ty, Type::Str | Type::OwnedStr);
             if is_str_concat {
-                let l_owned: i128 = if matches!(left.ty, Type::OwnedStr) { 1 } else { 0 };
-                let r_owned: i128 = if matches!(right.ty, Type::OwnedStr) { 1 } else { 0 };
+                // The `_owned` flag tells `intent_str_concat`
+                // to free the operand buffer after using it.
+                // For FRESH OwnedStr operands (Call /
+                // Binary / Block / IfExpr / Match returning
+                // OwnedStr) the buffer has no other owner —
+                // freeing inside concat is correct. For
+                // Var / FieldAccess OwnedStr operands the
+                // buffer is shared with a live binding, so
+                // freeing inside concat would double-free
+                // at the binding's scope-exit Drop. Same
+                // Call/Binary/... whitelist as the rest of
+                // the fresh-OwnedStr handlers. Closure
+                // #144: `t.name + "x"` (FieldAccess + Str)
+                // was double-freeing the field's heap.
+                let l_owned: i128 = if crate::ir::owned_str_consumed_at_concat(left) { 1 } else { 0 };
+                let r_owned: i128 = if crate::ir::owned_str_consumed_at_concat(right) { 1 } else { 0 };
                 let v = b.emit(
                     expr.ty.clone(),
                     expr.span,

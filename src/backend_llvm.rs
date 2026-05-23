@@ -1948,8 +1948,13 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             // the original operand's buffer. Mirror the C backend.
             let l = emit_expr(left, ctx, out);
             let r = emit_expr(right, ctx, out);
-            let l_owned = if matches!(left.ty, Type::OwnedStr) { 1 } else { 0 };
-            let r_owned = if matches!(right.ty, Type::OwnedStr) { 1 } else { 0 };
+            // Same Call/Binary/Block/... whitelist as the
+            // other fresh-OwnedStr handlers — Var /
+            // FieldAccess operands share their buffer with
+            // a live binding so freeing inside concat would
+            // double-free. Closure #144.
+            let l_owned = if crate::ir::owned_str_consumed_at_concat(left) { 1 } else { 0 };
+            let r_owned = if crate::ir::owned_str_consumed_at_concat(right) { 1 } else { 0 };
             let dest = ctx.fresh_tmp();
             out.push_str(&format!(
                 "  {} = call i8* @intent_str_concat(i8* {}, i32 {}, i8* {}, i32 {})\n",

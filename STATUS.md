@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-22
-**Test totals:** 831 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-23
+**Test totals:** 833 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,28 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`intent_str_concat` l_owned flag fix done 2026-05-23**:
+   `t.name + "-suffix"` where `t.name: OwnedStr` was
+   DOUBLE-FREEING. The concat helper's `l_owned`/`r_owned`
+   flag was set unconditionally for any OwnedStr-typed
+   operand, so concat freed the struct field's heap. Then
+   the struct's per-field scope-exit Drop also freed it
+   (the partial-move tracking only kicks in for whole-
+   binding `Stmt::Assign` moves, not for FieldAccess in
+   binary-op operands). New
+   `crate::ir::owned_str_consumed_at_concat(expr)` helper
+   uses a refined rule: `l_owned=1` only when the operand
+   is a Var (checker marks Var as moved by the binary op,
+   so the binding's Drop is suppressed and concat MUST
+   free) OR fresh (Call / Binary / Block / IfExpr /
+   Match — no other owner). FieldAccess / TupleAccess /
+   Ref keep `l_owned=0` so the binding's Drop owns the
+   free. Closure #144. Verified leak-free + double-free-
+   free under `-fsanitize=address,leak` against both the
+   Var-Var concat (`g + "!"`) and the FieldAccess-Str
+   concat (`t.name + "-suffix"`) shapes. See updated
+   [examples/struct_owned_field.intent](examples/struct_owned_field.intent).
 
    **`clone(fresh_vec)` drops borrowed arg done 2026-05-22**:
    `clone(vec(1, 2, 3))` was silently leaking the fresh
