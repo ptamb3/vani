@@ -17,5 +17,13 @@ fn main() -> i64 {
   // without touching `.data`.
   let m: u64 = len(vec(1, 2, 3, 4));
   assert m == 4;
+
+  // Closure #142: `vec(...)[i]` on a fresh Vec also frees
+  // the buffer after the indexed read. Same shape as
+  // closure #141 for `len`: SSA emits a Drop after the
+  // Index instruction; tree-C wraps the read in a
+  // brace-scoped tmp + free.
+  let mid: i64 = vec(7, 8, 9)[1];
+  assert mid == 8;
   return 0;
 }

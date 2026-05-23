@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #141)
+## ⏳ Resume here (paused 2026-05-22, after closure #142)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -120,7 +120,11 @@ buffer: generalized to `is_fresh_non_copy` (matches
 OwnedStr + Vec<T>); SSA + tree-C Len for Vec now
 free a fresh-Vec operand after reading `.len`.
 Verified against a 1000-iter loop (was ~40KB
-leaked). Test totals: 829 lib + 47 e2e passing.
+leaked). #142 `Index` of fresh Vec drops buffer:
+`vec(1, 2, 3)[0]` was leaking the same way as
+`len(vec(...))`. SSA + tree-C Index for Vec now
+free a fresh-Vec operand after reading `.data[i]`.
+Test totals: 830 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

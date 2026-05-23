@@ -3004,6 +3004,31 @@ mod tests {
     }
 
     #[test]
+    fn index_of_fresh_vec_drops_buffer() {
+        // Closure #142: `vec(1, 2, 3)[0]` (and other
+        // fresh-Vec index shapes) was silently leaking the
+        // Vec buffer. The Index instruction reads one slot
+        // but doesn't free `.data`. Mirrors closure #141's
+        // Len-of-fresh-Vec fix. SSA Index lowering emits a
+        // Drop after the InstrKind::Index when the operand
+        // is a fresh Vec; tree-C `emit_index` wraps the
+        // index read in a brace-scoped tmp +
+        // `intent_vec_<T>__free`. Var / FieldAccess Vec
+        // operands skip — binding owns the buffer.
+        let source = r#"
+            fn main() -> i64 {
+              let i: i64 = 0;
+              while i < 5 {
+                let x: i64 = vec(10, 20, 30)[1];
+                i = i + 1;
+              }
+              return 0;
+            }
+        "#;
+        compile(source).expect("index of fresh Vec should compile");
+    }
+
+    #[test]
     fn len_of_fresh_vec_drops_buffer() {
         // Closure #141: `len(vec(1,2,3))` was silently
         // leaking the Vec buffer — the SSA `Len` instruction

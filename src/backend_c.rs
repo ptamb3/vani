@@ -3044,7 +3044,37 @@ fn emit_index(array: &TypedExpr, index: &TypedExpr, checked: bool) -> String {
                 format!("({}[{}])", array_str, index_str)
             }
         }
-        Type::Vec(_) => {
+        Type::Vec(element) => {
+            // Fresh-Vec operand: bind to a brace-scoped tmp,
+            // read .data[i], then free the buffer via
+            // `intent_vec_<T>__free`. Without this the heap
+            // leaks. Var / FieldAccess Vec operands keep the
+            // simple form — binding owns the buffer. Closure
+            // #142.
+            if !is_ref && crate::ir::is_fresh_non_copy(array) {
+                let struct_name = vec_c_struct(element);
+                let free_helper = vec_helper(element, "free");
+                let elem_storage = c_element_storage(element);
+                if checked {
+                    return format!(
+                        "(({{ {sn} _intent_idx_tmp = ({arr}); {es} _intent_idx_r = _intent_idx_tmp.data[intent_check_bounds((uint64_t)({idx}), _intent_idx_tmp.len)]; {fh}(_intent_idx_tmp); _intent_idx_r; }}))",
+                        sn = struct_name,
+                        arr = array_str,
+                        es = elem_storage,
+                        idx = index_str,
+                        fh = free_helper
+                    );
+                } else {
+                    return format!(
+                        "(({{ {sn} _intent_idx_tmp = ({arr}); {es} _intent_idx_r = _intent_idx_tmp.data[(uint64_t)({idx})]; {fh}(_intent_idx_tmp); _intent_idx_r; }}))",
+                        sn = struct_name,
+                        arr = array_str,
+                        es = elem_storage,
+                        idx = index_str,
+                        fh = free_helper
+                    );
+                }
+            }
             let prefix = if is_ref {
                 format!("(*{})", array_str)
             } else {

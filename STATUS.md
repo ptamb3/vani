@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 829 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 830 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,18 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **`Index` of fresh Vec drops buffer done 2026-05-22**:
+   `vec(1, 2, 3)[0]` (and other fresh-Vec index shapes)
+   was silently leaking the Vec buffer — the `Index`
+   instruction reads one element but doesn't free
+   `.data`. Mirrors closure #141 for `Len`. SSA Index
+   lowering emits a `Drop` after the `InstrKind::Index`
+   when the operand is a fresh Vec. Tree-C `emit_index`
+   for Vec wraps the index read in a brace-scoped tmp +
+   `intent_vec_<T>__free` for fresh operands. Var /
+   FieldAccess Vec operands keep the simple form.
+   Closure #142.
 
    **`len` of fresh Vec drops buffer done 2026-05-22**:
    `len(vec(1, 2, 3))` was leaking the Vec buffer — the

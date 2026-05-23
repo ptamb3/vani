@@ -1895,6 +1895,16 @@ fn lower_expr_to_operand(
         TypedExprKind::Index { array, index, checked } => {
             let a = lower_expr_to_operand(array, b, locals)?;
             let i = lower_expr_to_operand(index, b, locals)?;
+            // Fresh-Vec operand (Call / Binary / Block /
+            // IfExpr / Match returning Vec): the Index
+            // instruction reads one element but doesn't free
+            // the buffer. Without a Drop the heap leaks.
+            // Var / FieldAccess Vec operands skip — the
+            // binding's scope-exit Drop owns the buffer.
+            // Closure #142.
+            let needs_vec_drop = crate::ir::is_fresh_non_copy(array)
+                && matches!(array.ty, Type::Vec(_));
+            let a_for_drop = a.clone();
             let v = b.emit(
                 expr.ty.clone(),
                 expr.span,
@@ -1904,6 +1914,17 @@ fn lower_expr_to_operand(
                     checked: *checked,
                 },
             );
+            if needs_vec_drop {
+                b.emit(
+                    Type::I64,
+                    expr.span,
+                    InstrKind::Drop {
+                        source: a_for_drop,
+                        name: "_".to_string(),
+                        ty: array.ty.clone(),
+                    },
+                );
+            }
             Ok(Operand::Value(v))
         }
         TypedExprKind::Len { array, length } => {
