@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 838 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 839 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,19 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **IndexAssign of Struct/Enum element frees old heap done 2026-05-23**:
+   `xs[i] = newStruct` for a `Vec<Struct{heap-field}>`
+   element was leaking the OLD element's heap fields.
+   The IndexAssign leaf-drop logic (closure #126) only
+   fired when `field_path != []` (i.e. `xs[i].field =
+   …`); whole-element overwrites (field_path empty +
+   leaf == Struct/Enum) fell through to a plain store,
+   losing the old heap. Tree-C's `emit_index_assign`
+   now also handles the `field_path == []` case for
+   leaf-Struct (walk per-field drops over the OLD
+   element) and leaf-Enum (switch on the OLD tag to
+   free the payload). Closure #149.
 
    **FieldAssign of Struct-typed field frees old heap done 2026-05-23**:
    `o.inner = newInner` where Inner has heap-shaped fields

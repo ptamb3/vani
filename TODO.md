@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #148)
+## ⏳ Resume here (paused 2026-05-23, after closure #149)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -163,8 +163,16 @@ fields was leaking the previous Inner's heap.
 FieldAssign's heap-overwrite logic (from #132) only
 handled OwnedStr / Vec field types; Struct fell
 through. Tree-C now walks the OLD struct field's
-per-field drops via `emit_struct_field_drops`. Test
-totals: 838 lib + 47 e2e passing.
+per-field drops via `emit_struct_field_drops`. #149
+IndexAssign of Struct/Enum element frees old heap:
+`xs[i] = newStruct` for a `Vec<Struct{heap-field}>`
+was leaking the OLD element's heap fields. The
+leaf-drop logic (closure #126) only fired when
+field_path was non-empty; whole-element overwrites
+fell through. Tree-C now also handles
+`field_path == []` for leaf-Struct (per-field drop
+walk) and leaf-Enum (tag-switch payload free). Test
+totals: 839 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

@@ -2537,6 +2537,9 @@ fn emit_index_assign(
     };
 
     if let (Some(lv), Some(lty)) = (slot_lvalue.as_ref(), leaf_ty.as_ref()) {
+        // Mixed-place leaf drop (closure #126 / F2): when the
+        // assignment writes through a field path, free the OLD
+        // leaf field's heap before storing the new value.
         if !field_path.is_empty() {
             match lty {
                 Type::OwnedStr => {
@@ -2544,6 +2547,70 @@ fn emit_index_assign(
                 }
                 Type::Vec(elem) => {
                     out.push_str(&format!("  {}({});\n", vec_helper(elem, "free"), lv));
+                }
+                _ => {}
+            }
+        } else {
+            // Whole-element overwrite (closure #149): `xs[i] =
+            // newStruct` / `xs[i] = newEnum` must free the OLD
+            // slot's heap fields / payload before the store.
+            // Previously only the field_path != [] case was
+            // handled — so `Vec<Tag{name: OwnedStr}>[0] =
+            // Tag{…}` was leaking the old element's name heap.
+            match lty {
+                Type::Struct(struct_name) => {
+                    let fields = STRUCT_FIELDS_REGISTRY
+                        .with(|r| r.borrow().get(struct_name).cloned())
+                        .unwrap_or_default();
+                    let has_owning = fields.iter().any(|(_, ty)| !ty.is_copy());
+                    if has_owning {
+                        let empty: std::collections::HashSet<&String> =
+                            std::collections::HashSet::new();
+                        emit_struct_field_drops(
+                            lv,
+                            struct_name,
+                            &fields,
+                            &empty,
+                            out,
+                        );
+                    }
+                }
+                Type::Enum(enum_name) => {
+                    let payload_ty = ENUM_PAYLOAD_REGISTRY
+                        .with(|r| r.borrow().get(enum_name).cloned());
+                    let free_expr: Option<String> = match &payload_ty {
+                        Some(Type::OwnedStr) => Some(format!(
+                            "free((void*){}.payload)",
+                            lv
+                        )),
+                        Some(Type::Vec(element)) => Some(format!(
+                            "{}({}.payload)",
+                            vec_helper(element, "free"),
+                            lv
+                        )),
+                        _ => None,
+                    };
+                    if let Some(free_call) = free_expr {
+                        let payload_tags: Vec<u32> =
+                            ENUM_PAYLOAD_TAGS_REGISTRY.with(|r| {
+                                r.borrow()
+                                    .get(enum_name)
+                                    .cloned()
+                                    .unwrap_or_default()
+                            });
+                        if !payload_tags.is_empty() {
+                            let cases: Vec<String> = payload_tags
+                                .iter()
+                                .map(|t| format!("case {}", t))
+                                .collect();
+                            out.push_str(&format!(
+                                "  switch ({}.tag) {{ {}: {}; break; default: break; }}\n",
+                                lv,
+                                cases.join(": "),
+                                free_call
+                            ));
+                        }
+                    }
                 }
                 _ => {}
             }

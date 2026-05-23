@@ -3004,6 +3004,37 @@ mod tests {
     }
 
     #[test]
+    fn index_assign_struct_element_frees_old_heap() {
+        // Closure #149: `xs[i] = newStruct` for a
+        // `Vec<Struct{heap-field}>` element was leaking the
+        // OLD element's heap fields. The IndexAssign leaf
+        // drop (closure #126) only fired when
+        // `field_path != []`; whole-element overwrites
+        // (field_path empty + leaf == Struct/Enum) fell
+        // through to a plain store, losing the old heap.
+        let source = r#"
+            struct Tag { name: OwnedStr }
+            fn main() -> i64 {
+              let xs: Vec<Tag> = vec(
+                Tag { name: "first" + "" },
+                Tag { name: "second" + "" }
+              );
+              xs[0] = Tag { name: "third" + "" };
+              return 0;
+            }
+        "#;
+        compile(source).expect("struct-element index-assign should compile");
+        let c = compile_to_c(source).expect("emits C");
+        // Tree-C must walk the OLD element's field drops
+        // (`free((void*)v_xs.data[...].name)`) before
+        // storing the new struct.
+        assert!(
+            c.contains("free((void*)v_xs.data["),
+            "expected per-field free of old element before assign, got:\n{c}"
+        );
+    }
+
+    #[test]
     fn field_assign_struct_field_frees_old_inner_fields() {
         // Closure #148: `o.inner = newInner` where Inner has
         // heap-shaped fields (OwnedStr) was leaking the
