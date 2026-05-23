@@ -2365,10 +2365,7 @@ fn emit_print_expr_no_newline(expr: &TypedExpr, out: &mut String) {
             // to a brace-scoped tmp so the free has a stable
             // handle and consecutive prints don't collide.
             // Closure #135.
-            let is_fresh = matches!(
-                expr.kind,
-                TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
-            );
+            let is_fresh = crate::ir::is_fresh_owned_str(expr);
             if is_fresh {
                 out.push_str("  {\n    char* _intent_print_tmp = ");
                 out.push_str(&emit_expr(expr));
@@ -3081,7 +3078,20 @@ fn emit_len(array: &TypedExpr, static_length: u64) -> String {
                 format!("({}.len)", array_str)
             }
         }
-        Type::Str | Type::OwnedStr => format!("((uint64_t)strlen({}))", emit_expr(array)),
+        Type::Str | Type::OwnedStr => {
+            // Fresh OwnedStr operand: free the heap after
+            // strlen via a GCC statement-expression. Var /
+            // FieldAccess / Str operands stay non-consuming.
+            // Closure #140.
+            if crate::ir::is_fresh_owned_str(array) {
+                format!(
+                    "((uint64_t)({{ char* _intent_len_tmp = ({}); uint64_t _intent_len_r = (uint64_t)strlen(_intent_len_tmp); free((void*)_intent_len_tmp); _intent_len_r; }}))",
+                    emit_expr(array)
+                )
+            } else {
+                format!("((uint64_t)strlen({}))", emit_expr(array))
+            }
+        }
         _ => format!("((uint64_t){})", static_length),
     }
 }
@@ -3132,6 +3142,28 @@ fn emit_binary(
             BinaryOp::Ge => ">=",
             _ => unreachable!(),
         };
+        // Fresh-OwnedStr operands need a free after strcmp;
+        // bind to brace-scoped tmps so the values stay alive
+        // for the compare and get released after. Closure #140.
+        let l_fresh = crate::ir::is_fresh_owned_str(left);
+        let r_fresh = crate::ir::is_fresh_owned_str(right);
+        if l_fresh || r_fresh {
+            let mut body = String::from("({ ");
+            body.push_str(&format!("const char* _intent_cmp_l = ({}); ", emit_expr(left)));
+            body.push_str(&format!("const char* _intent_cmp_r = ({}); ", emit_expr(right)));
+            body.push_str(&format!(
+                "bool _intent_cmp_r_b = (strcmp(_intent_cmp_l, _intent_cmp_r) {} 0); ",
+                cmp
+            ));
+            if l_fresh {
+                body.push_str("free((void*)_intent_cmp_l); ");
+            }
+            if r_fresh {
+                body.push_str("free((void*)_intent_cmp_r); ");
+            }
+            body.push_str("_intent_cmp_r_b; })");
+            return body;
+        }
         return format!("(strcmp({}, {}) {} 0)", emit_expr(left), emit_expr(right), cmp);
     }
 

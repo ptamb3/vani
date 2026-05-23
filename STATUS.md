@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-22
-**Test totals:** 827 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 828 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -523,6 +523,24 @@ fn main() returns i64 {
    pointer and calls `@free` or `@intent_vec_<tag>__free`.
    Closure #126 / F2. See updated
    [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+
+   **Unified fresh-OwnedStr helper + tree-C strcmp/strlen fixes done 2026-05-22**:
+   The per-site `matches!(e.ty, OwnedStr) && matches!(e.kind,
+   Call | Binary)` whitelist used by closures #135 (print),
+   #137 (match scrutinee), #138 (strcmp), and #139 (strlen)
+   is now a single `crate::ir::is_fresh_owned_str(expr)`
+   helper. The unified helper also broadens the set to
+   include `Block` / `IfExpr` / `Match` expressions
+   returning OwnedStr — these escape an inner heap to the
+   outer context (the inner Let bindings are never Drop'd
+   by the Block emitters in v1, so the value's only owner
+   is the outer use site). The leak surfaced as
+   `len({ let s = make(); s })` slipping past closure
+   #139's narrower whitelist. The tree-C emit_len and
+   emit_binary-strcmp paths (previously untouched by #138
+   / #139) now also free fresh operands via GCC statement-
+   expression-wrapped temps. Closure #140. Verified
+   leak-free under `-fsanitize=address,leak`.
 
    **`len` of fresh OwnedStr drops heap done 2026-05-22**:
    `len(make_owned_str())` was silently leaking —

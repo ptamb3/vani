@@ -1984,20 +1984,10 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             // FieldAccess operands skip the free so the
             // outer binding's scope-exit Drop still owns
             // the heap. Closure #138.
-            if matches!(left.ty, Type::OwnedStr)
-                && matches!(
-                    left.kind,
-                    TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
-                )
-            {
+            if crate::ir::is_fresh_owned_str(left) {
                 out.push_str(&format!("  call void @free(i8* {})\n", l));
             }
-            if matches!(right.ty, Type::OwnedStr)
-                && matches!(
-                    right.kind,
-                    TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
-                )
-            {
+            if crate::ir::is_fresh_owned_str(right) {
                 out.push_str(&format!("  call void @free(i8* {})\n", r));
             }
             let dest = ctx.fresh_tmp();
@@ -3272,12 +3262,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 // FieldAccess operands skip — outer binding's
                 // scope-exit Drop owns the heap. Closure
                 // #139.
-                if matches!(array.ty, Type::OwnedStr)
-                    && matches!(
-                        array.kind,
-                        TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
-                    )
-                {
+                if crate::ir::is_fresh_owned_str(array) {
                     out.push_str(&format!("  call void @free(i8* {})\n", s));
                 }
                 return v;

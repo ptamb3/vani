@@ -5650,11 +5650,7 @@ fn check_match_str(
     // (the outer binding's scope-exit Drop frees the same
     // pointer). Closure #137 mirrors closure #135's
     // print-of-OwnedStr whitelist.
-    let needs_temp_drop = matches!(scrut_ty, Type::OwnedStr)
-        && matches!(
-            scrutinee.expr.kind,
-            TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
-        );
+    let needs_temp_drop = crate::ir::is_fresh_owned_str(&scrutinee.expr);
     let stmts = if needs_temp_drop {
         let result_name = format!("__match_str_result_{}", span.start);
         let result_stmt = TypedStmt::Let {

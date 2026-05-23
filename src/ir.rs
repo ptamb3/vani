@@ -447,3 +447,38 @@ pub enum TypedConst {
     Float(f64),
     Bool(bool),
 }
+
+/// True when `expr` is an OwnedStr expression whose value
+/// is a FRESH heap allocation with no other binding holding
+/// it. Used at sites that READ an OwnedStr value without
+/// consuming it (print, strcmp, strlen, match scrutinee) to
+/// decide whether a `free` is needed after the read.
+///
+/// The conservative set: Call (user fn / intent_str_concat
+/// produces a fresh heap), Binary `+` concat (same), Block
+/// (its tail moves an inner let or evaluates to a fresh
+/// expression; the block doesn't emit Drops for its inner
+/// non-Copy lets so the value escapes to the outer context),
+/// IfExpr (branches produce fresh values; the if-expr yields
+/// one of them), Match (arm bodies produce fresh values).
+///
+/// The set excludes Var / FieldAccess / TupleAccess —
+/// reading from those references a binding-owned heap, and
+/// emitting a free at the use site would double-free at the
+/// owner's scope-exit Drop. Closure #140 unified the
+/// whitelist used by closures #135 / #137 / #138 / #139 into
+/// a single helper and broadened it to cover Block / IfExpr
+/// / Match (closure #139 surfaced the Block-len leak).
+pub fn is_fresh_owned_str(expr: &TypedExpr) -> bool {
+    if !matches!(expr.ty, Type::OwnedStr) {
+        return false;
+    }
+    matches!(
+        expr.kind,
+        TypedExprKind::Call { .. }
+            | TypedExprKind::Binary { .. }
+            | TypedExprKind::Block { .. }
+            | TypedExprKind::IfExpr { .. }
+            | TypedExprKind::Match { .. }
+    )
+}

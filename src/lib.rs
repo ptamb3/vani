@@ -3004,6 +3004,24 @@ mod tests {
     }
 
     #[test]
+    fn len_of_block_returning_owned_str_drops_heap() {
+        // Closure #140: `len({ let s = make(); s })` was
+        // leaking — the previous whitelist (#139) only
+        // covered Call / Binary operands, not Block / IfExpr
+        // / Match. The unified `is_fresh_owned_str` helper
+        // now matches all of those, and tree-C `emit_len`
+        // wraps strlen in a brace-scoped tmp + free for
+        // fresh operands.
+        let source = r#"
+            fn main() -> i64 {
+              let n: u64 = len({ let s: OwnedStr = "abc" + "def"; s });
+              return 0;
+            }
+        "#;
+        compile(source).expect("len of Block-OwnedStr should compile");
+    }
+
+    #[test]
     fn len_of_fresh_owned_str_drops_heap() {
         // Closure #139: `len(make_owned_str())` was silently
         // leaking — `intent_str_len` (strlen) doesn't

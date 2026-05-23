@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-22, after closure #139)
+## ⏳ Resume here (paused 2026-05-22, after closure #140)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -106,7 +106,17 @@ whitelist). #139 `len` of fresh OwnedStr drops heap:
 doesn't consume its argument; fresh Call / Binary `+`
 operands had no other owner. Same whitelist-based fix
 applied to the SSA `Len` lowering and tree-LLVM `Len`
-emit. Test totals: 827 lib + 47 e2e passing.
+emit. #140 unified `is_fresh_owned_str` helper +
+tree-C strcmp/strlen fixes: the per-site whitelist
+across #135 / #137 / #138 / #139 is now a single
+`crate::ir::is_fresh_owned_str` helper that also
+broadens the set to include Block / IfExpr / Match
+(closes a `len({…})` leak that #139's narrower
+whitelist missed). The tree-C `emit_len` and
+`emit_binary` strcmp paths — previously untouched —
+also now free fresh operands via GCC statement-
+expression temps. Test totals: 828 lib + 47 e2e
+passing.
 
 ### Recommended next (pick one)
 

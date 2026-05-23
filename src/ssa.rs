@@ -928,12 +928,7 @@ fn lower_stmt(
                 // double-free. Closure #135.
                 let needs_drop_after_print = match item {
                     crate::ir::TypedPrintItem::Expr(e) => {
-                        matches!(e.ty, Type::OwnedStr)
-                            && matches!(
-                                e.kind,
-                                TypedExprKind::Call { .. }
-                                    | TypedExprKind::Binary { .. }
-                            )
+                        crate::ir::is_fresh_owned_str(e)
                     }
                     crate::ir::TypedPrintItem::Str(_) => false,
                 };
@@ -1798,16 +1793,8 @@ fn lower_expr_to_operand(
                 // Track which operands need a Drop after the
                 // comparison and emit it. Closure #138 mirrors
                 // closure #135's print whitelist.
-                let l_needs_drop = matches!(left.ty, Type::OwnedStr)
-                    && matches!(
-                        left.kind,
-                        TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
-                    );
-                let r_needs_drop = matches!(right.ty, Type::OwnedStr)
-                    && matches!(
-                        right.kind,
-                        TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
-                    );
+                let l_needs_drop = crate::ir::is_fresh_owned_str(left);
+                let r_needs_drop = crate::ir::is_fresh_owned_str(right);
                 let l_for_drop = l.clone();
                 let r_for_drop = r.clone();
                 let cmp = b.emit(
@@ -1934,11 +1921,7 @@ fn lower_expr_to_operand(
                 // the call. Var / FieldAccess / TupleAccess
                 // operands skip the drop (binding owns).
                 // Closure #139 mirrors #135 / #137 / #138.
-                let needs_drop = matches!(array.ty, Type::OwnedStr)
-                    && matches!(
-                        array.kind,
-                        TypedExprKind::Call { .. } | TypedExprKind::Binary { .. }
-                    );
+                let needs_drop = crate::ir::is_fresh_owned_str(array);
                 let a_for_drop = a.clone();
                 let v = b.emit(
                     expr.ty.clone(),
