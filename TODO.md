@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #191)
+## ⏳ Resume here (paused 2026-05-24, after closure #192)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -480,6 +480,14 @@ beyond end_block → fell outside range → parent
 emitted them with goto-targets to skipped blocks.
 Fix: CFG-reachability walk from begin to end.
 Test totals: 883 lib + 47 e2e passing.
+#192 tree-C Block-expr Drop Struct emit: the
+inject_branch_drops machinery wraps if-expr / match
+arms with Drops for the OTHER branches' Vars; for
+Struct Vars the Block emit's Drop arm fell through
+`_ => {}` and the unchosen branch's heap leaked.
+Added the Struct arm that walks
+STRUCT_FIELDS_REGISTRY and emits the per-field free
+chain. Test totals: 884 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

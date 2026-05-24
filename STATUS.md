@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 883 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 884 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,18 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-C Block Drop Struct emits field chain done 2026-05-24**:
+   tree-C's Block-expression emit (used by
+   inject_branch_drops's branch-wrap from closures #179
+   / #180) handled `Drop OwnedStr` and `Drop Vec` arms
+   but fell through `_ => {}` for `Drop Struct` — leaking
+   the unchosen branch's heap on if-expr / match Var
+   branches with struct types. Added the Struct arm:
+   walks the STRUCT_FIELDS_REGISTRY and emits the per-
+   field free chain (mirrors `emit_struct_field_drops`
+   used by Stmt::Drop). Test totals: 884 lib + 47 e2e
+   passing. Closure #192.
 
    **Task body_blocks via CFG reachability done 2026-05-24**:
    Task body containing a for-loop with `continue` was

@@ -3227,6 +3227,46 @@ fn emit_expr(expr: &TypedExpr) -> String {
                                 local_name(name)
                             ));
                         }
+                        Type::Struct(struct_name) => {
+                            // Closure #192: Block-expr Drop
+                            // for a struct binding with
+                            // heap-owning fields. The
+                            // inject_branch_drops machinery
+                            // (closure #179) wraps if-expr /
+                            // match arms with Drops for the
+                            // OTHER branches' Vars. For
+                            // Struct-typed Vars the per-field
+                            // free chain has to run; previously
+                            // this arm fell through to `_ =>
+                            // {}` and the unchosen branch's
+                            // heap leaked.
+                            let fields = STRUCT_FIELDS_REGISTRY
+                                .with(|r| r.borrow().get(struct_name).cloned())
+                                .unwrap_or_default();
+                            let empty: std::collections::HashSet<&String> =
+                                std::collections::HashSet::new();
+                            // emit_struct_field_drops appends
+                            // to `out` with `  ` indent + `\n`
+                            // suffix per line. Inside the
+                            // statement-expression we strip
+                            // newlines so it stays one inline
+                            // sequence.
+                            let mut tmp = String::new();
+                            emit_struct_field_drops(
+                                &local_name(name),
+                                struct_name,
+                                &fields,
+                                &empty,
+                                &mut tmp,
+                            );
+                            for line in tmp.lines() {
+                                let trimmed = line.trim_start();
+                                if !trimmed.is_empty() {
+                                    body.push_str(trimmed);
+                                    body.push(' ');
+                                }
+                            }
+                        }
                         _ => {}
                     },
                     _ => {}

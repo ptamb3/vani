@@ -13421,6 +13421,47 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_c_block_drop_struct_emits_field_chain() {
+        // Closure #192: tree-C's Block-expression emit
+        // handled `Drop OwnedStr` and `Drop Vec` arms but
+        // fell through `_ => {}` for `Drop Struct` —
+        // leaking the unchosen branch's heap on if-expr /
+        // match Var-branch rewrites (closures #179, #180).
+        //
+        // Inject_branch_drops wraps each branch with Drops
+        // for the OTHER branches' Var leaves. For Struct
+        // Vars with heap-owning fields, the Drop needs to
+        // emit the per-field free chain.
+        let source = r#"
+            struct Box { name: OwnedStr }
+
+            fn main() -> i64 {
+              let cond: bool = true;
+              let a: Box = Box { name: "alpha" + "" };
+              let b: Box = Box { name: "beta" + "" };
+              let chosen: Box = if cond { a } else { b };
+              assert (len(chosen.name) as i64) == 5;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("if-expr Struct branches compile");
+        let main_start = c.find("static int64_t fn_main").expect("fn_main present");
+        let main_end = c[main_start..]
+            .find("\nint main(void)")
+            .map(|i| main_start + i)
+            .unwrap_or(c.len());
+        let main_body = &c[main_start..main_end];
+        // The if-expr ternary must drop the OTHER branch's
+        // struct's `.name` field inside each branch's
+        // statement-expression.
+        assert!(
+            main_body.contains("free((void*)v_a.name)") && main_body.contains("free((void*)v_b.name)"),
+            "expected per-field drops of v_a.name and v_b.name inside the if-expr branches:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn task_body_with_for_loop_continue_compiles() {
         // Closure #191: task body containing a for-loop
         // with `continue` was failing both SSA-C and
