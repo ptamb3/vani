@@ -13340,6 +13340,47 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn block_expr_var_tail_consumes_source_var() {
+        // Closure #174: `let b = { let _x = 1; a };` (a:
+        // OwnedStr Var) was double-freeing. The Block's
+        // tail expression yields a's value into the
+        // binding b, so b ends up aliasing a's heap.
+        // Both a's scope-exit drop and b's scope-exit
+        // drop then fired on the same heap. Same shape
+        // as closures #172/#173: `consume_if_moved_var`
+        // only descended into Var, FieldAccess, IfExpr,
+        // and Match — Block fell through. Now the tail
+        // is recursively consumed too.
+        let source = r#"
+            fn main() -> i64 {
+              let a: OwnedStr = "hello" + "";
+              let b: OwnedStr = { let _x: i64 = 1; a };
+              assert (len(b) as i64) == 5;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("block-expr Var tail compiles");
+        let main_start = c.find("static int64_t fn_main").expect("fn_main present");
+        let main_end = c[main_start..]
+            .find("\nint main(void)")
+            .map(|i| main_start + i)
+            .unwrap_or(c.len());
+        let main_body = &c[main_start..main_end];
+        // After the move, v_a's scope-exit drop must be
+        // suppressed; v_b's frees the chosen heap.
+        assert!(
+            !main_body.contains("free((void*)v_a)"),
+            "v_a was moved into the block tail; scope-exit drop must not fire:\n{}",
+            main_body
+        );
+        assert!(
+            main_body.contains("free((void*)v_b)"),
+            "v_b owns the moved heap; expect a scope-exit free:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn match_arms_returning_var_consume_all_arms() {
         // Closure #173: same shape as the if-expr Var
         // branches fix (closure #172) — `let chosen =

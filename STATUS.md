@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 865 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 866 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,17 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Block-expr Var tail consumes source Var done 2026-05-24**:
+   `let b = { let _x = 1; a };` (a: OwnedStr Var) was
+   double-freeing on scope exit. The Block's tail
+   expression yields a's value into b, so b aliases a's
+   heap; both Vars' scope-exit drops then fire. Same
+   shape as closures #172/#173 — `consume_if_moved_var`
+   covered Var, FieldAccess, IfExpr, and Match but
+   Block fell through. Now the tail is recursively
+   consumed. Closure #174. Test totals: 866 lib + 47
+   e2e passing.
 
    **Match arms returning Var consume all arms done 2026-05-24**:
    Same shape as closure #172 but for match scrutinees

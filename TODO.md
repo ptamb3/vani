@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #173)
+## ⏳ Resume here (paused 2026-05-24, after closure #174)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -388,7 +388,11 @@ through #172). `consume_if_moved_var` now recurses
 into every arm's body the same way it descends into
 both if-expr branches. Same known limitation:
 unchosen-arm Vars leak; structural rewrite needed.
-Test totals: 865 lib + 47 e2e passing.
+#174 Block-expr tail Var: `let b = { …; a };` was
+double-freeing because the tail Var aliased into b
+without `a` being marked moved. consume_if_moved_var
+now descends into Block { tail }. Same family as
+#172/#173. Test totals: 866 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

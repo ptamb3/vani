@@ -5501,6 +5501,16 @@ fn consume_if_moved_var(
                 consume_if_moved_var(&arm.body, checked, env);
             }
         }
+        // Block expression tail: `let y = { let _ = …; a };`
+        // — the tail expression is what the block yields,
+        // so a Var tail is moved into the binding the
+        // block initializes. Without descending into the
+        // tail, the Var's scope-exit drop fires AND the
+        // binding frees the same heap → double-free.
+        // Closure #174.
+        ExprKind::Block { tail, .. } => {
+            consume_if_moved_var(tail, checked, env);
+        }
         _ => {}
     }
 }
