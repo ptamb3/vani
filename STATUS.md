@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 868 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 869 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,20 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **`vec(a, b, …)` consumes Var element args done 2026-05-24**:
+   `let xs: Vec<OwnedStr> = vec(a, b);` (a, b: Var
+   OwnedStr) was double-freeing on scope exit. The
+   vec() builtin transfers each Var's heap into the
+   new Vec's slot, but `check_vec_builtin` never called
+   `consume_if_moved_var` on its element args — the
+   source Var's scope-exit Drop fired AFTER vec()
+   already stored the pointer, and the Vec's __free
+   re-freed each slot. Same family as push / set
+   (closure #171); one-line addition in the
+   element-coerce loop. Both backends were affected
+   (checker/IR-level bug). Test totals: 869 lib + 47
+   e2e passing. Closure #177.
 
    **SSA-C `ref Channel<T,N>` param drops `const` done 2026-05-24**:
    `fn produce(ch: ref Channel<i64, 16>, v: i64)` was

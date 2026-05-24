@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #176)
+## ⏳ Resume here (paused 2026-05-24, after closure #177)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -401,8 +401,14 @@ drops `const`: send/recv helpers take non-const
 pointers (atomically mutate seq counters + idx);
 the const-qualified ref parameter raised
 -Wdiscarded-qualifiers on every site. Mirrors the
-Atomic-ref arm. Test totals: 868 lib + 47 e2e
-passing.
+Atomic-ref arm. #177 `vec(a, b, …)` consumes each
+Var element when non-Copy. check_vec_builtin
+forgot to call consume_if_moved_var on its element
+args — source Var's scope-exit drop fired after
+vec() already moved the pointer into the slot, then
+Vec's __free re-freed each slot. Same family as
+push / set (#171). One-line addition. Test totals:
+869 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

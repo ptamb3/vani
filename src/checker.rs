@@ -9588,6 +9588,13 @@ fn check_vec_builtin(
             &format!("vec element {}", index),
             diagnostics,
         );
+        // Mark each Var argument as moved when the element
+        // type owns non-Copy heap — `vec(a, b)` transfers
+        // ownership of each Var into the new Vec's slot, so
+        // the source binding's scope-exit drop would double-
+        // free the heap now in the buffer. Mirrors push()
+        // and set() from closure #171. Closure #177.
+        consume_if_moved_var(&args[index], &coerced, env);
         coerced_args.push(coerced.expr);
     }
 

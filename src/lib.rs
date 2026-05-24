@@ -13340,6 +13340,58 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_literal_marks_var_elements_moved() {
+        // Closure #177: `let xs: Vec<OwnedStr> = vec(a, b);`
+        // where a, b are Vars of OwnedStr was double-
+        // freeing on scope exit. The vec() builtin
+        // transfers ownership of each Var into the new
+        // Vec's slot, so the source Var's scope-exit Drop
+        // fired AFTER vec() had already moved the heap
+        // pointer into the buffer, and the Vec's __free
+        // re-freed each element when xs went out of
+        // scope. Same family as push / set (closure #171):
+        // builtin handlers were forgetting to call
+        // consume_if_moved_var on element args.
+        //
+        // Both backends were affected (checker/IR-level
+        // bug). One-line fix.
+        let source = r#"
+            fn main() -> i64 {
+              let a: OwnedStr = "alpha" + "";
+              let b: OwnedStr = "beta" + "";
+              let xs: Vec<OwnedStr> = vec(a, b);
+              assert (len(ref xs) as i64) == 2;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("vec(Var, Var) compiles");
+        // After the vec() call, neither v_a nor v_b should
+        // appear in a scope-exit free — they were moved
+        // into the buffer.
+        let main_start = c.find("static int64_t fn_main").expect("fn_main present");
+        let main_end = c[main_start..]
+            .find("\nint main(void)")
+            .map(|i| main_start + i)
+            .unwrap_or(c.len());
+        let main_body = &c[main_start..main_end];
+        for var in &["v_a", "v_b"] {
+            assert!(
+                !main_body.contains(&format!("free((void*){})", var)),
+                "{} was moved into vec(); its scope-exit drop must not fire:\n{}",
+                var,
+                main_body
+            );
+        }
+        // The Vec's __free must still appear (it walks the
+        // buffer and frees each element).
+        assert!(
+            main_body.contains("intent_vec_owned_str__free"),
+            "expected scope-exit Vec __free:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn ssa_c_ref_channel_param_is_non_const() {
         // Closure #176: SSA-C declared `ref Channel<T, N>`
         // params as `const intent_channel_<T>_<N>*`. The
