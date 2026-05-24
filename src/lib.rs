@@ -13340,6 +13340,44 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn ssa_c_owned_str_declared_mutable() {
+        // Closure #175: SSA-C declared OwnedStr SSA values
+        // as `const char*`, the same as Str. The Vec helper
+        // bundle (shared with tree-C) declares the data
+        // field as `char* data`, so storing a const-qualified
+        // value into a non-const slot raised
+        // -Wdiscarded-qualifiers on every IndexAssign and
+        // similar store. The actual runtime behavior was
+        // fine (const is purely a compile-time annotation)
+        // but the warning noise hid actionable diagnostics.
+        //
+        // Fix: split Str (borrowed read-only, stays `const
+        // char*`) from OwnedStr (heap-owning, mutable —
+        // `char*`).
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<OwnedStr> = vec("a" + "", "b" + "");
+              let v: OwnedStr = "new" + "";
+              xs[0] = v;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("OwnedStr SSA-C compiles");
+        // The SSA-C emit declares `char* v_N;` for any
+        // OwnedStr-typed SSA value, never `const char*`
+        // for OwnedStr. Verify by scanning declarations.
+        // Need at least one `char* v_` declaration (without
+        // `const`) — the `v` binding's OwnedStr SSA value.
+        let has_mutable_owned = c
+            .lines()
+            .any(|line| line.trim_start().starts_with("char* v_"));
+        assert!(
+            has_mutable_owned,
+            "expected `char* v_…` declaration for OwnedStr (not `const char*`):\n{c}"
+        );
+    }
+
+    #[test]
     fn block_expr_var_tail_consumes_source_var() {
         // Closure #174: `let b = { let _x = 1; a };` (a:
         // OwnedStr Var) was double-freeing. The Block's

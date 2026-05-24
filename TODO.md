@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #174)
+## ⏳ Resume here (paused 2026-05-24, after closure #175)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -392,7 +392,11 @@ unchosen-arm Vars leak; structural rewrite needed.
 double-freeing because the tail Var aliased into b
 without `a` being marked moved. consume_if_moved_var
 now descends into Block { tail }. Same family as
-#172/#173. Test totals: 866 lib + 47 e2e passing.
+#172/#173. #175 SSA-C `OwnedStr` declared `char*`
+(was `const char*`, same as Str). Vec helper
+bundle's `char* data` field rejected const stores
+with -Wdiscarded-qualifiers; warning hid real
+diagnostics. Test totals: 867 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

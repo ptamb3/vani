@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 866 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 867 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,19 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **SSA-C `OwnedStr` declared `char*` not `const char*` done 2026-05-24**:
+   SSA-C lumped `Str` and `OwnedStr` together as `const
+   char*`. The shared Vec helper bundle declares the
+   data field as `char* data`, so storing an OwnedStr
+   value into a slot raised -Wdiscarded-qualifiers on
+   every IndexAssign / Reassign / push / set. Runtime
+   was fine (const is purely a compile-time tag) but
+   the noise hid real warnings. Split: `Str` keeps
+   `const char*` (borrowed read-only), `OwnedStr`
+   becomes `char*` (heap-owning, mutable — matches
+   tree-C). Test totals: 867 lib + 47 e2e passing.
+   Closure #175.
 
    **Block-expr Var tail consumes source Var done 2026-05-24**:
    `let b = { let _x = 1; a };` (a: OwnedStr Var) was

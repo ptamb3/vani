@@ -2140,7 +2140,15 @@ fn c_type(ty: &Type) -> Result<&'static str, EmitError> {
         Type::Bool => "bool",
         Type::F32 => "float",
         Type::F64 => "double",
-        Type::Str | Type::OwnedStr => "const char*",
+        // Str is a borrowed read-only pointer; OwnedStr is a
+        // mutable heap pointer that the runtime mallocs and
+        // frees. Spelling OwnedStr as `const char*` triggered
+        // a -Wdiscarded-qualifiers warning at every store
+        // into a `char**` Vec slot (the Vec helper bundle
+        // matches tree-C's `char* data` field). Closure
+        // #175.
+        Type::Str => "const char*",
+        Type::OwnedStr => "char*",
         other => {
             return Err(EmitError {
                 message: format!(
