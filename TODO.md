@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #165)
+## ⏳ Resume here (paused 2026-05-24, after closure #166)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -292,7 +292,14 @@ and `getelementptr %Struct_T*, %Struct_T** %arg_self`
 (lli: indirection mismatch) in tree-LLVM. Tree-C
 picks `.` vs `->` from `object_ty.is_any_ref()`;
 tree-LLVM derefs `object_ty` before spelling the GEP
-source type. Test totals: 857 lib + 47 e2e passing.
+source type. #166 FieldAssign marks RHS Var moved:
+`self.name = n;` was double-freeing the new heap —
+the parameter binding's scope-exit drop fired even
+though the field had taken ownership. The Let /
+Reassign / Call-arg arms already called
+`consume_if_moved_var` for non-Copy RHS Vars;
+FieldAssign was missing that call. One-line
+addition. Test totals: 858 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

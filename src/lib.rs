@@ -13340,6 +13340,68 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn field_assign_marks_rhs_var_moved() {
+        // Closure #166: `self.name = n;` inside a method
+        // declared `set_name(self: mut ref T, n: OwnedStr)`
+        // was double-freeing the new heap. The C output ran
+        // `free(self->name)` (correct old-slot drop), stored
+        // `v_n` into the slot (correct), then on the
+        // method's scope exit ran `free(v_n)` — freeing the
+        // heap the field now owns. After the call returned,
+        // any read of `t.name` was use-after-free.
+        //
+        // The checker's `Let` / `Reassign` / Call-arg arms
+        // already call `consume_if_moved_var` to mark the RHS
+        // Var as moved when it owns non-Copy heap. FieldAssign
+        // didn't, so the parameter binding stayed "live" and
+        // its scope-exit Drop fired.
+        //
+        // ASan caught it as heap-use-after-free on a later
+        // print of `b.name` after `b.set_name("beta" + "")`.
+        let source = r#"
+            struct Box { name: OwnedStr, count: i64 }
+            methods on Box {
+              fn set_name(self: mut ref Box, n: OwnedStr) {
+                self.name = n;
+              }
+            }
+            fn main() -> i64 {
+              let b: Box = Box { name: "alpha" + "", count: 0 };
+              b.set_name("beta" + "");
+              assert b.count == 0;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("field-assign moves RHS Var");
+        // Find the DEFINITION (not the forward declaration)
+        // of fn_Box_set_name: it ends with `{` instead of
+        // `;`. After the `v_self->name = v_n;` store, there
+        // must NOT be a `free((void*)v_n);` line — the
+        // value was moved into the field. The old slot's
+        // free BEFORE the store is still correct.
+        let fn_def_start = c
+            .find("static int64_t fn_Box_set_name(Struct_Box* v_self, char* v_n) {")
+            .expect("fn_Box_set_name definition present");
+        let fn_def_end = c[fn_def_start..]
+            .find("\n}\n")
+            .map(|i| fn_def_start + i)
+            .unwrap_or(c.len());
+        let body = &c[fn_def_start..fn_def_end];
+        assert!(
+            body.contains("v_self->name = v_n;"),
+            "expected store of v_n into v_self->name:\n{body}"
+        );
+        let store_idx = body
+            .find("v_self->name = v_n;")
+            .expect("store present");
+        let after_store = &body[store_idx..];
+        assert!(
+            !after_store.contains("free((void*)v_n)"),
+            "v_n was moved into the field; its scope-exit drop must not fire:\n{body}"
+        );
+    }
+
+    #[test]
     fn field_borrow_through_ref_self_uses_arrow_in_c() {
         // Closure #165: `ref self.items` inside a method
         // whose `self: ref Tags` previously emitted

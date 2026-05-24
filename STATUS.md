@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 857 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 858 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **FieldAssign marks RHS Var moved done 2026-05-24**:
+   `self.name = n;` inside `fn set_name(self: mut ref T, n:
+   OwnedStr)` was double-freeing the new heap. The C
+   output ran `free(self->name)` (correct old-slot drop),
+   stored `v_n` into the slot (correct), then on the
+   method's scope exit ran `free(v_n)` — freeing the heap
+   the field now owns. ASan caught it as heap-use-after-
+   free on the next read of `b.name`. The checker's Let /
+   Reassign / Call-arg arms already call
+   `consume_if_moved_var` to mark the RHS Var moved when
+   it owns non-Copy heap. FieldAssign was missing that
+   call. One-line addition. Verified ASan-clean on both
+   backends. Test totals: 858 lib + 47 e2e passing.
+   Closure #166.
 
    **Field-borrow through ref-typed self done 2026-05-23**:
    `ref self.items` inside a method declared `self: ref T`

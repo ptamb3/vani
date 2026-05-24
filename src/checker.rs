@@ -4521,6 +4521,13 @@ fn check_one_stmt(
                 "field assignment value",
                 diagnostics,
             );
+            // Mark the RHS Var as moved when the field-assign
+            // takes ownership of a non-Copy operand — same
+            // shape as Let / Reassign / Call-arg. Without
+            // this, the source binding would scope-exit-drop
+            // and double-free the heap now owned by the
+            // struct's field. Closure #166.
+            consume_if_moved_var(value, &value_coerced, env);
             body.push(TypedStmt::FieldAssign {
                 object: obj_checked.expr,
                 field: field.clone(),
