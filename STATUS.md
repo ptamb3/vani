@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 874 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 875 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,19 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **`is_fresh_owned_str` refined for if-expr Var branches done 2026-05-24**:
+   `print if cond { a } else { b };` (a, b: OwnedStr
+   Vars) was double-freeing. `is_fresh_owned_str` /
+   `is_fresh_non_copy` used a kind-only whitelist that
+   returned true for any IfExpr / Match / Block,
+   regardless of contents. Print's "free fresh result
+   after use" path then freed the Var's heap; scope-exit
+   freed it again. Refined to recurse into branches: an
+   if-expr / match / block is fresh only when EVERY
+   leaf is a fresh non-Copy producer (Call or Binary).
+   Var leaves disqualify. Test totals: 875 lib + 47
+   e2e passing. Closure #183.
 
    **inject_branch_drops at push/set xs arg done 2026-05-24**:
    `push(if cond { xs1 } else { xs2 }, v)` and `set(if

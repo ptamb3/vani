@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #182)
+## ⏳ Resume here (paused 2026-05-24, after closure #183)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -421,6 +421,12 @@ Return. One-line addition. Test totals: 873 lib +
 builtin handlers had wired inject_branch_drops into
 the value arg (#180) but not the Vec arg. Symmetric
 fix. Test totals: 874 lib + 47 e2e passing.
+#183 `is_fresh_owned_str` / `is_fresh_non_copy`
+refined to recurse into if-expr / match / block-tail
+branches: only treat as fresh when every leaf is
+itself a fresh producer (Call / Binary). Var leaves
+disqualify. Closes a print-of-if-expr-Var-branches
+double-free. Test totals: 875 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

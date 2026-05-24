@@ -13340,6 +13340,45 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn fresh_owned_str_refined_for_if_expr_var_branches() {
+        // Closure #183: `is_fresh_owned_str(if cond { a }
+        // else { b })` used a kind-only whitelist that
+        // returned true for any IfExpr/Match/Block,
+        // regardless of what was inside. This made print's
+        // "free fresh result after use" logic double-free
+        // when the if-expr just aliased existing Vars.
+        //
+        // Refine to recurse into branches: an if-expr /
+        // match / block-tail is fresh only if every leaf
+        // is itself a fresh non-Copy producer (Call or
+        // Binary). Var leaves now correctly disqualify.
+        let source = r#"
+            fn main() -> i64 {
+              let cond: bool = true;
+              let a: OwnedStr = "alpha" + "";
+              let b: OwnedStr = "beta" + "";
+              print if cond { a } else { b };
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("print if-expr compiles");
+        // The print emits a borrow-style fputs (no
+        // _intent_print_tmp + free), since the if-expr's
+        // Var branches mean the Vars own the heap.
+        let main_start = c.find("static int64_t fn_main").expect("fn_main present");
+        let main_end = c[main_start..]
+            .find("\nint main(void)")
+            .map(|i| main_start + i)
+            .unwrap_or(c.len());
+        let main_body = &c[main_start..main_end];
+        assert!(
+            !main_body.contains("_intent_print_tmp"),
+            "print of if-expr with Var branches must NOT use the fresh-free tmp pattern:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn push_set_xs_if_expr_drops_unchosen() {
         // Closure #182: `push(if cond { xs1 } else { xs2 },
         // v)` and `set(if cond { xs1 } else { xs2 }, i, v)`

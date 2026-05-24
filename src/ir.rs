@@ -479,7 +479,7 @@ pub fn is_fresh_owned_str(expr: &TypedExpr) -> bool {
     if !matches!(expr.ty, Type::OwnedStr) {
         return false;
     }
-    is_fresh_non_copy_kind(&expr.kind)
+    is_fresh_non_copy_expr(expr)
 }
 
 /// True when `expr` is a fresh heap-owning value of ANY
@@ -494,18 +494,30 @@ pub fn is_fresh_non_copy(expr: &TypedExpr) -> bool {
     if !matches!(expr.ty, Type::OwnedStr | Type::Vec(_)) {
         return false;
     }
-    is_fresh_non_copy_kind(&expr.kind)
+    is_fresh_non_copy_expr(expr)
 }
 
-fn is_fresh_non_copy_kind(kind: &TypedExprKind) -> bool {
-    matches!(
-        kind,
-        TypedExprKind::Call { .. }
-            | TypedExprKind::Binary { .. }
-            | TypedExprKind::Block { .. }
-            | TypedExprKind::IfExpr { .. }
-            | TypedExprKind::Match { .. }
-    )
+/// Refines the kind-only check: an if-expr / match / block
+/// is "fresh" only if EVERY branch / arm / tail recursively
+/// produces a fresh value. If any leaf is a Var (the binding
+/// owns the heap) or another non-fresh shape, treat the whole
+/// if-expr as non-fresh to avoid double-freeing the Var's
+/// heap when the use-site (e.g. print) frees its result.
+/// Closure #183 — the kind-only check returned true for
+/// `if c { a } else { b }` and let print's free-after-use
+/// classifier double-free the Var's heap.
+fn is_fresh_non_copy_expr(expr: &TypedExpr) -> bool {
+    match &expr.kind {
+        TypedExprKind::Call { .. } | TypedExprKind::Binary { .. } => true,
+        TypedExprKind::IfExpr { then_value, else_value, .. } => {
+            is_fresh_non_copy_expr(then_value) && is_fresh_non_copy_expr(else_value)
+        }
+        TypedExprKind::Match { arms, .. } => {
+            arms.iter().all(|a| is_fresh_non_copy_expr(&a.body))
+        }
+        TypedExprKind::Block { tail, .. } => is_fresh_non_copy_expr(tail),
+        _ => false,
+    }
 }
 
 /// True when an OwnedStr value will be CONSUMED at the use
@@ -528,5 +540,5 @@ pub fn owned_str_consumed_at_concat(expr: &TypedExpr) -> bool {
     if !matches!(expr.ty, Type::OwnedStr) {
         return false;
     }
-    matches!(expr.kind, TypedExprKind::Var(_)) || is_fresh_non_copy_kind(&expr.kind)
+    matches!(expr.kind, TypedExprKind::Var(_)) || is_fresh_non_copy_expr(expr)
 }
