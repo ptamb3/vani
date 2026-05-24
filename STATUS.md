@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 859 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 860 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,17 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-LLVM Discard of OwnedStr frees heap done 2026-05-24**:
+   `let _ = s;` (s: OwnedStr) was leaking. The Discard
+   handler's OwnedStr arm sat AFTER the `is_scalar(&expr.ty)`
+   arm, but `is_scalar(Type::OwnedStr)` returns true, so the
+   scalar arm consumed the branch — it just calls
+   `emit_expr` and discards the SSA value, never freeing
+   the heap. Same shape as the Struct fix (closure #145)
+   that already moved its arm BEFORE `is_scalar`. Now
+   OwnedStr is checked first too. Test totals: 860 lib +
+   47 e2e passing. Closure #168.
 
    **tree-LLVM `xs[i] = v` drops old slot done 2026-05-24**:
    `emit_leaf_overwrite_drop` had an early-return on

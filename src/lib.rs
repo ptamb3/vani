@@ -13340,6 +13340,42 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_llvm_discard_owned_str_frees_heap() {
+        // Closure #168: `let _ = s;` where `s: OwnedStr`
+        // was leaking on tree-LLVM. The Discard handler's
+        // OwnedStr arm sat AFTER `else if is_scalar(&expr.ty)`,
+        // but `is_scalar(Type::OwnedStr) == true` so the
+        // scalar arm consumed the branch — it just calls
+        // `emit_expr` and discards the SSA value, never
+        // freeing the heap. Same shape as the Struct fix
+        // (closure #145) that already moved its arm BEFORE
+        // is_scalar.
+        let source = r#"
+            fn main() -> i64 {
+              let s: OwnedStr = "abc" + "";
+              let _ = s;
+              return 0;
+            }
+        "#;
+        let ll = crate::backend_llvm::LlvmBackend
+            .emit(&compile(source).expect("Discard of OwnedStr Var compiles").ir);
+        let main_start = ll.find("define i64 @fn_main").expect("fn_main present");
+        let main_end = ll[main_start..]
+            .find("\ndefine ")
+            .map(|i| main_start + i)
+            .unwrap_or(ll.len());
+        let main_body = &ll[main_start..main_end];
+        // The Discard must emit a `call void @free(i8* …)`
+        // for the OwnedStr. The leak signature was the
+        // ABSENCE of any `@free` in fn_main.
+        assert!(
+            main_body.contains("call void @free(i8*"),
+            "expected `call void @free(i8* …)` for the OwnedStr Discard:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn tree_llvm_index_assign_drops_old_owned_str_slot() {
         // Closure #167: `xs[i] = v` on a `Vec<OwnedStr>` was
         // leaking the old slot's heap in tree-LLVM. The

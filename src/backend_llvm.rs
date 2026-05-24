@@ -1317,6 +1317,18 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                         ctx.current_block = done_lbl;
                     }
                 }
+            } else if matches!(&expr.ty, Type::OwnedStr) {
+                // OwnedStr arm is checked BEFORE `is_scalar`
+                // because `is_scalar(Type::OwnedStr)` returns
+                // true so the scalar arm would consume this
+                // branch and skip the `@free`, leaking the
+                // heap. Closure #168 — discovered via ASan on
+                // `let _ = s;` where s: OwnedStr.
+                let value = emit_expr(expr, ctx, out);
+                out.push_str(&format!(
+                    "  call void @free(i8* {})\n",
+                    value
+                ));
             } else if is_scalar(&expr.ty) {
                 let _ = emit_expr(expr, ctx, out);
             } else if let Type::Vec(element) = &expr.ty {
@@ -1329,12 +1341,6 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 out.push_str(&format!(
                     "  call void {}({} {})\n",
                     free_name, s_ty, value
-                ));
-            } else if matches!(&expr.ty, Type::OwnedStr) {
-                let value = emit_expr(expr, ctx, out);
-                out.push_str(&format!(
-                    "  call void @free(i8* {})\n",
-                    value
                 ));
             } else {
                 // Array (stack) and refs don't own a heap buffer.

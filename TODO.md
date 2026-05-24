@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #167)
+## ⏳ Resume here (paused 2026-05-24, after closure #168)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -307,7 +307,14 @@ case. The OwnedStr / Vec arms work for both deep
 and bare paths since `p` is the slot pointer in
 either case. Removing the guard fixes the leak;
 Copy element types stay no-ops via the wildcard
-arm. Test totals: 859 lib + 47 e2e passing.
+arm. #168 tree-LLVM `let _ = s` where s: OwnedStr
+was leaking: the Discard handler's OwnedStr arm sat
+AFTER `is_scalar(&expr.ty)` but `is_scalar` returns
+true for OwnedStr — the scalar arm consumed the
+branch and skipped the @free. Moving the OwnedStr
+arm before the is_scalar guard fixes it (same shape
+as closure #145 for Struct). Test totals: 860 lib +
+47 e2e passing.
 
 ### Recommended next (pick one)
 
