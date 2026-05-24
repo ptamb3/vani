@@ -6103,12 +6103,14 @@ fn check_expr(
                             // as vec / push / set (closures
                             // #171, #177). Closure #178.
                             consume_if_moved_var(&args[0], &arg_checked, env);
+                            let mut payload_expr = arg_checked.expr;
+                            inject_branch_drops(&mut payload_expr);
                             return CheckedExpr::new(
                                 TypedExprKind::EnumVariantWithPayload {
                                     enum_name: enum_name.clone(),
                                     variant: method.clone(),
                                     tag: tag as u32,
-                                    payload: Box::new(arg_checked.expr),
+                                    payload: Box::new(payload_expr),
                                     payload_ty: payload_ty.clone(),
                                 },
                                 Type::Enum(enum_name.clone()),
@@ -6175,7 +6177,9 @@ fn check_expr(
                             );
                             diagnose_partial_then_whole_move(arg, &coerced, env, diagnostics);
                             consume_if_moved_var(arg, &coerced, env);
-                            typed_args.push(coerced.expr);
+                            let mut arg_expr = coerced.expr;
+                            inject_branch_drops(&mut arg_expr);
+                            typed_args.push(arg_expr);
                         }
                         return CheckedExpr::new(
                             TypedExprKind::Call {
@@ -6462,7 +6466,9 @@ fn check_expr(
                 // T1.2 phase 2b.
                 diagnose_partial_then_whole_move(&found.1, &coerced, env, diagnostics);
                 consume_if_moved_var(&found.1, &coerced, env);
-                typed_fields.push((fname.clone(), coerced.expr));
+                let mut field_expr = coerced.expr;
+                inject_branch_drops(&mut field_expr);
+                typed_fields.push((fname.clone(), field_expr));
             }
             // Reject unknown field names.
             for (fname, _) in fields {
@@ -8749,7 +8755,9 @@ fn check_call(
             };
             diagnose_partial_then_whole_move(arg, &coerced, env, diagnostics);
             consume_if_moved_var(arg, &coerced, env);
-            coerced.expr
+            let mut arg_expr = coerced.expr;
+            inject_branch_drops(&mut arg_expr);  // closure #180
+            arg_expr
         })
         .collect();
 
@@ -9786,7 +9794,9 @@ fn check_vec_builtin(
         // free the heap now in the buffer. Mirrors push()
         // and set() from closure #171. Closure #177.
         consume_if_moved_var(&args[index], &coerced, env);
-        coerced_args.push(coerced.expr);
+        let mut elem_expr = coerced.expr;
+        inject_branch_drops(&mut elem_expr);
+        coerced_args.push(elem_expr);
     }
 
     CheckedExpr::new(
@@ -9874,6 +9884,8 @@ fn check_push_builtin(
     // already transferred ownership into the new Vec's
     // slot, double-freeing the heap. Closure #171.
     consume_if_moved_var(&args[1], &value, env);
+    let mut value_expr = value.expr;
+    inject_branch_drops(&mut value_expr);
 
     let (call_name, result_type) = if in_place {
         ("push_mut".to_string(), Type::I64)
@@ -9884,7 +9896,7 @@ fn check_push_builtin(
         TypedExprKind::Call {
             name: call_name,
             name_span: span,
-            args: vec![xs.expr, value.expr],
+            args: vec![xs.expr, value_expr],
         },
         result_type,
         None,
@@ -9944,13 +9956,15 @@ fn check_set_builtin(
     // binding's scope-exit drop would double-free.
     // Mirrors push (closure #171).
     consume_if_moved_var(&args[2], &value, env);
+    let mut value_expr = value.expr;
+    inject_branch_drops(&mut value_expr);
 
     let result_type = Type::Vec(Box::new(element_type));
     CheckedExpr::new(
         TypedExprKind::Call {
             name: "set".to_string(),
             name_span: span,
-            args: vec![xs.expr, index.expr, value.expr],
+            args: vec![xs.expr, index.expr, value_expr],
         },
         result_type,
         None,

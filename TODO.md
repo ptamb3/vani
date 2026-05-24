@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #179)
+## ⏳ Resume here (paused 2026-05-24, after closure #180)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -406,7 +406,13 @@ the unchosen-alternative leak the conservative move
 tracking in #172/#173 left behind. Wired into Let,
 Reassign, IndexAssign, FieldAssign. Recursive
 walker handles nested if-expr / match / block. Test
-totals: 871 lib + 47 e2e passing.
+totals: 871 lib + 47 e2e passing. #180 extends the
+inject to the remaining consume sites: named Call
+args, MethodCall args, StructLit field values,
+EnumVariantWithPayload arg, vec elements, push and
+set values. `f(if cond { a } else { b })` and
+similar shapes no longer leak the unchosen
+alternative. Test totals: 872 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 871 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 872 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,19 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **inject_branch_drops at remaining consume sites done 2026-05-24**:
+   Extends closure #179's structural-rewrite to the rest
+   of the consume_if_moved_var sites: named-function
+   Call args, MethodCall args (via Type-associated and
+   `obj.method()` paths), StructLit field values,
+   EnumVariantWithPayload constructor arg, `vec(…)`
+   element args, `push()` value, and `set()` value.
+   Same wrap-each-branch-in-Block-with-Drops pattern as
+   #179. Each site now adds the inject after consume,
+   so `f(if cond { a } else { b })` and similar shapes
+   no longer leak the unchosen alternative. Test
+   totals: 872 lib + 47 e2e passing. Closure #180.
 
    **If-expr / match Var-branch unchosen leak fixed done 2026-05-24**:
    Closes the unchosen-alternative leak left behind by

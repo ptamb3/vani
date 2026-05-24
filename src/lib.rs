@@ -13340,6 +13340,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn call_arg_if_expr_drops_unchosen() {
+        // Closure #180: `f(if cond { a } else { b })` where
+        // a, b are non-Copy Vars now also gets the
+        // unchosen-alternative drop fix (closure #179
+        // covered Let/Reassign/Index/Field; #180 adds the
+        // remaining consume sites: named-fn args, method
+        // args, StructLit fields, EnumVariantPayload, vec()
+        // elements, push()/set() values). Same wrap-each-
+        // branch-in-Block-with-Drops pattern as #179.
+        let source = r#"
+            fn take(s: OwnedStr) -> i64 {
+              return (len(s) as i64);
+            }
+
+            fn main() -> i64 {
+              let cond: bool = true;
+              let a: OwnedStr = "alpha" + "";
+              let b: OwnedStr = "beta" + "";
+              let n: i64 = take(if cond { a } else { b });
+              assert n == 5;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("call arg if-expr compiles");
+        // The Call-arg if-expr ternary must have v_a / v_b
+        // free calls inside the branches (closure #180).
+        assert!(
+            c.contains("free((void*)v_a)") && c.contains("free((void*)v_b)"),
+            "expected both v_a and v_b freed inside the call-arg ternary:\n{c}"
+        );
+    }
+
+    #[test]
     fn if_expr_var_branches_drop_unchosen_alternative() {
         // Closure #179: closes the unchosen-alternative leak
         // left by closures #172/#173's conservative move
