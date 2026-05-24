@@ -1852,6 +1852,7 @@ TODO.md keeps the history.
 ### Language surface gaps
 - **No mutable references to atomics-as-payloads.** Workaround: pre-extract scalars before spawning a task. *Tracked indirectly by future affine-rules work.*
 - **References are second-class.** `&T` / `&mut T` only as function parameter types; not as returns, let-bindings, or aggregate elements. *Working as intended for v1 — Rust-style first-class references are explicitly out of scope.*
+- **Early `return` from inside a consuming `for x in xs` body leaks the outer Vec buffer.** The post-loop shallow-free is emitted inline by the for-iter backend code and runs only on natural completion / break. `return` skips it. Workaround: use `break` to exit the loop, then return after. *Tracked as a structural-rewrite TODO: introduce a `TypedStmt::ForIterShallowFree` variant and emit it at every Return inside the consuming loop body.*
 
 ### Tooling
 - **`INTENTC_NO_VERIFY=1` skips every SMT round-trip.** Useful for fast iteration; do not set in CI — a violated `ensures` won't surface. Runtime safety guards stay in place. *Working as intended.*
