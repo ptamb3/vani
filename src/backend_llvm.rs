@@ -7037,24 +7037,34 @@ fn emit_parallel_for_via_gomp(
         .map(|r| (r.var.clone(), r.op))
         .collect();
     let rewritten = rewrite_body_for_reductions(body, &reductions_by_name);
+    // Push a LoopFrame so `continue` inside the body jumps
+    // to the step block (which does the +1) instead of
+    // falling through to the "outside a loop" no-op path
+    // that turned `continue` into a no-op → wrong reduction
+    // total. Closure #189 (same family as #185–#188).
+    outlined_ctx.loops.push(LoopFrame {
+        header: "step".to_string(),
+        exit: "exit".to_string(),
+    });
     for s in &rewritten {
         emit_stmt(s, &mut outlined_ctx, &mut deferred);
     }
-    if outlined_ctx.terminated {
-        // Body already returned/branched out; no fall-through.
-    } else {
-        // Increment i and loop.
-        deferred.push_str(&format!(
-            "  %i_next_load = load {}, {}* %i_addr\n",
-            lty, lty
-        ));
-        deferred.push_str(&format!("  %i_next = add {} %i_next_load, 1\n", lty));
-        deferred.push_str(&format!(
-            "  store {} %i_next, {}* %i_addr\n",
-            lty, lty
-        ));
-        deferred.push_str("  br label %hdr\n");
+    if !outlined_ctx.terminated {
+        deferred.push_str("  br label %step\n");
     }
+    outlined_ctx.loops.pop();
+    // Step block: increment i and jump back to hdr.
+    deferred.push_str("step:\n");
+    deferred.push_str(&format!(
+        "  %i_next_load = load {}, {}* %i_addr\n",
+        lty, lty
+    ));
+    deferred.push_str(&format!("  %i_next = add {} %i_next_load, 1\n", lty));
+    deferred.push_str(&format!(
+        "  store {} %i_next, {}* %i_addr\n",
+        lty, lty
+    ));
+    deferred.push_str("  br label %hdr\n");
     deferred.push_str("exit:\n");
     if use_win32 {
         deferred.push_str("  ret i8* null\n");

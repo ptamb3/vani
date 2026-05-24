@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #188)
+## ⏳ Resume here (paused 2026-05-24, after closure #189)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -458,7 +458,14 @@ alongside header/body. Test totals: 879 lib + 47
 e2e passing. #188 same continue-infinite-loop bug
 fixed in tree-LLVM `TypedStmt::For` (range form).
 Same iter_step / for_step shape. Test totals: 880
-lib + 47 e2e passing.
+lib + 47 e2e passing. #189 tree-LLVM outlined
+parallel-for fn didn't push a LoopFrame, so
+`continue` inside the parallel-for body fell
+through to the "outside a loop" path → wrong
+reduction total. Fix: LoopFrame{header:step,
+exit:exit} + step block doing load/+1/store/jump-
+to-hdr. Closes the family of for-loop continue
+bugs. Test totals: 881 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

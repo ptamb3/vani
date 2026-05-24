@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 880 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 881 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,23 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-LLVM parallel-for outlined fn continue done 2026-05-24**:
+   tree-LLVM's outlined parallel-for (`@__intent_par_<N>`
+   invoked via @GOMP_parallel / CreateThread) didn't push
+   a LoopFrame onto its FnCtx — `continue` inside the
+   body fell through to the "outside a loop" no-op
+   branch, then continued past the if-merge into the rest
+   of the loop body. `total = total + 1` ran on every
+   iteration regardless of the continue, breaking
+   reduction totals. Pre-existing bug; SSA-LLVM falls
+   back to tree-LLVM for multi-block parallel-for bodies
+   so the LLVM run hit this path. Fix mirrors closures
+   #185–#188: push a LoopFrame with header=step, emit a
+   step block that loads-bumps-stores i_addr then jumps
+   to hdr. Both natural body-end and `continue` jump to
+   step. Test totals: 881 lib + 47 e2e passing. Closure
+   #189.
 
    **tree-LLVM for-range continue emits step block done 2026-05-24**:
    tree-LLVM's `TypedStmt::For` (range form) had the same

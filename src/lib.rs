@@ -13421,6 +13421,53 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_llvm_parallel_for_outlined_continue_loops_correctly() {
+        // Closure #189: tree-LLVM's parallel-for outlined
+        // fn (`@__intent_par_<N>` invoked via @GOMP_parallel
+        // / CreateThread) had a similar continue handling
+        // gap as the SSA path. The outlined emit didn't
+        // push a LoopFrame onto its FnCtx, so any
+        // `continue` inside the body fell through to the
+        // "; continue outside a loop" no-op + emit a bare
+        // `br label %cont_X` that just rejoined the if-
+        // merge — never reaching the increment. Result:
+        // every iteration ran the post-continue body too,
+        // breaking the reduction total.
+        //
+        // Pre-existing bug; SSA-LLVM path falls back to
+        // tree-LLVM for multi-block parallel-for bodies, so
+        // the LLVM emit hits this code path. Fix mirrors
+        // closures #185–#188: push a LoopFrame with
+        // header=step, emit a step block that loads-bumps-
+        // stores i_addr, then jumps to hdr. Body's natural
+        // end and `continue` both jump to step.
+        let source = r#"
+            fn main() -> i64 {
+              let total: i64 = 0;
+              parallel for i from 0 to 10
+              reduce total with +;
+              {
+                let rem: i64 = i - (i / 2) * 2;
+                if rem != 0 {
+                  continue;
+                }
+                total = total + 1;
+              }
+              assert total == 5;
+              return 0;
+            }
+        "#;
+        let ll = crate::backend_llvm::LlvmBackend
+            .emit(&compile(source).expect("parallel-for continue compiles").ir);
+        // The outlined fn must have a `step:` label.
+        assert!(
+            ll.contains("step:"),
+            "expected step block in outlined parallel-for:\n{}",
+            ll
+        );
+    }
+
+    #[test]
     fn tree_llvm_for_range_continue_emits_step_block() {
         // Closure #188: tree-LLVM's `TypedStmt::For` (range
         // form) had the same continue-infinite-loop bug as
