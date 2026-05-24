@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #190)
+## ⏳ Resume here (paused 2026-05-24, after closure #191)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -473,6 +473,13 @@ generated `break;` inside the pragma which gcc/clang
 refused to compile. Checker now diagnoses with a
 clear message pointing at the Mutex<bool> workaround.
 Test totals: 882 lib + 47 e2e passing.
+#191 task body_blocks calculation used a contiguous
+ID range; closures #185/#187 step blocks plus
+if-then/else/merge blocks in task body got BlockIds
+beyond end_block → fell outside range → parent
+emitted them with goto-targets to skipped blocks.
+Fix: CFG-reachability walk from begin to end.
+Test totals: 883 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

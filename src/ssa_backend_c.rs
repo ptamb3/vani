@@ -868,20 +868,53 @@ fn collect_task_regions_c(f: &Function) -> Result<Vec<TaskRegionC>, EmitError> {
                             ),
                         });
                     }
-                    // Body blocks span begin → end in
-                    // `f.blocks` order (the SSA lowerer emits
-                    // blocks roughly in source-line order;
-                    // intermediate blocks from `if`/`while`
-                    // inside the body sit between).
-                    let begin_id = begin.begin_block.0;
-                    let end_id = block.id.0;
-                    let body_blocks: Vec<BlockId> = (begin_id..=end_id)
-                        .map(BlockId)
-                        .filter(|bid| {
-                            (bid.0 as usize) < f.blocks.len()
-                                && f.blocks[bid.0 as usize].id == *bid
-                        })
-                        .collect();
+                    // Body blocks via CFG reachability from
+                    // begin → end. The previous `(begin_id..
+                    // =end_id)` range-based approach missed
+                    // blocks whose ID was greater than
+                    // end_id but which still belong to the
+                    // task body (e.g. step blocks that
+                    // closures #185/#187 introduced after
+                    // for-loop exit blocks, or any
+                    // post-end-block control-flow chunk
+                    // created during body lowering). Walk
+                    // successors from begin_block, stopping
+                    // at end_block (don't follow its
+                    // successors — those are post-task).
+                    // Closure #191.
+                    let body_blocks: Vec<BlockId> = {
+                        let mut visited = std::collections::BTreeSet::new();
+                        let mut stack = vec![begin.begin_block];
+                        while let Some(bid) = stack.pop() {
+                            if !visited.insert(bid) {
+                                continue;
+                            }
+                            if bid == block.id {
+                                continue;
+                            }
+                            if (bid.0 as usize) >= f.blocks.len() {
+                                continue;
+                            }
+                            let blk = &f.blocks[bid.0 as usize];
+                            match &blk.terminator {
+                                Terminator::Jump { target, .. } => {
+                                    stack.push(*target);
+                                }
+                                Terminator::Branch {
+                                    then_block,
+                                    else_block,
+                                    ..
+                                } => {
+                                    stack.push(*then_block);
+                                    stack.push(*else_block);
+                                }
+                                _ => {}
+                            }
+                        }
+                        // Always include the end block.
+                        visited.insert(block.id);
+                        visited.into_iter().collect()
+                    };
                     regions.push(TaskRegionC {
                         handle: handle.clone(),
                         begin_block: begin.begin_block,

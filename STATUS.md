@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 882 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 883 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Task body_blocks via CFG reachability done 2026-05-24**:
+   Task body containing a for-loop with `continue` was
+   failing SSA-C and SSA-LLVM emit. The task region
+   collection used `(begin_id..=end_id)` for body_blocks
+   — a contiguous range. Closures #185 / #187 step
+   blocks plus if-then/else/merge blocks created later
+   in the same body got BlockIds beyond end_block, so
+   they fell outside the range. Parent (fn_main) emitted
+   them with goto-targets pointing at skipped step
+   blocks → undefined-label errors. Fix: walk the CFG
+   from begin_block, collecting all reachable blocks
+   without following end_block's successors. Mirrored
+   in both SSA-C and SSA-LLVM. Test totals: 883 lib +
+   47 e2e passing. Closure #191.
 
    **Parallel-for body rejects break done 2026-05-24**:
    `break` inside a `parallel for` body must be rejected

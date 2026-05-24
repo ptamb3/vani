@@ -665,15 +665,46 @@ fn collect_task_regions_llvm(f: &Function) -> Result<Vec<TaskRegion>, EmitError>
                             ),
                         });
                     }
-                    let begin_id = begin.begin_block.0;
-                    let end_id = block.id.0;
-                    let body_blocks: Vec<BlockId> = (begin_id..=end_id)
-                        .map(BlockId)
-                        .filter(|bid| {
-                            (bid.0 as usize) < f.blocks.len()
-                                && f.blocks[bid.0 as usize].id == *bid
-                        })
-                        .collect();
+                    // CFG-reachability for body_blocks
+                    // (mirror of ssa_backend_c.rs's closure
+                    // #191 fix). The earlier `(begin_id..=
+                    // end_id)` range missed blocks whose ID
+                    // was greater than end_id but which
+                    // still belonged to the task body
+                    // (post-end step blocks from closures
+                    // #185/#187 etc.).
+                    let body_blocks: Vec<BlockId> = {
+                        let mut visited = std::collections::BTreeSet::new();
+                        let mut stack = vec![begin.begin_block];
+                        while let Some(bid) = stack.pop() {
+                            if !visited.insert(bid) {
+                                continue;
+                            }
+                            if bid == block.id {
+                                continue;
+                            }
+                            if (bid.0 as usize) >= f.blocks.len() {
+                                continue;
+                            }
+                            let blk = &f.blocks[bid.0 as usize];
+                            match &blk.terminator {
+                                Terminator::Jump { target, .. } => {
+                                    stack.push(*target);
+                                }
+                                Terminator::Branch {
+                                    then_block,
+                                    else_block,
+                                    ..
+                                } => {
+                                    stack.push(*then_block);
+                                    stack.push(*else_block);
+                                }
+                                _ => {}
+                            }
+                        }
+                        visited.insert(block.id);
+                        visited.into_iter().collect()
+                    };
                     regions.push(TaskRegion {
                         handle: handle.clone(),
                         begin_block: begin.begin_block,

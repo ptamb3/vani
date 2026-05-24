@@ -13421,6 +13421,47 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn task_body_with_for_loop_continue_compiles() {
+        // Closure #191: task body containing a for-loop
+        // with `continue` was failing both SSA-C and
+        // SSA-LLVM emit because the task region's
+        // body_blocks calculation used a contiguous
+        // `(begin_id..=end_id)` range. Closures #185 / #187
+        // introduced step blocks that get created during
+        // for-loop lowering inside the task body, but
+        // additional control-flow blocks (if-then / if-else
+        // / if-merge) created later in the same body get
+        // BlockIds higher than the for-loop's exit block.
+        // Those blocks were left out of body_blocks → fn_main
+        // (parent) emitted them with `goto step` references
+        // to skipped blocks → undefined-label errors.
+        //
+        // Fix: walk the CFG from begin_block, collecting all
+        // reachable blocks until end_block is hit (don't
+        // follow its successors — those are post-task).
+        // Mirrored in both ssa_backend_c.rs and
+        // ssa_backend_llvm.rs.
+        let source = r#"
+            fn main() -> i64 {
+              task t {
+                let count: i64 = 0;
+                for i from 0 to 10 {
+                  let rem: i64 = i - (i / 2) * 2;
+                  if rem != 0 {
+                    continue;
+                  }
+                  count = count + 1;
+                }
+                let _ = count;
+              }
+              join t;
+              return 0;
+            }
+        "#;
+        compile(source).expect("task body with for-loop continue compiles");
+    }
+
+    #[test]
     fn parallel_for_rejects_break_in_body() {
         // Closure #190: `break` inside a `parallel for`
         // body must be rejected — OpenMP's `parallel for`
