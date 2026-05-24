@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 853 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 854 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-LLVM `len` on field forms done 2026-05-23**:
+   Closure #161 fixed `len(ref xs)` (Ref/RefMut wrapping
+   Var). This closes the other two shapes that also fell
+   through to the static-length fallback in tree-LLVM:
+   `len(ref t.items)` / `len(mut ref t.items)` (RefField /
+   RefMutField) and `len(t.items)` (FieldAccess yielding a
+   Vec). Both shapes hit lli's verifier with the `i64 0`
+   operand the fallback emitted, crashing the program
+   before it could run. Field-borrow forms reuse the
+   field-pointer that `emit_expr` already materializes;
+   bare field-access calls `emit_lvalue_addr` to get a
+   pointer to the field. Both then GEP into the Vec's
+   `.len` slot (field index 1) and load. Test totals:
+   854 lib + 47 e2e passing. Closure #162.
 
    **tree-LLVM `len(ref Vec)` GEP+load fix done 2026-05-23**:
    `emit_expr` Len handler only matched `array.kind ==

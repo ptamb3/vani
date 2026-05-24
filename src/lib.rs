@@ -13340,6 +13340,62 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_llvm_len_of_field_borrow_and_field_access_uses_field_pointer() {
+        // Closure #162: extends #161 to the two field-shape
+        // spellings of len that flow through tree-LLVM when a
+        // sibling expression forces an SSA-LLVM fallback:
+        //   - `len(ref t.items)` / `len(mut ref t.items)`
+        //     — array.kind is RefField / RefMutField.
+        //   - `len(t.items)` — array.kind is FieldAccess
+        //     yielding a Vec value directly.
+        // Both fell through to the `format!("{}", length)`
+        // fallback (zero for Vec). Worse, the constant `i64 0`
+        // operand was getting handed to assertion/store sites
+        // that the lli verifier rejected outright — programs
+        // crashed before they could run. The fix gets a
+        // pointer to the field via emit_expr (field-borrow
+        // forms) or emit_lvalue_addr (FieldAccess) and GEPs
+        // into the Vec struct's `.len` slot (field index 1).
+        let source = r#"
+            struct Box { items: Vec<OwnedStr> }
+
+            fn main() -> i64 {
+              let b: Box = Box { items: vec("a" + "", "b" + "", "c" + "") };
+              let n_ref: i64 = (len(ref b.items) as i64);
+              assert n_ref == 3;
+              let n_val: i64 = (len(b.items) as i64);
+              assert n_val == 3;
+              return 0;
+            }
+        "#;
+
+        let ll = crate::backend_llvm::LlvmBackend
+            .emit(&compile(source).expect("len on field forms compiles").ir);
+
+        // Both shapes must materialize a real load — not the
+        // constant `i64 0` that the static-length fallback
+        // would emit. We look for two `load i64, i64*` lines
+        // inside fn_main; one per assertion site (after the
+        // checker's bounds elision lowered).
+        let main_start = ll.find("define i64 @fn_main").expect("fn_main present");
+        let main_end = ll[main_start..]
+            .find("\ndefine ")
+            .map(|i| main_start + i)
+            .unwrap_or(ll.len());
+        let main_body = &ll[main_start..main_end];
+        let load_count = main_body
+            .lines()
+            .filter(|l| l.contains("load i64, i64*"))
+            .count();
+        assert!(
+            load_count >= 2,
+            "expected at least 2 i64 loads (one per `len` site), got {}:\n{}",
+            load_count,
+            main_body
+        );
+    }
+
+    #[test]
     fn tree_llvm_len_of_ref_vec_emits_load_not_static_zero() {
         // Closure #161: tree-LLVM's `emit_expr` Len handler
         // only recognized `array.kind == Var(name)`. When the

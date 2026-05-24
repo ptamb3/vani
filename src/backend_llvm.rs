@@ -3606,22 +3606,24 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
                 return v;
             }
-            // Accept `len(xs)` (Var) and `len(ref xs)` /
-            // `len(mut ref xs)` (Ref/RefMut wrapping a Var).
-            // The Ref expression itself returns the binding's
-            // alloca address, the same one we need for the
-            // .len GEP+load. Closure #161: previously the
-            // Ref/RefMut shape fell through to the static
-            // length fallback (zero for Vec), so
-            // `len(ref xs)` returned 0 whenever the program
-            // landed on tree-LLVM (e.g. when something else
-            // forced a fall back from SSA-LLVM).
-            let binding_name: Option<&String> = match &array.kind {
+            // Accept the various spellings that ultimately
+            // point at a Vec struct's alloca:
+            //   `len(xs)`           → Var(name)
+            //   `len(ref xs)`       → Ref { name }
+            //   `len(mut ref xs)`   → RefMut { name }
+            //   `len(ref t.items)`  → RefField { object, field_index, ... }
+            //   `len(mut ref t.x)`  → RefMutField { object, field_index, ... }
+            // Closure #161 added Var/Ref/RefMut. Closure #162
+            // adds the field-borrow forms — previously
+            // `len(ref t.items)` fell through to the static-
+            // length fallback (zero for Vec), crashing lli
+            // with a verifier error on the `i64 0` operand.
+            let var_binding: Option<&String> = match &array.kind {
                 TypedExprKind::Var(n) => Some(n),
                 TypedExprKind::Ref { name } | TypedExprKind::RefMut { name } => Some(name),
                 _ => None,
             };
-            if let Some(name) = binding_name {
+            if let Some(name) = var_binding {
                 if let Some((var_ty, addr)) = ctx.locals.get(name).cloned() {
                     if let Type::Vec(element) = var_ty.deref() {
                         let s_ty = vec_struct_name(element);
@@ -3634,6 +3636,45 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                         out.push_str(&format!("  {} = load i64, i64* {}\n", v, p));
                         return v;
                     }
+                }
+            }
+            // Field-borrow forms: the Ref/RefMutField expression
+            // GEP-pointers to the struct's field. For a Vec
+            // field, that pointer IS the Vec struct's address,
+            // ready for a `i32 1` GEP into .len.
+            if matches!(
+                array.kind,
+                TypedExprKind::RefField { .. } | TypedExprKind::RefMutField { .. }
+            ) {
+                if let Type::Vec(element) = array.ty.deref() {
+                    let s_ty = vec_struct_name(element);
+                    let base = emit_expr(array, ctx, out);
+                    let p = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = getelementptr {}, {}* {}, i64 0, i32 1\n",
+                        p, s_ty, s_ty, base
+                    ));
+                    let v = ctx.fresh_tmp();
+                    out.push_str(&format!("  {} = load i64, i64* {}\n", v, p));
+                    return v;
+                }
+            }
+            // `len(t.items)` — FieldAccess yielding a Vec
+            // value. Get a pointer to the field via the same
+            // lvalue-address machinery the IndexAssign /
+            // Reassign paths use, then GEP into .len + load.
+            if matches!(array.kind, TypedExprKind::FieldAccess { .. }) {
+                if let Type::Vec(element) = array.ty.deref() {
+                    let s_ty = vec_struct_name(element);
+                    let base = emit_lvalue_addr(array, ctx, out);
+                    let p = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = getelementptr {}, {}* {}, i64 0, i32 1\n",
+                        p, s_ty, s_ty, base
+                    ));
+                    let v = ctx.fresh_tmp();
+                    out.push_str(&format!("  {} = load i64, i64* {}\n", v, p));
+                    return v;
                 }
             }
             format!("{}", length)
