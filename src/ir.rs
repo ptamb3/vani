@@ -312,11 +312,17 @@ pub enum TypedExprKind {
         object: String,
         field: String,
         field_index: u32,
+        /// Type of the object binding. Used by backends to
+        /// decide whether the field access uses `.` (owned
+        /// struct) or `->` (ref-typed binding, e.g. `self:
+        /// ref T` in a method body). Closure #165.
+        object_ty: Type,
     },
     RefMutField {
         object: String,
         field: String,
         field_index: u32,
+        object_ty: Type,
     },
     /// Reference to a top-level function as a first-class
     /// value. Produced when an identifier in value position

@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 856 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 857 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,25 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Field-borrow through ref-typed self done 2026-05-23**:
+   `ref self.items` inside a method declared `self: ref T`
+   was broken on both backends. Tree-C emitted
+   `&v_self.items` — gcc rejected it with "request for
+   member 'items' in something not a structure" since
+   v_self is `Struct_T*`. Tree-LLVM emitted
+   `getelementptr %Struct_T*, %Struct_T** %arg_self, …`
+   which lli rejected because %arg_self IS %Struct_T*,
+   not a pointer-to-pointer. Both bugs stemmed from
+   RefField/RefMutField carrying only the binding's
+   name — not its type — so backends couldn't tell
+   whether the binding was owned (use `.`) or borrowed
+   (use `->`). Fix: add `object_ty: Type` to RefField /
+   RefMutField in the IR; tree-C picks `.` vs `->` from
+   `object_ty.is_any_ref()`; tree-LLVM derefs object_ty
+   before spelling the GEP source type so the
+   indirection level matches. Test totals: 857 lib +
+   47 e2e passing. Closure #165.
 
    **tree-C struct typedefs topologically sorted done 2026-05-23**:
    Source order was emitting `typedef struct {

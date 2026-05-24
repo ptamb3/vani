@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #164)
+## ⏳ Resume here (paused 2026-05-23, after closure #165)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -284,8 +284,15 @@ element). Source-order emit was producing
 `Struct_Outer { Struct_Inner inner; }` before
 `Struct_Inner` was declared, which cc rejected.
 LLVM's IR forward-declares named types so tree-LLVM
-was unaffected. Test totals: 856 lib + 47 e2e
-passing.
+was unaffected. #165 RefField/RefMutField now carry
+the binding's `object_ty`. `ref self.items` inside
+a `self: ref T` method body was emitting
+`&v_self.items` (cc: invalid member access) in tree-C
+and `getelementptr %Struct_T*, %Struct_T** %arg_self`
+(lli: indirection mismatch) in tree-LLVM. Tree-C
+picks `.` vs `->` from `object_ty.is_any_ref()`;
+tree-LLVM derefs `object_ty` before spelling the GEP
+source type. Test totals: 857 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

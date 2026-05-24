@@ -7049,11 +7049,13 @@ fn check_ref_mut(
                 ));
             }
             let ref_ty = Type::RefMut(Box::new(field_ty.clone()));
+            let object_ty = info.ty.clone();
             return CheckedExpr::new(
                 TypedExprKind::RefMutField {
                     object: obj_name.clone(),
                     field: field.clone(),
                     field_index: field_index as u32,
+                    object_ty,
                 },
                 ref_ty,
                 None,
@@ -7163,11 +7165,13 @@ fn check_ref(
                 ));
             }
             let ref_ty = Type::Ref(Box::new(field_ty.clone()));
+            let object_ty = info.ty.clone();
             return CheckedExpr::new(
                 TypedExprKind::RefField {
                     object: obj_name.clone(),
                     field: field.clone(),
                     field_index: field_index as u32,
+                    object_ty,
                 },
                 ref_ty,
                 None,

@@ -13340,6 +13340,49 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn field_borrow_through_ref_self_uses_arrow_in_c() {
+        // Closure #165: `ref self.items` inside a method
+        // whose `self: ref Tags` previously emitted
+        // `&v_self.items` in tree-C and an invalid
+        // `getelementptr %Struct_Tags*, %Struct_Tags** …`
+        // in tree-LLVM. The bug: backends only knew the
+        // field-borrow's `object` name, not the binding's
+        // type. RefField / RefMutField now carry the
+        // binding's `object_ty`; tree-C picks `.` vs `->`
+        // from `object_ty.is_any_ref()`, and tree-LLVM
+        // strips Ref/RefMut so the GEP source type is the
+        // dereferenced struct.
+        let source = r#"
+            struct Tags { items: Vec<i64> }
+            methods on Tags {
+              fn count(self: ref Tags) -> i64 {
+                return (len(ref self.items) as i64);
+              }
+            }
+            fn main() -> i64 {
+              let t: Tags = Tags { items: vec(1, 2, 3) };
+              assert t.count() == 3;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source)
+            .expect("ref self.items through a method compiles");
+        assert!(
+            c.contains("&v_self->items"),
+            "expected `&v_self->items` for ref-typed self in C output:\n{c}"
+        );
+        let ll = crate::backend_llvm::LlvmBackend
+            .emit(&compile(source).expect("LLVM emit").ir);
+        // tree-LLVM must GEP from the struct pointer
+        // directly (`%Struct_Tags, %Struct_Tags* %arg_self`)
+        // rather than the previous invalid double-indirection.
+        assert!(
+            ll.contains("getelementptr %Struct_Tags, %Struct_Tags* %arg_self"),
+            "expected single-indirection GEP through %arg_self in LLVM:\n{ll}"
+        );
+    }
+
+    #[test]
     fn tree_c_emits_struct_typedefs_in_dependency_order() {
         // Closure #164: structs were emitted in source order
         // (`for decl in &program.structs`), so

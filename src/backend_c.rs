@@ -2957,19 +2957,24 @@ fn emit_expr(expr: &TypedExpr) -> String {
                 _ => format!("&{}", local_name(name)),
             }
         }
-        TypedExprKind::RefField { object, field, .. }
-        | TypedExprKind::RefMutField { object, field, .. } => {
+        TypedExprKind::RefField { object, field, object_ty, .. }
+        | TypedExprKind::RefMutField { object, field, object_ty, .. } => {
             // `ref t.x` / `mut ref t.x` — take the address of
             // the struct field. C array-decay applies the same
             // way as for plain `Ref { name }`: passing
             // `v_t.field` works without `&` for array fields.
+            // When `object` is bound to a ref-typed value
+            // (e.g. `self: ref T` in a method body) we use
+            // `v_t->field` since v_t is a pointer. Closure
+            // #165.
             let inner_ty = match &expr.ty {
                 Type::Ref(inner) | Type::RefMut(inner) => inner,
                 _ => unreachable!("RefField/RefMutField must have ref type"),
             };
+            let sep = if object_ty.is_any_ref() { "->" } else { "." };
             match &**inner_ty {
-                Type::Array { .. } => format!("{}.{}", local_name(object), field),
-                _ => format!("&{}.{}", local_name(object), field),
+                Type::Array { .. } => format!("{}{}{}", local_name(object), sep, field),
+                _ => format!("&{}{}{}", local_name(object), sep, field),
             }
         }
         TypedExprKind::FnRef { name, .. } => {

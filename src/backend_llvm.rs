@@ -3728,9 +3728,20 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
         TypedExprKind::RefField { object, field_index, .. }
         | TypedExprKind::RefMutField { object, field_index, .. } => {
             // `ref t.x` / `mut ref t.x` — GEP into the struct's
-            // alloca to get a pointer to the field, then return
-            // that pointer as the SSA value of the borrow.
-            // T1.2 phase 2b follow-up.
+            // alloca (owned binding) or the pointer the param
+            // already holds (ref binding) to get a pointer to
+            // the field. T1.2 phase 2b follow-up.
+            //
+            // For owned struct `t: Tags`, `obj_addr` is the
+            // struct's alloca (`%Struct_Tags*`). For ref param
+            // `self: ref Tags`, `obj_addr` is the parameter's
+            // value, which IS `%Struct_Tags*`. Either way the
+            // GEP source type is the dereferenced struct.
+            // Previously `llvm_type_string(&obj_ty)` was used
+            // directly, which spelled `%Struct_Tags*` for the
+            // ref case and produced an invalid `getelementptr
+            // %Struct_Tags*, %Struct_Tags** %arg_self, …`.
+            // Closure #165.
             let (obj_ty, obj_addr) = ctx
                 .locals
                 .get(object)
@@ -3739,7 +3750,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     "checker: field-borrow on undeclared binding '{}'",
                     object
                 ));
-            let struct_ty_str = llvm_type_string(&obj_ty);
+            let struct_ty_str = llvm_type_string(obj_ty.deref());
             let p = ctx.fresh_tmp();
             out.push_str(&format!(
                 "  {} = getelementptr {}, {}* {}, i64 0, i32 {}\n",
