@@ -13340,6 +13340,48 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn push_set_xs_if_expr_drops_unchosen() {
+        // Closure #182: `push(if cond { xs1 } else { xs2 },
+        // v)` and `set(if cond { xs1 } else { xs2 }, i, v)`
+        // were leaking the unchosen Vec because the
+        // builtin handlers wired inject_branch_drops into
+        // the value arg (closure #180) but not the Vec
+        // arg. Symmetric fix.
+        let source = r#"
+            fn main() -> i64 {
+              let cond: bool = false;
+              let xs1: Vec<OwnedStr> = vec("a" + "");
+              let xs2: Vec<OwnedStr> = vec("b" + "");
+              let result: Vec<OwnedStr> = push(if cond { xs1 } else { xs2 }, "new" + "");
+              assert (len(ref result) as i64) == 2;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("push(if-expr-Vec, v) compiles");
+        // Each branch must drop the OTHER Vec via the
+        // shared __free helper.
+        let main_start = c.find("static int64_t fn_main").expect("fn_main present");
+        let main_end = c[main_start..]
+            .find("\nint main(void)")
+            .map(|i| main_start + i)
+            .unwrap_or(c.len());
+        let main_body = &c[main_start..main_end];
+        let free_count = main_body
+            .matches("intent_vec_owned_str__free")
+            .count();
+        // Frees expected: one per branch's "other Vec" drop +
+        // result's scope-exit free + scope-exit free of the
+        // outer xs1/xs2 (one of which was moved into push, so
+        // it's marked moved). At least 3 in fn_main.
+        assert!(
+            free_count >= 3,
+            "expected at least 3 intent_vec_owned_str__free calls, got {}:\n{}",
+            free_count,
+            main_body
+        );
+    }
+
+    #[test]
     fn return_if_expr_drops_unchosen() {
         // Closure #181: `return if cond { a } else { b };`
         // (a, b non-Copy Vars) was leaking the unchosen

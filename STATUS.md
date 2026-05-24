@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 873 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 874 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,14 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **inject_branch_drops at push/set xs arg done 2026-05-24**:
+   `push(if cond { xs1 } else { xs2 }, v)` and `set(if
+   cond { xs1 } else { xs2 }, i, v)` were leaking the
+   unchosen Vec. The builtin handlers had wired
+   inject_branch_drops into the value arg (closure #180)
+   but not the Vec arg. Symmetric fix. Test totals: 874
+   lib + 47 e2e passing. Closure #182.
 
    **inject_branch_drops at Return stmt done 2026-05-24**:
    `return if cond { a } else { b };` (a, b non-Copy

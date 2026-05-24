@@ -9885,6 +9885,8 @@ fn check_push_builtin(
     // already transferred ownership into the new Vec's
     // slot, double-freeing the heap. Closure #171.
     consume_if_moved_var(&args[1], &value, env);
+    let mut xs_expr = xs.expr;
+    inject_branch_drops(&mut xs_expr);  // closure #182
     let mut value_expr = value.expr;
     inject_branch_drops(&mut value_expr);
 
@@ -9897,7 +9899,7 @@ fn check_push_builtin(
         TypedExprKind::Call {
             name: call_name,
             name_span: span,
-            args: vec![xs.expr, value_expr],
+            args: vec![xs_expr, value_expr],
         },
         result_type,
         None,
@@ -9957,6 +9959,8 @@ fn check_set_builtin(
     // binding's scope-exit drop would double-free.
     // Mirrors push (closure #171).
     consume_if_moved_var(&args[2], &value, env);
+    let mut xs_expr = xs.expr;
+    inject_branch_drops(&mut xs_expr);  // closure #182
     let mut value_expr = value.expr;
     inject_branch_drops(&mut value_expr);
 
@@ -9965,7 +9969,7 @@ fn check_set_builtin(
         TypedExprKind::Call {
             name: "set".to_string(),
             name_span: span,
-            args: vec![xs.expr, index.expr, value_expr],
+            args: vec![xs_expr, index.expr, value_expr],
         },
         result_type,
         None,
