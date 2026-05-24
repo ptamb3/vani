@@ -2504,13 +2504,26 @@ fn emit_for_iter(
     // Consuming iteration owns the source for the duration of the loop.
     // For owned `Vec<T>`, the buffer must be freed when the loop exits.
     // Arrays have stack lifetime so no free is needed.
+    //
+    // For non-Copy elements, each slot was loaded into `x` and freed
+    // by x's scope-exit drop in the body. Routing through
+    // `intent_vec_<T>__free` here would re-walk every slot
+    // (closure #127's per-element drop) and double-free. Skip the
+    // helper and emit only the outer buffer free.
     if consumes && !is_ref {
         if let Type::Vec(element) = underlying {
-            out.push_str(&format!(
-                "  {}({});\n",
-                vec_helper(element, "free"),
-                coll_local
-            ));
+            if element.is_copy() {
+                out.push_str(&format!(
+                    "  {}({});\n",
+                    vec_helper(element, "free"),
+                    coll_local
+                ));
+            } else {
+                out.push_str(&format!(
+                    "  free({}.data);\n",
+                    coll_local
+                ));
+            }
         }
     }
 }

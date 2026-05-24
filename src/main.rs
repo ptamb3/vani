@@ -101,7 +101,20 @@ fn stmt_ssa_supported(stmt: &TypedStmt, extra_reject: &impl Fn(&TypedStmt) -> bo
                 && expr_ssa_supported(end)
                 && stmts_ssa_supported(body, extra_reject)
         }
-        TypedStmt::ForIter { collection_ty, body, .. } => {
+        TypedStmt::ForIter { collection_ty, consumes, element_ty, body, .. } => {
+            // Consuming `for x in xs` over a Vec of non-Copy
+            // elements: the SSA lowerer never emits a Drop for
+            // the consumed collection, leaving the outer buffer
+            // leaked (and there is no IR shape for "free the
+            // outer buffer only, skip the per-element walk").
+            // Route through tree-LLVM/tree-C which now handles
+            // it directly via `emit_for_iter`. Closure #159.
+            let consume_owned_vec = *consumes
+                && matches!(collection_ty, Type::Vec(_))
+                && !element_ty.is_copy();
+            if consume_owned_vec {
+                return false;
+            }
             ssa_type_supported(collection_ty)
                 && stmts_ssa_supported(body, extra_reject)
         }

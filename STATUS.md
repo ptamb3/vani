@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 850 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 851 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,31 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Consuming `for x in xs` on `Vec<non-Copy>` shallow-frees done 2026-05-23**:
+   `for x in xs` (consuming form) over `Vec<OwnedStr>` /
+   `Vec<Vec<T>>` / `Vec<Struct{heap}>` /
+   `Vec<Enum{heap-payload}>` was double-freeing the
+   per-element heap. Each iteration loaded the slot into
+   `x` and freed it via `x`'s scope-exit drop; then the
+   post-loop code called `intent_vec_<T>__free(xs)` which,
+   after closure #127, walks every slot and frees its
+   inner heap → second free of the same heap (ASan
+   double-free). Fix: tree-C and tree-LLVM `emit_for_iter`
+   now emit a shallow `free(xs.data)` (only the outer
+   buffer) when the element type is non-Copy and the
+   collection is owned. Copy-element collections still
+   route through `intent_vec_<T>__free` (which is just
+   `free(xs.data)` for Copy elements anyway). The SSA path
+   never emitted a Drop for the consumed collection at
+   all — silently leaking the outer buffer (no IR shape
+   for "free outer buffer only"). Gated out via
+   `stmt_ssa_supported`'s `ForIter` arm: programs with
+   consuming for-iter over non-Copy Vec elements now fall
+   back to tree-LLVM / tree-C. Verified clean under
+   `-fsanitize=address,leak` for `Vec<OwnedStr>`,
+   `Vec<Vec<i64>>`, and `Vec<Struct{OwnedStr,i64}>`.
+   Closure #159.
 
    **SSA-LLVM vec set/push/clone arg type fix done 2026-05-23**:
    `emit_vec_call` in

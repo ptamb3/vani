@@ -1,4 +1,4 @@
-intent "Iterate over arrays and Vecs with `for x in ref xs`";
+intent "Iterate over arrays and Vecs with `for x in ref xs` and consuming `for x in xs`";
 
 fn sum_vec(xs: ref Vec<i64>) -> i64 {
   let total: i64 = 0;
@@ -41,8 +41,22 @@ fn main() -> i64 {
   let p: i64 = count_positives(ref mixed);
   assert p == 3;
 
+  // Consuming `for x in xs` over a Vec<OwnedStr>: each
+  // element is moved into x and freed at scope exit. The
+  // outer buffer is freed by the loop's post-exit code.
+  // Closure #159 — previously double-freed the per-element
+  // heap because `intent_vec_<owned_str>__free` would walk
+  // every slot after closure #127's deep-drop change.
+  let owned: Vec<OwnedStr> = vec("a" + "", "bb" + "", "ccc" + "");
+  let owned_total: i64 = 0;
+  for s in owned {
+    owned_total = owned_total + (len(s) as i64);
+  }
+  assert owned_total == 6;
+
   print total;
   print m;
   print p;
+  print owned_total;
   return 0;
 }

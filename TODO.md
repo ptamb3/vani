@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #158)
+## ⏳ Resume here (paused 2026-05-23, after closure #159)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -232,8 +232,23 @@ arg type fix: `emit_vec_call` was falling back to
 `Vec<OwnedStr>`). Per-builtin signature lookup
 (`sig_at(pos)`) now returns `i64` for `set`'s
 middle arg, `Vec<T>` for the first arg, and the
-element type only for the value slot. Test totals:
-850 lib + 47 e2e passing.
+element type only for the value slot. #159 Consuming
+`for x in xs` over `Vec<non-Copy>` shallow-frees: the
+post-loop code called `intent_vec_<T>__free(xs)` which
+(since closure #127) walks every slot and re-frees
+each element's heap — double-freeing what `x`'s
+scope-exit drop already released per iteration. Tree-C
+and tree-LLVM `emit_for_iter` now emit a shallow
+`free(xs.data)` for non-Copy element collections;
+Copy-element collections still route through the
+deep `__free`. SSA path (which never emitted any
+post-loop drop, silently leaking the outer buffer)
+is gated out: `stmt_ssa_supported` rejects consuming
+for-iter over non-Copy Vec, falling back to tree.
+Verified clean under `-fsanitize=address,leak` for
+`Vec<OwnedStr>`, `Vec<Vec<i64>>`, and
+`Vec<Struct{OwnedStr,i64}>`. Test totals: 851 lib +
+47 e2e passing.
 
 ### Recommended next (pick one)
 

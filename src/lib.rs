@@ -13340,6 +13340,55 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn for_in_consuming_vec_owned_str_skips_per_element_free() {
+        // Closure #159: consuming `for x in xs` over a Vec
+        // of non-Copy elements used to emit
+        // `intent_vec_<T>__free(xs)` after the loop, which
+        // (since closure #127) walks every slot and frees
+        // its inner heap — double-freeing the elements x
+        // already freed via scope-exit drop. The fix emits
+        // a direct `free(xs.data)` instead, releasing only
+        // the outer buffer.
+        let source = r#"
+            fn make() -> Vec<OwnedStr> {
+              let xs: Vec<OwnedStr> = vec("a" + "", "b" + "");
+              return xs;
+            }
+            fn main() -> i64 {
+              let xs: Vec<OwnedStr> = make();
+              let total: i64 = 0;
+              for x in xs {
+                total = total + (len(x) as i64);
+              }
+              assert total == 2;
+              return 0;
+            }
+        "#;
+
+        let c = compile_to_c(source).expect("consuming Vec<OwnedStr> for-iter compiles");
+        // Tree-C emits `free(v_xs.data);` after the loop —
+        // the shallow form. The deep `intent_vec_i8p__free`
+        // (the per-element-walking helper) MUST NOT appear
+        // in `fn_main`.
+        let main_start = c.find("static int64_t fn_main").expect("fn_main present");
+        let main_end = c[main_start..]
+            .find("\nint main(void)")
+            .map(|i| main_start + i)
+            .unwrap_or(c.len());
+        let main_body = &c[main_start..main_end];
+        assert!(
+            main_body.contains("free(v_xs.data);"),
+            "expected shallow `free(v_xs.data);` after consuming for-iter: {}",
+            main_body
+        );
+        assert!(
+            !main_body.contains("intent_vec_owned_str__free"),
+            "deep __free must NOT be called in consuming non-Copy for-iter: {}",
+            main_body
+        );
+    }
+
+    #[test]
     fn for_in_owned_vec_blocks_use_after_iteration() {
         let source = r#"
             fn main() -> i64 {

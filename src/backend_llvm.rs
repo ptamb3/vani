@@ -1860,26 +1860,50 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
             out.push_str(&format!("{}:\n", exit));
 
             // If we consumed an owned Vec, free its buffer here.
-            // Route through the per-element-type `__free`
-            // helper so nested-Vec elements get recursively
-            // released (refines #7). `__free` is always
-            // emitted now, even for Copy elements.
+            // For non-Copy elements each slot was loaded into x and
+            // freed by x's scope-exit drop in the body — routing
+            // through `intent_vec_<T>__free` would re-walk every
+            // slot (closure #127's per-element drop) and double-
+            // free. Emit only the outer buffer free in that case.
             if *consumes {
                 if let Type::Vec(element) = collection_ty {
                     let s_ty = vec_struct_name(element);
-                    let v_loaded = ctx.fresh_tmp();
-                    out.push_str(&format!(
-                        "  {} = load {}, {}* {}\n",
-                        v_loaded, s_ty, s_ty, coll_addr
-                    ));
-                    let free_name = format!(
-                        "@intent_vec_{}__free",
-                        vec_struct_tag(element)
-                    );
-                    out.push_str(&format!(
-                        "  call void {}({} {})\n",
-                        free_name, s_ty, v_loaded
-                    ));
+                    if element.is_copy() {
+                        let v_loaded = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = load {}, {}* {}\n",
+                            v_loaded, s_ty, s_ty, coll_addr
+                        ));
+                        let free_name = format!(
+                            "@intent_vec_{}__free",
+                            vec_struct_tag(element)
+                        );
+                        out.push_str(&format!(
+                            "  call void {}({} {})\n",
+                            free_name, s_ty, v_loaded
+                        ));
+                    } else {
+                        let elt = llvm_type_string(element);
+                        let data_p = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = getelementptr {}, {}* {}, i64 0, i32 0\n",
+                            data_p, s_ty, s_ty, coll_addr
+                        ));
+                        let data_v = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = load {}*, {}** {}\n",
+                            data_v, elt, elt, data_p
+                        ));
+                        let data_i8 = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = bitcast {}* {} to i8*\n",
+                            data_i8, elt, data_v
+                        ));
+                        out.push_str(&format!(
+                            "  call void @free(i8* {})\n",
+                            data_i8
+                        ));
+                    }
                 }
             }
         }
