@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 870 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 871 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,22 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **If-expr / match Var-branch unchosen leak fixed done 2026-05-24**:
+   Closes the unchosen-alternative leak left behind by
+   the conservative move-tracking from closures
+   #172/#173. The checker now rewrites if-expr / match /
+   block-tail typed expressions so each branch wraps its
+   chosen value in a Block that drops the OTHER
+   branches' Var leaves before yielding. C ternary form:
+   `cond ? ({ free(v_b); v_a; }) : ({ free(v_a); v_b; })`.
+   LLVM emits the equivalent through the Block emitter
+   (closure #160 already wired Block Drop forwarding).
+   The rewrite is wired into Let, Reassign, IndexAssign,
+   and FieldAssign — the most common move contexts.
+   inject_branch_drops walks IfExpr, Match, and Block
+   recursively so nested patterns work too. Test totals:
+   871 lib + 47 e2e passing. Closure #179.
 
    **`Enum.Some(v)` consumes Var payload done 2026-05-24**:
    `Maybe.Some(n)` where n is a Var of OwnedStr was
@@ -1792,7 +1808,6 @@ TODO.md keeps the history.
 ### Language surface gaps
 - **No mutable references to atomics-as-payloads.** Workaround: pre-extract scalars before spawning a task. *Tracked indirectly by future affine-rules work.*
 - **References are second-class.** `&T` / `&mut T` only as function parameter types; not as returns, let-bindings, or aggregate elements. *Working as intended for v1 — Rust-style first-class references are explicitly out of scope.*
-- **If-expr / match with non-Copy Var branches leaks the unchosen alternatives.** `let chosen = if cond { a } else { b };` and `let chosen = match n { 1 then a, _ then b };` (a, b: OwnedStr Vars) mark every branch's Var as moved to avoid a double-free (closures #172 + #173), so the unchosen heaps stay unreclaimed. *Tracked as a structural-rewrite TODO: each branch should free the other arms' Vars inline before yielding the chosen value.*
 
 ### Tooling
 - **`INTENTC_NO_VERIFY=1` skips every SMT round-trip.** Useful for fast iteration; do not set in CI — a violated `ensures` won't surface. Runtime safety guards stay in place. *Working as intended.*

@@ -13340,6 +13340,50 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn if_expr_var_branches_drop_unchosen_alternative() {
+        // Closure #179: closes the unchosen-alternative leak
+        // left by closures #172/#173's conservative move
+        // tracking. `let r = if cond { a } else { b };` now
+        // rewrites the typed expr so each branch wraps its
+        // chosen value in a Block that drops the OTHER
+        // branch's Var leaves first. ASan-clean on both
+        // cond=true and cond=false.
+        let source = r#"
+            fn main() -> i64 {
+              let cond: bool = true;
+              let a: OwnedStr = "first" + "";
+              let b: OwnedStr = "second" + "";
+              let chosen: OwnedStr = if cond { a } else { b };
+              assert (len(chosen) as i64) == 5;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("if-expr Var branches compile");
+        // Each branch must include the other Var's free.
+        // The C ternary form: `cond ? ({ free(v_b); v_a; })
+        // : ({ free(v_a); v_b; })`.
+        let main_start = c.find("static int64_t fn_main").expect("fn_main present");
+        let main_end = c[main_start..]
+            .find("\nint main(void)")
+            .map(|i| main_start + i)
+            .unwrap_or(c.len());
+        let main_body = &c[main_start..main_end];
+        let chosen_idx = main_body
+            .find("v_chosen =")
+            .expect("v_chosen assignment");
+        let return_idx = main_body
+            .find("return v___intent_ret")
+            .expect("return present");
+        let if_region = &main_body[chosen_idx..return_idx];
+        assert!(
+            if_region.contains("free((void*)v_a)")
+                && if_region.contains("free((void*)v_b)"),
+            "expected both v_a and v_b dropped inside if-expr branches:\n{}",
+            if_region
+        );
+    }
+
+    #[test]
     fn enum_variant_payload_consumes_var() {
         // Closure #178: `Maybe.Some(n)` where n is a Var of
         // OwnedStr was double-freeing on scope exit. The
@@ -13578,14 +13622,44 @@ fn main() -> i64 {
             .map(|i| main_start + i)
             .unwrap_or(c.len());
         let main_body = &c[main_start..main_end];
+        // Closure #179: each arm now drops the OTHER arms'
+        // Vars before yielding its chosen value. So v_a /
+        // v_b / v_c free calls show up INSIDE the match's
+        // case branches — NOT at scope exit. v_chosen still
+        // owns the chosen heap and is freed at scope exit.
+        let return_idx = main_body
+            .find("return v___intent_ret")
+            .expect("return present");
+        let scope_exit = &main_body[main_body[return_idx..]
+            .find(';')
+            .map(|i| return_idx + i + 1)
+            .unwrap_or(main_body.len())..];
         for var in &["v_a", "v_b", "v_c"] {
             assert!(
-                !main_body.contains(&format!("free((void*){})", var)),
+                !scope_exit.contains(&format!("free((void*){})", var)),
                 "{} was consumed by the match; scope-exit drop must be suppressed:\n{}",
                 var,
-                main_body
+                scope_exit
             );
         }
+        // Per closure #179, each arm drops the other arms'
+        // Vars inside the case body — collectively at least
+        // 2 of {v_a, v_b, v_c} must appear in the match's
+        // case bodies (each case drops the other arms' Vars).
+        let chosen_start = main_body
+            .find("v_chosen =")
+            .expect("v_chosen assignment present");
+        let match_region = &main_body[chosen_start..return_idx];
+        let drop_count = ["v_a", "v_b", "v_c"]
+            .iter()
+            .filter(|v| match_region.contains(&format!("free((void*){})", v)))
+            .count();
+        assert!(
+            drop_count >= 2,
+            "expected at least 2 arm-local drops (closure #179), got {}:\n{}",
+            drop_count,
+            match_region
+        );
         assert!(
             main_body.contains("free((void*)v_chosen)"),
             "v_chosen owns the chosen arm's heap; expect a scope-exit free:\n{}",
@@ -13622,26 +13696,56 @@ fn main() -> i64 {
             }
         "#;
         let c = compile_to_c(source).expect("if-expr Var branches compile");
-        // After the if-expr, neither `free((void*)v_a)`
-        // nor `free((void*)v_b)` should appear at the
-        // scope exit — they were both marked moved by
-        // the conservative tracking. `v_chosen` is freed
-        // (it owns the chosen heap).
+        // Closure #179 (the structural rewrite) wraps each
+        // branch in a Block that drops the OTHER branch's
+        // Vars before yielding the chosen value. So
+        // v_a / v_b frees appear INSIDE the ternary's
+        // statement-expression branches — NOT at scope
+        // exit (the Vars are still marked moved at
+        // compile time). v_chosen owns the chosen heap
+        // and is freed at scope exit.
         let main_start = c.find("static int64_t fn_main").expect("fn_main present");
         let main_end = c[main_start..]
             .find("\nint main(void)")
             .map(|i| main_start + i)
             .unwrap_or(c.len());
         let main_body = &c[main_start..main_end];
+        // Each Var must be freed inside a statement-expr
+        // branch (`({ free(...); ...; })`) — never at the
+        // top-level scope exit.
+        let chosen_start = main_body
+            .find("v_chosen =")
+            .expect("v_chosen assignment present");
+        let return_idx = main_body
+            .find("return v___intent_ret")
+            .expect("return present");
+        let scope_exit = &main_body[main_body[return_idx..]
+            .find(';')
+            .map(|i| return_idx + i + 1)
+            .unwrap_or(main_body.len())..];
+        // Per closure #179, no v_a / v_b free at scope exit.
         assert!(
-            !main_body.contains("free((void*)v_a)"),
-            "v_a was moved into the if-expr; its scope-exit drop must not fire:\n{}",
-            main_body
+            !scope_exit.contains("free((void*)v_a)"),
+            "v_a must NOT be freed at scope exit:\n{}",
+            scope_exit
         );
         assert!(
-            !main_body.contains("free((void*)v_b)"),
-            "v_b was moved into the if-expr; its scope-exit drop must not fire:\n{}",
-            main_body
+            !scope_exit.contains("free((void*)v_b)"),
+            "v_b must NOT be freed at scope exit:\n{}",
+            scope_exit
+        );
+        // The if-expr ternary must drop the unchosen Var
+        // inside each branch.
+        let if_expr_region = &main_body[chosen_start..];
+        assert!(
+            if_expr_region.contains("free((void*)v_a)"),
+            "expected v_a free inside the else-branch (closure #179):\n{}",
+            if_expr_region
+        );
+        assert!(
+            if_expr_region.contains("free((void*)v_b)"),
+            "expected v_b free inside the then-branch (closure #179):\n{}",
+            if_expr_region
         );
         assert!(
             main_body.contains("free((void*)v_chosen)"),

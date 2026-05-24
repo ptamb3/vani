@@ -3246,7 +3246,7 @@ fn check_one_stmt(
             span,
         } => {
             verify_call_args_in_expr(expr, smt_facts, env, signatures, diagnostics);
-            let checked = if let Some(annotation) = annotation {
+            let mut checked = if let Some(annotation) = annotation {
                 validate_array_element_type(annotation, *span, diagnostics);
                 validate_no_ref(annotation, *span, "let annotation", diagnostics);
                 // Refines #8: empty `vec()` borrows its element type
@@ -3290,6 +3290,11 @@ fn check_one_stmt(
             }
 
             consume_if_moved_var(expr, &checked, env);
+            // After the conservative move marks all branch
+            // Vars as moved, rewrite the typed expr to drop
+            // the unchosen branches' Vars inline so the heap
+            // doesn't leak. Closure #179.
+            inject_branch_drops(&mut checked.expr);
 
             // `let _ = expr;` — discard pattern. Evaluate expr (consuming
             // moved vars above) but do not introduce a binding. Repeated
@@ -3567,6 +3572,7 @@ fn check_one_stmt(
             consume_if_moved_var(expr, &coerced, env);
             let drop_old = !existing.ty.is_copy() && existing.moved.is_none();
             let mut rhs = coerced.expr;
+            inject_branch_drops(&mut rhs);  // closure #179
             try_elide_bounds_in_typed_expr(&mut rhs, smt_facts, env, signatures);
             body.push(TypedStmt::Reassign {
                 name: name.clone(),
@@ -4269,6 +4275,7 @@ fn check_one_stmt(
 
             let mut idx_expr = index_checked.expr;
             let mut val_expr = value_coerced.expr;
+            inject_branch_drops(&mut val_expr);  // closure #179
             try_elide_bounds_in_typed_expr(&mut idx_expr, smt_facts, env, signatures);
             try_elide_bounds_in_typed_expr(&mut val_expr, smt_facts, env, signatures);
 
@@ -4528,12 +4535,14 @@ fn check_one_stmt(
             // and double-free the heap now owned by the
             // struct's field. Closure #166.
             consume_if_moved_var(value, &value_coerced, env);
+            let mut val_expr = value_coerced.expr;
+            inject_branch_drops(&mut val_expr);  // closure #179
             body.push(TypedStmt::FieldAssign {
                 object: obj_checked.expr,
                 field: field.clone(),
                 field_index: field_index as u32,
                 through_mut_ref,
-                value: value_coerced.expr,
+                value: val_expr,
             });
             false
         }
@@ -5439,6 +5448,180 @@ fn is_nested_field_access(expr: &Expr) -> bool {
             matches!(object.kind, ExprKind::FieldAccess { .. })
         }
         _ => false,
+    }
+}
+
+/// Walk a typed expression and collect every non-Copy Var
+/// leaf reachable through if-expr branches, match arms, and
+/// block tails. Used by `inject_branch_drops` to compute the
+/// "other branches' Vars" that each branch must drop before
+/// yielding its chosen value (closure #179).
+fn collect_branch_var_leaves(expr: &TypedExpr, out: &mut Vec<(String, Type)>) {
+    match &expr.kind {
+        TypedExprKind::Var(name) if !expr.ty.is_copy() => {
+            if !out.iter().any(|(n, _)| n == name) {
+                out.push((name.clone(), expr.ty.clone()));
+            }
+        }
+        TypedExprKind::IfExpr { then_value, else_value, .. } => {
+            collect_branch_var_leaves(then_value, out);
+            collect_branch_var_leaves(else_value, out);
+        }
+        TypedExprKind::Match { arms, .. } => {
+            for arm in arms {
+                collect_branch_var_leaves(&arm.body, out);
+            }
+        }
+        TypedExprKind::Block { tail, .. } => {
+            collect_branch_var_leaves(tail, out);
+        }
+        _ => {}
+    }
+}
+
+/// Wrap a branch expression in a Block that drops the given
+/// Vars before yielding the branch's value. Used by
+/// `inject_branch_drops` (closure #179) to plug the unchosen-
+/// alternative leak from closures #172/#173.
+fn wrap_branch_with_drops(
+    branch: &mut Box<TypedExpr>,
+    drops: Vec<(String, Type)>,
+) {
+    if drops.is_empty() {
+        return;
+    }
+    let drop_stmts: Vec<TypedStmt> = drops
+        .into_iter()
+        .map(|(name, ty)| TypedStmt::Drop {
+            name,
+            ty,
+            moved_fields: Vec::new(),
+        })
+        .collect();
+    // Take the original branch out so we can re-box it as
+    // the Block's tail. Replace with a placeholder Int(0)
+    // briefly — the placeholder is immediately overwritten.
+    let placeholder = TypedExpr {
+        kind: TypedExprKind::Int(0),
+        ty: Type::I64,
+        constant: None,
+        span: Span::default(),
+        binding_decl_span: None,
+    };
+    let original = std::mem::replace(branch.as_mut(), placeholder);
+    let span = original.span;
+    let ty = original.ty.clone();
+    let new_branch = TypedExpr {
+        kind: TypedExprKind::Block {
+            stmts: drop_stmts,
+            tail: Box::new(original),
+        },
+        ty,
+        constant: None,
+        span,
+        binding_decl_span: None,
+    };
+    **branch = new_branch;
+}
+
+/// Rewrite if-expr / match / block-expr trees so each branch
+/// drops the Var leaves owned by the OTHER branches before
+/// yielding its chosen value. Closes the unchosen-alternative
+/// leak the conservative move tracking in closures #172/#173
+/// left behind.
+///
+/// Called from each `consume_if_moved_var` site (Let, Reassign,
+/// FieldAssign, Call args, vec / push / set / enum-constructor)
+/// after the move bookkeeping fires. Closure #179.
+fn inject_branch_drops(expr: &mut TypedExpr) {
+    match &mut expr.kind {
+        TypedExprKind::IfExpr { then_value, else_value, .. } => {
+            let mut then_vars: Vec<(String, Type)> = Vec::new();
+            collect_branch_var_leaves(then_value, &mut then_vars);
+            let mut else_vars: Vec<(String, Type)> = Vec::new();
+            collect_branch_var_leaves(else_value, &mut else_vars);
+            let then_drops: Vec<(String, Type)> = else_vars
+                .iter()
+                .filter(|(n, _)| !then_vars.iter().any(|(t, _)| t == n))
+                .cloned()
+                .collect();
+            let else_drops: Vec<(String, Type)> = then_vars
+                .iter()
+                .filter(|(n, _)| !else_vars.iter().any(|(t, _)| t == n))
+                .cloned()
+                .collect();
+            // Recurse into nested if/match before wrapping
+            // so inner rewrites land first and the wrap is
+            // outermost.
+            inject_branch_drops(then_value);
+            inject_branch_drops(else_value);
+            wrap_branch_with_drops(then_value, then_drops);
+            wrap_branch_with_drops(else_value, else_drops);
+        }
+        TypedExprKind::Match { arms, .. } => {
+            let arm_vars: Vec<Vec<(String, Type)>> = arms
+                .iter()
+                .map(|arm| {
+                    let mut v = Vec::new();
+                    collect_branch_var_leaves(&arm.body, &mut v);
+                    v
+                })
+                .collect();
+            for i in 0..arms.len() {
+                let mut my_drops: Vec<(String, Type)> = Vec::new();
+                for (j, other_vars) in arm_vars.iter().enumerate() {
+                    if i == j {
+                        continue;
+                    }
+                    for (n, t) in other_vars {
+                        if !arm_vars[i].iter().any(|(tn, _)| tn == n)
+                            && !my_drops.iter().any(|(dn, _)| dn == n)
+                        {
+                            my_drops.push((n.clone(), t.clone()));
+                        }
+                    }
+                }
+                // The arm's body is a TypedExpr — we need a
+                // Box wrapper to reuse wrap_branch_with_drops.
+                // Match arms hold the body inline, so do the
+                // wrap manually.
+                inject_branch_drops(&mut arms[i].body);
+                if !my_drops.is_empty() {
+                    let drop_stmts: Vec<TypedStmt> = my_drops
+                        .into_iter()
+                        .map(|(name, ty)| TypedStmt::Drop {
+                            name,
+                            ty,
+                            moved_fields: Vec::new(),
+                        })
+                        .collect();
+                    let placeholder = TypedExpr {
+                        kind: TypedExprKind::Int(0),
+                        ty: Type::I64,
+                        constant: None,
+                        span: Span::default(),
+                        binding_decl_span: None,
+                    };
+                    let original = std::mem::replace(&mut arms[i].body, placeholder);
+                    let span = original.span;
+                    let ty = original.ty.clone();
+                    arms[i].body = TypedExpr {
+                        kind: TypedExprKind::Block {
+                            stmts: drop_stmts,
+                            tail: Box::new(original),
+                        },
+                        ty,
+                        constant: None,
+                        span,
+                        binding_decl_span: None,
+                    };
+                }
+            }
+        }
+        TypedExprKind::Block { tail, .. } => {
+            inject_branch_drops(tail);
+        }
+        _ => {}
     }
 }
 

@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #178)
+## ⏳ Resume here (paused 2026-05-24, after closure #179)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -352,32 +352,15 @@ heap); structural rewrite needed to free it inside
 each branch. Test totals: 864 lib + 47 e2e
 passing.
 
-### TODO — if-expr non-Copy Var unchosen leak
+### Closed: if-expr / match Var-branch unchosen leak (#179)
 
-Closure #172 hardened the if-expr Var-branches path
-against double-free by marking both Vars moved.
-The unchosen alternative now leaks. Proper fix:
-desugar `let r = if cond { a } else { b };` at the
-checker level into an if-statement plus per-branch
-drops:
-
-```
-let r: T;
-if cond {
-  drop(b);
-  r = a;
-} else {
-  drop(a);
-  r = b;
-}
-```
-
-Mirrors the match-on-fresh-OwnedStr desugar
-(closure #137 wrap-in-Block). Same shape applies
-to nested if-expr with Var leaves and to match arms
-on non-Copy Vars (handled by closure #173 with the
-same conservative-move shape — also leaks the
-unchosen arms).
+The conservative-move shape from #172/#173 used to
+leave the unchosen alternative's heap unreclaimed.
+Closure #179 rewrites the typed expr's branches via
+`inject_branch_drops` so each branch wraps its chosen
+value in a Block that drops the OTHER branches' Var
+leaves before yielding — closing the leak without
+introducing double-frees.
 
 #173 Match arms returning Var of non-Copy were
 double-freeing in the same way as #172. The
@@ -414,7 +397,16 @@ storing the payload pointer into the tagged-union
 without marking the source Var moved, so scope-exit
 drop double-freed against the enum's payload drop.
 One-line addition (same family as #171, #177).
-Test totals: 870 lib + 47 e2e passing.
+Test totals: 870 lib + 47 e2e passing. #179
+inject_branch_drops: structural rewrite of if-expr /
+match / block-tail typed expressions so each branch
+wraps its chosen value in a Block that drops the
+OTHER branches' Var leaves before yielding. Closes
+the unchosen-alternative leak the conservative move
+tracking in #172/#173 left behind. Wired into Let,
+Reassign, IndexAssign, FieldAssign. Recursive
+walker handles nested if-expr / match / block. Test
+totals: 871 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
