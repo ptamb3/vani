@@ -3606,7 +3606,22 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
                 return v;
             }
-            if let TypedExprKind::Var(name) = &array.kind {
+            // Accept `len(xs)` (Var) and `len(ref xs)` /
+            // `len(mut ref xs)` (Ref/RefMut wrapping a Var).
+            // The Ref expression itself returns the binding's
+            // alloca address, the same one we need for the
+            // .len GEP+load. Closure #161: previously the
+            // Ref/RefMut shape fell through to the static
+            // length fallback (zero for Vec), so
+            // `len(ref xs)` returned 0 whenever the program
+            // landed on tree-LLVM (e.g. when something else
+            // forced a fall back from SSA-LLVM).
+            let binding_name: Option<&String> = match &array.kind {
+                TypedExprKind::Var(n) => Some(n),
+                TypedExprKind::Ref { name } | TypedExprKind::RefMut { name } => Some(name),
+                _ => None,
+            };
+            if let Some(name) = binding_name {
                 if let Some((var_ty, addr)) = ctx.locals.get(name).cloned() {
                     if let Type::Vec(element) = var_ty.deref() {
                         let s_ty = vec_struct_name(element);

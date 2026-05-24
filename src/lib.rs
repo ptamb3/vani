@@ -13340,6 +13340,72 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_llvm_len_of_ref_vec_emits_load_not_static_zero() {
+        // Closure #161: tree-LLVM's `emit_expr` Len handler
+        // only recognized `array.kind == Var(name)`. When the
+        // source spelled the argument as `len(ref xs)`, the
+        // typed expression is `Len { array: Ref { name = "xs" }
+        // }` — the Ref expression. That fell through to a
+        // fallback that emitted `format!("{}", length)`, where
+        // `length` is the static length carried in the Len
+        // node — zero for Vec, since Vec lengths are dynamic.
+        // The Var arm correctly GEPs into the binding's
+        // alloca; Ref(name) needs the same treatment.
+        //
+        // Repro: when the program triggers an SSA-LLVM
+        // fallback (e.g. by adding a `clone_at`-flavored
+        // expression that the SSA gate doesn't yet route
+        // through SSA), `len(ref xs)` would print 0 instead
+        // of the real length.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<OwnedStr> = vec("a" + "");
+              let xs2: Vec<OwnedStr> = push(xs, "b" + "");
+              let n: i64 = (len(ref xs2) as i64);
+              assert n == 2;
+              print clone_at(ref xs2, 0);
+              return 0;
+            }
+        "#;
+
+        let ll = crate::backend_llvm::LlvmBackend
+            .emit(&compile(source).expect("len(ref xs) compiles").ir);
+
+        // The fix must emit a `load i64` from a GEP into the
+        // Vec struct's .len field for `ref xs2`. The bug
+        // signature was `i64 0` flowing into the assertion;
+        // after the fix the value comes out of a `load i64,
+        // i64*` after a `getelementptr … i32 1` (Vec's .len
+        // slot is field index 1 in the {data, len, capacity}
+        // typedef).
+        let main_start = ll
+            .find("define i64 @fn_main")
+            .expect("fn_main present");
+        let main_end = ll[main_start..]
+            .find("\ndefine ")
+            .map(|i| main_start + i)
+            .unwrap_or(ll.len());
+        let main_body = &ll[main_start..main_end];
+        // Find the GEP-len-load sequence: `getelementptr ... i32 1` then `load i64`.
+        let has_len_gep = main_body
+            .lines()
+            .any(|line| line.contains("getelementptr") && line.contains("i32 1"));
+        assert!(
+            has_len_gep,
+            "expected GEP into the Vec struct's .len slot for `len(ref xs2)`:\n{}",
+            main_body
+        );
+        let has_len_load = main_body
+            .lines()
+            .any(|line| line.contains("load i64, i64*"));
+        assert!(
+            has_len_load,
+            "expected `load i64, i64*` for the Vec .len field:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn match_str_scrutinee_fresh_owned_str_drops_in_tree_llvm() {
         // Closure #160: tree-LLVM's Block-expression emitter
         // (used when the checker desugars `match <fresh

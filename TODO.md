@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #160)
+## ⏳ Resume here (paused 2026-05-23, after closure #161)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -256,8 +256,15 @@ emitter only forwarded `Let` and `Print` to
 `emit_stmt` — the Drop was silently discarded,
 leaking the scrutinee's heap on every match call.
 Tree-C already handled Drop in its Block emitter.
-Now tree-LLVM forwards Drop too. Test totals: 852
-lib + 47 e2e passing.
+Now tree-LLVM forwards Drop too. #161 tree-LLVM
+`len(ref Vec)` was returning 0: the Len emitter only
+matched `array.kind == Var(name)`. `len(ref xs)` has
+`array.kind = Ref { name }` so it fell through to a
+fallback that emits the static-length value (0 for
+Vec). Now Ref / RefMut(name) take the same alloca
+address as Var(name) and route through the GEP-into-
+.len + load path. Test totals: 853 lib + 47 e2e
+passing.
 
 ### Recommended next (pick one)
 

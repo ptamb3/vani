@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 852 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 853 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-LLVM `len(ref Vec)` GEP+load fix done 2026-05-23**:
+   `emit_expr` Len handler only matched `array.kind ==
+   Var(name)`. When the source spelled the argument as
+   `len(ref xs)`, the typed expression is `Len { array:
+   Ref { name = "xs" } }`, so the Var arm was skipped and
+   the handler fell through to a `format!("{}", length)`
+   fallback. `length` carries the static array length —
+   for Vec it's always 0, so any `len(ref xs)` on a Vec
+   that landed on tree-LLVM (e.g. when a sibling
+   expression forced an SSA fallback) returned 0 instead
+   of the real length. Now the Ref/RefMut(name) case
+   resolves to the same alloca address as Var(name) and
+   takes the GEP-into-.len + load path. Test totals: 853
+   lib + 47 e2e passing. Closure #161.
 
    **tree-LLVM Block-expr emits Drop stmts done 2026-05-23**:
    `match <fresh OwnedStr> { … }` was leaking the
