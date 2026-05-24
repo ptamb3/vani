@@ -13421,6 +13421,42 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_llvm_for_range_continue_emits_step_block() {
+        // Closure #188: tree-LLVM's `TypedStmt::For` (range
+        // form) had the same continue-infinite-loop bug as
+        // the for-iter (closure #186) and SSA paths
+        // (closures #185, #187). `continue` jumped straight
+        // to for_header with i_addr unchanged → infinite
+        // loop. Now uses a `for_step` block between
+        // body-end and header for the increment. Both
+        // continue and natural fallthrough jump to step.
+        let source = r#"
+            struct Tag { name: OwnedStr }
+            fn main() -> i64 {
+              let t: Tag = Tag { name: "x" + "" };
+              let count: i64 = 0;
+              for i from 0 to 10 {
+                let rem: i64 = i - (i / 2) * 2;
+                if rem != 0 {
+                  continue;
+                }
+                count = count + 1;
+              }
+              assert count == 5;
+              print t.name;
+              return 0;
+            }
+        "#;
+        let ll = crate::backend_llvm::LlvmBackend
+            .emit(&compile(source).expect("for-range continue compiles").ir);
+        assert!(
+            ll.contains("for_step"),
+            "expected for_step block in tree-LLVM range-for emit:\n{}",
+            ll
+        );
+    }
+
+    #[test]
     fn ssa_for_range_continue_increments_counter() {
         // Closure #187: SSA had the same continue-infinite-
         // loop bug for `for i from start to end` (range

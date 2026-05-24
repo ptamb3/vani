@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 879 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 880 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,17 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-LLVM for-range continue emits step block done 2026-05-24**:
+   tree-LLVM's `TypedStmt::For` (range form) had the same
+   continue-infinite-loop bug as the for-iter form
+   (#186) and SSA paths (#185, #187). `continue` jumped
+   straight to for_header with i_addr unchanged →
+   infinite loop. Pre-existing bug since tree-LLVM range-
+   for shipped. Now uses a `for_step` block between body-
+   end and header for the increment; both continue and
+   natural fallthrough jump to step. Test totals: 880
+   lib + 47 e2e passing. Closure #188.
 
    **SSA for-range continue + parallel-for shape done 2026-05-24**:
    `for i from start to end` (range form, lowered via

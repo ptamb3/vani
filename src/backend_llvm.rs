@@ -1590,6 +1590,15 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
 
             let header = ctx.fresh_label("for_header");
             let body_lbl = ctx.fresh_label("for_body");
+            // `for_step` is the increment-then-jump-to-
+            // header block; it's the continue target so the
+            // counter bumps before re-entering the header's
+            // cond check. Closure #188 — previously
+            // `continue` jumped straight to header with
+            // i_addr unchanged → infinite loop. Mirrors the
+            // tree-LLVM for-iter fix (closure #186) and the
+            // SSA path fix (closures #185 + #187).
+            let step = ctx.fresh_label("for_step");
             let exit = ctx.fresh_label("for_exit");
             out.push_str(&format!("  br label %{}\n", header));
             out.push_str(&format!("{}:\n", header));
@@ -1605,7 +1614,7 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
 
             out.push_str(&format!("{}:\n", body_lbl));
             ctx.loops.push(LoopFrame {
-                header: header.clone(),
+                header: step.clone(),
                 exit: exit.clone(),
             });
             let outer_terminated = ctx.terminated;
@@ -1614,15 +1623,17 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 emit_stmt(s, ctx, out);
             }
             if !ctx.terminated {
-                // Increment and jump back to header.
-                let now = ctx.fresh_tmp();
-                let next = ctx.fresh_tmp();
-                out.push_str(&format!("  {} = load {}, {}* {}\n", now, lty, lty, i_addr));
-                out.push_str(&format!("  {} = add {} {}, 1\n", next, lty, now));
-                out.push_str(&format!("  store {} {}, {}* {}\n", lty, next, lty, i_addr));
-                out.push_str(&format!("  br label %{}\n", header));
+                out.push_str(&format!("  br label %{}\n", step));
             }
             ctx.loops.pop();
+            // Step block: increment i_addr, jump to header.
+            out.push_str(&format!("{}:\n", step));
+            let now = ctx.fresh_tmp();
+            let next = ctx.fresh_tmp();
+            out.push_str(&format!("  {} = load {}, {}* {}\n", now, lty, lty, i_addr));
+            out.push_str(&format!("  {} = add {} {}, 1\n", next, lty, now));
+            out.push_str(&format!("  store {} {}, {}* {}\n", lty, next, lty, i_addr));
+            out.push_str(&format!("  br label %{}\n", header));
             ctx.terminated = outer_terminated;
             // Restore the outer binding of `var` if any (so a
             // second loop with the same loop-variable name and a

@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #187)
+## ⏳ Resume here (paused 2026-05-24, after closure #188)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -455,7 +455,10 @@ SSA's lower_integer_for now uses the same step-block
 shape. ParallelForShape grew a `step_block` field;
 SSA-C / SSA-LLVM parallel-for emit skip step
 alongside header/body. Test totals: 879 lib + 47
-e2e passing.
+e2e passing. #188 same continue-infinite-loop bug
+fixed in tree-LLVM `TypedStmt::For` (range form).
+Same iter_step / for_step shape. Test totals: 880
+lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 
