@@ -2246,7 +2246,17 @@ fn c_declarator(ty: &Type, name: &str) -> Result<String, EmitError> {
             Type::Mutex(_) => format!("intent_mutex_i64* {}", name),
             Type::Guard(_) => format!("const intent_guard_i64* {}", name),
             Type::Channel(element, capacity) => format!(
-                "const {}* {}",
+                // Channel refs also drop `const` — the
+                // shared `intent_channel_<T>_<N>_send` and
+                // `_recv` helpers take a mutable pointer
+                // (they bump the per-slot seq counters and
+                // read/write idx atomically). The send/recv
+                // operations are concurrency-safe through
+                // atomic loads/stores, not C `const`.
+                // Closure #176 — caught via
+                // -Wdiscarded-qualifiers on the
+                // concurrency example.
+                "{}* {}",
                 crate::backend_c::c_channel_storage(element, *capacity),
                 name
             ),

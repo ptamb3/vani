@@ -13340,6 +13340,45 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn ssa_c_ref_channel_param_is_non_const() {
+        // Closure #176: SSA-C declared `ref Channel<T, N>`
+        // params as `const intent_channel_<T>_<N>*`. The
+        // shared `intent_channel_*_send` / `_recv` runtime
+        // helpers take a NON-const pointer (they bump
+        // seq counters and read/write idx through atomic
+        // loads/stores), so every send / recv call in
+        // SSA-C compiled with -Wdiscarded-qualifiers.
+        // Atomic refs already dropped `const`; the Channel
+        // arm now mirrors that.
+        let source = r#"
+            fn produce(ch: ref Channel<i64, 16>, v: i64) -> i64 {
+              return channel_send(ch, v);
+            }
+
+            fn main() -> i64 {
+              let ch: Channel<i64, 16> = channel_new();
+              let _ = produce(ref ch, 42);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("ref Channel param compiles");
+        // The produce fn's param must NOT carry a `const`
+        // qualifier for the channel pointer.
+        let produce_start = c
+            .find("fn_produce(")
+            .expect("produce fn present");
+        let line_end = c[produce_start..]
+            .find('\n')
+            .map(|i| produce_start + i)
+            .unwrap_or(c.len());
+        let sig = &c[produce_start..line_end];
+        assert!(
+            !sig.contains("const intent_channel_"),
+            "produce's channel param must be non-const:\n{sig}"
+        );
+    }
+
+    #[test]
     fn ssa_c_owned_str_declared_mutable() {
         // Closure #175: SSA-C declared OwnedStr SSA values
         // as `const char*`, the same as Str. The Vec helper

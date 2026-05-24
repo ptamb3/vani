@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 867 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 868 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,18 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **SSA-C `ref Channel<T,N>` param drops `const` done 2026-05-24**:
+   `fn produce(ch: ref Channel<i64, 16>, v: i64)` was
+   declared as `const intent_channel_int64_t_16*`. The
+   shared `intent_channel_*_send` / `_recv` helpers take
+   a NON-const pointer (they bump seq counters and idx
+   atomically through the cell pointer). Every send /
+   recv site raised -Wdiscarded-qualifiers. Atomic refs
+   already dropped `const` (the closest analogue);
+   Channel now mirrors that. Caught via `cc -Wall -Wextra
+   -c` on the concurrency example. Test totals: 868 lib
+   + 47 e2e passing. Closure #176.
 
    **SSA-C `OwnedStr` declared `char*` not `const char*` done 2026-05-24**:
    SSA-C lumped `Str` and `OwnedStr` together as `const
