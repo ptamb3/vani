@@ -13340,6 +13340,48 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_llvm_index_assign_drops_old_owned_str_slot() {
+        // Closure #167: `xs[i] = v` on a `Vec<OwnedStr>` was
+        // leaking the old slot's heap in tree-LLVM. The
+        // `emit_leaf_overwrite_drop` helper had an early
+        // return `if field_path.is_empty()` that matched the
+        // bare-leaf case (`xs[i] = v` with no `.field.field…`
+        // path). Removing that guard lets the OwnedStr / Vec
+        // arms run for the bare slot — `p` points directly
+        // at the array element when the path is empty, so
+        // the load+free shape is the same as the
+        // deep-field case. SSA-C's IndexAssign emitter
+        // already handled this via its own
+        // `c_element_drop_old` call. Tree-C was unaffected
+        // (it goes through a separate IndexAssign path that
+        // calls `c_element_drop_old` directly).
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<OwnedStr> = vec("a" + "", "b" + "");
+              let v: OwnedStr = "new" + "";
+              xs[0] = v;
+              return 0;
+            }
+        "#;
+        let ll = crate::backend_llvm::LlvmBackend
+            .emit(&compile(source).expect("xs[i] = v compiles").ir);
+        // The IndexAssign on a non-Copy element type must
+        // emit `load i8*, i8**` + `call void @free(i8* …)`
+        // BEFORE the `store` of the new value.
+        let main_start = ll.find("define i64 @fn_main").expect("fn_main present");
+        let main_end = ll[main_start..]
+            .find("\ndefine ")
+            .map(|i| main_start + i)
+            .unwrap_or(ll.len());
+        let main_body = &ll[main_start..main_end];
+        assert!(
+            main_body.contains("call void @free(i8*"),
+            "expected `call void @free(i8* …)` before the IndexAssign store:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn field_assign_marks_rhs_var_moved() {
         // Closure #166: `self.name = n;` inside a method
         // declared `set_name(self: mut ref T, n: OwnedStr)`

@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #166)
+## ⏳ Resume here (paused 2026-05-24, after closure #167)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -299,7 +299,15 @@ though the field had taken ownership. The Let /
 Reassign / Call-arg arms already called
 `consume_if_moved_var` for non-Copy RHS Vars;
 FieldAssign was missing that call. One-line
-addition. Test totals: 858 lib + 47 e2e passing.
+addition. #167 tree-LLVM `xs[i] = v` was leaking
+the old slot on `Vec<OwnedStr>` / `Vec<Vec<T>>`:
+`emit_leaf_overwrite_drop` early-returned when
+`field_path.is_empty()`, skipping the bare-leaf
+case. The OwnedStr / Vec arms work for both deep
+and bare paths since `p` is the slot pointer in
+either case. Removing the guard fixes the leak;
+Copy element types stay no-ops via the wildcard
+arm. Test totals: 859 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

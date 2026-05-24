@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 858 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 859 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-LLVM `xs[i] = v` drops old slot done 2026-05-24**:
+   `emit_leaf_overwrite_drop` had an early-return on
+   `field_path.is_empty()` so the bare-leaf IndexAssign
+   on a `Vec<OwnedStr>` / `Vec<Vec<T>>` skipped freeing
+   the old slot entirely — the previous element's heap
+   leaked. The early-return was originally meant to gate
+   the deep mixed-place path; turns out the OwnedStr /
+   Vec arms work for both shapes since `p` is the slot
+   pointer in either case. Removing the guard fixes the
+   leak; Copy element types stay no-ops via the wildcard
+   match arm. SSA-C handled this through its own
+   `c_element_drop_old` call, tree-C through a separate
+   IndexAssign path. Verified ASan-clean. Test totals:
+   859 lib + 47 e2e passing. Closure #167.
 
    **FieldAssign marks RHS Var moved done 2026-05-24**:
    `self.name = n;` inside `fn set_name(self: mut ref T, n:

@@ -5686,14 +5686,19 @@ pub(crate) fn vec_struct_name(element: &Type) -> String {
 /// Closure #126 / F2.
 fn emit_leaf_overwrite_drop(
     leaf_ty: &Type,
-    field_path: &[(String, u32)],
+    _field_path: &[(String, u32)],
     p: &str,
     ctx: &mut FnCtx<'_>,
     out: &mut String,
 ) {
-    if field_path.is_empty() {
-        return;
-    }
+    // Closure #167: the early-return on
+    // `field_path.is_empty()` (matching only deep mixed-
+    // place assigns) was blocking the old-slot drop on
+    // plain `xs[i] = v` for non-Copy element types. With
+    // `field_path = []`, `p` points at the array slot
+    // directly, which is exactly what we want to load+free
+    // for OwnedStr / Vec. Copy element types stay no-ops
+    // via the wildcard match arm.
     match leaf_ty {
         Type::OwnedStr => {
             let old = ctx.fresh_tmp();
