@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 881 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 882 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Parallel-for body rejects break done 2026-05-24**:
+   `break` inside a `parallel for` body must be rejected
+   — OpenMP's `parallel for` pragma forbids early exit
+   from worker iterations. The C backend forwarded
+   `break;` directly into the `_Pragma("omp parallel
+   for")` loop, and gcc/clang rejected with "break
+   statement used with OpenMP for loop". Tree-LLVM
+   accepted it with ambiguous cross-thread semantics.
+   Checker now diagnoses break inside a parallel-for
+   body with a clear message pointing at the
+   Mutex<bool>-guarded flag workaround. `continue` is
+   still allowed (OpenMP accepts it; the #185-#189 fixes
+   ensure correct increment). Test totals: 882 lib + 47
+   e2e passing. Closure #190.
 
    **tree-LLVM parallel-for outlined fn continue done 2026-05-24**:
    tree-LLVM's outlined parallel-for (`@__intent_par_<N>`

@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #189)
+## ⏳ Resume here (paused 2026-05-24, after closure #190)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -466,6 +466,13 @@ reduction total. Fix: LoopFrame{header:step,
 exit:exit} + step block doing load/+1/store/jump-
 to-hdr. Closes the family of for-loop continue
 bugs. Test totals: 881 lib + 47 e2e passing.
+#190 parallel-for body rejects `break`: OpenMP
+forbids break inside `omp parallel for`, but the
+checker silently allowed it. C backend then
+generated `break;` inside the pragma which gcc/clang
+refused to compile. Checker now diagnoses with a
+clear message pointing at the Mutex<bool> workaround.
+Test totals: 882 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

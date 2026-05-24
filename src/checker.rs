@@ -11367,7 +11367,25 @@ fn verify_pure_body(
                     // is OK — join itself is side-effect-free in
                     // v1's sequential lowering.
                 }
-                TypedStmt::Drop { .. } | TypedStmt::Break | TypedStmt::Continue => {}
+                TypedStmt::Break => {
+                    // OpenMP parallel-for rejects `break` —
+                    // C compilers emit "break statement used
+                    // with OpenMP for loop" and refuse to
+                    // compile. Other pure contexts (regular
+                    // for/while inside a verified function)
+                    // are fine. `continue` is allowed in both
+                    // OpenMP and pure contexts. Closure #190.
+                    if context.contains("'parallel for'") {
+                        diagnostics.push(Diagnostic::new(
+                            crate::span::Span::default(),
+                            format!(
+                                "{} cannot use `break` — OpenMP `parallel for` doesn't allow early exit from worker iterations. Use a Mutex<bool>-guarded flag if you need to short-circuit",
+                                context
+                            ),
+                        ));
+                    }
+                }
+                TypedStmt::Drop { .. } | TypedStmt::Continue => {}
             }
         }
     }

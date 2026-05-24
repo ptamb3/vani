@@ -13421,6 +13421,46 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn parallel_for_rejects_break_in_body() {
+        // Closure #190: `break` inside a `parallel for`
+        // body must be rejected — OpenMP's `parallel for`
+        // pragma doesn't allow early exit from worker
+        // iterations. The C backend forwards the break to
+        // `break;` inside an `_Pragma("omp parallel for")`
+        // loop, which gcc/clang reject with "break
+        // statement used with OpenMP for loop". Tree-LLVM
+        // accepted it but with ambiguous semantics across
+        // worker threads.
+        //
+        // Checker now diagnoses break inside a parallel-for
+        // body with a clear message. `continue` is still
+        // allowed (OpenMP accepts it; the #185-#189 fixes
+        // ensure correct increment).
+        let source = r#"
+            fn main() -> i64 {
+              let total: i64 = 0;
+              parallel for i from 0 to 10
+              reduce total with +;
+              {
+                if i > 5 {
+                  break;
+                }
+                total = total + 1;
+              }
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("break in parallel-for should fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("'parallel for' body cannot use `break`")),
+            "expected break diagnostic, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
     fn tree_llvm_parallel_for_outlined_continue_loops_correctly() {
         // Closure #189: tree-LLVM's parallel-for outlined
         // fn (`@__intent_par_<N>` invoked via @GOMP_parallel
