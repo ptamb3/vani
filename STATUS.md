@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 877 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 878 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,18 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-LLVM for-iter continue emits step block done 2026-05-24**:
+   tree-LLVM had the same continue-infinite-loop bug as
+   SSA (closed in #185). `continue` jumped straight to
+   iter_header with i_addr unchanged → infinite loop.
+   Pre-existing bug since tree-LLVM for-iter shipped.
+   Fix mirrors #185: introduce `iter_step` block that
+   bumps i_addr then jumps to header. LoopFrame's header
+   points to step (continue target). Body's natural end
+   also jumps to step. Tree-C is unaffected (uses C's
+   native `for (i = 0; i < len; i++)` form). Test totals:
+   878 lib + 47 e2e passing. Closure #186.
 
    **SSA for-iter continue increments counter done 2026-05-24**:
    `continue` inside an SSA for-iter was jumping straight

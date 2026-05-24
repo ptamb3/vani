@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #185)
+## ⏳ Resume here (paused 2026-05-24, after closure #186)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -444,7 +444,11 @@ for-iter shipped. Restructured with a `step` block
 that takes the carry params, increments, then
 jumps to header. Continue and natural-end both
 jump to step uniformly. Test totals: 877 lib + 47
-e2e passing.
+e2e passing. #186 same bug fixed in tree-LLVM: it
+had the same continue-infinite-loop pattern. Same
+iter_step block fix. Tree-C uses C's native
+`for (i = 0; i < len; i++)` form so it was
+unaffected. Test totals: 878 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

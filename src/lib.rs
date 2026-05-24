@@ -13421,6 +13421,53 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_llvm_for_iter_continue_emits_step_block() {
+        // Closure #186: tree-LLVM had the same continue-
+        // infinite-loop bug as SSA (#185). `continue` jumped
+        // straight to the iter_header block, skipping the
+        // increment that only ran on the body's natural
+        // fallthrough path. Pre-existing bug since tree-LLVM
+        // for-iter was added.
+        //
+        // Fix mirrors the SSA approach: introduce an
+        // `iter_step` block that bumps i_addr then jumps
+        // to header. The LoopFrame's header points to step
+        // (the continue target). The body's natural end
+        // jumps to step too — so the increment runs
+        // uniformly on both paths.
+        //
+        // Tree-C is unaffected (it uses C's native `for (i
+        // = 0; i < len; i++)` form, where `continue`
+        // always increments).
+        let source = r#"
+            fn count_evens(xs: ref [i64; 5]) -> i64 {
+              let count: i64 = 0;
+              for x in ref xs {
+                let half: i64 = x / 2;
+                let rem: i64 = x - half * 2;
+                if rem != 0 {
+                  continue;
+                }
+                count = count + 1;
+              }
+              return count;
+            }
+            fn main() -> i64 {
+              let arr: [i64; 5] = [1, 2, 3, 4, 5];
+              assert count_evens(ref arr) == 2;
+              return 0;
+            }
+        "#;
+        let ll = crate::backend_llvm::LlvmBackend
+            .emit(&compile(source).expect("continue compiles").ir);
+        assert!(
+            ll.contains("iter_step"),
+            "expected iter_step block in tree-LLVM emit:\n{}",
+            ll
+        );
+    }
+
+    #[test]
     fn ssa_for_iter_continue_increments_counter() {
         // Closure #185: `continue` inside an SSA for-iter
         // was jumping straight to the header block with the
