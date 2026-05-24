@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #159)
+## ⏳ Resume here (paused 2026-05-23, after closure #160)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -247,8 +247,17 @@ is gated out: `stmt_ssa_supported` rejects consuming
 for-iter over non-Copy Vec, falling back to tree.
 Verified clean under `-fsanitize=address,leak` for
 `Vec<OwnedStr>`, `Vec<Vec<i64>>`, and
-`Vec<Struct{OwnedStr,i64}>`. Test totals: 851 lib +
-47 e2e passing.
+`Vec<Struct{OwnedStr,i64}>`. #160 tree-LLVM Block-
+expression emits Drop stmts: `check_match_str`
+desugars `match <fresh OwnedStr> { … }` into Block
+{ Let temp = scr; Let result = ifchain; Drop temp;
+result } (closure #137), but tree-LLVM's Block
+emitter only forwarded `Let` and `Print` to
+`emit_stmt` — the Drop was silently discarded,
+leaking the scrutinee's heap on every match call.
+Tree-C already handled Drop in its Block emitter.
+Now tree-LLVM forwards Drop too. Test totals: 852
+lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 851 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 852 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,25 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-LLVM Block-expr emits Drop stmts done 2026-05-23**:
+   `match <fresh OwnedStr> { … }` was leaking the
+   scrutinee's heap on tree-LLVM. The checker's
+   `check_match_str` desugar wraps the if-chain in a
+   Block { Let temp = scr; Let result = ifchain; Drop
+   temp; result } (closure #137), so the temp gets
+   released after the if-chain evaluates. Tree-C's
+   Block emitter handled the Drop arm; tree-LLVM's
+   emitter only routed `Let` and `Print` through
+   `emit_stmt` — the Drop was silently discarded.
+   Fix: extend the Block emitter to also forward
+   `TypedStmt::Drop` to `emit_stmt`, which already
+   knows how to free OwnedStr / Vec / Struct / Enum
+   bindings registered in `ctx.locals` (each Let stmt
+   above the Drop puts the binding's alloca address
+   there). Verified clean under
+   `-fsanitize=address,leak` for `match make_owned()
+   { "abcdef" then 1, _ then 0 }`. Closure #160.
 
    **Consuming `for x in xs` on `Vec<non-Copy>` shallow-frees done 2026-05-23**:
    `for x in xs` (consuming form) over `Vec<OwnedStr>` /

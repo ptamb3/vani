@@ -13340,6 +13340,60 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn match_str_scrutinee_fresh_owned_str_drops_in_tree_llvm() {
+        // Closure #160: tree-LLVM's Block-expression emitter
+        // (used when the checker desugars `match <fresh
+        // OwnedStr> { … }` into a Block { Let temp = scr;
+        // Let result = ifchain; Drop temp; result }) was
+        // silently dropping `TypedStmt::Drop` from the
+        // Block::stmts list. Only `Let` and `Print` were
+        // routed through `emit_stmt`. That leaked the
+        // scrutinee's heap on every match-on-fresh-OwnedStr
+        // call (e.g. `match make_owned() { "x" then 1, _ then
+        // 0 }`). Tree-C's Block emitter (closure #137) had
+        // already handled the OwnedStr / Vec Drop arms.
+        let source = r#"
+            fn make() -> OwnedStr {
+              return "abc" + "def";
+            }
+            fn main() -> i64 {
+              let r: i64 = match make() {
+                "abcdef" then 1,
+                _ then 0,
+              };
+              assert r == 1;
+              return 0;
+            }
+        "#;
+
+        let ll = crate::backend_llvm::LlvmBackend
+            .emit(&compile(source).expect("match on fresh OwnedStr compiles").ir);
+        // After the if-chain, the Block emitter must call
+        // `@free` on the scrutinee temp. Locate the main
+        // function and assert a free of an i8* runs after
+        // the branch/phi for the match's if-chain.
+        let main_start = ll
+            .find("define i64 @fn_main")
+            .expect("fn_main present");
+        let main_end = ll[main_start..]
+            .find("\ndefine ")
+            .map(|i| main_start + i)
+            .unwrap_or(ll.len());
+        let main_body = &ll[main_start..main_end];
+        assert!(
+            main_body.contains("ifexpr_merge")
+                || main_body.contains("phi i64"),
+            "expected the match's if-chain phi in fn_main:\n{}",
+            main_body
+        );
+        assert!(
+            main_body.contains("call void @free(i8*"),
+            "expected `call void @free(i8* …)` for the match scrutinee Drop in fn_main:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn for_in_consuming_vec_owned_str_skips_per_element_free() {
         // Closure #159: consuming `for x in xs` over a Vec
         // of non-Copy elements used to emit

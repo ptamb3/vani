@@ -4031,13 +4031,19 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
         TypedExprKind::Block { stmts, tail } => {
             // Block expression: emit each Let stmt inline
             // (alloca + store, register the name in ctx.locals
-            // so the tail can reference it) and each Print
-            // stmt inline (via the normal stmt emitter), then
-            // emit the tail expression. After emission, restore
-            // any outer-scope bindings shadowed by inner lets
-            // so the surrounding scope's reads still resolve.
-            // V1 admits Let + Print stmts; the checker rejects
-            // anything else. Closure #129.
+            // so the tail can reference it) and each Print /
+            // Drop stmt via the normal stmt emitter, then emit
+            // the tail expression. After emission, restore any
+            // outer-scope bindings shadowed by inner lets so
+            // the surrounding scope's reads still resolve.
+            // V1 user-facing blocks admit Let + Print
+            // (closure #129); the checker also synthesizes
+            // Block exprs containing a `Drop` stmt for fresh
+            // OwnedStr match scrutinees (closure #137), and
+            // for `try` desugar's intermediate prints
+            // (closure #130). Closure #160 — fixes a
+            // tree-LLVM leak where the synthesized Drop was
+            // silently dropped here.
             let saved: Vec<(String, Option<(Type, String)>)> = stmts
                 .iter()
                 .filter_map(|s| {
@@ -4061,7 +4067,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                         ));
                         ctx.locals.insert(name.clone(), (ty.clone(), addr));
                     }
-                    TypedStmt::Print { .. } => {
+                    TypedStmt::Print { .. } | TypedStmt::Drop { .. } => {
                         emit_stmt(s, ctx, out);
                     }
                     _ => {}
