@@ -13340,6 +13340,47 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn return_if_expr_drops_unchosen() {
+        // Closure #181: `return if cond { a } else { b };`
+        // (a, b non-Copy Vars) was leaking the unchosen
+        // alternative — `inject_branch_drops` was wired
+        // into Let / Reassign / Index / Field / Call /
+        // Method / vec / push / set / enum payload via
+        // closures #179 + #180, but the Return-stmt arm
+        // was missed. This closure adds it.
+        let source = r#"
+            fn pick(cond: bool) -> OwnedStr {
+              let a: OwnedStr = "alpha" + "";
+              let b: OwnedStr = "beta" + "";
+              return if cond { a } else { b };
+            }
+
+            fn main() -> i64 {
+              let r: OwnedStr = pick(true);
+              assert (len(r) as i64) == 5;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("return if-expr compiles");
+        // Locate the DEFINITION of fn_pick (not the forward
+        // declaration). The definition ends with `{`; the
+        // forward decl ends with `;`.
+        let pick_def = c
+            .find("static char* fn_pick(bool v_cond) {")
+            .expect("fn_pick definition present");
+        let pick_end = c[pick_def..]
+            .find("\n}\n")
+            .map(|i| pick_def + i)
+            .unwrap_or(c.len());
+        let pick_body = &c[pick_def..pick_end];
+        assert!(
+            pick_body.contains("free((void*)v_a)") && pick_body.contains("free((void*)v_b)"),
+            "expected both v_a and v_b freed inside the return ternary:\n{}",
+            pick_body
+        );
+    }
+
+    #[test]
     fn call_arg_if_expr_drops_unchosen() {
         // Closure #180: `f(if cond { a } else { b })` where
         // a, b are non-Copy Vars now also gets the

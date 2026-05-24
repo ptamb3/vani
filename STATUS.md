@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 872 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 873 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,16 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **inject_branch_drops at Return stmt done 2026-05-24**:
+   `return if cond { a } else { b };` (a, b non-Copy
+   Vars) was still leaking. inject_branch_drops was
+   wired into Let / Reassign / Index / Field / Call /
+   Method / vec / push / set / enum payload (#179, #180)
+   but the Return-stmt arm was missed. One-line addition
+   right before `try_elide_bounds_in_typed_expr` on the
+   return expression. Test totals: 873 lib + 47 e2e
+   passing. Closure #181.
 
    **inject_branch_drops at remaining consume sites done 2026-05-24**:
    Extends closure #179's structural-rewrite to the rest

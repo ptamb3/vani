@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #180)
+## ⏳ Resume here (paused 2026-05-24, after closure #181)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -413,6 +413,11 @@ EnumVariantWithPayload arg, vec elements, push and
 set values. `f(if cond { a } else { b })` and
 similar shapes no longer leak the unchosen
 alternative. Test totals: 872 lib + 47 e2e passing.
+#181 inject_branch_drops also at the Return-stmt
+arm: `return if cond { a } else { b };` was leaking
+the unchosen Var since the inject wasn't wired into
+Return. One-line addition. Test totals: 873 lib +
+47 e2e passing.
 
 ### Recommended next (pick one)
 

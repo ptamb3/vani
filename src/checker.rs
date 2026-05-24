@@ -3640,6 +3640,7 @@ fn check_one_stmt(
             // collide with a user-chosen name (parser/lexer reject
             // identifiers starting with `__intent`).
             let mut ret_expr = checked.expr;
+            inject_branch_drops(&mut ret_expr);  // closure #181
             try_elide_bounds_in_typed_expr(&mut ret_expr, smt_facts, env, signatures);
             // Per-return unique suffix so multiple return sites in the
             // same function don't try to alloca the same SSA name.
