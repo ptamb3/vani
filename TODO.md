@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #169)
+## ⏳ Resume here (paused 2026-05-24, after closure #170)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -321,8 +321,16 @@ parallel arms via closure #147; tree-LLVM only had
 Vec / OwnedStr. Added the Struct arm
 (emit_llvm_struct_field_drops over the old alloca)
 and the Enum arm (load + tag-branch + free payload —
-mirrors the Drop handler). Test totals: 861 lib +
-47 e2e passing.
+mirrors the Drop handler). #170 tree-LLVM nested
+FieldAssign drop_old extended to Struct and Enum:
+`o.inner = NewInner { … };` was leaking the OLD
+nested struct's heap fields. Tree-C had the
+parallel arms via closure #148; tree-LLVM only had
+OwnedStr/Vec. Added Struct arm (walks the OLD
+field's heap-owning sub-fields via
+emit_llvm_struct_field_drops at the field pointer)
+and a defensive Enum arm matching the Reassign
+shape. Test totals: 862 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

@@ -1667,7 +1667,9 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
             // value before storing the new one, otherwise the
             // previous heap allocation leaks. Mirrors the
             // leaf-Drop logic for IndexAssign (closure #126).
-            // Closure #132.
+            // Closure #132 added OwnedStr and Vec. Closure
+            // #170 closes Struct and Enum (tree-C had these
+            // via closure #148).
             match &value.ty {
                 Type::OwnedStr => {
                     let old = ctx.fresh_tmp();
@@ -1693,6 +1695,110 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                         "  call void {}({} {})\n",
                         free_name, s_ty, old
                     ));
+                }
+                Type::Struct(struct_name) => {
+                    // Walk the OLD nested struct's heap-owning
+                    // fields BEFORE overwriting. elem_p IS the
+                    // struct's address so it serves as the
+                    // base for emit_llvm_struct_field_drops.
+                    let fields = LLVM_STRUCT_FIELDS_REGISTRY
+                        .with(|r| r.borrow().get(struct_name).cloned())
+                        .unwrap_or_default();
+                    let has_owning = fields.iter().any(|(_, ty)| !ty.is_copy());
+                    if has_owning {
+                        let empty: std::collections::HashSet<&String> =
+                            std::collections::HashSet::new();
+                        emit_llvm_struct_field_drops(
+                            &elem_p,
+                            struct_name,
+                            &fields,
+                            &empty,
+                            ctx,
+                            out,
+                        );
+                    }
+                }
+                Type::Enum(enum_name) => {
+                    // Same shape as Reassign drop_old for
+                    // Enum (closure #169): load OLD tagged-
+                    // union, OR-chain on payloaded tags,
+                    // free heap payload if active.
+                    let payload_ty = LLVM_ENUM_PAYLOAD_REGISTRY
+                        .with(|r| r.borrow().get(enum_name).cloned());
+                    let heap_kind = match &payload_ty {
+                        Some(Type::OwnedStr) => Some("owned_str"),
+                        Some(Type::Vec(_)) => Some("vec"),
+                        _ => None,
+                    };
+                    if let Some(kind) = heap_kind {
+                        let payload_tags: Vec<u32> = LLVM_ENUM_PAYLOAD_TAGS_REGISTRY
+                            .with(|r| r.borrow().get(enum_name).cloned().unwrap_or_default());
+                        if !payload_tags.is_empty() {
+                            let s_ty = format!("%Enum_{}", enum_name);
+                            let loaded = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = load {}, {}* {}\n",
+                                loaded, s_ty, s_ty, elem_p
+                            ));
+                            let tag = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = extractvalue {} {}, 0\n",
+                                tag, s_ty, loaded
+                            ));
+                            let payload = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = extractvalue {} {}, 1\n",
+                                payload, s_ty, loaded
+                            ));
+                            let free_lbl = ctx.fresh_label("field_enum_free");
+                            let done_lbl = ctx.fresh_label("field_enum_done");
+                            let mut prev = "i1 false".to_string();
+                            for t in &payload_tags {
+                                let cmp = ctx.fresh_tmp();
+                                out.push_str(&format!(
+                                    "  {} = icmp eq i32 {}, {}\n",
+                                    cmp, tag, t
+                                ));
+                                let or_v = ctx.fresh_tmp();
+                                out.push_str(&format!(
+                                    "  {} = or {}, {}\n",
+                                    or_v, prev, cmp
+                                ));
+                                prev = format!("i1 {}", or_v);
+                            }
+                            let cond = prev.trim_start_matches("i1 ").to_string();
+                            out.push_str(&format!(
+                                "  br i1 {}, label %{}, label %{}\n",
+                                cond, free_lbl, done_lbl
+                            ));
+                            out.push_str(&format!("{}:\n", free_lbl));
+                            match kind {
+                                "owned_str" => {
+                                    out.push_str(&format!(
+                                        "  call void @free(i8* {})\n",
+                                        payload
+                                    ));
+                                }
+                                "vec" => {
+                                    if let Some(Type::Vec(element)) = &payload_ty {
+                                        let free_name = format!(
+                                            "@intent_vec_{}__free",
+                                            vec_struct_tag(element)
+                                        );
+                                        let v_struct = vec_struct_name(element);
+                                        out.push_str(&format!(
+                                            "  call void {}({} {})\n",
+                                            free_name, v_struct, payload
+                                        ));
+                                    }
+                                }
+                                _ => {}
+                            }
+                            out.push_str(&format!("  br label %{}\n", done_lbl));
+                            out.push_str(&format!("{}:\n", done_lbl));
+                            ctx.current_block = done_lbl;
+                        }
+                    }
                 }
                 _ => {}
             }

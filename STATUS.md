@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 861 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 862 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-LLVM nested FieldAssign drops old heap done 2026-05-24**:
+   `o.inner = NewInner { name: "fresh" + "" };` (struct-
+   typed field on a struct that already owns heap) was
+   leaking the OLD nested struct's heap-owning fields.
+   Tree-LLVM's FieldAssign had drop-old arms for OwnedStr
+   and Vec (closure #132); Struct and Enum fell through
+   `_ => {}`. Tree-C had the parallel arms via closure
+   #148. Added Struct arm (walks the OLD nested struct's
+   heap-owning fields via emit_llvm_struct_field_drops
+   before overwriting) and a defensive Enum arm (mirrors
+   the Reassign Enum drop in closure #169; the checker
+   currently gates enum-as-struct-field but kept for
+   parity). Test totals: 862 lib + 47 e2e passing.
+   Closure #170.
 
    **tree-LLVM Reassign of struct/enum drops old heap done 2026-05-24**:
    `b = Box { name: "second" + "" };` (where `b: Box` has

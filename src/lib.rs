@@ -13340,6 +13340,53 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_llvm_field_assign_drops_old_struct_and_enum_heap() {
+        // Closure #170: tree-LLVM FieldAssign had drop-old
+        // arms for OwnedStr and Vec (closure #132); Struct
+        // and Enum fields fell through `_ => {}` so a nested
+        // struct's heap (or a payloaded enum's heap payload)
+        // leaked on `o.inner = NewInner { … }`. Tree-C had
+        // the parallel arms via closure #148.
+        let source = r#"
+            struct Inner { name: OwnedStr }
+            struct Outer { inner: Inner, count: i64 }
+
+            fn main() -> i64 {
+              let o: Outer = Outer { inner: Inner { name: "deep" + "" }, count: 7 };
+              o.inner = Inner { name: "fresh" + "" };
+              return 0;
+            }
+        "#;
+        let ll = crate::backend_llvm::LlvmBackend
+            .emit(&compile(source).expect("nested FieldAssign compiles").ir);
+        // Two `call void @free(i8* …)` lines expected in
+        // fn_main: one for the OLD `o.inner.name` (the new
+        // drop-old path), one for the FRESH `o.inner.name`
+        // at scope exit.
+        let main_start = ll.find("define i64 @fn_main").expect("fn_main present");
+        let main_end = ll[main_start..]
+            .find("\ndefine ")
+            .map(|i| main_start + i)
+            .unwrap_or(ll.len());
+        let main_body = &ll[main_start..main_end];
+        let free_count = main_body
+            .lines()
+            .filter(|l| l.contains("call void @free(i8*"))
+            .count();
+        assert!(
+            free_count >= 2,
+            "expected at least 2 @free calls in fn_main (old + scope exit), got {}:\n{}",
+            free_count,
+            main_body
+        );
+
+        // Note: enum-as-struct-field is gated out by the
+        // checker in v1, so the enum arm of the FieldAssign
+        // drop-old logic is defensive — kept for parity with
+        // tree-C and to match the Reassign Enum arm.
+    }
+
+    #[test]
     fn tree_llvm_reassign_drops_old_struct_and_enum_heap() {
         // Closure #169: tree-LLVM's Reassign handler had
         // drop_old arms only for Vec and OwnedStr. Bindings
