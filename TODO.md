@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #157)
+## ⏳ Resume here (paused 2026-05-23, after closure #158)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -224,8 +224,16 @@ __set helper only freed for `Type::Vec(inner)`
 elements; `set(Vec<OwnedStr|Struct|Enum>, …)`
 leaked the previous slot's heap. Closure #127 had
 extended tree-C; #157 closes LLVM with OwnedStr /
-Struct / Enum arms. Test totals: 849 lib + 47 e2e
-passing.
+Struct / Enum arms. #158 SSA-LLVM vec set/push/clone
+arg type fix: `emit_vec_call` was falling back to
+`element.clone()` for any `Operand::Const` (since
+`operand_type` returns None for Const), typing
+`set`'s i64 index as the element type (`i8* 0` for
+`Vec<OwnedStr>`). Per-builtin signature lookup
+(`sig_at(pos)`) now returns `i64` for `set`'s
+middle arg, `Vec<T>` for the first arg, and the
+element type only for the value slot. Test totals:
+850 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

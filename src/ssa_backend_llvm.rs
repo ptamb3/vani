@@ -4409,12 +4409,40 @@ fn emit_vec_call(
         }
         op => {
             // push / set / clone — call the shared helpers
-            // emitted in the module preamble.
+            // emitted in the module preamble. Each helper
+            // has a known signature; fall back to that when
+            // an operand is a Const (operand_type returns
+            // None). Closure #158: previously fell back to
+            // `element` for every Const, which typed the
+            // `i` index of `set(xs, i, v)` as the element
+            // type (i8* for Vec<OwnedStr>) — a real type
+            // mismatch the lli verifier warned about and
+            // tolerated. The signatures by name:
+            //   - push(Vec<T>, T)         → (struct, elt)
+            //   - set(Vec<T>, i64, T)     → (struct, i64, elt)
+            //   - clone(Vec<T>)           → (struct)
+            //   - push_mut(*Vec<T>, T)    → (struct*, elt)
+            let sig_at = |pos: usize| -> Type {
+                match op {
+                    "push" => {
+                        if pos == 0 { Type::Vec(Box::new(element.clone())) }
+                        else { element.clone() }
+                    }
+                    "set" => {
+                        if pos == 0 { Type::Vec(Box::new(element.clone())) }
+                        else if pos == 1 { Type::I64 }
+                        else { element.clone() }
+                    }
+                    "clone" => Type::Vec(Box::new(element.clone())),
+                    _ => element.clone(),
+                }
+            };
             let arg_pairs: Result<Vec<String>, EmitError> = args
                 .iter()
-                .map(|a| {
+                .enumerate()
+                .map(|(i, a)| {
                     let aty = operand_type(a, value_types)
-                        .unwrap_or_else(|| element.clone());
+                        .unwrap_or_else(|| sig_at(i));
                     Ok(format!("{} {}", llvm_type_string(&aty)?, operand_str(a)))
                 })
                 .collect();

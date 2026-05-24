@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 849 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 850 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **SSA-LLVM vec set/push/clone arg type fix done 2026-05-23**:
+   `emit_vec_call` in
+   [src/ssa_backend_llvm.rs](src/ssa_backend_llvm.rs) was
+   falling back to `element.clone()` whenever
+   `operand_type(...)` returned `None` (which happens for
+   every `Operand::Const`). That typed `set`'s i64 index
+   slot as the element type — e.g. `set(Vec<OwnedStr>,
+   0, v)` emitted `i8* 0` for the literal index, which
+   the lli verifier warned about and the call site
+   tolerated by accident. Fix: a per-builtin signature
+   table (`sig_at(pos)`) returns the correct expected
+   type per position: `push(Vec<T>, T)`, `set(Vec<T>,
+   i64, T)`, `clone(Vec<T>)`. Const operands now type
+   correctly. Closure #158.
 
    **`clone_at` Enum element done 2026-05-23**:
    tree-LLVM's `clone_at` panicked for Enum element

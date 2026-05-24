@@ -3004,6 +3004,29 @@ mod tests {
     }
 
     #[test]
+    fn ssa_llvm_vec_set_index_typed_as_i64() {
+        // Closure #158: SSA-LLVM's `emit_vec_call` was
+        // falling back to `element.clone()` for any
+        // Const argument (operand_type returns None for
+        // Const). For `set(xs, 0, v)` over a
+        // `Vec<OwnedStr>`, this typed the index `0` as
+        // i8* — a type mismatch lli warned about and
+        // tolerated. Per-builtin signature lookup now
+        // returns `Type::I64` for `set`'s second arg,
+        // the Vec<T> struct type for the first arg, etc.
+        // Compile-and-link verification covered by the
+        // e2e parity runner.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<OwnedStr> = vec("a" + "1", "b" + "2");
+              let ys: Vec<OwnedStr> = set(xs, 0, "c" + "3");
+              return 0;
+            }
+        "#;
+        compile(source).expect("set(Vec<OwnedStr>) should compile");
+    }
+
+    #[test]
     fn vec_set_owned_str_frees_old_element_in_llvm() {
         // Closure #157: LLVM's per-shape Vec __set helper
         // only freed the old slot for `Type::Vec(inner)`
