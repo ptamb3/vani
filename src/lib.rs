@@ -13421,6 +13421,59 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn ssa_consuming_for_iter_emits_buffer_drop_on_exit() {
+        // Closure #184: `for x in xs` (consuming form, Vec
+        // of Copy elements) flowing through SSA wasn't
+        // emitting any Drop for the consumed buffer, since
+        // the checker marks the source as moved and SSA's
+        // lower_for_iter ignored the consumes flag. On
+        // normal loop completion the outer buffer leaked.
+        //
+        // SSA gate already routes Vec<non-Copy> consuming
+        // for-iter to tree backends (closure #159), so SSA
+        // only sees Vec<Copy>. For Copy elements,
+        // intent_vec_<T>__free is the shallow free
+        // (`free(xs.data)`), exactly what we want. Emit a
+        // Drop instruction at the loop's exit block.
+        //
+        // Known remaining limitation: early `return` from
+        // inside the body still skips this Drop — same
+        // shape documented in STATUS.md's known-issues.
+        let source = r#"
+            fn sum(xs: Vec<i64>) -> i64 {
+              let total: i64 = 0;
+              for x in xs {
+                total = total + x;
+              }
+              return total;
+            }
+
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let s: i64 = sum(xs);
+              assert s == 6;
+              return 0;
+            }
+        "#;
+        let ll = crate::backend_llvm::LlvmBackend
+            .emit(&compile(source).expect("consuming Vec<i64> for-iter compiles").ir);
+        // The fix must emit a `call void
+        // @intent_vec_i64__free` in fn_sum after the loop
+        // exit block.
+        let sum_start = ll.find("define i64 @fn_sum").expect("fn_sum present");
+        let sum_end = ll[sum_start..]
+            .find("\ndefine ")
+            .map(|i| sum_start + i)
+            .unwrap_or(ll.len());
+        let sum_body = &ll[sum_start..sum_end];
+        assert!(
+            sum_body.contains("@intent_vec_i64__free"),
+            "expected `@intent_vec_i64__free` call in fn_sum after the for-iter exit:\n{}",
+            sum_body
+        );
+    }
+
+    #[test]
     fn return_if_expr_drops_unchosen() {
         // Closure #181: `return if cond { a } else { b };`
         // (a, b non-Copy Vars) was leaking the unchosen

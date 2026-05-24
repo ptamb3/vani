@@ -1021,7 +1021,7 @@ fn lower_for_iter(
     var: &str,
     element_ty: &Type,
     collection: &str,
-    _consumes: bool,
+    consumes: bool,
     body: &[TypedStmt],
     b: &mut FunctionBuilder,
     locals: &mut Locals,
@@ -1166,6 +1166,29 @@ fn lower_for_iter(
             continue;
         }
         locals.insert(name.clone(), *exit_v);
+    }
+    // Consuming form of a Vec source: the checker marks the
+    // source binding as moved, so its scope-exit Drop is
+    // suppressed. But the heap data buffer needs freeing.
+    // Emit an explicit Drop instruction here so the backend's
+    // `intent_vec_<T>__free` (which is shallow `free(xs.data)`
+    // for Copy elements) runs on normal completion of the
+    // loop. The SSA gate in main.rs rejects consuming over
+    // Vec<non-Copy> so we don't need to worry about deep
+    // free walking already-moved elements (closure #159).
+    // Closure #184.
+    if consumes {
+        if let Type::Vec(_) = coll_ty.deref() {
+            b.emit(
+                Type::Tuple(Vec::new()),
+                Span::default(),
+                InstrKind::Drop {
+                    source: Operand::Value(coll_v),
+                    ty: coll_ty.deref().clone(),
+                    name: collection.to_string(),
+                },
+            );
+        }
     }
     Ok(())
 }

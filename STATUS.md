@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 875 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 876 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **SSA consuming for-iter emits buffer Drop on normal exit done 2026-05-24**:
+   `for x in xs` (consuming form, Vec of Copy elements)
+   flowing through SSA wasn't emitting any Drop for the
+   consumed buffer — the checker marks the source as
+   moved and SSA's lower_for_iter ignored the consumes
+   flag. On normal loop completion the outer buffer
+   leaked. SSA's gate already routes Vec<non-Copy> to
+   tree backends (closure #159), so SSA only sees
+   Vec<Copy>; `intent_vec_<T>__free` IS the shallow free
+   for Copy elements. Emit an InstrKind::Drop at the
+   loop's exit block. Test totals: 876 lib + 47 e2e
+   passing. Closure #184. Known remaining: early
+   `return` from inside the body still skips this Drop
+   (tracked in STATUS.md known-issues).
 
    **`is_fresh_owned_str` refined for if-expr Var branches done 2026-05-24**:
    `print if cond { a } else { b };` (a, b: OwnedStr

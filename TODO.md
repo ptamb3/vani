@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #183)
+## ⏳ Resume here (paused 2026-05-24, after closure #184)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -427,6 +427,16 @@ branches: only treat as fresh when every leaf is
 itself a fresh producer (Call / Binary). Var leaves
 disqualify. Closes a print-of-if-expr-Var-branches
 double-free. Test totals: 875 lib + 47 e2e passing.
+#184 SSA consuming for-iter: lower_for_iter ignored
+the consumes flag, leaking the outer Vec buffer on
+normal completion. SSA gate routes Vec<non-Copy>
+consume to tree backends (#159), so SSA only sees
+Vec<Copy>; intent_vec_<T>__free is shallow for Copy.
+Emit InstrKind::Drop for the consumed Vec at the
+exit block. Known remaining: early `return` from
+inside the body still skips this Drop (documented
+known limitation). Test totals: 876 lib + 47 e2e
+passing.
 
 ### Recommended next (pick one)
 
