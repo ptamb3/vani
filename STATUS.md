@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 862 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 863 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,23 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **`push(xs, v)` / `set(xs, i, v)` consume value Var done 2026-05-24**:
+   `push(xs, v)` and `set(xs, i, v)` where `v` is a Var
+   of OwnedStr (or any non-Copy heap-owner) were
+   double-freeing on scope exit. The checker's builtin
+   handlers consumed `args[0]` (the Vec) via
+   `consume_if_moved_var` but never the value arg —
+   so the source Var stayed "live" and its scope-exit
+   drop fired AFTER push transferred ownership into the
+   new Vec's slot, freeing the heap a second time when
+   the Vec was later __free'd. ASan caught it on a
+   chained `let xs2 = push(xs, v); let xs3 =
+   push(xs2, w);`. Both backends were affected
+   (checker/IR-level bug). Two-line fix: also call
+   `consume_if_moved_var` on the value arg in push() and
+   set(). Test totals: 863 lib + 47 e2e passing.
+   Closure #171.
 
    **tree-LLVM nested FieldAssign drops old heap done 2026-05-24**:
    `o.inner = NewInner { name: "fresh" + "" };` (struct-

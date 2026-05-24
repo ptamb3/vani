@@ -9632,6 +9632,13 @@ fn check_push_builtin(
         diagnose_partial_then_whole_move(&args[0], &xs, env, diagnostics);
         consume_if_moved_var(&args[0], &xs, env);
     }
+    // The pushed value is taken by value — for non-Copy
+    // element types (OwnedStr / Vec / struct with heap),
+    // the source Var binding must be marked moved.
+    // Otherwise its scope-exit drop fires after push
+    // already transferred ownership into the new Vec's
+    // slot, double-freeing the heap. Closure #171.
+    consume_if_moved_var(&args[1], &value, env);
 
     let (call_name, result_type) = if in_place {
         ("push_mut".to_string(), Type::I64)
@@ -9697,6 +9704,11 @@ fn check_set_builtin(
     diagnose_partial_then_whole_move(&args[0], &xs, env, diagnostics);
 
     consume_if_moved_var(&args[0], &xs, env);
+    // Mark the new-value Var moved when it owns non-Copy
+    // heap — set() stores it into the slot, so the source
+    // binding's scope-exit drop would double-free.
+    // Mirrors push (closure #171).
+    consume_if_moved_var(&args[2], &value, env);
 
     let result_type = Type::Vec(Box::new(element_type));
     CheckedExpr::new(

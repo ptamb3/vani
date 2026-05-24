@@ -13340,6 +13340,84 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn push_and_set_mark_value_var_moved() {
+        // Closure #171: `push(xs, v)` and `set(xs, i, v)`
+        // where `v` is a Var of non-Copy heap (OwnedStr,
+        // Vec, …) were double-freeing on scope exit. The
+        // checker's builtin handlers called
+        // `consume_if_moved_var(&args[0], &xs, env)` to
+        // mark the Vec moved, but the VALUE arg never got
+        // the same treatment — so the source Var's
+        // scope-exit Drop fired AFTER push transferred
+        // ownership into the new Vec's slot, freeing the
+        // heap a second time when the Vec was later
+        // __free'd.
+        //
+        // ASan caught it as double-free on a chained
+        // `let xs2 = push(xs, v); let xs3 = push(xs2, w);`.
+        // Both backends were affected since this is a
+        // checker/IR-level bug.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<OwnedStr> = vec("a" + "");
+              let v: OwnedStr = "b" + "";
+              let xs2: Vec<OwnedStr> = push(xs, v);
+              assert (len(ref xs2) as i64) == 2;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("push(xs, Var) compiles");
+        // After the push, the Var `v_v` MUST NOT be freed
+        // at scope exit — it was moved into the Vec.
+        let main_start = c.find("static int64_t fn_main").expect("fn_main present");
+        let main_end = c[main_start..]
+            .find("\nint main(void)")
+            .map(|i| main_start + i)
+            .unwrap_or(c.len());
+        let main_body = &c[main_start..main_end];
+        // Locate the push call. Tree-C names value args
+        // by their SSA-style local name; the moved Var
+        // (the `v` binding holding "b") is `v_v` in the
+        // local-name convention.
+        assert!(
+            main_body.contains("intent_vec_owned_str__push("),
+            "expected push call in fn_main:\n{}",
+            main_body
+        );
+        let push_idx = main_body
+            .find("intent_vec_owned_str__push(")
+            .expect("push present");
+        let after_push = &main_body[push_idx..];
+        // No explicit `free(v_v)` (the source Var's
+        // scope-exit drop) should appear after the push.
+        // The Vec's __free covers the moved heap.
+        assert!(
+            !after_push.contains("free((void*)v_v)"),
+            "v was moved into push; its scope-exit drop must not fire:\n{}",
+            main_body
+        );
+
+        // Set form: `set(xs, i, v)` — args[2] is the value.
+        let set_src = r#"
+            fn main() -> i64 {
+              let xs: Vec<OwnedStr> = vec("a" + "", "b" + "");
+              let v: OwnedStr = "new" + "";
+              let xs2: Vec<OwnedStr> = set(xs, 0, v);
+              assert (len(ref xs2) as i64) == 2;
+              return 0;
+            }
+        "#;
+        let c2 = compile_to_c(set_src).expect("set(xs, i, Var) compiles");
+        let set_idx = c2.find("__set(").expect("set call present");
+        let after_set = &c2[set_idx..];
+        assert!(
+            !after_set.contains("free((void*)v_v)"),
+            "v was moved into set; its scope-exit drop must not fire:\n{}",
+            c2
+        );
+    }
+
+    #[test]
     fn tree_llvm_field_assign_drops_old_struct_and_enum_heap() {
         // Closure #170: tree-LLVM FieldAssign had drop-old
         // arms for OwnedStr and Vec (closure #132); Struct

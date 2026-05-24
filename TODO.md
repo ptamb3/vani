@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #170)
+## ⏳ Resume here (paused 2026-05-24, after closure #171)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -330,7 +330,16 @@ OwnedStr/Vec. Added Struct arm (walks the OLD
 field's heap-owning sub-fields via
 emit_llvm_struct_field_drops at the field pointer)
 and a defensive Enum arm matching the Reassign
-shape. Test totals: 862 lib + 47 e2e passing.
+shape. #171 `push(xs, v)` / `set(xs, i, v)` consume
+the VALUE Var when it owns non-Copy heap. Builtin
+handlers were calling consume_if_moved_var on
+args[0] (the Vec) but not on args[1]/args[2] (the
+value), so the source Var's scope-exit drop double-
+freed the heap now owned by the new Vec's slot.
+ASan caught it on chained pushes; both backends
+were affected since it's a checker/IR-level bug.
+Two-line fix. Test totals: 863 lib + 47 e2e
+passing.
 
 ### Recommended next (pick one)
 
