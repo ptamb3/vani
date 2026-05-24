@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 869 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 870 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,20 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **`Enum.Some(v)` consumes Var payload done 2026-05-24**:
+   `Maybe.Some(n)` where n is a Var of OwnedStr was
+   double-freeing on scope exit. The
+   EnumVariantWithPayload constructor transfers
+   ownership of the payload into the tagged-union, but
+   `check_call`'s enum-constructor branch never called
+   `consume_if_moved_var` on the payload arg. Source
+   Var's scope-exit Drop fired AFTER the constructor
+   stored the payload pointer, and the enum's drop
+   re-freed the same heap. Same family as vec / push /
+   set (#171, #177). One-line addition. Both backends
+   were affected (checker/IR-level bug). Test totals:
+   870 lib + 47 e2e passing. Closure #178.
 
    **`vec(a, b, …)` consumes Var element args done 2026-05-24**:
    `let xs: Vec<OwnedStr> = vec(a, b);` (a, b: Var

@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #177)
+## ⏳ Resume here (paused 2026-05-24, after closure #178)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -408,7 +408,13 @@ args — source Var's scope-exit drop fired after
 vec() already moved the pointer into the slot, then
 Vec's __free re-freed each slot. Same family as
 push / set (#171). One-line addition. Test totals:
-869 lib + 47 e2e passing.
+869 lib + 47 e2e passing. #178 `Enum.Some(v)`
+consumes Var payload arg: enum-constructor was
+storing the payload pointer into the tagged-union
+without marking the source Var moved, so scope-exit
+drop double-freed against the enum's payload drop.
+One-line addition (same family as #171, #177).
+Test totals: 870 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

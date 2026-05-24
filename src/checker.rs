@@ -5912,6 +5912,14 @@ fn check_expr(
                                 "enum payload",
                                 diagnostics,
                             );
+                            // Enum constructor transfers ownership
+                            // of the payload into the tagged-union
+                            // — mark the source Var moved so the
+                            // scope-exit drop doesn't fire on a
+                            // heap the enum now owns. Same family
+                            // as vec / push / set (closures
+                            // #171, #177). Closure #178.
+                            consume_if_moved_var(&args[0], &arg_checked, env);
                             return CheckedExpr::new(
                                 TypedExprKind::EnumVariantWithPayload {
                                     enum_name: enum_name.clone(),

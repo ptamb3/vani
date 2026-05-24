@@ -13340,6 +13340,38 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn enum_variant_payload_consumes_var() {
+        // Closure #178: `Maybe.Some(n)` where n is a Var of
+        // OwnedStr was double-freeing on scope exit. The
+        // EnumVariantWithPayload constructor transfers
+        // ownership of the payload into the tagged-union,
+        // but `check_call` for enum constructors never
+        // called `consume_if_moved_var` on the payload arg.
+        // Same family as vec / push / set (#171, #177).
+        let source = r#"
+            enum Maybe { Some(OwnedStr), None }
+
+            fn main() -> i64 {
+              let n: OwnedStr = "alpha" + "";
+              let m: Maybe = Maybe.Some(n);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("Maybe.Some(Var) compiles");
+        let main_start = c.find("static int64_t fn_main").expect("fn_main present");
+        let main_end = c[main_start..]
+            .find("\nint main(void)")
+            .map(|i| main_start + i)
+            .unwrap_or(c.len());
+        let main_body = &c[main_start..main_end];
+        assert!(
+            !main_body.contains("free((void*)v_n)"),
+            "v_n was moved into Maybe.Some(); scope-exit drop must not fire:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn vec_literal_marks_var_elements_moved() {
         // Closure #177: `let xs: Vec<OwnedStr> = vec(a, b);`
         // where a, b are Vars of OwnedStr was double-
