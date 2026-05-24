@@ -13340,6 +13340,63 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn if_expr_var_branches_consume_both_vars() {
+        // Closure #172: `let chosen = if cond { a } else
+        // { b };` where `a, b: OwnedStr` Vars was double-
+        // freeing on scope exit. The codegen ternary
+        // (`cond ? v_a : v_b`) makes v_chosen alias the
+        // chosen Var's heap, so the scope-exit drops of
+        // v_a, v_b, AND v_chosen all hit the same heap.
+        // `consume_if_moved_var` only recursed into bare
+        // Var and FieldAccess sources, ignoring IfExpr.
+        // Now it descends into both branches and marks
+        // each branch's Var moved. Conservative: the
+        // UNCHOSEN alternative leaks (its heap isn't
+        // freed since the Var is marked moved). Tracked
+        // separately as a remaining TODO; the proper fix
+        // is a structural rewrite of the if-expr that
+        // frees the unchosen alternative inside each
+        // branch.
+        let source = r#"
+            fn main() -> i64 {
+              let cond: bool = true;
+              let a: OwnedStr = "first" + "";
+              let b: OwnedStr = "second" + "";
+              let chosen: OwnedStr = if cond { a } else { b };
+              assert (len(chosen) as i64) == 5;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("if-expr Var branches compile");
+        // After the if-expr, neither `free((void*)v_a)`
+        // nor `free((void*)v_b)` should appear at the
+        // scope exit — they were both marked moved by
+        // the conservative tracking. `v_chosen` is freed
+        // (it owns the chosen heap).
+        let main_start = c.find("static int64_t fn_main").expect("fn_main present");
+        let main_end = c[main_start..]
+            .find("\nint main(void)")
+            .map(|i| main_start + i)
+            .unwrap_or(c.len());
+        let main_body = &c[main_start..main_end];
+        assert!(
+            !main_body.contains("free((void*)v_a)"),
+            "v_a was moved into the if-expr; its scope-exit drop must not fire:\n{}",
+            main_body
+        );
+        assert!(
+            !main_body.contains("free((void*)v_b)"),
+            "v_b was moved into the if-expr; its scope-exit drop must not fire:\n{}",
+            main_body
+        );
+        assert!(
+            main_body.contains("free((void*)v_chosen)"),
+            "v_chosen owns the chosen Var's heap; expect a scope-exit free:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn push_and_set_mark_value_var_moved() {
         // Closure #171: `push(xs, v)` and `set(xs, i, v)`
         // where `v` is a Var of non-Copy heap (OwnedStr,

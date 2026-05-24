@@ -5474,6 +5474,21 @@ fn consume_if_moved_var(
                 }
             }
         }
+        // Conservative move tracking for if-expression
+        // branches. `let chosen = if cond { a } else { b };`
+        // where both a and b are non-Copy Vars must mark
+        // BOTH as moved — otherwise the codegen ternary
+        // aliases v_chosen with v_a OR v_b, and the
+        // scope-exit drop of all three would double-free.
+        // Both Vars-as-moved means the unchosen alternative
+        // leaks, but that's safe (no double-free). Closure
+        // #172. A proper fix that frees the unchosen
+        // alternative needs a structural rewrite in the
+        // codegen layer.
+        ExprKind::IfExpr { then_value, else_value, .. } => {
+            consume_if_moved_var(then_value, checked, env);
+            consume_if_moved_var(else_value, checked, env);
+        }
         _ => {}
     }
 }

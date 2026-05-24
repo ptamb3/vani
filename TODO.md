@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #171)
+## ⏳ Resume here (paused 2026-05-24, after closure #172)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -338,8 +338,44 @@ value), so the source Var's scope-exit drop double-
 freed the heap now owned by the new Vec's slot.
 ASan caught it on chained pushes; both backends
 were affected since it's a checker/IR-level bug.
-Two-line fix. Test totals: 863 lib + 47 e2e
+Two-line fix. #172 If-expr non-Copy Var branches
+were double-freeing: `let chosen = if cond { a }
+else { b };` (a, b: OwnedStr Vars) emits a ternary
+`cond ? v_a : v_b` so v_chosen aliases one Var's
+heap — scope-exit drops of v_a, v_b, and v_chosen
+all hit the same heap. `consume_if_moved_var` now
+recurses into IfExpr branches, marking each
+branch's Var moved (conservative). Both backends
+were affected. Known limitation: the unchosen
+alternative leaks (no double-free, just lost
+heap); structural rewrite needed to free it inside
+each branch. Test totals: 864 lib + 47 e2e
 passing.
+
+### TODO — if-expr non-Copy Var unchosen leak
+
+Closure #172 hardened the if-expr Var-branches path
+against double-free by marking both Vars moved.
+The unchosen alternative now leaks. Proper fix:
+desugar `let r = if cond { a } else { b };` at the
+checker level into an if-statement plus per-branch
+drops:
+
+```
+let r: T;
+if cond {
+  drop(b);
+  r = a;
+} else {
+  drop(a);
+  r = b;
+}
+```
+
+Mirrors the match-on-fresh-OwnedStr desugar
+(closure #137 wrap-in-Block). Same shape applies
+to nested if-expr with Var leaves and to match arms
+on non-Copy Vars.
 
 ### Recommended next (pick one)
 

@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 863 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 864 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,22 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **If-expr Var branches consume both Vars done 2026-05-24**:
+   `let chosen = if cond { a } else { b };` (a, b: Vars
+   of OwnedStr) was double-freeing on scope exit. The
+   codegen ternary `cond ? v_a : v_b` makes v_chosen
+   alias the chosen Var's heap, so the scope-exit drops
+   of v_a, v_b, AND v_chosen all hit the same heap.
+   `consume_if_moved_var` only descended into bare Var
+   and FieldAccess sources — IfExpr fell through `_ =>
+   {}`. Now it recurses into both branches and marks
+   each branch's Var moved. Conservative: the UNCHOSEN
+   alternative leaks (its heap isn't freed since the Var
+   is marked moved). Both backends were affected
+   (checker/IR-level bug). Closure #172. Known
+   remaining: unchosen-alternative leak (tracked in
+   TODO.md). Test totals: 864 lib + 47 e2e passing.
 
    **`push(xs, v)` / `set(xs, i, v)` consume value Var done 2026-05-24**:
    `push(xs, v)` and `set(xs, i, v)` where `v` is a Var
@@ -1697,6 +1713,7 @@ TODO.md keeps the history.
 ### Language surface gaps
 - **No mutable references to atomics-as-payloads.** Workaround: pre-extract scalars before spawning a task. *Tracked indirectly by future affine-rules work.*
 - **References are second-class.** `&T` / `&mut T` only as function parameter types; not as returns, let-bindings, or aggregate elements. *Working as intended for v1 — Rust-style first-class references are explicitly out of scope.*
+- **If-expr with non-Copy Var branches leaks the unchosen alternative.** `let chosen = if cond { a } else { b };` (a, b: OwnedStr Vars) marks both as moved to avoid a double-free (closure #172), so the unchosen heap stays unreclaimed. *Tracked as a structural-rewrite TODO: each branch should free the unchosen Var inline before yielding the chosen value.*
 
 ### Tooling
 - **`INTENTC_NO_VERIFY=1` skips every SMT round-trip.** Useful for fast iteration; do not set in CI — a violated `ensures` won't surface. Runtime safety guards stay in place. *Working as intended.*
