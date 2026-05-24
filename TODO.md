@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #172)
+## ⏳ Resume here (paused 2026-05-24, after closure #173)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -375,7 +375,20 @@ if cond {
 Mirrors the match-on-fresh-OwnedStr desugar
 (closure #137 wrap-in-Block). Same shape applies
 to nested if-expr with Var leaves and to match arms
-on non-Copy Vars.
+on non-Copy Vars (handled by closure #173 with the
+same conservative-move shape — also leaks the
+unchosen arms).
+
+#173 Match arms returning Var of non-Copy were
+double-freeing in the same way as #172. The
+integer / enum / bool match keeps `TypedExprKind::
+Match` shape (the Str scrutinee desugars to an
+IfExpr chain via check_match_str so it's covered
+through #172). `consume_if_moved_var` now recurses
+into every arm's body the same way it descends into
+both if-expr branches. Same known limitation:
+unchosen-arm Vars leak; structural rewrite needed.
+Test totals: 865 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

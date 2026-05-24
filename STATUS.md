@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 864 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 865 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Match arms returning Var consume all arms done 2026-05-24**:
+   Same shape as closure #172 but for match scrutinees
+   that stay as `TypedExprKind::Match` (integer / enum /
+   bool). `let chosen = match n { 1 then a, 2 then b, _
+   then c };` was double-freeing because the codegen
+   switch makes v_chosen alias one of the Vars and the
+   scope-exit drops of every Var plus v_chosen all hit
+   the same heap. `consume_if_moved_var` now recurses
+   into every arm's body the same way it recurses into
+   if-expr branches. Str scrutinees were already
+   covered through check_match_str's IfExpr-chain
+   desugar. Conservative: unchosen-arm Vars leak (same
+   TODO as the if-expr case). Test totals: 865 lib +
+   47 e2e passing. Closure #173.
 
    **If-expr Var branches consume both Vars done 2026-05-24**:
    `let chosen = if cond { a } else { b };` (a, b: Vars
@@ -1713,7 +1728,7 @@ TODO.md keeps the history.
 ### Language surface gaps
 - **No mutable references to atomics-as-payloads.** Workaround: pre-extract scalars before spawning a task. *Tracked indirectly by future affine-rules work.*
 - **References are second-class.** `&T` / `&mut T` only as function parameter types; not as returns, let-bindings, or aggregate elements. *Working as intended for v1 — Rust-style first-class references are explicitly out of scope.*
-- **If-expr with non-Copy Var branches leaks the unchosen alternative.** `let chosen = if cond { a } else { b };` (a, b: OwnedStr Vars) marks both as moved to avoid a double-free (closure #172), so the unchosen heap stays unreclaimed. *Tracked as a structural-rewrite TODO: each branch should free the unchosen Var inline before yielding the chosen value.*
+- **If-expr / match with non-Copy Var branches leaks the unchosen alternatives.** `let chosen = if cond { a } else { b };` and `let chosen = match n { 1 then a, _ then b };` (a, b: OwnedStr Vars) mark every branch's Var as moved to avoid a double-free (closures #172 + #173), so the unchosen heaps stay unreclaimed. *Tracked as a structural-rewrite TODO: each branch should free the other arms' Vars inline before yielding the chosen value.*
 
 ### Tooling
 - **`INTENTC_NO_VERIFY=1` skips every SMT round-trip.** Useful for fast iteration; do not set in CI — a violated `ensures` won't surface. Runtime safety guards stay in place. *Working as intended.*

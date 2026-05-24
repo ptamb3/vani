@@ -13340,6 +13340,58 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn match_arms_returning_var_consume_all_arms() {
+        // Closure #173: same shape as the if-expr Var
+        // branches fix (closure #172) — `let chosen =
+        // match n { 1 then a, 2 then b, _ then c };` was
+        // double-freeing because the codegen switch makes
+        // v_chosen alias the chosen arm's Var, and the
+        // scope-exit drops of every Var plus v_chosen all
+        // hit the same heap. Integer / enum / bool match
+        // returns TypedExprKind::Match directly (Str
+        // scrutinees desugar through check_match_str's
+        // IfExpr chain so they're already covered by
+        // #172). consume_if_moved_var now recurses into
+        // every arm's body. Conservative: unchosen-arm
+        // Vars leak (same TODO as the if-expr case).
+        let source = r#"
+            fn main() -> i64 {
+              let n: i64 = 2;
+              let a: OwnedStr = "alpha" + "";
+              let b: OwnedStr = "beta" + "";
+              let c: OwnedStr = "gamma" + "";
+              let chosen: OwnedStr = match n {
+                1 then a,
+                2 then b,
+                _ then c,
+              };
+              assert (len(chosen) as i64) == 4;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("match Var arms compile");
+        let main_start = c.find("static int64_t fn_main").expect("fn_main present");
+        let main_end = c[main_start..]
+            .find("\nint main(void)")
+            .map(|i| main_start + i)
+            .unwrap_or(c.len());
+        let main_body = &c[main_start..main_end];
+        for var in &["v_a", "v_b", "v_c"] {
+            assert!(
+                !main_body.contains(&format!("free((void*){})", var)),
+                "{} was consumed by the match; scope-exit drop must be suppressed:\n{}",
+                var,
+                main_body
+            );
+        }
+        assert!(
+            main_body.contains("free((void*)v_chosen)"),
+            "v_chosen owns the chosen arm's heap; expect a scope-exit free:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn if_expr_var_branches_consume_both_vars() {
         // Closure #172: `let chosen = if cond { a } else
         // { b };` where `a, b: OwnedStr` Vars was double-

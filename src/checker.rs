@@ -5489,6 +5489,18 @@ fn consume_if_moved_var(
             consume_if_moved_var(then_value, checked, env);
             consume_if_moved_var(else_value, checked, env);
         }
+        // Same shape for match arms: `let chosen = match n
+        // { 1 then a, 2 then b, _ then c };` would double-
+        // free without marking every arm's Var moved.
+        // Integer / enum / bool dispatch keeps the Match
+        // shape in the typed IR (Str scrutinees desugar
+        // into IfExpr via check_match_str, picked up by the
+        // arm above). Closure #173.
+        ExprKind::Match { arms, .. } => {
+            for arm in arms {
+                consume_if_moved_var(&arm.body, checked, env);
+            }
+        }
         _ => {}
     }
 }
