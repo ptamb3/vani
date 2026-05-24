@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 860 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 861 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,20 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-LLVM Reassign of struct/enum drops old heap done 2026-05-24**:
+   `b = Box { name: "second" + "" };` (where `b: Box` has
+   `name: OwnedStr`) and `m = Maybe.Some("second" + "");`
+   (payloaded enum) were leaking the OLD value's heap.
+   Tree-LLVM's Reassign drop_old match only had arms for
+   Vec and OwnedStr; Struct / Enum fell through `_ => {}`.
+   Tree-C had the parallel arms via closure #147. Added
+   the Struct arm (walk OLD alloca's heap-owning fields
+   via emit_llvm_struct_field_drops) and the Enum arm
+   (load OLD tagged-union, branch on tag, free heap
+   payload if active — mirrors the Drop handler's Enum
+   arm). Test totals: 861 lib + 47 e2e passing. Closure
+   #169.
 
    **tree-LLVM Discard of OwnedStr frees heap done 2026-05-24**:
    `let _ = s;` (s: OwnedStr) was leaking. The Discard

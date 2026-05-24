@@ -13340,6 +13340,78 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_llvm_reassign_drops_old_struct_and_enum_heap() {
+        // Closure #169: tree-LLVM's Reassign handler had
+        // drop_old arms only for Vec and OwnedStr. Bindings
+        // of heap-owning struct types (e.g. `b: Box` with
+        // `name: OwnedStr` field) and payloaded enums lost
+        // the OLD value's heap on `b = Box { … }` / `m =
+        // Maybe.Some(…)`. Tree-C had the parallel arms via
+        // closure #147.
+        //
+        // Struct case: walks the existing alloca's fields
+        // via emit_llvm_struct_field_drops before storing
+        // the fresh value.
+        //
+        // Enum case: loads the OLD tagged-union from the
+        // alloca, OR-chains the payloaded tag check, frees
+        // the heap payload if active. Mirrors the Drop
+        // handler's Enum arm.
+        let source = r#"
+            struct Box { name: OwnedStr }
+
+            fn main() -> i64 {
+              let b: Box = Box { name: "first" + "" };
+              b = Box { name: "second" + "" };
+              return 0;
+            }
+        "#;
+        let ll = crate::backend_llvm::LlvmBackend
+            .emit(&compile(source).expect("struct reassign compiles").ir);
+        let main_start = ll.find("define i64 @fn_main").expect("fn_main present");
+        let main_end = ll[main_start..]
+            .find("\ndefine ")
+            .map(|i| main_start + i)
+            .unwrap_or(ll.len());
+        let main_body = &ll[main_start..main_end];
+        // Reassign must walk the OLD struct's fields BEFORE
+        // storing the new struct. The first field's free
+        // (the OwnedStr) is `call void @free(i8* …)` —
+        // there must be at least TWO such frees in fn_main:
+        // one for the OLD `b.name` on reassign, one for
+        // the new `b.name` on scope exit.
+        let free_count = main_body
+            .lines()
+            .filter(|l| l.contains("call void @free(i8*"))
+            .count();
+        assert!(
+            free_count >= 2,
+            "expected at least 2 free calls (old slot + scope exit), got {}:\n{}",
+            free_count,
+            main_body
+        );
+
+        let enum_source = r#"
+            enum Maybe { Some(OwnedStr), None }
+
+            fn main() -> i64 {
+              let m: Maybe = Maybe.Some("first" + "");
+              m = Maybe.Some("second" + "");
+              return 0;
+            }
+        "#;
+        let ll2 = crate::backend_llvm::LlvmBackend
+            .emit(&compile(enum_source).expect("enum reassign compiles").ir);
+        // Enum reassign emits a `reassign_enum_free` label
+        // (per the tag-branch design).
+        assert!(
+            ll2.contains("reassign_enum_free"),
+            "expected `reassign_enum_free` branch label in enum reassign:\n{}",
+            ll2
+        );
+    }
+
+    #[test]
     fn tree_llvm_discard_owned_str_frees_heap() {
         // Closure #168: `let _ = s;` where `s: OwnedStr`
         // was leaking on tree-LLVM. The Discard handler's

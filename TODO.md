@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #168)
+## ⏳ Resume here (paused 2026-05-24, after closure #169)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -313,7 +313,15 @@ AFTER `is_scalar(&expr.ty)` but `is_scalar` returns
 true for OwnedStr — the scalar arm consumed the
 branch and skipped the @free. Moving the OwnedStr
 arm before the is_scalar guard fixes it (same shape
-as closure #145 for Struct). Test totals: 860 lib +
+as closure #145 for Struct). #169 tree-LLVM Reassign
+drop_old extended to Struct and Enum: bindings of
+heap-owning structs and payloaded enums were leaking
+the OLD value's heap on reassign. Tree-C had the
+parallel arms via closure #147; tree-LLVM only had
+Vec / OwnedStr. Added the Struct arm
+(emit_llvm_struct_field_drops over the old alloca)
+and the Enum arm (load + tag-branch + free payload —
+mirrors the Drop handler). Test totals: 861 lib +
 47 e2e passing.
 
 ### Recommended next (pick one)
