@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #162)
+## ⏳ Resume here (paused 2026-05-23, after closure #163)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -272,7 +272,13 @@ that the lli verifier rejected outright. Field-
 borrow forms reuse the field-pointer emit_expr
 materializes; FieldAccess goes through
 emit_lvalue_addr. Both then GEP-into-.len + load.
-Test totals: 854 lib + 47 e2e passing.
+#163 tree-LLVM Index for Vec-typed struct fields:
+`b.items[1]` panicked with
+`unreachable!("Index on unsupported base")`. The
+FieldAccess arm only handled Array-typed fields;
+the parallel Vec arm now reuses emit_lvalue_addr
++ .data GEP + load + element GEP + load. Test
+totals: 855 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

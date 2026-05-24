@@ -13340,6 +13340,65 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_llvm_index_into_struct_field_vec_compiles() {
+        // Closure #163: `t.items[i]` (FieldAccess base, Vec
+        // type) panicked tree-LLVM's Index handler with
+        // `unreachable!("Index on unsupported base")`. The
+        // handler had a FieldAccess arm only for Array-typed
+        // fields. Now Vec-typed field bases reuse the
+        // emit_lvalue_addr machinery: the field-pointer IS
+        // the Vec struct address, so we GEP into .data, load
+        // the element pointer, GEP at idx, and load. The
+        // same shape is reachable whenever a sibling
+        // expression forces an SSA-LLVM fallback (e.g. an
+        // OwnedStr concat or a clone_at-shaped call).
+        let source = r#"
+            struct Box { items: Vec<i64> }
+
+            fn main() -> i64 {
+              let b: Box = Box { items: vec(10, 20, 30) };
+              let v: i64 = b.items[1];
+              assert v == 20;
+              return 0;
+            }
+        "#;
+
+        let ll = crate::backend_llvm::LlvmBackend
+            .emit(&compile(source).expect("t.items[i] compiles").ir);
+
+        // The fix must emit: a GEP into the items field
+        // (struct field 0), then a GEP into the Vec's .data
+        // field (i32 0), then a load of `i8**` (or `T**`),
+        // then a GEP at the dynamic index, then a load of
+        // the element. The first GEP signature is `i32 0`
+        // into the struct (items is field 0 of Box).
+        let main_start = ll.find("define i64 @fn_main").expect("fn_main present");
+        let main_end = ll[main_start..]
+            .find("\ndefine ")
+            .map(|i| main_start + i)
+            .unwrap_or(ll.len());
+        let main_body = &ll[main_start..main_end];
+        // After the items field GEP, we need a Vec .data GEP
+        // and a load of the data pointer.
+        let has_struct_field_gep = main_body
+            .lines()
+            .any(|l| l.contains("getelementptr %Struct_Box, %Struct_Box*"));
+        let has_vec_data_gep = main_body
+            .lines()
+            .any(|l| l.contains("%intent_vec_i64*") && l.contains("i32 0"));
+        assert!(
+            has_struct_field_gep,
+            "expected GEP into Struct_Box for items field:\n{}",
+            main_body
+        );
+        assert!(
+            has_vec_data_gep,
+            "expected GEP into intent_vec_i64 for .data:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn tree_llvm_len_of_field_borrow_and_field_access_uses_field_pointer() {
         // Closure #162: extends #161 to the two field-shape
         // spellings of len that flow through tree-LLVM when a

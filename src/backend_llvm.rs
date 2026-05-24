@@ -3576,6 +3576,41 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     out.push_str(&format!("  {} = load {}, {}* {}\n", v, elt_ty, elt_ty, p));
                     return v;
                 }
+                // `t.data[i]` — Vec-typed struct field. The
+                // field pointer is itself the Vec struct
+                // address; GEP into .data, load the element
+                // pointer, GEP at idx, then load. Mirrors the
+                // Var(Vec) arm above but starts from the
+                // field pointer instead of the binding's
+                // alloca. Closure #163.
+                if let Type::Vec(element) = array.ty.deref().clone() {
+                    let s_ty = vec_struct_name(&element);
+                    let elt_ty = llvm_type_string(&element);
+                    let base_addr = emit_lvalue_addr(array, ctx, out);
+                    let data_p = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = getelementptr {}, {}* {}, i64 0, i32 0\n",
+                        data_p, s_ty, s_ty, base_addr
+                    ));
+                    let data = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = load {}*, {}** {}\n",
+                        data, elt_ty, elt_ty, data_p
+                    ));
+                    let idx_v = emit_expr(index, ctx, out);
+                    let idx_i64 = widen_index_to_64(&idx_v, &index.ty, ctx, out);
+                    let p = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = getelementptr {}, {}* {}, i64 {}\n",
+                        p, elt_ty, elt_ty, data, idx_i64
+                    ));
+                    let v = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = load {}, {}* {}\n",
+                        v, elt_ty, elt_ty, p
+                    ));
+                    return v;
+                }
             }
             // The Index arms above cover Var-base on Vec, Array
             // (consuming or via reference), Str, plus struct-
