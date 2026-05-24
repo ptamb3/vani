@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 855 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 856 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-C struct typedefs topologically sorted done 2026-05-23**:
+   Source order was emitting `typedef struct {
+   Struct_Inner inner; } Struct_Outer;` BEFORE
+   `Struct_Inner` was declared. cc rejected the output
+   with "unknown type name 'Struct_Inner'". The emit
+   loop now does a DFS over the struct dependency graph
+   (direct `Struct(S)` field or `[S; N]` field), so
+   dependencies come first. Vec / Ref / Atomic / Mutex /
+   Guard / Channel / Tuple all introduce pointer-shaped
+   indirection through their own typedef bundles, so
+   they don't drive struct dependencies. LLVM's IR
+   forward-declares named types so tree-LLVM was
+   unaffected. Test totals: 856 lib + 47 e2e passing.
+   Closure #164.
 
    **tree-LLVM `t.items[i]` for Vec field done 2026-05-23**:
    `b.items[1]` (FieldAccess base, Vec element type) was

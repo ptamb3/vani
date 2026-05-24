@@ -217,11 +217,59 @@ pub fn emit_c(program: &TypedProgram) -> String {
     if !struct_field_vec_elements.is_empty() {
         body.push('\n');
     }
-    // Emit user-declared struct typedefs. Declaration order
-    // is preserved so a struct can reference a previously-
-    // declared struct as a field. T1.2 phase 1.
-    for decl in &program.structs {
-        emit_struct_bundle(decl, &mut body);
+    // Emit user-declared struct typedefs. Topologically sort
+    // first so a struct that references another by value
+    // (direct field of `Struct(S)` or `[S; N]`) is emitted
+    // AFTER that other struct's typedef. C requires the full
+    // type to be visible before use; LLVM forward-declares
+    // named types so it doesn't need this. Source order
+    // would otherwise emit `struct Outer { Struct_Inner inner; }`
+    // before `Struct_Inner` is declared. Vec/Ref/RefMut
+    // /Atomic/Mutex/Guard/Channel/Tuple all introduce
+    // pointer-shaped indirection through their own typedef
+    // bundles, so they don't drive struct dependencies.
+    // Closure #164.
+    fn struct_deps(ty: &Type, out: &mut Vec<String>) {
+        match ty {
+            Type::Struct(name) => out.push(name.clone()),
+            Type::Array { element, .. } => struct_deps(element, out),
+            _ => {}
+        }
+    }
+    fn visit(
+        name: &str,
+        by_name: &std::collections::HashMap<&str, &crate::ir::TypedStructDecl>,
+        emitted: &mut std::collections::HashSet<String>,
+        on_stack: &mut std::collections::HashSet<String>,
+        body: &mut String,
+    ) {
+        if emitted.contains(name) || on_stack.contains(name) {
+            return;
+        }
+        let Some(decl) = by_name.get(name) else {
+            return;
+        };
+        on_stack.insert(name.to_string());
+        let mut deps: Vec<String> = Vec::new();
+        for (_, fty) in &decl.fields {
+            struct_deps(fty, &mut deps);
+        }
+        for dep in deps {
+            visit(&dep, by_name, emitted, on_stack, body);
+        }
+        emit_struct_bundle(decl, body);
+        emitted.insert(name.to_string());
+        on_stack.remove(name);
+    }
+    let mut by_name: std::collections::HashMap<&str, &crate::ir::TypedStructDecl> =
+        std::collections::HashMap::new();
+    for d in &program.structs {
+        by_name.insert(d.name.as_str(), d);
+    }
+    let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut on_stack: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for d in &program.structs {
+        visit(&d.name, &by_name, &mut emitted, &mut on_stack, &mut body);
     }
     if !program.structs.is_empty() {
         body.push('\n');

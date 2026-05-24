@@ -13340,6 +13340,53 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_c_emits_struct_typedefs_in_dependency_order() {
+        // Closure #164: structs were emitted in source order
+        // (`for decl in &program.structs`), so
+        //   struct Outer { inner: Inner }
+        //   struct Inner { x: i64 }
+        // emitted `typedef struct { Struct_Inner inner; }
+        // Struct_Outer;` BEFORE `typedef struct { … }
+        // Struct_Inner;`. C requires the field type to be
+        // complete at declaration time, so cc rejected the
+        // output with "unknown type name 'Struct_Inner'".
+        // LLVM's IR forward-declares named types so tree-
+        // LLVM was unaffected.
+        //
+        // Topological sort by direct field dependency
+        // (Struct field, or Array element). Vec/Ref/Tuple/
+        // /Atomic/Mutex/Guard/Channel use pointer-shaped
+        // indirection through their own typedef bundles
+        // so they don't drive struct dependencies.
+        let source = r#"
+            struct Outer { inner: Inner }
+            struct Inner { x: i64 }
+
+            fn main() -> i64 {
+              let o: Outer = Outer { inner: Inner { x: 42 } };
+              assert o.inner.x == 42;
+              return 0;
+            }
+        "#;
+
+        let c = compile_to_c(source)
+            .expect("nested struct compiles after topological sort");
+        // The Inner typedef must appear before the Outer
+        // typedef in the emitted C.
+        let inner_typedef = c
+            .find("} Struct_Inner;")
+            .expect("Struct_Inner typedef present");
+        let outer_typedef = c
+            .find("} Struct_Outer;")
+            .expect("Struct_Outer typedef present");
+        assert!(
+            inner_typedef < outer_typedef,
+            "Struct_Inner must be declared before Struct_Outer (outer references inner by value):\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn tree_llvm_index_into_struct_field_vec_compiles() {
         // Closure #163: `t.items[i]` (FieldAccess base, Vec
         // type) panicked tree-LLVM's Index handler with

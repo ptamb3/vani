@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-23, after closure #163)
+## ⏳ Resume here (paused 2026-05-23, after closure #164)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -277,8 +277,15 @@ emit_lvalue_addr. Both then GEP-into-.len + load.
 `unreachable!("Index on unsupported base")`. The
 FieldAccess arm only handled Array-typed fields;
 the parallel Vec arm now reuses emit_lvalue_addr
-+ .data GEP + load + element GEP + load. Test
-totals: 855 lib + 47 e2e passing.
++ .data GEP + load + element GEP + load. #164
+tree-C struct typedefs topologically sorted by
+direct field dependency (Struct field or Array
+element). Source-order emit was producing
+`Struct_Outer { Struct_Inner inner; }` before
+`Struct_Inner` was declared, which cc rejected.
+LLVM's IR forward-declares named types so tree-LLVM
+was unaffected. Test totals: 856 lib + 47 e2e
+passing.
 
 ### Recommended next (pick one)
 
