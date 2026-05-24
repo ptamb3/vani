@@ -224,6 +224,12 @@ pub struct ParallelForShape {
     /// Block holding the first instruction of the loop
     /// body (the then-target of the header's branch).
     pub body_block: BlockId,
+    /// Block between body-end and header that bumps the
+    /// counter +1. Both the body's natural fallthrough and
+    /// `continue` jump here. Closure #187 — previously the
+    /// increment lived inline at body-end and `continue`
+    /// jumped straight to header, skipping it.
+    pub step_block: BlockId,
     /// Block holding the loop's exit (the else-target of
     /// the header's branch). The matching `ParallelForEnd`
     /// hint will be emitted in this block.
@@ -700,6 +706,7 @@ fn lower_stmt(
                     end: Operand::Const(Const::Int(0)),
                     header_block: BlockId(0),
                     body_block: BlockId(0),
+                    step_block: BlockId(0),
                     exit_block: BlockId(0),
                 };
                 b.emit(
@@ -719,6 +726,7 @@ fn lower_stmt(
                     end: shape_info.end,
                     header_block: shape_info.header,
                     body_block: shape_info.body,
+                    step_block: shape_info.step,
                     exit_block: shape_info.exit,
                 };
                 match &mut b.blocks[pre_block.0 as usize].instructions[begin_idx].kind {
@@ -1489,6 +1497,11 @@ struct IntegerForShape {
     end: Operand,
     header: BlockId,
     body: BlockId,
+    /// Step block between body and header — holds the
+    /// counter +1 increment so `continue` (which jumps
+    /// directly to step) and natural body-end both
+    /// trigger the bump. Closure #187.
+    step: BlockId,
     exit: BlockId,
 }
 
@@ -1510,6 +1523,13 @@ fn lower_integer_for(
 
     let header = b.new_block();
     let body_bb = b.new_block();
+    // `step` is the increment-then-jump-to-header block.
+    // Closure #187 — `continue` inside a `for i from a to
+    // b` was jumping straight to the header with the OLD
+    // counter (the step lived inline at body-end), so the
+    // continue path skipped the +1 → infinite loop. Same
+    // shape as closures #185/#186 fixed for `for x in xs`.
+    let step = b.new_block();
     let exit = b.new_block();
 
     // Loop-carried bindings include the loop variable itself
@@ -1517,12 +1537,16 @@ fn lower_integer_for(
     // loop var FIRST so test inspection is more predictable.
     let modified = modified_in_body(body);
     let mut carry: Vec<(String, ValueId, Type)> = Vec::new();
+    let mut step_carry: Vec<(String, ValueId, Type)> = Vec::new();
     // Loop variable (always carried).
     let i_header = b.fresh_value();
     b.add_block_param(header, i_header, ty.clone());
     let i_exit = b.fresh_value();
     b.add_block_param(exit, i_exit, ty.clone());
+    let i_step = b.fresh_value();
+    b.add_block_param(step, i_step, ty.clone());
     carry.push((var.to_string(), i_header, ty.clone()));
+    step_carry.push((var.to_string(), i_step, ty.clone()));
     // Any pre-loop bindings the body reassigns.
     for name in &modified {
         if name == var {
@@ -1534,7 +1558,10 @@ fn lower_integer_for(
             b.add_block_param(header, hp, cty.clone());
             let ep = b.fresh_value();
             b.add_block_param(exit, ep, cty.clone());
-            carry.push((name.clone(), hp, cty));
+            let sp = b.fresh_value();
+            b.add_block_param(step, sp, cty.clone());
+            carry.push((name.clone(), hp, cty.clone()));
+            step_carry.push((name.clone(), sp, cty));
         }
     }
 
@@ -1588,41 +1615,54 @@ fn lower_integer_for(
     });
 
     // Body: lower with carry visible, set up the loop frame.
+    // LoopFrame.header points to `step` so `continue` lands
+    // there, where the +1 actually happens. Body's natural
+    // end also jumps to step.
     b.set_current(body_bb);
     b.loops.push(LoopFrame {
-        header,
+        header: step,
         exit,
-        carry: carry.clone(),
+        carry: step_carry.clone(),
     });
     let mut body_locals = loop_locals.clone();
     lower_stmts(body, b, &mut body_locals)?;
 
-    // After the body (if it didn't terminate), emit `i = i + 1`
-    // and jump back to header with the incremented value plus
-    // current carry values.
+    // After the body (if it didn't terminate), jump to step
+    // with the OLD counter (step does the +1).
     if b.current_block_terminator().is_none() {
-        let inc = b.emit(
-            ty.clone(),
-            end.span,
-            InstrKind::Binary {
-                op: BinaryOp::Add,
-                l: Operand::Value(*body_locals.get(var).expect("loop var in body locals")),
-                r: Operand::Const(Const::Int(1)),
-            },
-        );
-        body_locals.insert(var.to_string(), inc);
-        let back_args: Vec<Operand> = carry
+        let step_args: Vec<Operand> = step_carry
             .iter()
             .map(|(name, _, _)| {
                 Operand::Value(*body_locals.get(name).expect("carry in body"))
             })
             .collect();
         b.terminate(Terminator::Jump {
-            target: header,
-            args: back_args,
+            target: step,
+            args: step_args,
         });
     }
     b.loops.pop();
+
+    // Step block: bump counter, jump to header with the
+    // updated carry.
+    b.set_current(step);
+    let inc = b.emit(
+        ty.clone(),
+        end.span,
+        InstrKind::Binary {
+            op: BinaryOp::Add,
+            l: Operand::Value(i_step),
+            r: Operand::Const(Const::Int(1)),
+        },
+    );
+    let mut back_args: Vec<Operand> = vec![Operand::Value(inc)];
+    for (_, sp, _) in step_carry.iter().skip(1) {
+        back_args.push(Operand::Value(*sp));
+    }
+    b.terminate(Terminator::Jump {
+        target: header,
+        args: back_args,
+    });
 
     // Rebind carried bindings (except the loop var, which goes
     // out of scope at the loop's end) to exit-block params.
@@ -1641,6 +1681,7 @@ fn lower_integer_for(
         end: end_op,
         header,
         body: body_bb,
+        step,
         exit,
     })
 }

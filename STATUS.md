@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 878 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 879 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,23 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **SSA for-range continue + parallel-for shape done 2026-05-24**:
+   `for i from start to end` (range form, lowered via
+   `lower_integer_for`) had the same continue-infinite-
+   loop bug as the for-iter form fixed in #185.
+   Restructured with the same `step` block shape: step
+   bumps the counter, jumps to header. Body's natural
+   end and `continue` both jump to step. LoopFrame's
+   header is step (the continue target).
+   `ParallelForShape` grew a `step_block` field so the
+   SSA-C / SSA-LLVM parallel-for recognizers can absorb
+   step into the OpenMP / outlined-fn region — they now
+   skip step alongside header / body. Without this
+   update, the C / LLVM emit referenced step as a
+   free-standing basic block with `goto bb_step;` that
+   no other block defined. Test totals: 879 lib + 47
+   e2e passing. Closure #187.
 
    **tree-LLVM for-iter continue emits step block done 2026-05-24**:
    tree-LLVM had the same continue-infinite-loop bug as

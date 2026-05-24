@@ -362,7 +362,17 @@ fn emit_function(
     let task_regions = collect_task_regions_llvm(f)?;
     let skip_blocks: std::collections::BTreeSet<BlockId> = par_regions
         .iter()
-        .flat_map(|r| [r.shape.header_block, r.shape.body_block])
+        .flat_map(|r| {
+            // Closure #187 added step_block — skip it too;
+            // it's absorbed into the outlined fn's update
+            // arithmetic, not emitted as a free-standing
+            // LLVM basic block.
+            [
+                r.shape.header_block,
+                r.shape.body_block,
+                r.shape.step_block,
+            ]
+        })
         .collect();
     let par_by_begin: std::collections::BTreeMap<BlockId, &ParallelRegion> =
         par_regions.iter().map(|r| (r.begin_block, r)).collect();

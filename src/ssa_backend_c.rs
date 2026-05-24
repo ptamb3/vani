@@ -25,7 +25,7 @@
 
 use std::fmt::Write;
 
-use crate::ast::{ReductionOp, Type, UnaryOp};
+use crate::ast::{BinaryOp, ReductionOp, Type, UnaryOp};
 use crate::ssa::{
     BlockId, Const, Function, HintKind, InstrKind, Module, Operand,
     ParallelForShape, Terminator, ValueId,
@@ -314,7 +314,18 @@ fn emit_function(f: &Function, out: &mut String) -> Result<(), EmitError> {
     let par_regions = collect_parallel_regions(f)?;
     let skip_blocks: std::collections::BTreeSet<BlockId> = par_regions
         .iter()
-        .flat_map(|r| [r.shape.header_block, r.shape.body_block])
+        .flat_map(|r| {
+            // Closure #187 added the `step_block` between
+            // body and header. Skip it alongside the others
+            // — it's absorbed into the C for-loop's update
+            // clause (i++), not emitted as a free-standing
+            // basic block.
+            [
+                r.shape.header_block,
+                r.shape.body_block,
+                r.shape.step_block,
+            ]
+        })
         .collect();
     let par_by_begin: std::collections::BTreeMap<BlockId, &ParallelRegion> =
         par_regions.iter().map(|r| (r.begin_block, r)).collect();
@@ -564,6 +575,10 @@ pub(crate) fn recognize_parallel_region(
 
     // Body must be a single block. Multi-block bodies
     // (if/else inside the loop) aren't recognized yet.
+    // Since closure #187 the loop's structure is
+    // body → step → header (step does the counter +1
+    // so `continue` doesn't skip the increment). So
+    // accept body jumping to step.
     let body = &f.blocks[shape.body_block.0 as usize];
     let (back_args, back_target) = match &body.terminator {
         Terminator::Jump { target, args } => (args.clone(), *target),
@@ -576,11 +591,11 @@ pub(crate) fn recognize_parallel_region(
             });
         }
     };
-    if back_target != shape.header_block {
+    if back_target != shape.step_block {
         return Err(EmitError {
             message: format!(
-                "parallel-for body jumps to {:?}, expected back-edge to header {:?}",
-                back_target, shape.header_block
+                "parallel-for body jumps to {:?}, expected back-edge to step {:?}",
+                back_target, shape.step_block
             ),
         });
     }
@@ -594,19 +609,28 @@ pub(crate) fn recognize_parallel_region(
         });
     }
 
-    // The back-edge's first arg is the counter-next value.
-    // Body's last instruction must produce it via `counter +
-    // 1`. We don't fully verify the shape — we just identify
-    // the ValueId to skip during body emit.
-    let counter_increment_value = match &back_args[0] {
-        Operand::Value(v) => *v,
-        Operand::Const(_) => {
-            return Err(EmitError {
-                message: "parallel-for back-edge counter must be a Value, not a Const"
-                    .to_string(),
-            });
-        }
-    };
+    // The body's back-edge args go to step (not header).
+    // Step does the `i + 1`. The first arg from body is
+    // the OLD counter value (step takes it, adds 1, jumps
+    // to header). For our purposes, find the actual
+    // counter-increment value emitted in step so we can
+    // skip it if it (theoretically) appears in body — in
+    // practice body no longer has it after closure #187,
+    // but the skip is harmless.
+    let step_block = &f.blocks[shape.step_block.0 as usize];
+    let counter_increment_value = step_block
+        .instructions
+        .iter()
+        .find_map(|instr| match &instr.kind {
+            InstrKind::Binary {
+                op: BinaryOp::Add,
+                ..
+            } => Some(instr.result),
+            _ => None,
+        })
+        .ok_or_else(|| EmitError {
+            message: "parallel-for step block missing counter increment".to_string(),
+        })?;
 
     // For each reduction, the back-edge arg at index `1 + i`
     // is the updated value. We emit it normally but assign

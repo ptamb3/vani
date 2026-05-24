@@ -1696,6 +1696,7 @@ mod tests {
                     end: crate::ssa::Operand::Const(crate::ssa::Const::Int(0)),
                     header_block: crate::ssa::BlockId(0),
                     body_block: crate::ssa::BlockId(0),
+                    step_block: crate::ssa::BlockId(0),
                     exit_block: crate::ssa::BlockId(0),
                 },
             }),

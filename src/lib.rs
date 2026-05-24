@@ -13421,6 +13421,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn ssa_for_range_continue_increments_counter() {
+        // Closure #187: SSA had the same continue-infinite-
+        // loop bug for `for i from start to end` (range
+        // form, lowered via `lower_integer_for`) as the
+        // for-iter form fixed in #185. `continue` jumped
+        // straight to header with the OLD counter,
+        // skipping the increment that lived inline at
+        // body-end. Restructured with a step block — the
+        // same shape as for-iter — that bumps the counter
+        // and jumps to header. Body's natural end also
+        // jumps to step. ParallelForShape grew a
+        // `step_block` field; the SSA-C / SSA-LLVM
+        // parallel-for recognizers now skip step alongside
+        // header/body when absorbing the loop into a single
+        // OpenMP / outlined-fn region.
+        let source = r#"
+            fn main() -> i64 {
+              let count: i64 = 0;
+              for i from 0 to 10 {
+                let rem: i64 = i - (i / 2) * 2;
+                if rem != 0 {
+                  continue;
+                }
+                count = count + 1;
+              }
+              assert count == 5;
+              return 0;
+            }
+        "#;
+        compile(source).expect("for-range with continue compiles");
+    }
+
+    #[test]
     fn tree_llvm_for_iter_continue_emits_step_block() {
         // Closure #186: tree-LLVM had the same continue-
         // infinite-loop bug as SSA (#185). `continue` jumped
