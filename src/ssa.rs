@@ -1052,6 +1052,15 @@ fn lower_for_iter(
 
     let header = b.new_block();
     let body_bb = b.new_block();
+    // `step` is the increment-then-jump-to-header block.
+    // It's also the target of `continue` so that continue
+    // bumps the counter instead of skipping the increment.
+    // The body's natural fallthrough also jumps to `step`.
+    // Closure #185 — previously `continue` jumped straight
+    // to `header` which expected the next iteration's
+    // counter; without the increment, every continue
+    // re-entered the same iteration → infinite loop.
+    let step = b.new_block();
     let exit = b.new_block();
 
     // Carry: idx counter + any pre-loop bindings modified
@@ -1060,9 +1069,19 @@ fn lower_for_iter(
     b.add_block_param(header, i_header, Type::I64);
     let i_exit = b.fresh_value();
     b.add_block_param(exit, i_exit, Type::I64);
+    // step block also takes block-args for the pre-step
+    // state of the carry. Inside step we increment idx and
+    // pass through the carries unchanged.
+    let i_step = b.fresh_value();
+    b.add_block_param(step, i_step, Type::I64);
     let mut carry: Vec<(String, ValueId, Type)> = vec![(
         format!("__intent_iter_idx_{}", var),
         i_header,
+        Type::I64,
+    )];
+    let mut step_carry: Vec<(String, ValueId, Type)> = vec![(
+        format!("__intent_iter_idx_{}", var),
+        i_step,
         Type::I64,
     )];
     let modified = modified_in_body(body);
@@ -1076,7 +1095,10 @@ fn lower_for_iter(
             b.add_block_param(header, hp, cty.clone());
             let ep = b.fresh_value();
             b.add_block_param(exit, ep, cty.clone());
-            carry.push((name.clone(), hp, cty));
+            let sp = b.fresh_value();
+            b.add_block_param(step, sp, cty.clone());
+            carry.push((name.clone(), hp, cty.clone()));
+            step_carry.push((name.clone(), sp, cty));
         }
     }
 
@@ -1129,34 +1151,53 @@ fn lower_for_iter(
         body_locals.insert(name.clone(), *hp);
     }
     body_locals.insert(var.to_string(), element_v);
+    // Continue target is `step`, not `header` — so
+    // `continue` bumps the counter via step's increment
+    // before re-checking the cond in header. The carry
+    // attached to the frame uses step's block-params so
+    // continue's args list up at the right slots.
     b.loops.push(LoopFrame {
-        header,
+        header: step,
         exit,
-        carry: carry.clone(),
+        carry: step_carry.clone(),
     });
     lower_stmts(body, b, &mut body_locals)?;
     if b.current_block_terminator().is_none() {
-        let inc = b.emit(
-            Type::I64,
-            Span::default(),
-            InstrKind::Binary {
-                op: BinaryOp::Add,
-                l: Operand::Value(i_header),
-                r: Operand::Const(Const::Int(1)),
-            },
-        );
-        let mut back_args: Vec<Operand> = vec![Operand::Value(inc)];
-        for (name, _, _) in carry.iter().skip(1) {
-            back_args.push(Operand::Value(
+        // Body's natural end → step (with i_header, not
+        // pre-incremented). step does the actual +1.
+        let mut step_args: Vec<Operand> = vec![Operand::Value(i_header)];
+        for (name, _, _) in step_carry.iter().skip(1) {
+            step_args.push(Operand::Value(
                 *body_locals.get(name).expect("carry in body"),
             ));
         }
         b.terminate(Terminator::Jump {
-            target: header,
-            args: back_args,
+            target: step,
+            args: step_args,
         });
     }
     b.loops.pop();
+
+    // Step block: bump idx and jump to header with updated
+    // carry. Both natural body-end and `continue` land here.
+    b.set_current(step);
+    let inc = b.emit(
+        Type::I64,
+        Span::default(),
+        InstrKind::Binary {
+            op: BinaryOp::Add,
+            l: Operand::Value(i_step),
+            r: Operand::Const(Const::Int(1)),
+        },
+    );
+    let mut back_args: Vec<Operand> = vec![Operand::Value(inc)];
+    for (_, sp, _) in step_carry.iter().skip(1) {
+        back_args.push(Operand::Value(*sp));
+    }
+    b.terminate(Terminator::Jump {
+        target: header,
+        args: back_args,
+    });
 
     // Continue past the loop in `exit`, rebinding carry.
     b.set_current(exit);

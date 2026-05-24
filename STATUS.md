@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 876 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 877 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,22 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **SSA for-iter continue increments counter done 2026-05-24**:
+   `continue` inside an SSA for-iter was jumping straight
+   to the header block with the OLD i_header value — the
+   increment only happened on the natural body-
+   fallthrough path. Every `continue` re-entered the
+   same iteration → infinite loop (hang at runtime).
+   Pre-existing bug from when SSA for-iter was added.
+   Fix: introduce a `step` block between body-end and
+   header. Step takes the carry params, increments idx,
+   then jumps to header. Both the natural fallthrough
+   and `continue` jump to step (with the OLD i_header)
+   so the increment fires uniformly. LoopFrame.header
+   now points to step (the continue target), with the
+   step's carry params replacing the header's. Test
+   totals: 877 lib + 47 e2e passing. Closure #185.
 
    **SSA consuming for-iter emits buffer Drop on normal exit done 2026-05-24**:
    `for x in xs` (consuming form, Vec of Copy elements)

@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #184)
+## ⏳ Resume here (paused 2026-05-24, after closure #185)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -436,7 +436,15 @@ Emit InstrKind::Drop for the consumed Vec at the
 exit block. Known remaining: early `return` from
 inside the body still skips this Drop (documented
 known limitation). Test totals: 876 lib + 47 e2e
-passing.
+passing. #185 SSA for-iter continue infinite loop:
+`continue` jumped straight to the header with the
+OLD i_header — increment only fired on natural
+body-end fallthrough. Pre-existing bug since SSA
+for-iter shipped. Restructured with a `step` block
+that takes the carry params, increments, then
+jumps to header. Continue and natural-end both
+jump to step uniformly. Test totals: 877 lib + 47
+e2e passing.
 
 ### Recommended next (pick one)
 
