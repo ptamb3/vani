@@ -13548,6 +13548,32 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn ssa_c_omits_unused_block_labels() {
+        // Closure #204: SSA-C emitted a `bbN:` label for
+        // EVERY block, including the entry block of a
+        // straight-line fn that no `goto` ever targets.
+        // gcc warned `label 'bb0' defined but not used`
+        // (-Wunused-label) and the noise hid real
+        // diagnostics. Fix: pre-scan all terminators (Jump,
+        // Branch) plus special-region targets (parallel-for
+        // exit, multi-block task end) to build a
+        // `referenced_blocks` set, then emit a label only
+        // for blocks in that set.
+        let source = r#"
+            fn helper(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 { return helper(1, 2); }
+        "#;
+        let c = compile_to_c(source).expect("simple fn compiles");
+        // A straight-line fn has no internal Jump/Branch
+        // targets, so no `bbN:` labels should appear.
+        assert!(
+            !c.contains("bb0:"),
+            "expected no `bb0:` label in straight-line fn (unused label):\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn tree_c_no_payload_variant_with_array_payload_uses_brace_init() {
         // Closure #203: `.payload = 0` for an enum whose
         // payload is an array type (e.g. `Window.Closed`

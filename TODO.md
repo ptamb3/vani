@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #203)
+## ⏳ Resume here (paused 2026-05-25, after closure #204)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,15 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#204 SSA-C omits unused block labels: SSA-C emitted a
+`bbN:` label for EVERY block, including the entry block
+of a straight-line fn that no `goto` ever targets. gcc
+warned `-Wunused-label`. Fix: pre-scan terminators (Jump,
+Branch) plus special-region targets (parallel-for exit,
+multi-block task end) to build a `referenced_blocks` set;
+emit labels only for those. All 58 examples now clean
+under -Wunused-label. Test totals: 897 lib + 47 e2e
+passing.
 #203 tree-C array-payload no-variant brace-init:
 `.payload = 0` for an enum with array-typed payload was
 tripping `-Wmissing-braces` and is ill-formed C (gcc

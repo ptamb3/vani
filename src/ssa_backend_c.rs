@@ -382,6 +382,49 @@ fn emit_function(f: &Function, out: &mut String) -> Result<(), EmitError> {
         }
     }
 
+    // Closure #204: collect the set of block IDs that are
+    // actually referenced by some terminator (Jump / Branch).
+    // Only those need a `bbN:` label emit; for blocks reached
+    // only via fall-through (typically the entry block of a
+    // straight-line fn), the label is unused and trips
+    // `-Wunused-label`. The collected set also includes
+    // explicit `goto` targets emitted by special regions
+    // (parallel-for exit, task end_block, etc.).
+    let mut referenced_blocks: std::collections::BTreeSet<BlockId> =
+        std::collections::BTreeSet::new();
+    if f.entry.0 != 0 {
+        referenced_blocks.insert(f.entry);
+    }
+    for block in &f.blocks {
+        match &block.terminator {
+            Terminator::Jump { target, .. } => {
+                referenced_blocks.insert(*target);
+            }
+            Terminator::Branch { then_block, else_block, .. } => {
+                referenced_blocks.insert(*then_block);
+                referenced_blocks.insert(*else_block);
+            }
+            _ => {}
+        }
+    }
+    // Special-region emit paths add explicit `goto bbN;`
+    // statements that we also need to count as references.
+    // Note: task region's `begin_block` is referenced inside
+    // the OUTLINED task fn (separate string buffer), not by
+    // the parent fn emit, so we don't add it here. Same for
+    // intermediate task body blocks (they're absorbed into
+    // the outline). The `end_block` IS referenced by the
+    // parent via the `goto bb<end>;` emitted after the task
+    // join site for multi-block task bodies.
+    for region in &par_regions {
+        referenced_blocks.insert(region.shape.exit_block);
+    }
+    for region in &task_regions {
+        if region.begin_block != region.end_block {
+            referenced_blocks.insert(region.end_block);
+        }
+    }
+
     for block in &f.blocks {
         if skip_blocks.contains(&block.id) {
             // Header / body blocks are absorbed into the
@@ -396,7 +439,9 @@ fn emit_function(f: &Function, out: &mut String) -> Result<(), EmitError> {
             // the outlined task fn instead.
             continue;
         }
-        writeln!(out, "bb{}:", block.id.0).unwrap();
+        if referenced_blocks.contains(&block.id) {
+            writeln!(out, "bb{}:", block.id.0).unwrap();
+        }
         if let Some(region) = par_by_begin.get(&block.id) {
             emit_parallel_for_region(f, block, region, &value_types, out)?;
             // After the for-loop, fall through to the exit
