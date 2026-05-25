@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #208)
+## ⏳ Resume here (paused 2026-05-25, after closure #209)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,14 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#209 tree-C Atomic<T> struct field element width fix:
+parallel to #208 for Atomic. The c_leaf_type fallback
+returned `_Atomic int64_t` for any Atomic; an
+`Atomic<u32>` field declared at i64 width was
+type-incorrect (functionally tolerated via implicit
+conversion). Fix: add `Type::Atomic(element)` arm to
+`c_element_storage`. Test totals: 902 lib + 47 e2e
+passing.
 #208 tree-C Channel<T,N> struct field capacity fix:
 `Channel<T, N>` as a struct field emitted as
 `intent_channel_int64_t_16` (the hardcoded leaf fallback)

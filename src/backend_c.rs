@@ -1460,6 +1460,16 @@ pub(crate) fn c_element_storage(ty: &Type) -> String {
         // `intent_channel_int64_t_4_new()` return type and cc
         // rejects with "incompatible types".
         Type::Channel(element, capacity) => c_channel_storage(element, *capacity),
+        // Closure #209: same shape for `Atomic<T>`. The
+        // c_leaf_type fallback returns `_Atomic int64_t`
+        // for any Atomic; an `Atomic<u32>` struct field
+        // declared at i64 width would silently use the wrong
+        // memory size on platforms where i64 and u32 atomics
+        // have different alignment / lock-free behavior.
+        // `c_atomic_storage(element)` returns
+        // `_Atomic <c_leaf_type(element)>` — the right
+        // per-element width.
+        Type::Atomic(element) => c_atomic_storage(element),
         _ => c_leaf_type(ty).to_string(),
     }
 }

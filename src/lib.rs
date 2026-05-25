@@ -13548,6 +13548,45 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_c_atomic_struct_field_uses_element_width() {
+        // Closure #209: parallel to #208 for Atomic.
+        // `Atomic<T>` as a struct field was emitting
+        // `_Atomic int64_t` (the c_leaf_type fallback)
+        // regardless of T. For `Atomic<u32>`, this meant
+        // the cell was actually i64-width on disk even
+        // though the source language declared u32.
+        // Functionally tolerated at runtime via implicit
+        // conversion, but the memory layout / alignment /
+        // lock-free properties could diverge from the
+        // declared type. Fix: add a `Type::Atomic(element)`
+        // arm to `c_element_storage` that calls
+        // `c_atomic_storage(element)` → `_Atomic
+        // <c_leaf_type(element)>`.
+        let source = r#"
+            struct Counter { hits: Atomic<u32> }
+
+            fn main() -> i64 {
+              let c: Counter = Counter { hits: atomic_new(0 as u32) };
+              atomic_fetch_add(ref c.hits, 5);
+              let v: u32 = atomic_load(ref c.hits);
+              assert v == 5;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("Atomic struct field compiles");
+        assert!(
+            c.contains("_Atomic uint32_t hits"),
+            "expected `_Atomic uint32_t hits` struct field:\n{}",
+            c
+        );
+        assert!(
+            !c.contains("_Atomic int64_t hits"),
+            "expected NO `_Atomic int64_t hits` fallback:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn tree_c_channel_struct_field_uses_correct_capacity() {
         // Closure #208: `Channel<T, N>` as a struct field
         // emitted with the hardcoded fallback type

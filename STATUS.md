@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 901 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 902 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,19 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-C Atomic<T> struct field element width fix done 2026-05-25**:
+   Parallel to #208 for `Atomic<T>` as a struct field.
+   The c_leaf_type fallback returned `_Atomic int64_t`
+   for any Atomic; an `Atomic<u32>` field declared at
+   i64 width would have wrong memory size / alignment /
+   lock-free properties vs the declared type
+   (functionally tolerated at runtime via implicit
+   conversion, but type-incorrect). Fix: add an
+   `Atomic(element)` arm to `c_element_storage` that
+   calls `c_atomic_storage(element)` → `_Atomic
+   <c_leaf_type(element)>`. Test totals: 902 lib + 47
+   e2e passing. Closure #209.
 
    **tree-C Channel<T,N> struct field capacity fix done 2026-05-25**:
    `Channel<T, N>` as a struct field emitted with the
