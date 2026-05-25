@@ -1687,12 +1687,14 @@ fn sub_aliases_in_type(ty: &mut Type, aliases: &BTreeMap<String, Type>) {
 
 fn sub_aliases_in_stmt(stmt: &mut Stmt, aliases: &BTreeMap<String, Type>) {
     match stmt {
-        Stmt::Let { annotation, .. } | Stmt::LetTuple { annotation, .. } => {
+        Stmt::Let { annotation, expr, .. } | Stmt::LetTuple { annotation, expr, .. } => {
             if let Some(ty) = annotation {
                 sub_aliases_in_type(ty, aliases);
             }
+            sub_aliases_in_expr(expr, aliases);
         }
-        Stmt::If { then_body, else_body, .. } => {
+        Stmt::If { cond, then_body, else_body, .. } => {
+            sub_aliases_in_expr(cond, aliases);
             for s in then_body {
                 sub_aliases_in_stmt(s, aliases);
             }
@@ -1700,15 +1702,141 @@ fn sub_aliases_in_stmt(stmt: &mut Stmt, aliases: &BTreeMap<String, Type>) {
                 sub_aliases_in_stmt(s, aliases);
             }
         }
-        Stmt::While { body, .. }
-        | Stmt::For { body, .. }
-        | Stmt::ForIter { body, .. }
-        | Stmt::TaskSpawn { body, .. } => {
+        Stmt::While { cond, invariants, body, .. } => {
+            sub_aliases_in_expr(cond, aliases);
+            for inv in invariants {
+                sub_aliases_in_expr(inv, aliases);
+            }
             for s in body {
                 sub_aliases_in_stmt(s, aliases);
             }
         }
-        _ => {}
+        Stmt::For { start, end, invariants, body, .. } => {
+            sub_aliases_in_expr(start, aliases);
+            sub_aliases_in_expr(end, aliases);
+            for inv in invariants {
+                sub_aliases_in_expr(inv, aliases);
+            }
+            for s in body {
+                sub_aliases_in_stmt(s, aliases);
+            }
+        }
+        Stmt::ForIter { body, .. } | Stmt::TaskSpawn { body, .. } => {
+            for s in body {
+                sub_aliases_in_stmt(s, aliases);
+            }
+        }
+        Stmt::Return { expr, .. }
+        | Stmt::Assert { expr, .. }
+        | Stmt::Prove { expr, .. }
+        | Stmt::Assign { expr, .. } => {
+            sub_aliases_in_expr(expr, aliases);
+        }
+        Stmt::IndexAssign { index, value, .. } => {
+            sub_aliases_in_expr(index, aliases);
+            sub_aliases_in_expr(value, aliases);
+        }
+        Stmt::FieldAssign { object, value, .. } => {
+            sub_aliases_in_expr(object, aliases);
+            sub_aliases_in_expr(value, aliases);
+        }
+        Stmt::Print { items, .. } => {
+            for item in items {
+                if let crate::ast::PrintItem::Expr(e) = item {
+                    sub_aliases_in_expr(e, aliases);
+                }
+            }
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } | Stmt::TaskJoin { .. } => {}
+    }
+}
+
+/// Mirror of `resolve_enum_types_in_expr` for type-alias
+/// substitution: recurse into expression trees so Lets inside
+/// Block-expressions get their annotation aliases substituted.
+/// Without this, `let p: AliasName = …;` inside `{ let r = …;
+/// p.0 }` would never have its annotation rewritten and the
+/// checker would reject with "Pair vs (i64, i64)" (or similar).
+fn sub_aliases_in_expr(expr: &mut Expr, aliases: &BTreeMap<String, Type>) {
+    match &mut expr.kind {
+        ExprKind::Block { stmts, tail } => {
+            for s in stmts {
+                sub_aliases_in_stmt(s, aliases);
+            }
+            sub_aliases_in_expr(tail, aliases);
+        }
+        ExprKind::IfExpr { cond, then_value, else_value } => {
+            sub_aliases_in_expr(cond, aliases);
+            sub_aliases_in_expr(then_value, aliases);
+            sub_aliases_in_expr(else_value, aliases);
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            sub_aliases_in_expr(scrutinee, aliases);
+            for arm in arms {
+                sub_aliases_in_expr(&mut arm.body, aliases);
+            }
+        }
+        ExprKind::Cast { expr: inner, ty } => {
+            sub_aliases_in_type(ty, aliases);
+            sub_aliases_in_expr(inner, aliases);
+        }
+        ExprKind::Unary { expr: inner, .. } => {
+            sub_aliases_in_expr(inner, aliases);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            sub_aliases_in_expr(left, aliases);
+            sub_aliases_in_expr(right, aliases);
+        }
+        ExprKind::Call { args, .. } => {
+            for a in args {
+                sub_aliases_in_expr(a, aliases);
+            }
+        }
+        ExprKind::MethodCall { receiver, args, .. } => {
+            sub_aliases_in_expr(receiver, aliases);
+            for a in args {
+                sub_aliases_in_expr(a, aliases);
+            }
+        }
+        ExprKind::ArrayLit { elements } => {
+            for e in elements {
+                sub_aliases_in_expr(e, aliases);
+            }
+        }
+        ExprKind::Tuple(elements) => {
+            for e in elements {
+                sub_aliases_in_expr(e, aliases);
+            }
+        }
+        ExprKind::Index { array, index } => {
+            sub_aliases_in_expr(array, aliases);
+            sub_aliases_in_expr(index, aliases);
+        }
+        ExprKind::Len { array } => {
+            sub_aliases_in_expr(array, aliases);
+        }
+        ExprKind::Ref { inner } | ExprKind::RefMut { inner } => {
+            sub_aliases_in_expr(inner, aliases);
+        }
+        ExprKind::TupleAccess { tuple, .. } => {
+            sub_aliases_in_expr(tuple, aliases);
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for (_, e) in fields {
+                sub_aliases_in_expr(e, aliases);
+            }
+        }
+        ExprKind::FieldAccess { object, .. } => {
+            sub_aliases_in_expr(object, aliases);
+        }
+        ExprKind::Try { inner } => {
+            sub_aliases_in_expr(inner, aliases);
+        }
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Var(_) => {}
     }
 }
 

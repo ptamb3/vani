@@ -13548,6 +13548,34 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn block_expr_inner_let_with_type_alias_annotation_compiles() {
+        // Closure #197: the type-alias substitution pass
+        // (`sub_aliases_in_stmt`) had the same pre-existing
+        // limitation as `resolve_enum_types_in_stmt` (#196):
+        // it never descended into a Stmt's `expr` field, so
+        // aliases in Block-expr inner Lets were left unresolved
+        // and the checker reported `let p: P = Point { … };`
+        // as "Pair vs (i64, i64)" or "P vs Point" — confusing
+        // and wrong. Fix: parallel `sub_aliases_in_expr` walks
+        // every expression shape and recurses through nested
+        // Lets, mirroring the #196 enum walker.
+        let source = r#"
+            struct Point { x: i64, y: i64 }
+            type P = Point;
+
+            fn main() -> i64 {
+              let r: i64 = {
+                let p: P = Point { x: 3, y: 4 };
+                p.x + p.y
+              };
+              assert r == 7;
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("type-alias inner Let inside Block-expr must compile");
+    }
+
+    #[test]
     fn block_expr_inner_let_with_enum_annotation_compiles() {
         // Closure #196: `resolve_enum_types_in_stmt` walked
         // top-level fn bodies and the bodies of `if`/`while`/

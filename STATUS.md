@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 889 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 890 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,18 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Block-expr inner type-alias resolution done 2026-05-25**:
+   Parallel to closure #196 for the type-alias
+   substitution pass. `sub_aliases_in_stmt` had the same
+   pre-existing limitation — it never descended into a
+   Stmt's `expr` field, so any `let p: AliasName = …;`
+   inside a Block-expr kept the unsubstituted alias and
+   the checker rejected with the unresolved-name
+   diagnostic. New `sub_aliases_in_expr` walks every
+   expression shape and recurses through nested Lets,
+   mirroring the #196 enum walker. Test totals: 890 lib
+   + 47 e2e passing. Closure #197.
 
    **Block-expr inner enum-let annotation resolution done 2026-05-24**:
    `resolve_enum_types_in_stmt` walked top-level fn
