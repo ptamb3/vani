@@ -236,6 +236,14 @@ fn preamble(out: &mut String) {
 fn emit_function_prototype(f: &Function, out: &mut String) -> Result<(), EmitError> {
     let ret_c = c_type(&f.return_type)?;
     write!(out, "{} fn_{}(", ret_c, f.name).unwrap();
+    // Closure #202: empty-param prototypes must say `(void)`,
+    // not `()`. Empty parens mean "unspecified prototype" in
+    // C (not "no args"), tripping `-Wstrict-prototypes` and
+    // breaking -Werror builds. Tree-C already emits `(void)`
+    // via `emit_params`; mirror that here.
+    if f.params.is_empty() {
+        out.push_str("void");
+    }
     for (i, (_, ty, vid)) in f.params.iter().enumerate() {
         if i > 0 {
             out.push_str(", ");
@@ -250,6 +258,11 @@ fn emit_function_prototype(f: &Function, out: &mut String) -> Result<(), EmitErr
 fn emit_function(f: &Function, out: &mut String) -> Result<(), EmitError> {
     let ret_c = c_type(&f.return_type)?;
     write!(out, "{} fn_{}(", ret_c, f.name).unwrap();
+    // Closure #202: see `emit_function_prototype` for why
+    // empty parens must be `(void)`.
+    if f.params.is_empty() {
+        out.push_str("void");
+    }
     for (i, (name, ty, vid)) in f.params.iter().enumerate() {
         if i > 0 {
             out.push_str(", ");

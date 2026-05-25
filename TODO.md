@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #201)
+## ⏳ Resume here (paused 2026-05-25, after closure #202)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,13 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#202 SSA-C empty-param prototype `(void)`: SSA-C emitted
+`fn_main()` (empty parens = K&R unspecified prototype),
+tripping `-Wstrict-prototypes` and breaking -Werror builds.
+Both `emit_function_prototype` and `emit_function` now write
+`(void)` when params is empty, mirroring tree-C's
+`emit_params`. -Wstrict-prototypes sweep over all 58
+examples now clean. Test totals: 895 lib + 47 e2e passing.
 #201 Block-expr Let RHS move tracking: the Block-expr
 `Stmt::Let` arm (closure #129 MVP) never called
 `consume_if_moved_var(rhs, …)`, so `let n = b.name`

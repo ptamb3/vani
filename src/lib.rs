@@ -13548,6 +13548,32 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn ssa_c_empty_param_signature_uses_void() {
+        // Closure #202: SSA-C emitted `fn_main()` for a no-
+        // arg function. Empty parens mean "unspecified
+        // prototype" in C (not "no args"), tripping
+        // `-Wstrict-prototypes` and breaking -Werror builds.
+        // Both `emit_function_prototype` and `emit_function`
+        // now write `(void)` when `f.params` is empty —
+        // mirrors what tree-C's `emit_params` already did.
+        let source = r#"
+            fn helper() -> i64 { return 42; }
+            fn main() -> i64 { return helper(); }
+        "#;
+        let c = compile_to_c(source).expect("no-arg fn compiles");
+        assert!(
+            !c.contains("fn_main()") || c.contains("fn_main(void)"),
+            "expected no `fn_main()` empty-paren prototype:\n{}",
+            c
+        );
+        assert!(
+            c.contains("fn_helper(void)"),
+            "expected `fn_helper(void)` prototype:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn block_expr_let_marks_rhs_var_moves() {
         // Closure #201: the Block-expr `Stmt::Let` arm
         // (closure #129's MVP) never called

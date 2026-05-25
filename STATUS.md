@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 894 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 895 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,18 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **SSA-C empty-param prototype `(void)` done 2026-05-25**:
+   SSA-C emitted `fn_main()` with empty parens for no-
+   arg functions. In C, empty parens mean "unspecified
+   prototype" (K&R style), not "no args" — tripping
+   `-Wstrict-prototypes` and breaking -Werror builds.
+   Both `emit_function_prototype` and `emit_function`
+   now write `(void)` when `f.params` is empty,
+   mirroring what tree-C's `emit_params` already did.
+   `-Wstrict-prototypes` sweep over all 58 examples now
+   clean. Test totals: 895 lib + 47 e2e passing.
+   Closure #202.
 
    **Block-expr Let RHS move tracking done 2026-05-25**:
    The Block-expr `Stmt::Let` arm (closure #129 MVP)
