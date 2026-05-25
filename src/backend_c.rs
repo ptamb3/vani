@@ -4335,8 +4335,26 @@ fn format_declarator(ty: &Type, name: &str) -> String {
                     s.trim_end().to_string()
                 })
                 .collect();
-            let ret_decl = format_declarator(ret, "");
-            let ret_decl = ret_decl.trim_end().to_string();
+            // Closure #216: when the return type is itself a
+            // FnPtr, naive declarator nesting (`R (*)(...) (*name)()`)
+            // is ill-formed C — the inner fn-ptr declarator
+            // can't appear as a prefix-only type. Proper C
+            // declarator nesting (`R (*(*name)())(...)`) is
+            // syntactically complex to synthesize correctly.
+            // Since all fn-ptrs are interchangeable at the C
+            // storage level (`void*` in struct fields / Vec
+            // slots — closures #214/#215), drop the inner
+            // signature and emit `void*` for the return when
+            // it's a FnPtr. Call sites handle the implicit
+            // conversion (caller's `let f: fn(...) -> R = p();`
+            // assigns a `void*` to a fn-pointer-typed local
+            // which gcc accepts with an implicit conversion).
+            let ret_decl = if matches!(ret.as_ref(), Type::FnPtr(_, _)) {
+                "void*".to_string()
+            } else {
+                let r = format_declarator(ret, "");
+                r.trim_end().to_string()
+            };
             format!("{} (*{})({})", ret_decl, name, params_c.join(", "))
         }
         other => format!("{} {}", c_leaf_type(other), name),

@@ -13548,6 +13548,46 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_c_nested_fnptr_return_compiles() {
+        // Closure #216: `fn() -> fn(T) -> R` produced
+        // syntactically broken C declarator
+        //   `int64_t (*)(int64_t, int64_t) (*v_p)()`
+        // because `format_declarator` recursively formatted
+        // the inner fn-ptr return type as a prefix (which
+        // isn't valid C — fn-ptr declarators can't appear
+        // prefix-only). Fix: when the FnPtr's return type is
+        // itself a FnPtr, drop the inner signature in the
+        // declarator and use `void*` for the return slot.
+        // All fn-ptrs are interchangeable at the C storage
+        // level (struct fields, Vec slots — closures #214/#215),
+        // so the implicit conversion at use sites works.
+        let source = r#"
+            fn add(a: i64, b: i64) -> i64 { return a + b; }
+
+            fn picker() -> fn(i64, i64) -> i64 {
+              return add;
+            }
+
+            fn main() -> i64 {
+              let p: fn() -> fn(i64, i64) -> i64 = picker;
+              let f: fn(i64, i64) -> i64 = p();
+              let r: i64 = f(3, 5);
+              assert r == 8;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("nested FnPtr return compiles");
+        // The local `v_p` must have a syntactically valid
+        // declarator — `void* (*v_p)()`, not the broken
+        // `<sig> (*v_p)()` form.
+        assert!(
+            c.contains("void* (*v_p)()"),
+            "expected `void* (*v_p)()` for the nested-FnPtr local:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn tree_llvm_vec_fnptr_emits_clean_tag() {
         // Closure #215: tree-LLVM's `vec_struct_tag` fell
         // through to `llvm_type(FnPtr)` which is

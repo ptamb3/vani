@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 907 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 908 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,19 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-C nested FnPtr return declarator done 2026-05-25**:
+   `fn() -> fn(T) -> R` produced syntactically broken C
+     `int64_t (*)(int64_t, int64_t) (*v_p)()`
+   because `format_declarator` recursively formatted the
+   inner fn-ptr return as a prefix — fn-ptr declarators
+   can't appear prefix-only in C. Fix: when the FnPtr's
+   return type is itself a FnPtr, emit `void*` for the
+   return slot. All fn-ptrs are interchangeable at the
+   C storage level (closures #214/#215), so the implicit
+   conversion at use sites works (gcc accepts void*↔fn-ptr
+   silently). Test totals: 908 lib + 47 e2e passing.
+   Closure #216.
 
    **tree-LLVM Vec<FnPtr> tag fix done 2026-05-25**:
    Parallel to #214 on the LLVM side. tree-LLVM's
