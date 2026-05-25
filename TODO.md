@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #199)
+## ⏳ Resume here (paused 2026-05-25, after closure #200)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,17 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#200 Block-expr `let _ = …` Discard handling: the
+Block-expr `check_expr` arm always called
+`env.insert_current(name)` and emitted `TypedStmt::Let`.
+For `name == "_"`, two consecutive discards collided on
+the synthetic name (`v__` redefined) and the fresh
+OwnedStr/Vec result leaked because Discard wasn't on
+the Block emit's accepted arm list. Fix: emit
+`TypedStmt::Discard` when `name == "_"`. Tree-C Block
+emit grew a Discard arm with brace-scoped tmps; tree-
+LLVM Block emit forwards Discard to `emit_stmt`. Test
+totals: 893 lib + 47 e2e passing.
 #199 Block-expr shadow-name false-move: closure #174's
 recursion into `Block { tail }` in `consume_if_moved_var`
 fired AFTER pop_scope, so `env.lookup_mut(name)` walked

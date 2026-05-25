@@ -13548,6 +13548,56 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn block_expr_let_underscore_emits_discard_not_let() {
+        // Closure #200: Block-expr's Let arm always called
+        // `env.insert_current(name)` and emitted
+        // `TypedStmt::Let`. For `name == "_"`, two consecutive
+        // discards collide on the synthetic name (`v__`
+        // redefined) and the fresh OwnedStr/Vec result leaks
+        // because Discard wasn't on the Block emit's accepted
+        // arm list. Fix: in the Block-expr `check_expr` arm,
+        // detect `name == "_"` and emit `TypedStmt::Discard
+        // { expr }` instead — mirrors the regular fn-body Let
+        // path (closure #134). Tree-C Block emit grew a
+        // Discard arm covering OwnedStr/Vec/Struct/Enum with
+        // brace-scoped tmps; tree-LLVM Block emit now forwards
+        // Discard to `emit_stmt` like Print/Drop.
+        let source = r#"
+            fn make() -> OwnedStr { return "made" + ""; }
+
+            fn main() -> i64 {
+              let n: i64 = {
+                let _ = make();
+                let _ = make();
+                let a: OwnedStr = "kept" + "";
+                len(a) as i64
+              };
+              assert n == 4;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("let _ inside Block-expr compiles");
+        // Both discards must be present (each in their own
+        // brace-scope) and each must free the heap.
+        let main_start = c.find("static int64_t fn_main(void) {").unwrap_or(0);
+        let main_body = &c[main_start..];
+        // Expect two `_intent_discard = (fn_make())` calls and
+        // their matching frees — confirms both discards ran.
+        let discard_calls = main_body.matches("_intent_discard = (fn_make())").count();
+        assert!(
+            discard_calls == 2,
+            "expected 2 _intent_discard = fn_make() calls, got {}:\n{}",
+            discard_calls, main_body
+        );
+        let frees = main_body.matches("free((void*)_intent_discard)").count();
+        assert!(
+            frees == 2,
+            "expected 2 free((void*)_intent_discard) calls, got {}:\n{}",
+            frees, main_body
+        );
+    }
+
+    #[test]
     fn block_expr_inner_shadow_does_not_mark_outer_var_moved() {
         // Closure #199: when the outer
         // `consume_if_moved_var` walks into a Block-expr's

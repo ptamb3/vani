@@ -3238,6 +3238,106 @@ fn emit_expr(expr: &TypedExpr) -> String {
                     TypedStmt::Print { items } => {
                         emit_print_items(items, &mut body);
                     }
+                    TypedStmt::Discard { expr: discard_expr } => {
+                        // Closure #200: `let _ = expr;` inside
+                        // a Block-expr. Evaluate the RHS for
+                        // side effects and free any heap result.
+                        // Brace-scope each so consecutive
+                        // discards don't collide on the tmp
+                        // name. Mirrors the regular stmt-level
+                        // discard handling (closures #134, #145,
+                        // #146).
+                        let rhs_c = emit_expr(discard_expr);
+                        match &discard_expr.ty {
+                            Type::OwnedStr => {
+                                body.push_str(&format!(
+                                    "{{ char* _intent_discard = ({}); free((void*)_intent_discard); }} ",
+                                    rhs_c
+                                ));
+                            }
+                            Type::Vec(element) => {
+                                let s_name = vec_c_struct(element);
+                                body.push_str(&format!(
+                                    "{{ {} _intent_discard = ({}); {}(_intent_discard); }} ",
+                                    s_name,
+                                    rhs_c,
+                                    vec_helper(element, "free"),
+                                ));
+                            }
+                            Type::Struct(struct_name) => {
+                                let fields = STRUCT_FIELDS_REGISTRY
+                                    .with(|r| r.borrow().get(struct_name).cloned())
+                                    .unwrap_or_default();
+                                let has_owning =
+                                    fields.iter().any(|(_, ty)| !ty.is_copy());
+                                if has_owning {
+                                    let mut field_drops = String::new();
+                                    let empty: std::collections::HashSet<&String> =
+                                        std::collections::HashSet::new();
+                                    emit_struct_field_drops(
+                                        "_intent_discard",
+                                        struct_name,
+                                        &fields,
+                                        &empty,
+                                        &mut field_drops,
+                                    );
+                                    body.push_str(&format!(
+                                        "{{ {} _intent_discard = ({}); {}}} ",
+                                        struct_c_name(struct_name),
+                                        rhs_c,
+                                        field_drops,
+                                    ));
+                                } else {
+                                    body.push_str(&format!("(void)({}); ", rhs_c));
+                                }
+                            }
+                            Type::Enum(enum_name) => {
+                                let payload_ty = ENUM_PAYLOAD_REGISTRY
+                                    .with(|r| r.borrow().get(enum_name).cloned());
+                                let free_expr: Option<String> = match &payload_ty {
+                                    Some(Type::OwnedStr) => Some(
+                                        "free((void*)_intent_discard.payload)".to_string(),
+                                    ),
+                                    Some(Type::Vec(element)) => Some(format!(
+                                        "{}(_intent_discard.payload)",
+                                        vec_helper(element, "free")
+                                    )),
+                                    _ => None,
+                                };
+                                if let Some(free_call) = free_expr {
+                                    let payload_tags: Vec<u32> = ENUM_PAYLOAD_TAGS_REGISTRY
+                                        .with(|r| {
+                                            r.borrow()
+                                                .get(enum_name)
+                                                .cloned()
+                                                .unwrap_or_default()
+                                        });
+                                    if !payload_tags.is_empty() {
+                                        let cases: Vec<String> = payload_tags
+                                            .iter()
+                                            .map(|t| format!("case {}", t))
+                                            .collect();
+                                        body.push_str(&format!(
+                                            "{{ {} _intent_discard = ({}); switch (_intent_discard.tag) {{ {}: {}; break; default: break; }} }} ",
+                                            format!("Enum_{}", enum_name),
+                                            rhs_c,
+                                            cases.join(": "),
+                                            free_call,
+                                        ));
+                                    } else {
+                                        body.push_str(&format!("(void)({}); ", rhs_c));
+                                    }
+                                } else {
+                                    body.push_str(&format!("(void)({}); ", rhs_c));
+                                }
+                            }
+                            _ => {
+                                // Copy / scalar / non-heap discards:
+                                // just evaluate for side effects.
+                                body.push_str(&format!("(void)({}); ", rhs_c));
+                            }
+                        }
+                    }
                     TypedStmt::Drop { name, ty, .. } => match ty {
                         Type::OwnedStr => {
                             body.push_str(&format!(

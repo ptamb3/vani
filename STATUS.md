@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 892 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 893 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,22 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Block-expr `let _ = …` Discard handling done 2026-05-25**:
+   The Block-expr `check_expr` arm always called
+   `env.insert_current(name)` and emitted
+   `TypedStmt::Let`. For `name == "_"`, two consecutive
+   discards collided on the synthetic name (`v__`
+   redefined) and the fresh OwnedStr/Vec result leaked
+   because Discard wasn't on the Block emit's accepted
+   arm list. Fix: detect `name == "_"` in the Block-expr
+   Let arm and emit `TypedStmt::Discard { expr }` —
+   mirrors the regular fn-body Let path (closure #134).
+   Tree-C Block emit grew a Discard arm covering
+   OwnedStr/Vec/Struct/Enum with brace-scoped tmps;
+   tree-LLVM Block emit now forwards Discard to
+   `emit_stmt` alongside Print/Drop. Test totals: 893
+   lib + 47 e2e passing. Closure #200.
 
    **Block-expr shadow-name false-move done 2026-05-25**:
    When the OUTER `consume_if_moved_var` walked into a

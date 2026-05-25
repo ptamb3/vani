@@ -4407,7 +4407,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                         ));
                         ctx.locals.insert(name.clone(), (ty.clone(), addr));
                     }
-                    TypedStmt::Print { .. } | TypedStmt::Drop { .. } => {
+                    TypedStmt::Print { .. }
+                    | TypedStmt::Drop { .. }
+                    | TypedStmt::Discard { .. } => {
+                        // Closure #200: forward Discard too —
+                        // `let _ = expr;` inside a Block-expr
+                        // must evaluate the RHS for side effects
+                        // and free any heap result. The stmt-
+                        // level Discard handler already covers
+                        // OwnedStr/Vec/Struct/Enum/Array.
                         emit_stmt(s, ctx, out);
                     }
                     _ => {}

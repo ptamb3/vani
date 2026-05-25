@@ -7388,6 +7388,19 @@ fn check_expr(
                         } else {
                             check_expr(rhs, env, signatures, diagnostics)
                         };
+                        // `let _ = expr;` is a discard. Don't
+                        // insert a binding (the name `_` would
+                        // collide on the second use) and emit a
+                        // `Discard` stmt so the codegen frees a
+                        // fresh heap result. Mirrors the
+                        // regular fn-body Let path (closure
+                        // #134). Closure #200.
+                        if name == "_" {
+                            typed_stmts.push(TypedStmt::Discard {
+                                expr: rhs_checked.expr,
+                            });
+                            continue;
+                        }
                         let ty = rhs_checked.ty().clone();
                         env.insert_current(name.clone(), VarInfo {
                             ty: ty.clone(),
