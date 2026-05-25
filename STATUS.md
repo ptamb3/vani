@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 887 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 888 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,24 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **inject_branch_drops skips inner Block decls done 2026-05-24**:
+   With closure #194's tail-spill landing `let
+   __block_tail_<span> = …` inside each Block-expr,
+   the `if-expr cond { Block1 } else { Block2 }` shape
+   broke at codegen because
+   `collect_branch_var_leaves` was treating the inner
+   spill Var as a "leaf" of the branch and
+   inject_branch_drops then emitted `Drop
+   __block_tail_<span>` in the OTHER branch — where
+   that name isn't declared. cc rejected with
+   `undeclared identifier v___block_tail_<n>`. Fix in
+   `collect_branch_var_leaves`: when descending into
+   `Block { stmts, tail }`, filter out any Var name
+   that a `Let` inside the same Block introduces. The
+   filter is symmetric for spill Vars (synthetic) and
+   user-declared inner Vars. Test totals: 888 lib +
+   47 e2e passing. Closure #195.
 
    **Block-expr sibling-let scope-exit drops done 2026-05-24**:
    `let r = { let a = …; let b = …; a };` was leaking

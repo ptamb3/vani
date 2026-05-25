@@ -5473,8 +5473,33 @@ fn collect_branch_var_leaves(expr: &TypedExpr, out: &mut Vec<(String, Type)>) {
                 collect_branch_var_leaves(&arm.body, out);
             }
         }
-        TypedExprKind::Block { tail, .. } => {
-            collect_branch_var_leaves(tail, out);
+        TypedExprKind::Block { stmts, tail } => {
+            // Vars declared inside the Block are out of scope
+            // for sibling if/match branches — collect from the
+            // tail but filter out any name that a Let in this
+            // Block introduces. Without the filter, the spill
+            // from closure #194 (`__block_tail_<span>`) and
+            // user-declared inner Vars get treated as outer-
+            // scope leaves and inject_branch_drops would emit
+            // `Drop <inner-name>` in the OTHER branch where
+            // that name isn't visible. Closure #195.
+            let mut leaves: Vec<(String, Type)> = Vec::new();
+            collect_branch_var_leaves(tail, &mut leaves);
+            let inner_declared: std::collections::BTreeSet<&str> = stmts
+                .iter()
+                .filter_map(|s| match s {
+                    TypedStmt::Let { name, .. } => Some(name.as_str()),
+                    _ => None,
+                })
+                .collect();
+            for (n, t) in leaves {
+                if inner_declared.contains(n.as_str()) {
+                    continue;
+                }
+                if !out.iter().any(|(existing, _)| existing == &n) {
+                    out.push((n, t));
+                }
+            }
         }
         _ => {}
     }

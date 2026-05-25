@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #194)
+## ⏳ Resume here (paused 2026-05-24, after closure #195)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,18 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#195 inject_branch_drops cross-scope leak after #194:
+the spill from #194 lands `let __block_tail_<span> =
+…` inside each Block-expr, and `collect_branch_var_
+leaves` was treating the inner spill Var as a "leaf"
+of the surrounding if-expr branch. inject_branch_drops
+then emitted `Drop __block_tail_<span>` in the OTHER
+branch where the name isn't declared → cc rejected
+with `undeclared identifier`. Fix: when descending
+into `Block { stmts, tail }`, filter out any Var name
+that a `Let` inside the same Block introduces. Same
+filter helps user-declared inner Vars too. Test
+totals: 888 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

@@ -13548,6 +13548,75 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn inject_branch_drops_skips_inner_block_decls() {
+        // Closure #195: with #194's tail-spill inserting
+        // `let __block_tail_<span> = …` inside each Block-expr,
+        // a Var-branch shape like
+        //   `if cond { { let a = …; let b = …; a } }
+        //        else { { let cc = …; let dd = …; cc } }`
+        // had the inject_branch_drops walker collecting each
+        // branch's INNER spill Var as a "leaf" and trying to
+        // drop the opposite branch's spill name — but that
+        // name is only declared inside the other Block's
+        // scope, so cc rejected the resulting C with
+        // "undeclared identifier `v___block_tail_<n>`".
+        // Fix in `collect_branch_var_leaves`: when descending
+        // into `Block { stmts, tail }`, filter out any Var
+        // name that a Let inside the same Block introduces.
+        let source = r#"
+            fn pick(flag: i64) -> OwnedStr {
+              let chosen: OwnedStr = if flag > 0 {
+                { let a: OwnedStr = "alpha" + "";
+                  let b: OwnedStr = "beta" + "";
+                  a }
+              } else {
+                { let cc: OwnedStr = "gamma" + "";
+                  let dd: OwnedStr = "delta" + "";
+                  cc }
+              };
+              return chosen;
+            }
+
+            fn main() -> i64 {
+              let r: OwnedStr = pick(1);
+              assert (len(r) as i64) == 5;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source)
+            .expect("nested Block-expr inside if-expr branches must compile");
+        // The C must NOT reference the opposite branch's
+        // `__block_tail_<n>` spill name (which was the cc
+        // failure). And each branch's own spill must be
+        // declared next to its sibling-let drops.
+        let pick_start = c
+            .find("static char* fn_pick(int64_t v_flag) {")
+            .expect("fn_pick definition present");
+        let pick_end = c[pick_start..]
+            .find("\nstatic int64_t fn_main")
+            .map(|i| pick_start + i)
+            .unwrap_or(c.len());
+        let pick_body = &c[pick_start..pick_end];
+        assert!(
+            pick_body.contains("free((void*)v_b)")
+                && pick_body.contains("free((void*)v_dd)"),
+            "expected each branch to free its own sibling let inside its Block:\n{}",
+            pick_body
+        );
+        // Inject_branch_drops must NOT have hoisted a drop of
+        // the OTHER branch's spill into this branch. Count
+        // `__block_tail_` occurrences — there should be two
+        // pairs (one decl + one read per branch), not three
+        // (which would mean a cross-branch drop was injected).
+        let spill_hits = pick_body.matches("__block_tail_").count();
+        assert!(
+            spill_hits == 4,
+            "expected exactly 4 __block_tail_ occurrences (decl+read x2), got {}:\n{}",
+            spill_hits, pick_body
+        );
+    }
+
+    #[test]
     fn tree_c_block_expr_skips_spill_when_no_drops_needed() {
         // Closure #194: when the Block's tail consumes every
         // sibling (e.g. `{ let a = …; let b = …; a + b }`),
