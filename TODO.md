@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #207)
+## ⏳ Resume here (paused 2026-05-25, after closure #208)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,15 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#208 tree-C Channel<T,N> struct field capacity fix:
+`Channel<T, N>` as a struct field emitted as
+`intent_channel_int64_t_16` (the hardcoded leaf fallback)
+because `c_element_storage` fell through to `c_leaf_type`
+for Channel. cc rejected with "incompatible types" since
+the constructor returns the actual `(T, N)` type. Fix:
+add a `Channel(elt, cap)` arm to `c_element_storage` that
+calls `c_channel_storage(elt, cap)`. Test totals: 901
+lib + 47 e2e passing.
 #207 tree-C Block-expr user-Drop for Copy structs:
 the Block-expr Drop emit's Struct arm walked per-field
 free chains but never checked USER_DROP_REGISTRY. For

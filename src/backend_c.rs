@@ -1449,6 +1449,17 @@ pub(crate) fn c_element_storage(ty: &Type) -> String {
         {
             enum_c_name(name)
         }
+        // Closure #208: `Channel<T, N>` is parametric over
+        // both element width and capacity. The c_leaf_type
+        // fallback returns the hardcoded
+        // `intent_channel_int64_t_16` (the comment there
+        // explicitly notes callers must special-case
+        // Channel). Without this arm, a `Channel<i64, 4>`
+        // struct field declared as `intent_channel_int64_t_16`
+        // doesn't match the constructor's
+        // `intent_channel_int64_t_4_new()` return type and cc
+        // rejects with "incompatible types".
+        Type::Channel(element, capacity) => c_channel_storage(element, *capacity),
         _ => c_leaf_type(ty).to_string(),
     }
 }

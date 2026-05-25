@@ -13548,6 +13548,51 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_c_channel_struct_field_uses_correct_capacity() {
+        // Closure #208: `Channel<T, N>` as a struct field
+        // emitted with the hardcoded fallback type
+        // `intent_channel_int64_t_16` because
+        // `c_element_storage` fell through `_ => c_leaf_type`
+        // for Channel, and `c_leaf_type(Channel)` returns
+        // that 16-capacity fallback (the comment there
+        // explicitly notes callers must special-case
+        // Channel). Field of `Channel<i64, 4>` therefore
+        // didn't match the constructor's
+        // `intent_channel_int64_t_4_new()` return type, and
+        // cc rejected with "incompatible types when
+        // initializing". Same shape for non-i64 Channel
+        // element types.
+        //
+        // Fix: add `Channel(elt, cap)` arm to
+        // `c_element_storage` that calls
+        // `c_channel_storage(elt, cap)`.
+        let source = r#"
+            struct Pipeline { ch: Channel<i64, 4> }
+
+            fn main() -> i64 {
+              let p: Pipeline = Pipeline { ch: channel_new() };
+              let ok: i64 = channel_send(ref p.ch, 42);
+              let v: i64 = channel_recv(ref p.ch);
+              assert v == 42;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("Channel field compiles");
+        // The struct field declaration must use the actual
+        // (T, N) — not the fallback 16-capacity.
+        assert!(
+            c.contains("intent_channel_int64_t_4 ch"),
+            "expected struct field `intent_channel_int64_t_4 ch`:\n{}",
+            c
+        );
+        assert!(
+            !c.contains("intent_channel_int64_t_16 ch"),
+            "expected NO fallback `intent_channel_int64_t_16 ch`:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn tree_c_block_expr_calls_user_drop_for_copy_struct() {
         // Closure #207: tree-C's Block-expr Drop emit (the
         // inline arm for non-stmt-level Drops added by

@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 900 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 901 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-C Channel<T,N> struct field capacity fix done 2026-05-25**:
+   `Channel<T, N>` as a struct field emitted with the
+   hardcoded fallback type `intent_channel_int64_t_16`
+   because `c_element_storage` fell through to
+   `c_leaf_type` for Channel, and `c_leaf_type(Channel)`
+   returns the 16-capacity fallback (the comment there
+   explicitly notes callers must special-case Channel).
+   A field of `Channel<i64, 4>` therefore didn't match
+   the constructor's `intent_channel_int64_t_4_new()`
+   return type and cc rejected with "incompatible types".
+   Same shape for non-i64 Channel element types. Fix:
+   add a `Channel(elt, cap)` arm to `c_element_storage`
+   that calls `c_channel_storage(elt, cap)`. Test
+   totals: 901 lib + 47 e2e passing. Closure #208.
 
    **tree-C Block-expr user-Drop for Copy structs done 2026-05-25**:
    tree-C's Block-expr Drop emit (inline arm for non-
