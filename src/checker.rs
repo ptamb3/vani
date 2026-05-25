@@ -2139,7 +2139,7 @@ fn desugar_try_let_in_program(
     program: &mut Program,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    use crate::ast::{EnumDecl, MatchArm, Pattern};
+    use crate::ast::EnumDecl;
     // Build a quick enum registry: name → decl, so the
     // rewriter can find Some-like / None-like variants.
     let enum_by_name: std::collections::HashMap<String, EnumDecl> =
@@ -2151,180 +2151,221 @@ fn desugar_try_let_in_program(
             .collect();
     let mut counter: usize = 0;
     for function in program.functions.iter_mut() {
-        // Restrict shape: body[0] must be Let with Try RHS;
-        // body[1..len-1] must all be Let stmts; body[last]
-        // must be Return.
-        if function.body.len() < 2 {
-            continue;
-        }
-        let has_try = matches!(
-            &function.body[0],
-            Stmt::Let { expr: e, .. }
-                if matches!(e.kind, ExprKind::Try { .. })
+        let return_type = function.return_type.clone();
+        // Recursively walk the function body, rewriting any
+        // stmt-list that matches the try-let-block shape.
+        // Closure #217 extends the v1 desugar (which only
+        // operated on the top-level fn body) to inner
+        // stmt-lists (if/else/while/for/task bodies) so
+        // `try` can appear in nested control flow.
+        try_rewrite_stmt_list(
+            &mut function.body,
+            &return_type,
+            &enum_by_name,
+            &mut counter,
+            diagnostics,
         );
-        if !has_try {
-            continue;
-        }
-        // Tail must be Return.
-        let last_idx = function.body.len() - 1;
-        if !matches!(&function.body[last_idx], Stmt::Return { .. }) {
-            continue;
-        }
-        // Intermediate stmts must be either `let` (passed
-        // through into the Some-arm block's stmts) or
-        // `print` (also accepted by block expressions since
-        // closure #129). Anything else surfaces a clean
-        // diagnostic — control flow and reassignment still
-        // need surrounding-stmt handling we don't model.
-        let intermediate_ok = function.body[1..last_idx]
-            .iter()
-            .all(|s| matches!(s, Stmt::Let { .. } | Stmt::Print { .. }));
-        if !intermediate_ok {
-            diagnostics.push(Diagnostic::new(
-                function.body[0].span(),
-                "`try` desugar in v1 requires only `let` and `print` statements \
-                 between the `try`-let and the final `return`; control flow / \
-                 assignments between aren't supported yet (T2.6 phase 2 follow-up)",
-            ));
-            continue;
-        }
-        // Extract the try-let pieces.
-        let (try_name, try_annotation, try_inner, try_span) = match &function.body[0] {
-            Stmt::Let {
-                name,
-                annotation,
-                expr,
-                span,
-            } => {
-                let inner = match &expr.kind {
-                    ExprKind::Try { inner } => (**inner).clone(),
-                    _ => unreachable!(),
-                };
-                (name.clone(), annotation.clone(), inner, *span)
+    }
+}
+
+/// Apply the try-let-rewrite to a stmt-list. Walks nested
+/// control-flow bodies first so inner rewrites land before
+/// the outer pattern-match runs.
+fn try_rewrite_stmt_list(
+    body: &mut Vec<Stmt>,
+    return_type: &Type,
+    enum_by_name: &std::collections::HashMap<String, crate::ast::EnumDecl>,
+    counter: &mut usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // First, recurse into any nested control-flow bodies so
+    // a try-let inside an inner block gets desugared before
+    // we look at the outer shape.
+    for s in body.iter_mut() {
+        match s {
+            Stmt::If { then_body, else_body, .. } => {
+                try_rewrite_stmt_list(
+                    then_body, return_type, enum_by_name, counter, diagnostics,
+                );
+                try_rewrite_stmt_list(
+                    else_body, return_type, enum_by_name, counter, diagnostics,
+                );
             }
-            _ => unreachable!(),
-        };
-        // Function return type must be a known payloaded enum.
-        let return_enum_name = match &function.return_type {
-            Type::Enum(n) => n.clone(),
-            _ => {
-                diagnostics.push(Diagnostic::new(
-                    try_span,
-                    format!(
-                        "`try` requires the enclosing function's return type \
-                         to be an enum; got {}",
-                        function.return_type
-                    ),
-                ));
-                continue;
+            Stmt::While { body: inner, .. }
+            | Stmt::For { body: inner, .. }
+            | Stmt::ForIter { body: inner, .. }
+            | Stmt::TaskSpawn { body: inner, .. } => {
+                try_rewrite_stmt_list(
+                    inner, return_type, enum_by_name, counter, diagnostics,
+                );
             }
-        };
-        let enum_decl = match enum_by_name.get(&return_enum_name) {
-            Some(d) => d,
-            None => continue, // unknown enum; downstream checker handles
-        };
-        // Find the payloaded variant (the "Some-like" — has
-        // a payload) and the payload-less variant ("None-like").
-        let payloaded: Vec<_> = enum_decl
-            .variants
-            .iter()
-            .filter(|v| !v.payload.is_empty())
-            .collect();
-        let payloadless: Vec<_> = enum_decl
-            .variants
-            .iter()
-            .filter(|v| v.payload.is_empty())
-            .collect();
-        if payloaded.len() != 1 || payloadless.len() != 1 {
+            _ => {}
+        }
+    }
+    try_rewrite_at_top(body, return_type, enum_by_name, counter, diagnostics);
+}
+
+/// Check whether `body` matches the shape
+///   [Let(try) , (Let|Print)* , Return]
+/// and rewrite in place to a single Return-of-Match if so.
+/// Returns silently when the shape doesn't match; emits a
+/// diagnostic when there's a Let(try) but the surrounding
+/// shape is invalid.
+fn try_rewrite_at_top(
+    body: &mut Vec<Stmt>,
+    return_type: &Type,
+    enum_by_name: &std::collections::HashMap<String, crate::ast::EnumDecl>,
+    counter: &mut usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    use crate::ast::{MatchArm, Pattern};
+    if body.len() < 2 {
+        return;
+    }
+    let has_try = matches!(
+        &body[0],
+        Stmt::Let { expr: e, .. }
+            if matches!(e.kind, ExprKind::Try { .. })
+    );
+    if !has_try {
+        return;
+    }
+    let last_idx = body.len() - 1;
+    if !matches!(&body[last_idx], Stmt::Return { .. }) {
+        return;
+    }
+    let intermediate_ok = body[1..last_idx]
+        .iter()
+        .all(|s| matches!(s, Stmt::Let { .. } | Stmt::Print { .. }));
+    if !intermediate_ok {
+        diagnostics.push(Diagnostic::new(
+            body[0].span(),
+            "`try` desugar in v1 requires only `let` and `print` statements \
+             between the `try`-let and the final `return`; control flow / \
+             assignments between aren't supported yet (T2.6 phase 2 follow-up)",
+        ));
+        return;
+    }
+    let (try_name, try_annotation, try_inner, try_span) = match &body[0] {
+        Stmt::Let { name, annotation, expr, span } => {
+            let inner = match &expr.kind {
+                ExprKind::Try { inner } => (**inner).clone(),
+                _ => unreachable!(),
+            };
+            (name.clone(), annotation.clone(), inner, *span)
+        }
+        _ => unreachable!(),
+    };
+    let return_enum_name = match return_type {
+        Type::Enum(n) => n.clone(),
+        _ => {
             diagnostics.push(Diagnostic::new(
                 try_span,
                 format!(
-                    "`try` requires the enum '{}' to have exactly one payloaded \
-                     variant and one payload-less variant; got {} payloaded and \
-                     {} payload-less",
-                    return_enum_name,
-                    payloaded.len(),
-                    payloadless.len()
+                    "`try` requires the enclosing function's return type \
+                     to be an enum; got {}",
+                    return_type
                 ),
             ));
-            continue;
+            return;
         }
-        let some_variant = payloaded[0].name.clone();
-        let none_variant = payloadless[0].name.clone();
-        // Synthesize fresh binding name.
-        let fresh = format!("__try_v_{}", counter);
-        counter += 1;
-        // Build the block-expr stmts for the Some arm: the
-        // `let v: T = __t;` followed by the intermediate
-        // lets, with the Return's expression as the tail.
-        let mut block_stmts: Vec<Stmt> = Vec::new();
-        block_stmts.push(Stmt::Let {
-            name: try_name.clone(),
-            annotation: try_annotation.clone(),
-            expr: Expr {
-                kind: ExprKind::Var(fresh.clone()),
-                span: try_span,
-            },
-            span: try_span,
-        });
-        for s in &function.body[1..last_idx] {
-            block_stmts.push(s.clone());
-        }
-        let tail_expr = match &function.body[last_idx] {
-            Stmt::Return { expr, .. } => expr.clone(),
-            _ => unreachable!(),
-        };
-        let some_arm_body = Expr {
-            kind: ExprKind::Block {
-                stmts: block_stmts,
-                tail: Box::new(tail_expr.clone()),
-            },
-            span: try_span,
-        };
-        // None arm body: re-emit the early-return value as
-        // an enum-variant reference. Use FieldAccess shape
-        // since `EnumName.Variant` lexes that way.
-        let none_arm_body = Expr {
-            kind: ExprKind::FieldAccess {
-                object: Box::new(Expr {
-                    kind: ExprKind::Var(return_enum_name.clone()),
-                    span: try_span,
-                }),
-                field: none_variant.clone(),
-            },
-            span: try_span,
-        };
-        let return_span = function.body[last_idx].span();
-        let match_expr = Expr {
-            kind: ExprKind::Match {
-                scrutinee: Box::new(try_inner),
-                arms: vec![
-                    MatchArm {
-                        pattern: Pattern::VariantWithBinding {
-                            enum_name: return_enum_name.clone(),
-                            variant: some_variant,
-                            binding: fresh,
-                        },
-                        pattern_span: try_span,
-                        body: some_arm_body,
-                    },
-                    MatchArm {
-                        pattern: Pattern::Variant {
-                            enum_name: return_enum_name,
-                            variant: none_variant,
-                        },
-                        pattern_span: try_span,
-                        body: none_arm_body,
-                    },
-                ],
-            },
-            span: try_span,
-        };
-        function.body = vec![Stmt::Return {
-            expr: match_expr,
-            span: return_span,
-        }];
+    };
+    let enum_decl = match enum_by_name.get(&return_enum_name) {
+        Some(d) => d,
+        None => return,
+    };
+    let payloaded: Vec<_> = enum_decl
+        .variants
+        .iter()
+        .filter(|v| !v.payload.is_empty())
+        .collect();
+    let payloadless: Vec<_> = enum_decl
+        .variants
+        .iter()
+        .filter(|v| v.payload.is_empty())
+        .collect();
+    if payloaded.len() != 1 || payloadless.len() != 1 {
+        diagnostics.push(Diagnostic::new(
+            try_span,
+            format!(
+                "`try` requires the enum '{}' to have exactly one payloaded \
+                 variant and one payload-less variant; got {} payloaded and \
+                 {} payload-less",
+                return_enum_name,
+                payloaded.len(),
+                payloadless.len()
+            ),
+        ));
+        return;
     }
+    let some_variant = payloaded[0].name.clone();
+    let none_variant = payloadless[0].name.clone();
+    let fresh = format!("__try_v_{}", *counter);
+    *counter += 1;
+    let mut block_stmts: Vec<Stmt> = Vec::new();
+    block_stmts.push(Stmt::Let {
+        name: try_name.clone(),
+        annotation: try_annotation.clone(),
+        expr: Expr {
+            kind: ExprKind::Var(fresh.clone()),
+            span: try_span,
+        },
+        span: try_span,
+    });
+    for s in &body[1..last_idx] {
+        block_stmts.push(s.clone());
+    }
+    let tail_expr = match &body[last_idx] {
+        Stmt::Return { expr, .. } => expr.clone(),
+        _ => unreachable!(),
+    };
+    let some_arm_body = Expr {
+        kind: ExprKind::Block {
+            stmts: block_stmts,
+            tail: Box::new(tail_expr.clone()),
+        },
+        span: try_span,
+    };
+    let none_arm_body = Expr {
+        kind: ExprKind::FieldAccess {
+            object: Box::new(Expr {
+                kind: ExprKind::Var(return_enum_name.clone()),
+                span: try_span,
+            }),
+            field: none_variant.clone(),
+        },
+        span: try_span,
+    };
+    let return_span = body[last_idx].span();
+    let match_expr = Expr {
+        kind: ExprKind::Match {
+            scrutinee: Box::new(try_inner),
+            arms: vec![
+                MatchArm {
+                    pattern: Pattern::VariantWithBinding {
+                        enum_name: return_enum_name.clone(),
+                        variant: some_variant,
+                        binding: fresh,
+                    },
+                    pattern_span: try_span,
+                    body: some_arm_body,
+                },
+                MatchArm {
+                    pattern: Pattern::Variant {
+                        enum_name: return_enum_name,
+                        variant: none_variant,
+                    },
+                    pattern_span: try_span,
+                    body: none_arm_body,
+                },
+            ],
+        },
+        span: try_span,
+    };
+    *body = vec![Stmt::Return {
+        expr: match_expr,
+        span: return_span,
+    }];
 }
 
 /// T1.4 phase 2: monomorphize generic functions. Walks the

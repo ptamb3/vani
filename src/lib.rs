@@ -13548,6 +13548,99 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn try_desugar_fires_inside_nested_blocks() {
+        // Closure #217: extended the `try`-let desugar
+        // (which previously only operated on the top-level
+        // function body) to recurse into nested control-flow
+        // bodies — `if`/`else`/`while`/`for`/`for-iter`/task.
+        // A `let v: T = try o; … return Opt.Some(...);` shape
+        // anywhere in the fn (not just the top-level body)
+        // now rewrites to the match-with-early-return form.
+        let source = r#"
+            enum Opt { Some(i64), None }
+
+            fn run(o: Opt, cond: bool) -> Opt {
+              let x: i64 = 7;
+              if cond {
+                let v: i64 = try o;
+                return Opt.Some(v + x);
+              }
+              return Opt.None;
+            }
+
+            fn main() -> i64 {
+              let r: Opt = run(Opt.Some(10), true);
+              return 0;
+            }
+        "#;
+        // Before #217, `try` inside the if-body surfaced the
+        // "still in progress" diagnostic; after, it compiles.
+        compile_to_c(source).expect("nested try in if-body must compile");
+    }
+
+    #[test]
+    fn try_desugar_fires_inside_else_and_while_and_for() {
+        // Coverage for else-body, while-body, for-body
+        // — all should desugar identically to the top-level
+        // rewrite thanks to the recursive `try_rewrite_stmt_list`.
+        let else_source = r#"
+            enum Opt { Some(i64), None }
+
+            fn run(o: Opt, cond: bool) -> Opt {
+              if cond {
+                return Opt.None;
+              } else {
+                let v: i64 = try o;
+                return Opt.Some(v);
+              }
+            }
+
+            fn main() -> i64 {
+              let r: Opt = run(Opt.Some(1), false);
+              return 0;
+            }
+        "#;
+        compile_to_c(else_source).expect("try in else-body compiles");
+
+        let while_source = r#"
+            enum Opt { Some(i64), None }
+
+            fn run(o: Opt) -> Opt {
+              let i: i64 = 0;
+              while i < 1 {
+                let v: i64 = try o;
+                return Opt.Some(v + i);
+              }
+              return Opt.None;
+            }
+
+            fn main() -> i64 {
+              let r: Opt = run(Opt.Some(1));
+              return 0;
+            }
+        "#;
+        compile_to_c(while_source).expect("try in while-body compiles");
+
+        let for_source = r#"
+            enum Opt { Some(i64), None }
+
+            fn run(o: Opt) -> Opt {
+              for i from 0 to 1 {
+                let v: i64 = try o;
+                return Opt.Some(v + i);
+              }
+              return Opt.None;
+            }
+
+            fn main() -> i64 {
+              let r: Opt = run(Opt.Some(1));
+              return 0;
+            }
+        "#;
+        compile_to_c(for_source).expect("try in for-body compiles");
+    }
+
+    #[test]
     fn tree_c_nested_fnptr_return_compiles() {
         // Closure #216: `fn() -> fn(T) -> R` produced
         // syntactically broken C declarator

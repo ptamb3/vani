@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 908 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 910 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,23 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **`try` in nested blocks done 2026-05-25**:
+   The v1 `try`-let desugar previously only operated on
+   the top-level function body — `body[0]` had to be the
+   Let(try), `body[last]` the Return, intermediate stmts
+   restricted to Let/Print. Nested `try` (inside an
+   if/else/while/for body) surfaced the "still in
+   progress" diagnostic. Refactored the desugar into
+   `try_rewrite_stmt_list` which recursively walks
+   if/else/while/for/for-iter/task bodies AND applies
+   the top-level pattern-match at each level. The
+   inner-first traversal ensures inner rewrites land
+   before the outer pattern-match runs (so e.g. an
+   if-body with `[Let(try), Return]` gets rewritten to
+   a single `Return(match…)` before the outer fn body
+   is inspected). Test totals: 910 lib + 47 e2e
+   passing. Closure #217.
 
    **tree-C nested FnPtr return declarator done 2026-05-25**:
    `fn() -> fn(T) -> R` produced syntactically broken C
