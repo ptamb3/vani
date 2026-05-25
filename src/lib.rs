@@ -13548,6 +13548,37 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_llvm_vec_fnptr_emits_clean_tag() {
+        // Closure #215: tree-LLVM's `vec_struct_tag` fell
+        // through to `llvm_type(FnPtr)` which is
+        // `unreachable!` ("use llvm_type_string for fn-ptr
+        // type") → panic when emitting `Vec<fn(T) -> R>`.
+        // Tree-C had the analogous closure #214 fix for the
+        // tree-C `element_tag` falling through to
+        // `c_leaf_type(FnPtr) = "void*"` (invalid C
+        // identifier). Add `Type::FnPtr` arm to
+        // `vec_struct_tag` returning `"fnptr"` — all fn-ptrs
+        // lower to the same `<ret> (<params>)*` LLVM type so
+        // one tag works regardless of signature.
+        let source = r#"
+            fn double(x: i64) -> i64 { return x * 2; }
+
+            fn main() -> i64 {
+              let ops: Vec<fn(i64) -> i64> = vec(double);
+              return 0;
+            }
+        "#;
+        let checked = compile(source).expect("Vec<FnPtr> compiles");
+        // Force tree-LLVM emit (would panic before #215).
+        let ll = crate::backend_llvm::LlvmBackend.emit(&checked.ir);
+        assert!(
+            ll.contains("%intent_vec_fnptr"),
+            "expected `%intent_vec_fnptr` typedef on tree-LLVM:\n{}",
+            ll
+        );
+    }
+
+    #[test]
     fn tree_c_vec_fnptr_typedef_is_identifier_safe() {
         // Closure #214: `Vec<fn(T) -> R>` element-tag fell
         // through to `c_leaf_type(FnPtr).replace(' ', '_')`

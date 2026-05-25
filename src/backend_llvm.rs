@@ -5987,7 +5987,16 @@ pub(crate) fn vec_struct_tag(element: &Type) -> String {
         // `Type::Struct(_)`. T1.2 + Vec<Struct> LLVM.
         Type::Struct(name) => format!("Struct_{}", name),
         Type::Enum(name) => format!("Enum_{}", name),
-        // Scalars + ref/atomic/channel/fnptr go through the
+        // Closure #215: `Vec<fn(...) -> R>` element-tag fell
+        // through to `llvm_type(FnPtr)` which is
+        // `unreachable!` ("use llvm_type_string for fn-ptr
+        // type"). The C backend already has an analogous
+        // `"fnptr"` arm (closure #214). Match here so the
+        // emit doesn't panic — all fn-ptrs lower to the
+        // same `<ret> (<params>)*` LLVM type so a single
+        // tag works.
+        Type::FnPtr(_, _) => "fnptr".to_string(),
+        // Scalars + ref/atomic/channel go through the
         // existing leaf spelling, with `%`/`*`/space replaced
         // by `_` so the identifier stays well-formed.
         _ => llvm_type(element)

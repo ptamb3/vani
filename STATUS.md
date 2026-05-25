@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 906 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 907 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,17 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-LLVM Vec<FnPtr> tag fix done 2026-05-25**:
+   Parallel to #214 on the LLVM side. tree-LLVM's
+   `vec_struct_tag` for FnPtr fell through to
+   `llvm_type(FnPtr)` which is `unreachable!` ("use
+   llvm_type_string for fn-ptr type") → panic during
+   emit. Added `Type::FnPtr(_, _)` arm returning
+   `"fnptr"` — all fn-ptrs lower to the same
+   `<ret> (<params>)*` LLVM type so one tag works
+   regardless of signature. Test totals: 907 lib + 47
+   e2e passing. Closure #215.
 
    **tree-C Vec<FnPtr> identifier-safe typedef done 2026-05-25**:
    `Vec<fn(T) -> R>` element-tag fell through to

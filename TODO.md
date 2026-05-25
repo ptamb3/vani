@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #214)
+## ⏳ Resume here (paused 2026-05-25, after closure #215)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,11 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#215 tree-LLVM Vec<FnPtr> tag fix: parallel to #214 on
+the LLVM side. `vec_struct_tag` fell through to
+`llvm_type(FnPtr)` which is `unreachable!` → panic
+during emit. Added `Type::FnPtr` arm returning
+`"fnptr"`. Test totals: 907 lib + 47 e2e passing.
 #214 tree-C Vec<FnPtr> identifier-safe typedef:
 `element_tag(FnPtr)` fell through to `c_leaf_type =
 "void*"` → typedef `intent_vec_void*` is invalid C
