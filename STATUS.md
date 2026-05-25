@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 895 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 896 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,18 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-C array-payload no-variant brace-init done 2026-05-25**:
+   `.payload = 0` for an enum whose payload is an array
+   type (e.g. `Window.Closed` when `Window` carries an
+   `[i64; 4]` payload) was tripping `-Wmissing-braces`
+   and is technically ill-formed C — an array can't be
+   initialized from a bare integer (gcc accepts via the
+   zero-fill extension; stricter compilers reject).
+   Tree-C's payload-less variant emit had brace-init for
+   Vec/Tuple/Struct but not Array. Added Array to the
+   brace-init list — emits `.payload = {0}`. Test
+   totals: 896 lib + 47 e2e passing. Closure #203.
 
    **SSA-C empty-param prototype `(void)` done 2026-05-25**:
    SSA-C emitted `fn_main()` with empty parens for no-

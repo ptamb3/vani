@@ -3081,7 +3081,15 @@ fn emit_expr(expr: &TypedExpr) -> String {
                     .with(|r| r.borrow().get(enum_name).cloned())
                     .expect("just checked payloaded");
                 let payload_zero = match &payload_ty {
-                    Type::Vec(_) | Type::Tuple(_) | Type::Struct(_) => "{0}",
+                    // Aggregates and arrays can't be initialized
+                    // from a bare integer. Closure #203 adds
+                    // `Type::Array` to the brace-init list —
+                    // `.payload = 0` was tripping
+                    // `-Wmissing-braces` and is technically
+                    // ill-formed for array initializers (gcc
+                    // accepts via zero-fill extension, but
+                    // -Werror or stricter compilers reject).
+                    Type::Vec(_) | Type::Tuple(_) | Type::Struct(_) | Type::Array { .. } => "{0}",
                     _ => "0",
                 };
                 format!(

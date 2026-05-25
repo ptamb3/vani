@@ -13548,6 +13548,44 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_c_no_payload_variant_with_array_payload_uses_brace_init() {
+        // Closure #203: `.payload = 0` for an enum whose
+        // payload is an array type (e.g. `Window.Closed`
+        // when `Window` carries an `[i64; 4]` payload) was
+        // tripping `-Wmissing-braces` and is technically
+        // ill-formed C (an array can't be initialized from
+        // a bare integer; gcc accepts via the zero-fill
+        // extension, stricter compilers reject). Tree-C's
+        // payload-less variant emit had brace-init for Vec/
+        // Tuple/Struct but not Array. Added Array to the
+        // brace-init list — emits `.payload = {0}`.
+        let source = r#"
+            enum Window { Open([i64; 4]), Closed }
+
+            fn make_closed() -> Window {
+              return Window.Closed;
+            }
+
+            fn main() -> i64 {
+              let w: Window = make_closed();
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("array-payload enum compiles");
+        // Find the Closed variant emit. Expect `.payload = {0}`.
+        assert!(
+            c.contains(".payload = {0}"),
+            "expected `.payload = {{0}}` brace-init for no-payload variant of array-payload enum:\n{}",
+            c
+        );
+        assert!(
+            !c.contains(".payload = 0 }"),
+            "expected no bare `.payload = 0` for array-payload enum:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn ssa_c_empty_param_signature_uses_void() {
         // Closure #202: SSA-C emitted `fn_main()` for a no-
         // arg function. Empty parens mean "unspecified
