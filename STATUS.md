@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 899 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 900 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-C Block-expr user-Drop for Copy structs done 2026-05-25**:
+   tree-C's Block-expr Drop emit (inline arm for non-
+   stmt-level Drops) had a Struct branch that walked
+   per-field free chains but never checked
+   USER_DROP_REGISTRY. For a Copy-but-user-Drop struct
+   (e.g. `Resource { id: i64 }` plus `implement Drop`),
+   the per-field walk emitted nothing and the user's
+   drop method was silently skipped at Block-expr scope
+   exit. The regular stmt-level Struct Drop handler at
+   backend_c.rs:1965-1987 already had the user-Drop
+   check; the Block-expr inline arm needed the same.
+   Tree-LLVM unaffected (its Block-expr emit forwards
+   Drop to emit_stmt which already handles user-Drop).
+   Test totals: 900 lib + 47 e2e passing. Closure #207.
 
    **SSA-C parallel-for post-loop counter uses end-bound done 2026-05-25**:
    Per OpenMP, the iteration variable inside `omp parallel

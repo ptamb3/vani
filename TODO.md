@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #206)
+## ⏳ Resume here (paused 2026-05-25, after closure #207)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,15 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#207 tree-C Block-expr user-Drop for Copy structs:
+the Block-expr Drop emit's Struct arm walked per-field
+free chains but never checked USER_DROP_REGISTRY. For
+a Copy-but-user-Drop struct (e.g. `Resource { id: i64 }`
+plus `implement Drop`), the per-field walk emitted
+nothing and the user's drop was silently skipped at
+Block-expr scope exit. Regular stmt-level Drop already
+had the user-Drop check; the inline Block arm needed
+the same. Test totals: 900 lib + 47 e2e passing.
 #206 SSA-C parallel-for post-loop counter UB read: per
 OpenMP, the iteration variable inside `omp parallel for`
 is implicitly private — reading it AFTER the loop is

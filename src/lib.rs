@@ -13548,6 +13548,57 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_c_block_expr_calls_user_drop_for_copy_struct() {
+        // Closure #207: tree-C's Block-expr Drop emit (the
+        // inline arm for non-stmt-level Drops added by
+        // closures #192/#193/etc.) had a Struct branch that
+        // walked per-field free chains but never checked
+        // USER_DROP_REGISTRY. For a Copy-but-user-Drop
+        // struct (e.g. `Resource` with only `id: i64` plus
+        // `implement Drop`), the per-field walk emitted
+        // nothing and the user's drop method was silently
+        // skipped at Block-expr scope exit. The regular
+        // stmt-level Drop handler at backend_c.rs:1965-1987
+        // already had `if has_user_drop && !has_owning_field
+        // { (void)fn_T_drop(v_x); return; }` — added the
+        // same check to the inline Block emit arm.
+        let source = r#"
+            struct Resource { id: i64 }
+
+            interface Drop {
+              fn drop(self: Resource) -> i64;
+            }
+
+            implement Drop for Resource {
+              fn drop(self: Resource) -> i64 {
+                return self.id;
+              }
+            }
+
+            fn main() -> i64 {
+              let n: i64 = {
+                let r: Resource = Resource { id: 42 };
+                let s: Resource = Resource { id: 99 };
+                r.id
+              };
+              assert n == 42;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("user-Drop inside Block-expr compiles");
+        // Both v_r and v_s must invoke fn_Resource_drop
+        // before the Block-expr yields. Look in fn_main.
+        let main_start = c.find("static int64_t fn_main(void) {").unwrap_or(0);
+        let main_body = &c[main_start..];
+        assert!(
+            main_body.contains("fn_Resource_drop(v_r)")
+                && main_body.contains("fn_Resource_drop(v_s)"),
+            "expected fn_Resource_drop(v_r) AND fn_Resource_drop(v_s) calls inside the Block-expr:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn ssa_c_parallel_for_post_loop_counter_uses_end_bound() {
         // Closure #206: per OpenMP, the iteration variable
         // inside `omp parallel for` is implicitly private —

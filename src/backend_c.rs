@@ -3384,6 +3384,31 @@ fn emit_expr(expr: &TypedExpr) -> String {
                             let fields = STRUCT_FIELDS_REGISTRY
                                 .with(|r| r.borrow().get(struct_name).cloned())
                                 .unwrap_or_default();
+                            // Closure #207: if the struct has a
+                            // user-declared `implement Drop for T`
+                            // AND no owning fields, the auto-
+                            // call invokes the user's drop method.
+                            // Mirrors the regular stmt-level
+                            // Struct Drop arm (lines 1965-1987).
+                            // Without this, a Block-expr inner
+                            // Let of a Copy-but-user-Drop struct
+                            // (e.g. `Resource` with only an
+                            // i64 field plus `implement Drop`)
+                            // silently skipped the user drop at
+                            // scope exit.
+                            let has_user_drop = USER_DROP_REGISTRY
+                                .with(|r| r.borrow().contains(struct_name));
+                            let has_owning_field = fields.iter().any(|(_, ty)| {
+                                matches!(ty, Type::OwnedStr | Type::Vec(_))
+                            });
+                            if has_user_drop && !has_owning_field {
+                                body.push_str(&format!(
+                                    "(void){}({}); ",
+                                    function_name(&format!("{}_drop", struct_name)),
+                                    local_name(name),
+                                ));
+                                continue;
+                            }
                             let empty: std::collections::HashSet<&String> =
                                 std::collections::HashSet::new();
                             // emit_struct_field_drops appends
