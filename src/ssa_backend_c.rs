@@ -845,6 +845,29 @@ fn emit_parallel_for_region(
             });
         }
     };
+    // Closure #206: per OpenMP, the loop iteration variable
+    // is implicitly private inside `omp parallel for`; reading
+    // its value AFTER the loop is undefined. The
+    // emit_block_arg_assignments call below propagates the
+    // header→exit args, which include the counter's
+    // header-value (`v_<counter>`). Substitute any arg that
+    // references the counter with the loop's `end` operand —
+    // the well-defined post-loop counter value is exactly
+    // `end` (or past-end on `break`, but the parallel-for
+    // gate rejects `break` per closure #190). Without this,
+    // gcc warns `v_<counter> is used uninitialized` and the
+    // post-loop reads observe undefined values.
+    let counter_value = Operand::Value(region.shape.counter_header_value);
+    let exit_args: Vec<Operand> = exit_args
+        .into_iter()
+        .map(|arg| {
+            if arg == counter_value {
+                region.shape.end.clone()
+            } else {
+                arg
+            }
+        })
+        .collect();
     emit_block_arg_assignments(f, region.shape.exit_block, &exit_args, "  ", out);
     writeln!(out, "  goto bb{};", region.shape.exit_block.0).unwrap();
     Ok(())

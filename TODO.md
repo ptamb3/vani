@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #205)
+## ⏳ Resume here (paused 2026-05-25, after closure #206)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,16 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#206 SSA-C parallel-for post-loop counter UB read: per
+OpenMP, the iteration variable inside `omp parallel for`
+is implicitly private — reading it AFTER the loop is
+undefined. SSA-C propagated the counter as a header→exit
+block-arg → `v_3 = v_2` where v_2 is now undefined. gcc
+warned `v_2 is used uninitialized`. Fix: substitute the
+counter operand with the loop's `end` operand in the
+exit-arg assignments (parallel-for forbids `break` per
+#190 so end is the only well-defined post-loop value).
+Test totals: 899 lib + 47 e2e passing.
 #205 tree-C match-on-bool cast for switch: gcc warns
 `switch condition has boolean value` (-Wswitch-bool)
 when the dispatch is bool. Tree-C now emits

@@ -13548,6 +13548,58 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn ssa_c_parallel_for_post_loop_counter_uses_end_bound() {
+        // Closure #206: per OpenMP, the iteration variable
+        // inside `omp parallel for` is implicitly private —
+        // reading its value AFTER the loop is undefined.
+        // SSA-C's `emit_parallel_for_region` propagated
+        // header→exit block-args literally, so a Phi that
+        // captures the post-loop counter value rendered as
+        // `v_3 = v_2` where v_2 is the (now-undefined)
+        // counter. gcc warned `v_2 is used uninitialized`.
+        // Fix: substitute the counter operand with the
+        // loop's `end` operand when emitting the exit-arg
+        // assignments — the well-defined post-loop value is
+        // exactly the loop bound (parallel-for forbids
+        // `break` per closure #190).
+        let source = r#"
+            pure fn square(n: i64) -> i64 { return n * n; }
+
+            fn main() -> i64 {
+              parallel for i from 0 to 5 {
+                let s: i64 = square(i);
+              }
+              return 0;
+            }
+        "#;
+        // Parallel-for routes through SSA-C, not tree-C —
+        // mirror what `emit_c_via_ssa` in main.rs does.
+        let checked = compile(source).expect("parallel-for compiles");
+        let (module, errs) = crate::ssa::lower_program(&checked.ir);
+        assert!(errs.is_empty(), "SSA lowering errors: {:?}", errs);
+        let c = crate::ssa_backend_c::emit(&module).expect("SSA-C emit");
+        // After the parallel-for closing brace, an assignment
+        // of `v_<exit_param> = (int64_t)5LL;` must appear.
+        // Before #206 the assignment read `v_<counter>` which
+        // OpenMP makes undefined post-loop.
+        let pragma_pos = c.find("_Pragma(\"omp parallel for\")")
+            .expect("omp pragma present");
+        // Find the matching `}` after the for-loop opening
+        // (the line immediately after the pragma is the for
+        // header; the body's `}` closes the loop).
+        let after_pragma = &c[pragma_pos..];
+        let close_brace_pos = after_pragma
+            .find("\n  }\n")
+            .expect("loop closing brace present");
+        let after_close = &after_pragma[close_brace_pos..close_brace_pos + 100];
+        assert!(
+            after_close.contains("(int64_t)5LL"),
+            "expected post-loop assignment to use end bound 5LL, got:\n{}\n\nfull:\n{}",
+            after_close, c
+        );
+    }
+
+    #[test]
     fn tree_c_match_on_bool_casts_to_int_for_switch() {
         // Closure #205: gcc warns `switch condition has
         // boolean value` (-Wswitch-bool) when the dispatch

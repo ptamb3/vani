@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 898 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 899 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **SSA-C parallel-for post-loop counter uses end-bound done 2026-05-25**:
+   Per OpenMP, the iteration variable inside `omp parallel
+   for` is implicitly private — reading its value AFTER
+   the loop is undefined. SSA-C's
+   `emit_parallel_for_region` propagated header→exit
+   block-args literally, so a Phi capturing the post-loop
+   counter value rendered as `v_3 = v_2` where v_2 is the
+   (now-undefined) counter. gcc warned `v_2 is used
+   uninitialized`. Fix: substitute the counter operand
+   with the loop's `end` operand when emitting exit-arg
+   assignments — the well-defined post-loop value is
+   exactly the loop bound (parallel-for forbids `break`
+   per closure #190). Test totals: 899 lib + 47 e2e
+   passing. Closure #206.
 
    **tree-C match-on-bool cast for switch done 2026-05-25**:
    gcc warns `switch condition has boolean value`
