@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 904 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 905 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,18 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **CallIndirect arg move tracking done 2026-05-25**:
+   `check_indirect_call` (the fn-ptr call path)
+   checked + coerced each arg but never called
+   `consume_if_moved_var` or `inject_branch_drops`.
+   For a non-Copy arg like `OwnedStr`, the callee
+   consumed the heap (freed at fn scope exit) AND the
+   caller's scope-exit Drop fired on the same binding
+   — ASan-detected double-free at runtime. The regular
+   `check_call` already had the consume + inject pair;
+   `check_indirect_call` was the outlier. Test totals:
+   905 lib + 47 e2e passing. Closure #213.
 
    **SSA-LLVM gates out Vec<Atomic/Channel> → tree-LLVM done 2026-05-25**:
    SSA-LLVM represents `Atomic<T>` as the alloca *pointer*

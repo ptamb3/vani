@@ -13548,6 +13548,42 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn check_indirect_call_marks_owned_str_arg_moved() {
+        // Closure #213: `check_indirect_call` (the fn-ptr
+        // call path) checked + coerced each arg but never
+        // called `consume_if_moved_var`. For a non-Copy arg
+        // like `OwnedStr`, the callee consumed it (freed the
+        // heap at fn scope exit) AND the caller's scope-exit
+        // Drop fired on the same binding — ASan-detected
+        // double-free at runtime. The regular `check_call`
+        // already had the consume_if_moved_var +
+        // inject_branch_drops pair; #213 mirrors it.
+        let source = r#"
+            fn consume(s: OwnedStr) -> i64 {
+              return len(s) as i64;
+            }
+
+            fn main() -> i64 {
+              let f: fn(OwnedStr) -> i64 = consume;
+              let s: OwnedStr = "hello" + "";
+              let n: i64 = f(s);
+              assert n == 5;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("FnPtr OwnedStr arg compiles");
+        // After #213, `v_s` must be marked moved → no
+        // scope-exit `free((void*)v_s)` in fn_main.
+        let main_start = c.find("static int64_t fn_main(void) {").unwrap_or(0);
+        let main_body = &c[main_start..];
+        assert!(
+            !main_body.contains("free((void*)v_s)"),
+            "expected v_s marked moved by indirect call (no scope-exit free):\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn tree_c_vec_atomic_typedef_includes_element_width() {
         // Closure #211: `Vec<Atomic<T>>` element-tag fell
         // through to `c_leaf_type(Atomic).replace(' ', '_')`

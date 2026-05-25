@@ -8961,7 +8961,20 @@ fn check_indirect_call(
             &format!("indirect call argument {}", idx),
             diagnostics,
         );
-        typed_args.push(coerced.expr);
+        // Closure #213: mirror the regular `check_call` arm —
+        // mark non-Copy arg bindings as moved (`fn_ptr(s)`
+        // where `s: OwnedStr` transfers ownership to the
+        // callee just like a named call), and rewrite if-expr
+        // / match Var-branch RHSs via `inject_branch_drops`
+        // so the unchosen branch doesn't leak. Without this,
+        // ASan-detected double-free at scope exit (the
+        // OwnedStr arg was freed by the callee AND by the
+        // caller's scope-exit Drop).
+        diagnose_partial_then_whole_move(arg, &coerced, env, diagnostics);
+        consume_if_moved_var(arg, &coerced, env);
+        let mut arg_expr = coerced.expr;
+        inject_branch_drops(&mut arg_expr);
+        typed_args.push(arg_expr);
     }
     // Build the callee expression — a TypedExpr that loads
     // the fn-ptr binding's current value.
