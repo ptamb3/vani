@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 903 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 904 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,24 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-C Vec<Atomic/Channel> typedef collision done 2026-05-25**:
+   `Vec<Atomic<T>>` element-tag fell through to
+   `c_leaf_type(Atomic).replace(' ', '_')` which returned
+   the hardcoded `_Atomic int64_t` regardless of T →
+   typedef `intent_vec__Atomic_int64_t` for ANY
+   Vec<Atomic<T>>. Two distinct `Vec<Atomic<T>>` in the
+   same program collapsed to one typedef whose `data`
+   field had the FIRST T's width → ASan stack-buffer-
+   overflow on memcpy when widths differed (e.g. u32 vs
+   u8). Same shape for `Vec<Channel<T, N>>` (different
+   (T, N) would collide). Fix: add
+   `Type::Atomic(element)` and `Type::Channel(element,
+   capacity)` arms to `element_tag` so distinct shapes
+   get distinct typedef names like
+   `intent_vec_atomic_uint32_t` and
+   `intent_vec_channel_int64_t_4`. Test totals: 904 lib
+   + 47 e2e passing. Closure #211.
 
    **tree-C RefField const-strip for Mutex/Atomic/Channel done 2026-05-25**:
    When borrowing a struct via `ref T` and then field-

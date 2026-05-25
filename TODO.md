@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #210)
+## ⏳ Resume here (paused 2026-05-25, after closure #211)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,18 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#211 tree-C Vec<Atomic/Channel> typedef collision:
+`element_tag` fell through to `c_leaf_type` for
+Atomic/Channel, returning the hardcoded i64-width
+strings regardless of element type / capacity. Two
+distinct `Vec<Atomic<T>>` (or `Vec<Channel<T,N>>`) in
+the same program collapsed to one typedef whose `data`
+field had the FIRST shape's width — ASan stack-buffer-
+overflow on memcpy when widths differed (u32 vs u8).
+Fix: add `Atomic(element)` → `atomic_<element_tag>`
+and `Channel(element, capacity)` → `channel_<tag>_<N>`
+arms to `element_tag`. Test totals: 904 lib + 47 e2e
+passing.
 #210 tree-C RefField const-strip for Mutex/Atomic/Channel:
 when borrowing `ref T` and field-borrowing a Mutex/Atomic
 /Channel field (`ref c.lock`), the field-pointer kept

@@ -13548,6 +13548,51 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_c_vec_atomic_typedef_includes_element_width() {
+        // Closure #211: `Vec<Atomic<T>>` element-tag fell
+        // through to `c_leaf_type(Atomic).replace(' ', '_')`
+        // which returned the hardcoded `_Atomic int64_t`
+        // → typedef name `intent_vec__Atomic_int64_t`
+        // regardless of T. Two `Vec<Atomic<T>>` with
+        // different T in the same program collapsed to a
+        // single typedef whose `data` field had the FIRST
+        // T's element type. ASan-detected stack-buffer-
+        // overflow on memcpy when widths differed (u32 vs
+        // u8). Same shape for `Vec<Channel<T, N>>` (would
+        // collapse different (T, N) to the same typedef).
+        // Fix: add `Type::Atomic` / `Type::Channel` arms to
+        // `element_tag` so distinct (T, …) shapes get
+        // distinct typedef names.
+        let source = r#"
+            fn main() -> i64 {
+              let a: Vec<Atomic<u32>> = vec(atomic_new(0 as u32));
+              let b: Vec<Atomic<u8>> = vec(atomic_new(0 as u8));
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("two Vec<Atomic<T>> compiles");
+        // Each Vec<Atomic<T>> must have its own typedef
+        // name based on T.
+        assert!(
+            c.contains("intent_vec_atomic_uint32_t"),
+            "expected `intent_vec_atomic_uint32_t` typedef:\n{}",
+            c
+        );
+        assert!(
+            c.contains("intent_vec_atomic_uint8_t"),
+            "expected `intent_vec_atomic_uint8_t` typedef:\n{}",
+            c
+        );
+        // And the collapsed `_Atomic_int64_t` fallback must
+        // not appear.
+        assert!(
+            !c.contains("intent_vec__Atomic_int64_t"),
+            "expected no collapsed `intent_vec__Atomic_int64_t` typedef:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn tree_c_ref_field_to_mutex_strips_const() {
         // Closure #210: when borrowing a struct via `ref T`
         // and then field-borrowing a Mutex/Atomic/Channel

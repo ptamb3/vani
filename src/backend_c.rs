@@ -1074,6 +1074,22 @@ pub(crate) fn element_tag(element: &Type) -> String {
         // failing to compile).
         Type::Str => "str".to_string(),
         Type::OwnedStr => "owned_str".to_string(),
+        // Closure #211: `Atomic<T>` / `Channel<T, N>` must
+        // include the element type (and capacity) in the
+        // element-tag so per-shape Vec typedefs stay
+        // distinct. The c_leaf_type fallback returned the
+        // hardcoded `_Atomic int64_t` / `intent_channel_int64_t_16`
+        // strings for any Atomic/Channel, collapsing every
+        // `Vec<Atomic<T>>` (or `Vec<Channel<T,N>>`) to the
+        // same typedef name. With two distinct (T, …) shapes
+        // in the same program, the second `vec()` call used
+        // the first's typedef which had the wrong element
+        // type — ASan-detected stack-buffer-overflow on
+        // memcpy when widths differed (u32 vs u8).
+        Type::Atomic(element) => format!("atomic_{}", element_tag(element)),
+        Type::Channel(element, capacity) => {
+            format!("channel_{}_{}", element_tag(element), capacity)
+        }
         _ => c_leaf_type(element).replace(' ', "_"),
     }
 }
