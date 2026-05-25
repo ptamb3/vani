@@ -537,6 +537,23 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **SSA-LLVM gates out Vec<Atomic/Channel> → tree-LLVM done 2026-05-25**:
+   SSA-LLVM represents `Atomic<T>` as the alloca *pointer*
+   (so subsequent `&counter` references reuse the same
+   address), and Channel similarly indirects through the
+   struct. Storing a pointer-shaped SSA value into an
+   `i32` Vec slot emitted `store i32 %ptr, …` which
+   failed the LLVM IR verifier with a type mismatch (the
+   element width is the underlying scalar `i32`, not
+   `i32*`). Tree-LLVM doesn't have this issue — it goes
+   through a different vec emit path. Closure #212 adds
+   `stmt_uses_vec_of_atomic_or_channel` to
+   `ssa_llvm_extra_reject` so any program containing
+   `Vec<Atomic<T>>` / `Vec<Channel<T,N>>` (at any nesting
+   depth) routes through tree-LLVM. SSA-C unaffected;
+   its emit already handles these correctly. Test
+   totals: 904 lib + 47 e2e passing. Closure #212.
+
    **tree-C Vec<Atomic/Channel> typedef collision done 2026-05-25**:
    `Vec<Atomic<T>>` element-tag fell through to
    `c_leaf_type(Atomic).replace(' ', '_')` which returned

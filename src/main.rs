@@ -41,8 +41,146 @@ fn ssa_path_supports(
 /// task bodies and other unsupported shapes surface
 /// `EmitError` from inside the SSA-LLVM emit → tree-LLVM
 /// fallback.
-fn ssa_llvm_extra_reject(_stmt: &TypedStmt) -> bool {
-    false
+fn ssa_llvm_extra_reject(stmt: &TypedStmt) -> bool {
+    // Closure #212: `Vec<Atomic<T>>` / `Vec<Channel<T,N>>`
+    // route through SSA-LLVM's vec literal emit which
+    // expects the element to be a value-shaped LLVM type
+    // (i32, i64, struct, …). SSA-LLVM represents Atomic
+    // as the alloca *pointer* (so subsequent `&counter`
+    // references reuse the same address), and Channel
+    // similarly indirects through the struct. Storing a
+    // pointer-shaped SSA value into an `i32` Vec slot
+    // emits `store i32 %ptr, …` which fails the LLVM IR
+    // verifier with a type mismatch. Tree-LLVM doesn't
+    // have this issue (it goes through a different vec
+    // emit path) — gate Vec<Atomic|Channel> out of SSA-
+    // LLVM so it falls back to tree-LLVM. Also gates any
+    // outer Vec containing Atomic/Channel at any nesting
+    // depth.
+    stmt_uses_vec_of_atomic_or_channel(stmt)
+}
+
+fn ty_contains_vec_of_atomic_or_channel(ty: &Type) -> bool {
+    match ty {
+        Type::Vec(inner) => matches!(
+            &**inner,
+            Type::Atomic(_) | Type::Channel(_, _)
+        ) || ty_contains_vec_of_atomic_or_channel(inner),
+        Type::Array { element, .. } => ty_contains_vec_of_atomic_or_channel(element),
+        Type::Ref(inner) | Type::RefMut(inner) => {
+            ty_contains_vec_of_atomic_or_channel(inner)
+        }
+        Type::Tuple(elements) => elements
+            .iter()
+            .any(ty_contains_vec_of_atomic_or_channel),
+        Type::FnPtr(params, ret) => {
+            params.iter().any(ty_contains_vec_of_atomic_or_channel)
+                || ty_contains_vec_of_atomic_or_channel(ret)
+        }
+        _ => false,
+    }
+}
+
+fn expr_uses_vec_of_atomic_or_channel(expr: &vani::ir::TypedExpr) -> bool {
+    if ty_contains_vec_of_atomic_or_channel(&expr.ty) {
+        return true;
+    }
+    use vani::ir::TypedExprKind as E;
+    match &expr.kind {
+        E::Unary { expr, .. } | E::Cast { expr, .. } | E::Len { array: expr, .. } => {
+            expr_uses_vec_of_atomic_or_channel(expr)
+        }
+        E::Binary { left, right, .. } => {
+            expr_uses_vec_of_atomic_or_channel(left)
+                || expr_uses_vec_of_atomic_or_channel(right)
+        }
+        E::Call { args, .. }
+        | E::ArrayLit { elements: args } => {
+            args.iter().any(expr_uses_vec_of_atomic_or_channel)
+        }
+        E::CallIndirect { callee, args } => {
+            expr_uses_vec_of_atomic_or_channel(callee)
+                || args.iter().any(expr_uses_vec_of_atomic_or_channel)
+        }
+        E::Index { array, index, .. } => {
+            expr_uses_vec_of_atomic_or_channel(array)
+                || expr_uses_vec_of_atomic_or_channel(index)
+        }
+        E::Tuple { elements } => {
+            elements.iter().any(expr_uses_vec_of_atomic_or_channel)
+        }
+        E::TupleAccess { tuple, .. } => expr_uses_vec_of_atomic_or_channel(tuple),
+        E::StructLit { fields, .. } => fields
+            .iter()
+            .any(|(_, e)| expr_uses_vec_of_atomic_or_channel(e)),
+        E::FieldAccess { object, .. } => expr_uses_vec_of_atomic_or_channel(object),
+        E::EnumVariantWithPayload { payload, .. } => {
+            expr_uses_vec_of_atomic_or_channel(payload)
+        }
+        E::IfExpr { cond, then_value, else_value } => {
+            expr_uses_vec_of_atomic_or_channel(cond)
+                || expr_uses_vec_of_atomic_or_channel(then_value)
+                || expr_uses_vec_of_atomic_or_channel(else_value)
+        }
+        E::Match { scrutinee, arms } => {
+            expr_uses_vec_of_atomic_or_channel(scrutinee)
+                || arms.iter().any(|arm| expr_uses_vec_of_atomic_or_channel(&arm.body))
+        }
+        E::Block { stmts, tail } => {
+            stmts.iter().any(stmt_uses_vec_of_atomic_or_channel)
+                || expr_uses_vec_of_atomic_or_channel(tail)
+        }
+        _ => false,
+    }
+}
+
+fn stmt_uses_vec_of_atomic_or_channel(stmt: &TypedStmt) -> bool {
+    match stmt {
+        TypedStmt::Let { ty, expr, .. } | TypedStmt::Reassign { ty, expr, .. } => {
+            ty_contains_vec_of_atomic_or_channel(ty)
+                || expr_uses_vec_of_atomic_or_channel(expr)
+        }
+        TypedStmt::Drop { ty, .. } => ty_contains_vec_of_atomic_or_channel(ty),
+        TypedStmt::Discard { expr }
+        | TypedStmt::Return { expr }
+        | TypedStmt::Assert { expr, .. }
+        | TypedStmt::Prove { expr } => expr_uses_vec_of_atomic_or_channel(expr),
+        TypedStmt::Print { items } => items.iter().any(|i| match i {
+            TypedPrintItem::Expr(e) => expr_uses_vec_of_atomic_or_channel(e),
+            TypedPrintItem::Str(_) => false,
+        }),
+        TypedStmt::If { cond, then_body, else_body } => {
+            expr_uses_vec_of_atomic_or_channel(cond)
+                || then_body.iter().any(stmt_uses_vec_of_atomic_or_channel)
+                || else_body.iter().any(stmt_uses_vec_of_atomic_or_channel)
+        }
+        TypedStmt::While { cond, body } => {
+            expr_uses_vec_of_atomic_or_channel(cond)
+                || body.iter().any(stmt_uses_vec_of_atomic_or_channel)
+        }
+        TypedStmt::For { start, end, body, .. } => {
+            expr_uses_vec_of_atomic_or_channel(start)
+                || expr_uses_vec_of_atomic_or_channel(end)
+                || body.iter().any(stmt_uses_vec_of_atomic_or_channel)
+        }
+        TypedStmt::ForIter { body, element_ty, collection_ty, .. } => {
+            ty_contains_vec_of_atomic_or_channel(element_ty)
+                || ty_contains_vec_of_atomic_or_channel(collection_ty)
+                || body.iter().any(stmt_uses_vec_of_atomic_or_channel)
+        }
+        TypedStmt::IndexAssign { index, value, .. } => {
+            expr_uses_vec_of_atomic_or_channel(index)
+                || expr_uses_vec_of_atomic_or_channel(value)
+        }
+        TypedStmt::FieldAssign { object, value, .. } => {
+            expr_uses_vec_of_atomic_or_channel(object)
+                || expr_uses_vec_of_atomic_or_channel(value)
+        }
+        TypedStmt::TaskSpawn { body, .. } => {
+            body.iter().any(stmt_uses_vec_of_atomic_or_channel)
+        }
+        _ => false,
+    }
 }
 
 /// SSA-C now handles both `parallel for` (via OpenMP
