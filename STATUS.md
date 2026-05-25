@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 905 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 906 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,20 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-C Vec<FnPtr> identifier-safe typedef done 2026-05-25**:
+   `Vec<fn(T) -> R>` element-tag fell through to
+   `c_leaf_type(FnPtr).replace(' ', '_')` which returned
+   `"void*"` (the `*` survives the replace). The emitted
+   typedef `intent_vec_void*` is not a valid C
+   identifier; cc rejected with "expected '=', ',', ';',
+   'asm' or '__attribute__' before '*' token". Fix: add
+   `Type::FnPtr(_, _)` arm to `element_tag` that returns
+   the identifier-safe spelling `"fnptr"`. All fn-ptrs
+   share the same C representation (`void*` cast in/out
+   for indirect calls), so one tag is correct regardless
+   of param/return types. Test totals: 906 lib + 47 e2e
+   passing. Closure #214.
 
    **CallIndirect arg move tracking done 2026-05-25**:
    `check_indirect_call` (the fn-ptr call path)

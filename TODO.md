@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #213)
+## ⏳ Resume here (paused 2026-05-25, after closure #214)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,13 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#214 tree-C Vec<FnPtr> identifier-safe typedef:
+`element_tag(FnPtr)` fell through to `c_leaf_type =
+"void*"` → typedef `intent_vec_void*` is invalid C
+(the `*` survived `.replace(' ', '_')`). cc rejected.
+Fix: add `FnPtr` arm returning `"fnptr"` — all fn-ptrs
+share the same `void*` C representation so one tag is
+correct. Test totals: 906 lib + 47 e2e passing.
 #213 CallIndirect arg move tracking: `check_indirect_call`
 (the fn-ptr call path) checked + coerced each arg but
 never called `consume_if_moved_var` /

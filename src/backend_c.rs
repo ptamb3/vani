@@ -1090,6 +1090,15 @@ pub(crate) fn element_tag(element: &Type) -> String {
         Type::Channel(element, capacity) => {
             format!("channel_{}_{}", element_tag(element), capacity)
         }
+        // Closure #214: `fn(T1, T2) -> R` falls through to
+        // `c_leaf_type(FnPtr) = "void*"`, and the `*` in the
+        // typedef name (`intent_vec_void*`) breaks C parsing.
+        // Spell it as `fnptr` — distinct from any scalar
+        // type, identifier-safe. All fn-ptrs share the same
+        // C representation (`void*` cast in/out for indirect
+        // calls), so a single per-element-tag typedef is
+        // correct regardless of parameter/return types.
+        Type::FnPtr(_, _) => "fnptr".to_string(),
         _ => c_leaf_type(element).replace(' ', "_"),
     }
 }

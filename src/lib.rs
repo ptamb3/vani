@@ -13548,6 +13548,41 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_c_vec_fnptr_typedef_is_identifier_safe() {
+        // Closure #214: `Vec<fn(T) -> R>` element-tag fell
+        // through to `c_leaf_type(FnPtr).replace(' ', '_')`
+        // = `"void*"` (the `*` stays through replace). The
+        // emitted typedef `intent_vec_void*` is not a valid
+        // C identifier and cc rejected with
+        // "expected '=', ',', ';', 'asm' or '__attribute__'
+        // before '*' token". Fix: add `Type::FnPtr(_, _)`
+        // arm to `element_tag` that returns the
+        // identifier-safe spelling `"fnptr"`. All fn-ptrs
+        // share the same C representation (`void*` cast
+        // in/out for indirect calls), so one tag is correct.
+        let source = r#"
+            fn double(x: i64) -> i64 { return x * 2; }
+            fn triple(x: i64) -> i64 { return x * 3; }
+
+            fn main() -> i64 {
+              let ops: Vec<fn(i64) -> i64> = vec(double, triple);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("Vec<FnPtr> compiles");
+        assert!(
+            c.contains("intent_vec_fnptr"),
+            "expected `intent_vec_fnptr` typedef:\n{}",
+            c
+        );
+        assert!(
+            !c.contains("intent_vec_void*"),
+            "expected no `intent_vec_void*` (invalid C identifier):\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn check_indirect_call_marks_owned_str_arg_moved() {
         // Closure #213: `check_indirect_call` (the fn-ptr
         // call path) checked + coerced each arg but never
