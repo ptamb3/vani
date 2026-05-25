@@ -13548,6 +13548,48 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_c_ref_field_to_mutex_strips_const() {
+        // Closure #210: when borrowing a struct via `ref T`
+        // and then field-borrowing a Mutex/Atomic/Channel
+        // field (`ref t.lock`), the C lowering took the
+        // address through a `const T*` pointer, producing
+        // a `const Mutex*` operand. The runtime helper
+        // `intent_mutex_i64_lock` (and Atomic/Channel ops)
+        // take a non-const pointer — atomic-style ops are
+        // inherently mutating even via a read-only borrow.
+        // gcc warned `-Wdiscarded-qualifiers`. Closure #176
+        // already handled the analogous shape for direct
+        // `ref Mutex/Channel/Atomic` params; #210 covers
+        // field-borrow through a `ref Struct`.
+        let source = r#"
+            struct Counter { lock: Mutex<i64> }
+
+            fn increment(c: ref Counter) -> i64 {
+              let g: Guard<i64> = mutex_lock(ref c.lock);
+              let cur: i64 = guard_get(ref g);
+              let _ = guard_set(ref g, cur + 1);
+              return cur + 1;
+            }
+
+            fn main() -> i64 {
+              let c: Counter = Counter { lock: mutex_new(0) };
+              let n1: i64 = increment(ref c);
+              assert n1 == 1;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("Mutex field-borrow compiles");
+        // The lock call must use an explicit cast that
+        // strips the const qualifier from the field pointer.
+        assert!(
+            c.contains("intent_mutex_i64_lock((intent_mutex_i64*)&v_c->lock)")
+                || c.contains("intent_mutex_i64_lock((intent_mutex_i64*)&v_c.lock)"),
+            "expected `intent_mutex_i64_lock((intent_mutex_i64*)&v_c->lock)` const-strip cast:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn tree_c_atomic_struct_field_uses_element_width() {
         // Closure #209: parallel to #208 for Atomic.
         // `Atomic<T>` as a struct field was emitting

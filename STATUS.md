@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 902 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 903 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,22 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-C RefField const-strip for Mutex/Atomic/Channel done 2026-05-25**:
+   When borrowing a struct via `ref T` and then field-
+   borrowing a Mutex/Atomic/Channel field (`ref c.lock`),
+   the C lowering took the address through a `const T*`
+   pointer → `const Mutex*` operand. The runtime helper
+   `intent_mutex_i64_lock` (and Atomic/Channel ops) takes
+   a non-const pointer — atomic-style ops are inherently
+   mutating even via a read-only borrow. gcc warned
+   `-Wdiscarded-qualifiers`. Closure #176 already handled
+   direct `ref Mutex/Channel/Atomic` params; #210 covers
+   field-borrow through a `ref Struct`. Tree-C now emits
+   `(intent_mutex_i64*)&v_c->lock` with an explicit const-
+   strip cast. -Wdiscarded-qualifiers sweep over all 58
+   examples clean. Test totals: 903 lib + 47 e2e passing.
+   Closure #210.
 
    **tree-C Atomic<T> struct field element width fix done 2026-05-25**:
    Parallel to #208 for `Atomic<T>` as a struct field.

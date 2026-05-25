@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #209)
+## ⏳ Resume here (paused 2026-05-25, after closure #210)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,15 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#210 tree-C RefField const-strip for Mutex/Atomic/Channel:
+when borrowing `ref T` and field-borrowing a Mutex/Atomic
+/Channel field (`ref c.lock`), the field-pointer kept
+the parent's const qualifier → `const Mutex*` mismatch
+vs the helper's non-const param → -Wdiscarded-qualifiers.
+Closure #176 covered direct ref params; #210 covers
+field-borrow through `ref Struct`. Emits
+`(intent_mutex_i64*)&v_c->lock` const-strip cast. Test
+totals: 903 lib + 47 e2e passing.
 #209 tree-C Atomic<T> struct field element width fix:
 parallel to #208 for Atomic. The c_leaf_type fallback
 returned `_Atomic int64_t` for any Atomic; an

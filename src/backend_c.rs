@@ -3018,8 +3018,44 @@ fn emit_expr(expr: &TypedExpr) -> String {
                 _ => unreachable!("RefField/RefMutField must have ref type"),
             };
             let sep = if object_ty.is_any_ref() { "->" } else { "." };
+            // Closure #210: when the object is borrowed via
+            // `ref T` (read-only borrow), the C parameter is
+            // `const T*`, so `&v_t->field` would be
+            // `const FieldType*`. For Mutex/Atomic/Channel
+            // fields, the helper functions
+            // (`intent_mutex_i64_lock` etc.) take non-const
+            // pointers — atomic-style ops conceptually
+            // mutate even via a read-only borrow. Without a
+            // const-strip cast, cc warns
+            // `-Wdiscarded-qualifiers`. Closure #176
+            // already handled the analogous shape for direct
+            // `ref Mutex<T>` / `ref Channel<T,N>` / `ref
+            // Atomic<T>` params; #210 covers field-borrow
+            // through `ref Struct`.
+            let needs_const_strip = object_ty.is_ref()
+                && matches!(
+                    &**inner_ty,
+                    Type::Mutex(_) | Type::Atomic(_) | Type::Channel(_, _)
+                );
             match &**inner_ty {
                 Type::Array { .. } => format!("{}{}{}", local_name(object), sep, field),
+                _ if needs_const_strip => {
+                    let storage = match &**inner_ty {
+                        Type::Mutex(_) => "intent_mutex_i64".to_string(),
+                        Type::Atomic(element) => c_atomic_storage(element),
+                        Type::Channel(element, capacity) => {
+                            c_channel_storage(element, *capacity)
+                        }
+                        _ => unreachable!(),
+                    };
+                    format!(
+                        "({}*)&{}{}{}",
+                        storage,
+                        local_name(object),
+                        sep,
+                        field
+                    )
+                }
                 _ => format!("&{}{}{}", local_name(object), sep, field),
             }
         }
