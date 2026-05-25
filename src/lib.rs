@@ -13641,6 +13641,51 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn try_desugar_handles_multiple_trys_in_one_block() {
+        // Closure #218: extended the desugar to nest matches
+        // for multiple Let(try) stmts in the same body. The
+        // recursive `try_rewrite_block_stmts` finds each
+        // try, splits the stmts, and wraps the remainder in
+        // a match — recursively, so N tries produce N nested
+        // matches with the innermost containing the final
+        // return-expr.
+        let two = r#"
+            enum Opt { Some(i64), None }
+
+            fn run(a: Opt, b: Opt) -> Opt {
+              let x: i64 = try a;
+              let y: i64 = try b;
+              return Opt.Some(x + y);
+            }
+
+            fn main() -> i64 {
+              let r: Opt = run(Opt.Some(3), Opt.Some(4));
+              return 0;
+            }
+        "#;
+        compile_to_c(two).expect("two trys in one block compiles");
+
+        let three_with_intermediate = r#"
+            enum Opt { Some(i64), None }
+
+            fn run(a: Opt, b: Opt, c: Opt) -> Opt {
+              let x: i64 = try a;
+              let doubled: i64 = x * 2;
+              let y: i64 = try b;
+              let z: i64 = try c;
+              return Opt.Some(doubled + y + z);
+            }
+
+            fn main() -> i64 {
+              let r: Opt = run(Opt.Some(1), Opt.Some(2), Opt.Some(3));
+              return 0;
+            }
+        "#;
+        compile_to_c(three_with_intermediate)
+            .expect("three trys with intermediate let compiles");
+    }
+
+    #[test]
     fn tree_c_nested_fnptr_return_compiles() {
         // Closure #216: `fn() -> fn(T) -> R` produced
         // syntactically broken C declarator

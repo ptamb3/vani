@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 910 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 911 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Multiple `try`s in one block done 2026-05-25**:
+   The desugar from closure #217 still only handled the
+   FIRST `Let(try)` in a body — subsequent `try` stmts
+   surfaced the "still in progress" diagnostic.
+   Refactored to `try_rewrite_block_stmts` which finds
+   the first try in a stmt-list, lifts the rest into a
+   match's Some-arm Block-expr, and recurses on the
+   inner stmts. N `try`s in one body now produce N
+   nested matches with the innermost holding the final
+   return-expr. Intermediate non-try `let` stmts
+   between consecutive `try`s are preserved (e.g.
+   `let x = try a; let doubled = x * 2; let y = try b;
+    return Opt.Some(doubled + y);`). Test totals: 911
+   lib + 47 e2e passing. Closure #218.
 
    **`try` in nested blocks done 2026-05-25**:
    The v1 `try`-let desugar previously only operated on

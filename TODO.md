@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #217)
+## ⏳ Resume here (paused 2026-05-25, after closure #218)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,15 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#218 Multiple `try`s in one block (#5 follow-up closed):
+the desugar from #217 only handled the FIRST `Let(try)`;
+subsequent `try` stmts surfaced the "still in progress"
+diagnostic. Refactored to `try_rewrite_block_stmts` —
+finds the first try in a stmt-list, lifts the rest into
+a match's Some-arm Block-expr, and recurses on the inner
+stmts. N tries → N nested matches. Intermediate non-try
+`let`s between consecutive `try`s are preserved. Test
+totals: 911 lib + 47 e2e passing.
 #217 `try` in nested blocks (#5 follow-up closed):
 the v1 `try`-let desugar only operated on the top-level
 fn body. Refactored into `try_rewrite_stmt_list` which

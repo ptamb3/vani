@@ -2205,12 +2205,13 @@ fn try_rewrite_stmt_list(
     try_rewrite_at_top(body, return_type, enum_by_name, counter, diagnostics);
 }
 
-/// Check whether `body` matches the shape
-///   [Let(try) , (Let|Print)* , Return]
-/// and rewrite in place to a single Return-of-Match if so.
-/// Returns silently when the shape doesn't match; emits a
-/// diagnostic when there's a Let(try) but the surrounding
-/// shape is invalid.
+/// Check whether `body` contains any Let(try) and rewrite all
+/// occurrences in place. Multiple Let(try) stmts in the same
+/// body get nested (closure #218) — each try lifts the rest of
+/// the body into its Some-arm Block-expr, then the recursive
+/// rewriter processes the inner stmts to find further trys.
+/// Returns silently when no Let(try) is present; emits a
+/// diagnostic when the surrounding shape is invalid.
 fn try_rewrite_at_top(
     body: &mut Vec<Stmt>,
     return_type: &Type,
@@ -2218,49 +2219,61 @@ fn try_rewrite_at_top(
     counter: &mut usize,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    use crate::ast::{MatchArm, Pattern};
-    if body.len() < 2 {
-        return;
-    }
-    let has_try = matches!(
-        &body[0],
-        Stmt::Let { expr: e, .. }
-            if matches!(e.kind, ExprKind::Try { .. })
-    );
-    if !has_try {
+    if body.is_empty() {
         return;
     }
     let last_idx = body.len() - 1;
     if !matches!(&body[last_idx], Stmt::Return { .. }) {
         return;
     }
-    let intermediate_ok = body[1..last_idx]
+    // Find any Let-try in body[0..last_idx]. If none, nothing
+    // to rewrite at this level.
+    let has_try = body[0..last_idx].iter().any(|s| matches!(
+        s,
+        Stmt::Let { expr: e, .. }
+            if matches!(e.kind, ExprKind::Try { .. })
+    ));
+    if !has_try {
+        return;
+    }
+    // Validate intermediate stmt shapes once up front (Block-
+    // expr only accepts Let/Print).
+    let intermediate_ok = body[0..last_idx]
         .iter()
         .all(|s| matches!(s, Stmt::Let { .. } | Stmt::Print { .. }));
     if !intermediate_ok {
+        let first_try_span = body[0..last_idx]
+            .iter()
+            .find(|s| matches!(
+                s,
+                Stmt::Let { expr: e, .. }
+                    if matches!(e.kind, ExprKind::Try { .. })
+            ))
+            .map(|s| s.span())
+            .unwrap_or_else(crate::span::Span::default);
         diagnostics.push(Diagnostic::new(
-            body[0].span(),
+            first_try_span,
             "`try` desugar in v1 requires only `let` and `print` statements \
              between the `try`-let and the final `return`; control flow / \
              assignments between aren't supported yet (T2.6 phase 2 follow-up)",
         ));
         return;
     }
-    let (try_name, try_annotation, try_inner, try_span) = match &body[0] {
-        Stmt::Let { name, annotation, expr, span } => {
-            let inner = match &expr.kind {
-                ExprKind::Try { inner } => (**inner).clone(),
-                _ => unreachable!(),
-            };
-            (name.clone(), annotation.clone(), inner, *span)
-        }
-        _ => unreachable!(),
-    };
+    // Resolve the early-return enum's variants.
+    let first_try_span = body[0..last_idx]
+        .iter()
+        .find(|s| matches!(
+            s,
+            Stmt::Let { expr: e, .. }
+                if matches!(e.kind, ExprKind::Try { .. })
+        ))
+        .map(|s| s.span())
+        .unwrap_or_else(crate::span::Span::default);
     let return_enum_name = match return_type {
         Type::Enum(n) => n.clone(),
         _ => {
             diagnostics.push(Diagnostic::new(
-                try_span,
+                first_try_span,
                 format!(
                     "`try` requires the enclosing function's return type \
                      to be an enum; got {}",
@@ -2286,7 +2299,7 @@ fn try_rewrite_at_top(
         .collect();
     if payloaded.len() != 1 || payloadless.len() != 1 {
         diagnostics.push(Diagnostic::new(
-            try_span,
+            first_try_span,
             format!(
                 "`try` requires the enum '{}' to have exactly one payloaded \
                  variant and one payload-less variant; got {} payloaded and \
@@ -2300,51 +2313,118 @@ fn try_rewrite_at_top(
     }
     let some_variant = payloaded[0].name.clone();
     let none_variant = payloadless[0].name.clone();
+    // Extract the trailing Return's expr; the recursive
+    // rewriter operates on (stmts, tail_expr).
+    let return_expr = match &body[last_idx] {
+        Stmt::Return { expr, .. } => expr.clone(),
+        _ => unreachable!(),
+    };
+    let return_span = body[last_idx].span();
+    let stmts_before_return: Vec<Stmt> = body[0..last_idx].to_vec();
+    let (final_stmts, final_tail) = try_rewrite_block_stmts(
+        stmts_before_return,
+        return_expr,
+        &return_enum_name,
+        &some_variant,
+        &none_variant,
+        counter,
+    );
+    let mut new_body: Vec<Stmt> = final_stmts;
+    new_body.push(Stmt::Return {
+        expr: final_tail,
+        span: return_span,
+    });
+    *body = new_body;
+}
+
+/// Walk `stmts` for the FIRST `Let { expr: Try { ... } }` and
+/// lift everything from that stmt onward into a match-on-the-
+/// try-expr expression whose Some-arm contains a Block-expr
+/// of the remaining stmts + tail. Recurses on the inner stmts
+/// so multiple `try`s in the same body get nested matches
+/// (closure #218). Returns the (possibly-shortened) stmts that
+/// preceded the first try plus the new tail expression.
+fn try_rewrite_block_stmts(
+    mut stmts: Vec<Stmt>,
+    tail: Expr,
+    return_enum_name: &str,
+    some_variant: &str,
+    none_variant: &str,
+    counter: &mut usize,
+) -> (Vec<Stmt>, Expr) {
+    use crate::ast::{MatchArm, Pattern};
+    // Find the first Let-try.
+    let pos = stmts.iter().position(|s| matches!(
+        s,
+        Stmt::Let { expr: e, .. }
+            if matches!(e.kind, ExprKind::Try { .. })
+    ));
+    let Some(i) = pos else {
+        return (stmts, tail);
+    };
+    let (try_name, try_annotation, try_inner, try_span) = match &stmts[i] {
+        Stmt::Let { name, annotation, expr, span } => {
+            let inner = match &expr.kind {
+                ExprKind::Try { inner } => (**inner).clone(),
+                _ => unreachable!(),
+            };
+            (name.clone(), annotation.clone(), inner, *span)
+        }
+        _ => unreachable!(),
+    };
     let fresh = format!("__try_v_{}", *counter);
     *counter += 1;
-    let mut block_stmts: Vec<Stmt> = Vec::new();
-    block_stmts.push(Stmt::Let {
-        name: try_name.clone(),
-        annotation: try_annotation.clone(),
+    // Build the Some-arm Block-expr's inner stmts:
+    //   Let try_name = __t,
+    //   then everything after the try-let.
+    let after: Vec<Stmt> = stmts.drain(i + 1..).collect();
+    let mut inner_stmts: Vec<Stmt> = Vec::new();
+    inner_stmts.push(Stmt::Let {
+        name: try_name,
+        annotation: try_annotation,
         expr: Expr {
             kind: ExprKind::Var(fresh.clone()),
             span: try_span,
         },
         span: try_span,
     });
-    for s in &body[1..last_idx] {
-        block_stmts.push(s.clone());
-    }
-    let tail_expr = match &body[last_idx] {
-        Stmt::Return { expr, .. } => expr.clone(),
-        _ => unreachable!(),
-    };
+    inner_stmts.extend(after);
+    // Recurse: handle any further Let-trys nested in the
+    // remaining stmts. The recursion yields the fully-desugared
+    // Block-expr contents.
+    let (final_inner_stmts, final_inner_tail) = try_rewrite_block_stmts(
+        inner_stmts,
+        tail,
+        return_enum_name,
+        some_variant,
+        none_variant,
+        counter,
+    );
     let some_arm_body = Expr {
         kind: ExprKind::Block {
-            stmts: block_stmts,
-            tail: Box::new(tail_expr.clone()),
+            stmts: final_inner_stmts,
+            tail: Box::new(final_inner_tail),
         },
         span: try_span,
     };
     let none_arm_body = Expr {
         kind: ExprKind::FieldAccess {
             object: Box::new(Expr {
-                kind: ExprKind::Var(return_enum_name.clone()),
+                kind: ExprKind::Var(return_enum_name.to_string()),
                 span: try_span,
             }),
-            field: none_variant.clone(),
+            field: none_variant.to_string(),
         },
         span: try_span,
     };
-    let return_span = body[last_idx].span();
     let match_expr = Expr {
         kind: ExprKind::Match {
             scrutinee: Box::new(try_inner),
             arms: vec![
                 MatchArm {
                     pattern: Pattern::VariantWithBinding {
-                        enum_name: return_enum_name.clone(),
-                        variant: some_variant,
+                        enum_name: return_enum_name.to_string(),
+                        variant: some_variant.to_string(),
                         binding: fresh,
                     },
                     pattern_span: try_span,
@@ -2352,8 +2432,8 @@ fn try_rewrite_at_top(
                 },
                 MatchArm {
                     pattern: Pattern::Variant {
-                        enum_name: return_enum_name,
-                        variant: none_variant,
+                        enum_name: return_enum_name.to_string(),
+                        variant: none_variant.to_string(),
                     },
                     pattern_span: try_span,
                     body: none_arm_body,
@@ -2362,10 +2442,11 @@ fn try_rewrite_at_top(
         },
         span: try_span,
     };
-    *body = vec![Stmt::Return {
-        expr: match_expr,
-        span: return_span,
-    }];
+    // Pop the (now empty) try-let stmt and any stmts after —
+    // `drain(i+1..)` already removed the trailing portion; the
+    // try-let itself sits at index i, remove it too.
+    stmts.truncate(i);
+    (stmts, match_expr)
 }
 
 /// T1.4 phase 2: monomorphize generic functions. Walks the
