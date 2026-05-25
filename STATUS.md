@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 893 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 894 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,19 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Block-expr Let RHS move tracking done 2026-05-25**:
+   The Block-expr `Stmt::Let` arm (closure #129 MVP)
+   never called `consume_if_moved_var(rhs, …)`, so
+   `let n = b.name` (partial-move) or `let n = outer_var`
+   (Var move) inside a Block-expr didn't propagate the
+   move into the env. The struct's per-field free / outer
+   Var's scope-exit free then double-freed the heap that
+   the moved-out binding's drop ALSO freed — ASan ABORT.
+   Fix: mirror the regular fn-body Let arm — call
+   `consume_if_moved_var(rhs, &rhs_checked, env)` then
+   `inject_branch_drops(&mut rhs_checked.expr)`. Test
+   totals: 894 lib + 47 e2e passing. Closure #201.
 
    **Block-expr `let _ = …` Discard handling done 2026-05-25**:
    The Block-expr `check_expr` arm always called

@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #200)
+## ⏳ Resume here (paused 2026-05-25, after closure #201)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,15 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#201 Block-expr Let RHS move tracking: the Block-expr
+`Stmt::Let` arm (closure #129 MVP) never called
+`consume_if_moved_var(rhs, …)`, so `let n = b.name`
+(partial-move) or `let n = outer_var` (Var move) inside
+a Block-expr didn't propagate the move. ASan ABORT on
+double-free at scope exit. Fix: mirror the regular
+fn-body Let arm — call `consume_if_moved_var` then
+`inject_branch_drops`. Test totals: 894 lib + 47 e2e
+passing.
 #200 Block-expr `let _ = …` Discard handling: the
 Block-expr `check_expr` arm always called
 `env.insert_current(name)` and emitted `TypedStmt::Let`.

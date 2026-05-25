@@ -13548,6 +13548,61 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn block_expr_let_marks_rhs_var_moves() {
+        // Closure #201: the Block-expr `Stmt::Let` arm
+        // (closure #129's MVP) never called
+        // `consume_if_moved_var(rhs, …)`, so
+        //   `let extracted = { let n = b.name; n };`
+        // didn't mark `b.moved_fields["name"]` and the
+        // struct's per-field free at scope exit double-freed
+        // (extracted's drop ALSO freed the same heap, ABORT).
+        // Fix: in the Block-expr Let arm, call
+        // `consume_if_moved_var(rhs, &rhs_checked, env)` and
+        // `inject_branch_drops(&mut rhs_checked.expr)` —
+        // mirrors the regular fn-body Let path.
+        let source = r#"
+            struct Box { name: OwnedStr, count: i64 }
+
+            fn main() -> i64 {
+              let b: Box = Box { name: "hello" + "", count: 42 };
+              let extracted: OwnedStr = {
+                let n: OwnedStr = b.name;
+                n
+              };
+              assert b.count == 42;
+              assert (len(extracted) as i64) == 5;
+              return 0;
+            }
+        "#;
+        // Just compilation success is the test — without
+        // closure #201 the program double-freed at runtime.
+        // The double-free is a behavioral bug that needs
+        // ASan to catch; the unit test verifies the partial
+        // move is recorded by checking the generated C
+        // does not free `v_b.name` (because b.name was moved
+        // into extracted via the Block).
+        let c = compile_to_c(source).expect("partial-move via Block-expr compiles");
+        let main_start = c.find("static int64_t fn_main(void) {").unwrap_or(0);
+        let main_body = &c[main_start..];
+        // After #201, `b.name` is marked moved → struct
+        // per-field free at scope exit skips name; only
+        // `extracted` is freed (via Drop OwnedStr at
+        // scope exit). So `free((void*)v_b.name)` MUST
+        // NOT appear in fn_main.
+        assert!(
+            !main_body.contains("free((void*)v_b.name)"),
+            "expected v_b.name to be marked moved (no scope-exit free), got:\n{}",
+            main_body
+        );
+        // And v_extracted MUST still be freed.
+        assert!(
+            main_body.contains("free((void*)v_extracted)"),
+            "expected v_extracted scope-exit free:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn block_expr_let_underscore_emits_discard_not_let() {
         // Closure #200: Block-expr's Let arm always called
         // `env.insert_current(name)` and emitted

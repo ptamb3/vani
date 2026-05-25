@@ -7382,12 +7382,27 @@ fn check_expr(
             for s in stmts {
                 match s {
                     Stmt::Let { name, annotation, expr: rhs, span } => {
-                        let rhs_checked = if let Some(ann) = annotation {
+                        let mut rhs_checked = if let Some(ann) = annotation {
                             let raw = check_expr(rhs, env, signatures, diagnostics);
                             coerce_checked(raw, ann, rhs.span, "let initializer", diagnostics)
                         } else {
                             check_expr(rhs, env, signatures, diagnostics)
                         };
+                        // Closure #201: mirror the regular fn-
+                        // body Let arm's move-tracking + branch-
+                        // rewrite. Without `consume_if_moved_var`
+                        // here, `let n = b.name` inside a Block-
+                        // expr never marks `b.moved_fields["name"]`
+                        // → the struct's per-field free at scope
+                        // exit double-frees `b.name`'s heap (also
+                        // freed via the moved-out binding's
+                        // drop). Same family for Var moves of
+                        // non-Copy RHS. `inject_branch_drops`
+                        // rewrites if-expr / match Var-branches
+                        // (closure #179) so the unchosen branch
+                        // doesn't leak.
+                        consume_if_moved_var(rhs, &rhs_checked, env);
+                        inject_branch_drops(&mut rhs_checked.expr);
                         // `let _ = expr;` is a discard. Don't
                         // insert a binding (the name `_` would
                         // collide on the second use) and emit a
