@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 897 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 898 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,16 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-C match-on-bool cast for switch done 2026-05-25**:
+   gcc warns `switch condition has boolean value`
+   (-Wswitch-bool) when the dispatch expression is
+   bool-typed. Tree-C's Match emit passed the bool
+   scrutinee directly to `switch(…)` with `case 0` /
+   `case 1` arms. Fix: cast bool scrutinees to int
+   (`switch ((int)v_b)`) so the canonical 0/1 dispatch
+   is unambiguous. Test totals: 898 lib + 47 e2e
+   passing. Closure #205.
 
    **SSA-C omits unused block labels done 2026-05-25**:
    SSA-C emitted a `bbN:` label for EVERY block,

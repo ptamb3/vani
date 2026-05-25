@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #204)
+## ⏳ Resume here (paused 2026-05-25, after closure #205)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,11 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#205 tree-C match-on-bool cast for switch: gcc warns
+`switch condition has boolean value` (-Wswitch-bool)
+when the dispatch is bool. Tree-C now emits
+`switch ((int)v_b)` for bool scrutinees. Test totals:
+898 lib + 47 e2e passing.
 #204 SSA-C omits unused block labels: SSA-C emitted a
 `bbN:` label for EVERY block, including the entry block
 of a straight-line fn that no `goto` ever targets. gcc

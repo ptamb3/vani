@@ -13548,6 +13548,41 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_c_match_on_bool_casts_to_int_for_switch() {
+        // Closure #205: gcc warns `switch condition has
+        // boolean value` (-Wswitch-bool) when the dispatch
+        // expression is bool-typed. Tree-C's Match emit
+        // passed the bool scrutinee directly to `switch(…)`
+        // with `case 0` / `case 1` arms. Fix: cast bool
+        // scrutinees to int (`switch ((int)v_b)`) so the
+        // canonical 0/1 dispatch is unambiguous and gcc
+        // doesn't warn.
+        let source = r#"
+            fn describe(b: bool) -> i64 {
+              return match b {
+                true then 1,
+                false then 0,
+              };
+            }
+            fn main() -> i64 {
+              assert describe(true) == 1;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("match-on-bool compiles");
+        assert!(
+            c.contains("switch (((int)v_b))"),
+            "expected `switch (((int)v_b))` cast for bool-scrutinee match:\n{}",
+            c
+        );
+        assert!(
+            !c.contains("switch (v_b)"),
+            "expected no bare `switch (v_b)` (would warn -Wswitch-bool):\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn ssa_c_omits_unused_block_labels() {
         // Closure #204: SSA-C emitted a `bbN:` label for
         // EVERY block, including the entry block of a

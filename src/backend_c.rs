@@ -3166,6 +3166,14 @@ fn emit_expr(expr: &TypedExpr) -> String {
                     scr_full
                 ));
                 "__scr.tag".to_string()
+            } else if matches!(&scrutinee.ty, Type::Bool) {
+                // Closure #205: gcc warns
+                // `switch condition has boolean value` (-Wswitch-bool)
+                // when the dispatch expression is bool-typed. Cast
+                // to int so the switch's `case 0` / `case 1` arms
+                // dispatch on the canonical 0/1 representation
+                // without the warning.
+                format!("((int){})", scr_full)
             } else {
                 scr_full
             };
