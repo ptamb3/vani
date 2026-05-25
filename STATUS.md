@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-23
-**Test totals:** 884 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 885 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,18 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-C Block Drop Enum: tag switch + payload free done 2026-05-24**:
+   Parallel to closure #192's Struct arm. Block-expr
+   Drop for a payloaded enum needed to switch on the
+   active tag and free the heap payload (OwnedStr /
+   Vec). Inject_branch_drops's branch-wrap left enum-
+   typed Vars in the unchosen branch with their
+   payload heap leaked. Added the Enum arm: emits a
+   `switch (v_name.tag) { case T1: free_call; break;
+   default: break; }` form (same shape as the Reassign
+   Enum drop in closure #147). Test totals: 885 lib +
+   47 e2e passing. Closure #193.
 
    **tree-C Block Drop Struct emits field chain done 2026-05-24**:
    tree-C's Block-expression emit (used by

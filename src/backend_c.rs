@@ -3267,6 +3267,49 @@ fn emit_expr(expr: &TypedExpr) -> String {
                                 }
                             }
                         }
+                        Type::Enum(enum_name) => {
+                            // Closure #193: parallel to the
+                            // Struct arm. Block-expr Drop for
+                            // a payloaded enum needs to switch
+                            // on the active tag and free the
+                            // heap payload — otherwise the
+                            // unchosen branch's payload leaks.
+                            let payload_ty = ENUM_PAYLOAD_REGISTRY
+                                .with(|r| r.borrow().get(enum_name).cloned());
+                            let free_expr: Option<String> = match &payload_ty {
+                                Some(Type::OwnedStr) => Some(format!(
+                                    "free((void*){}.payload)",
+                                    local_name(name)
+                                )),
+                                Some(Type::Vec(element)) => Some(format!(
+                                    "{}({}.payload)",
+                                    vec_helper(element, "free"),
+                                    local_name(name)
+                                )),
+                                _ => None,
+                            };
+                            if let Some(free_call) = free_expr {
+                                let payload_tags: Vec<u32> =
+                                    ENUM_PAYLOAD_TAGS_REGISTRY.with(|r| {
+                                        r.borrow()
+                                            .get(enum_name)
+                                            .cloned()
+                                            .unwrap_or_default()
+                                    });
+                                if !payload_tags.is_empty() {
+                                    let cases: Vec<String> = payload_tags
+                                        .iter()
+                                        .map(|t| format!("case {}", t))
+                                        .collect();
+                                    body.push_str(&format!(
+                                        "switch ({}.tag) {{ {}: {}; break; default: break; }} ",
+                                        local_name(name),
+                                        cases.join(": "),
+                                        free_call,
+                                    ));
+                                }
+                            }
+                        }
                         _ => {}
                     },
                     _ => {}

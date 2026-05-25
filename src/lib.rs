@@ -13421,6 +13421,43 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_c_block_drop_enum_emits_tag_switch_payload_free() {
+        // Closure #193: parallel to the Struct arm
+        // (closure #192). Block-expr Drop for a payloaded
+        // enum needs to switch on the active tag and free
+        // the heap payload (OwnedStr / Vec). Without this,
+        // inject_branch_drops's branch-wrap left enum-
+        // typed Vars in the unchosen branch with their
+        // payload heap leaked.
+        let source = r#"
+            enum Maybe { Some(OwnedStr), None }
+
+            fn main() -> i64 {
+              let cond: bool = true;
+              let a: Maybe = Maybe.Some("alpha" + "");
+              let b: Maybe = Maybe.Some("beta" + "");
+              let chosen: Maybe = if cond { a } else { b };
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("if-expr Enum branches compile");
+        let main_start = c.find("static int64_t fn_main").expect("fn_main present");
+        let main_end = c[main_start..]
+            .find("\nint main(void)")
+            .map(|i| main_start + i)
+            .unwrap_or(c.len());
+        let main_body = &c[main_start..main_end];
+        // Each branch must include a switch on the
+        // OTHER's tag, freeing the payload.
+        assert!(
+            main_body.contains("switch (v_a.tag)")
+                && main_body.contains("switch (v_b.tag)"),
+            "expected per-branch payload-free switches on v_a.tag and v_b.tag:\n{}",
+            main_body
+        );
+    }
+
+    #[test]
     fn tree_c_block_drop_struct_emits_field_chain() {
         // Closure #192: tree-C's Block-expression emit
         // handled `Drop OwnedStr` and `Drop Vec` arms but

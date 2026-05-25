@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #192)
+## ⏳ Resume here (paused 2026-05-24, after closure #193)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -488,6 +488,11 @@ Struct Vars the Block emit's Drop arm fell through
 Added the Struct arm that walks
 STRUCT_FIELDS_REGISTRY and emits the per-field free
 chain. Test totals: 884 lib + 47 e2e passing.
+#193 same shape for Enum: tree-C Block-expr Drop
+arm now emits `switch (v.tag) { case T: free; break;
+default: break; }` for payloaded enums. Mirrors the
+Reassign Enum drop (#147). Test totals: 885 lib +
+47 e2e passing.
 
 ### Recommended next (pick one)
 
