@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #195)
+## ⏳ Resume here (paused 2026-05-24, after closure #196)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,21 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#196 Block-expr inner enum-let annotation resolution:
+`resolve_enum_types_in_stmt` walked top-level fn bodies
+and `if`/`while`/`for`/`for-iter`/task bodies but never
+descended into a Stmt's `expr` field, so any Let inside
+a Block-expr (e.g. `let r = { let a: Maybe = …; … }`)
+kept its annotation as `Type::Struct("Maybe")`. The
+identical-text "Maybe vs Maybe" diagnostic surfaced when
+the variant constructor's `Type::Enum` didn't match the
+unresolved annotation. Fix: new
+`resolve_enum_types_in_expr` walks every expression
+shape (Block, IfExpr, Match, Cast, Binary, Call, Tuple,
+StructLit, FieldAccess, Try, …) and recurses through
+nested Lets. Pre-existing bug exposed by writing
+enum-typed inner Lets. Test totals: 889 lib + 47 e2e
+passing.
 #195 inject_branch_drops cross-scope leak after #194:
 the spill from #194 lands `let __block_tail_<span> =
 …` inside each Block-expr, and `collect_branch_var_

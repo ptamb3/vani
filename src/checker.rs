@@ -1326,12 +1326,14 @@ fn resolve_enum_types_in_stmt(
     enums: &std::collections::HashSet<String>,
 ) {
     match stmt {
-        Stmt::Let { annotation, .. } | Stmt::LetTuple { annotation, .. } => {
+        Stmt::Let { annotation, expr, .. } | Stmt::LetTuple { annotation, expr, .. } => {
             if let Some(ty) = annotation {
                 resolve_enum_types_in_type(ty, enums);
             }
+            resolve_enum_types_in_expr(expr, enums);
         }
-        Stmt::If { then_body, else_body, .. } => {
+        Stmt::If { cond, then_body, else_body, .. } => {
+            resolve_enum_types_in_expr(cond, enums);
             for s in then_body {
                 resolve_enum_types_in_stmt(s, enums);
             }
@@ -1339,15 +1341,144 @@ fn resolve_enum_types_in_stmt(
                 resolve_enum_types_in_stmt(s, enums);
             }
         }
-        Stmt::While { body, .. }
-        | Stmt::For { body, .. }
-        | Stmt::ForIter { body, .. }
-        | Stmt::TaskSpawn { body, .. } => {
+        Stmt::While { cond, invariants, body, .. } => {
+            resolve_enum_types_in_expr(cond, enums);
+            for inv in invariants {
+                resolve_enum_types_in_expr(inv, enums);
+            }
             for s in body {
                 resolve_enum_types_in_stmt(s, enums);
             }
         }
-        _ => {}
+        Stmt::For { start, end, invariants, body, .. } => {
+            resolve_enum_types_in_expr(start, enums);
+            resolve_enum_types_in_expr(end, enums);
+            for inv in invariants {
+                resolve_enum_types_in_expr(inv, enums);
+            }
+            for s in body {
+                resolve_enum_types_in_stmt(s, enums);
+            }
+        }
+        Stmt::ForIter { body, .. } | Stmt::TaskSpawn { body, .. } => {
+            for s in body {
+                resolve_enum_types_in_stmt(s, enums);
+            }
+        }
+        Stmt::Return { expr, .. }
+        | Stmt::Assert { expr, .. }
+        | Stmt::Prove { expr, .. }
+        | Stmt::Assign { expr, .. } => {
+            resolve_enum_types_in_expr(expr, enums);
+        }
+        Stmt::IndexAssign { index, value, .. } => {
+            resolve_enum_types_in_expr(index, enums);
+            resolve_enum_types_in_expr(value, enums);
+        }
+        Stmt::FieldAssign { object, value, .. } => {
+            resolve_enum_types_in_expr(object, enums);
+            resolve_enum_types_in_expr(value, enums);
+        }
+        Stmt::Print { items, .. } => {
+            for item in items {
+                if let crate::ast::PrintItem::Expr(e) = item {
+                    resolve_enum_types_in_expr(e, enums);
+                }
+            }
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } | Stmt::TaskJoin { .. } => {}
+    }
+}
+
+/// Recurse into an expression tree, resolving enum-name type
+/// annotations that the parser produced as `Type::Struct`.
+/// Critical for Block-expressions, whose inner `let X: Enum =
+/// …;` annotations would otherwise stay as `Type::Struct(Enum)`
+/// and fail the `coerce_checked` equality check against the
+/// resolved `Type::Enum(Enum)` returned by `check_expr`.
+fn resolve_enum_types_in_expr(
+    expr: &mut Expr,
+    enums: &std::collections::HashSet<String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Block { stmts, tail } => {
+            for s in stmts {
+                resolve_enum_types_in_stmt(s, enums);
+            }
+            resolve_enum_types_in_expr(tail, enums);
+        }
+        ExprKind::IfExpr { cond, then_value, else_value } => {
+            resolve_enum_types_in_expr(cond, enums);
+            resolve_enum_types_in_expr(then_value, enums);
+            resolve_enum_types_in_expr(else_value, enums);
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            resolve_enum_types_in_expr(scrutinee, enums);
+            for arm in arms {
+                resolve_enum_types_in_expr(&mut arm.body, enums);
+            }
+        }
+        ExprKind::Cast { expr: inner, ty } => {
+            resolve_enum_types_in_type(ty, enums);
+            resolve_enum_types_in_expr(inner, enums);
+        }
+        ExprKind::Unary { expr: inner, .. } => {
+            resolve_enum_types_in_expr(inner, enums);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            resolve_enum_types_in_expr(left, enums);
+            resolve_enum_types_in_expr(right, enums);
+        }
+        ExprKind::Call { args, .. } => {
+            for a in args {
+                resolve_enum_types_in_expr(a, enums);
+            }
+        }
+        ExprKind::MethodCall { receiver, args, .. } => {
+            resolve_enum_types_in_expr(receiver, enums);
+            for a in args {
+                resolve_enum_types_in_expr(a, enums);
+            }
+        }
+        ExprKind::ArrayLit { elements } => {
+            for e in elements {
+                resolve_enum_types_in_expr(e, enums);
+            }
+        }
+        ExprKind::Tuple(elements) => {
+            for e in elements {
+                resolve_enum_types_in_expr(e, enums);
+            }
+        }
+        ExprKind::Index { array, index } => {
+            resolve_enum_types_in_expr(array, enums);
+            resolve_enum_types_in_expr(index, enums);
+        }
+        ExprKind::Len { array } => {
+            resolve_enum_types_in_expr(array, enums);
+        }
+        ExprKind::Ref { inner } | ExprKind::RefMut { inner } => {
+            resolve_enum_types_in_expr(inner, enums);
+        }
+        ExprKind::TupleAccess { tuple, .. } => {
+            resolve_enum_types_in_expr(tuple, enums);
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for (_, e) in fields {
+                resolve_enum_types_in_expr(e, enums);
+            }
+        }
+        ExprKind::FieldAccess { object, .. } => {
+            resolve_enum_types_in_expr(object, enums);
+        }
+        ExprKind::Try { inner } => {
+            resolve_enum_types_in_expr(inner, enums);
+        }
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Var(_) => {}
     }
 }
 

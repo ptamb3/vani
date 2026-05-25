@@ -13548,6 +13548,40 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn block_expr_inner_let_with_enum_annotation_compiles() {
+        // Closure #196: `resolve_enum_types_in_stmt` walked
+        // top-level fn bodies and the bodies of `if`/`while`/
+        // `for`/`for-iter`/task — but never descended into a
+        // Stmt's `expr` field, so any Let inside a Block-expr
+        // (e.g. `let r = { let a: Maybe = …; … }`) kept its
+        // annotation as `Type::Struct("Maybe")` instead of
+        // being resolved to `Type::Enum("Maybe")`. Then
+        // `coerce_checked` got actual=Type::Enum, target=Type::
+        // Struct, both rendered as "Maybe", and rejected with
+        // "let initializer must be assignable to Maybe, got
+        // Maybe" — a confusing identical-text diagnostic.
+        // Fix: extend `resolve_enum_types_in_stmt` to call
+        // a new `resolve_enum_types_in_expr` for every
+        // expression field, and have the expr walker descend
+        // into Block, IfExpr, Match, Cast, Binary, Call, etc.
+        let source = r#"
+            enum Maybe { Some(OwnedStr), None }
+
+            fn main() -> i64 {
+              let r: Maybe = {
+                let a: Maybe = Maybe.Some("alpha" + "");
+                let b: Maybe = Maybe.Some("beta" + "");
+                a
+              };
+              return 0;
+            }
+        "#;
+        // Before #196 this would surface the "Maybe vs Maybe"
+        // diagnostic; afterwards compilation succeeds.
+        compile_to_c(source).expect("enum-typed inner Let inside Block-expr must compile");
+    }
+
+    #[test]
     fn inject_branch_drops_skips_inner_block_decls() {
         // Closure #195: with #194's tail-spill inserting
         // `let __block_tail_<span> = …` inside each Block-expr,

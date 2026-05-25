@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 888 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 889 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,25 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Block-expr inner enum-let annotation resolution done 2026-05-24**:
+   `resolve_enum_types_in_stmt` walked top-level fn
+   bodies and the bodies of `if`/`while`/`for`/`for-iter`
+   /task — but never descended into a Stmt's `expr`
+   field, so any Let inside a Block-expr (e.g. `let r =
+   { let a: Maybe = …; … }`) kept its annotation as
+   `Type::Struct("Maybe")` instead of being resolved to
+   `Type::Enum("Maybe")`. `coerce_checked` then got
+   actual=Type::Enum, target=Type::Struct, both rendered
+   as "Maybe", and rejected with "let initializer must
+   be assignable to Maybe, got Maybe" — a confusing
+   identical-text diagnostic. Fix: extend
+   `resolve_enum_types_in_stmt` to call a new
+   `resolve_enum_types_in_expr` for every expression
+   field, and have the expr walker descend into Block,
+   IfExpr, Match, Cast, Binary, Call, Tuple, StructLit,
+   FieldAccess, Try, etc. Test totals: 889 lib + 47
+   e2e passing. Closure #196.
 
    **inject_branch_drops skips inner Block decls done 2026-05-24**:
    With closure #194's tail-spill landing `let
