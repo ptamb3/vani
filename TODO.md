@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #198)
+## ⏳ Resume here (paused 2026-05-25, after closure #199)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,16 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#199 Block-expr shadow-name false-move: closure #174's
+recursion into `Block { tail }` in `consume_if_moved_var`
+fired AFTER pop_scope, so `env.lookup_mut(name)` walked
+past the gone inner shadow and marked an outer-scope
+binding of the same name as moved — spurious "value 'a'
+was moved" diagnostic. Closure #194's inner consume
+already marked the inner binding before pop_scope. Fix
+the outer recursion: skip when the Block's tail is a
+`Var(name)` and the same Block declares a `Let` with
+that name. Test totals: 892 lib + 47 e2e passing.
 #198 tree-C tuple-shape collection in control flow:
 `collect_tuple_shapes_in_expr` had Tuple/TupleAccess/
 Unary/Binary/Call/ArrayLit/Cast/Index/Len/CallIndirect

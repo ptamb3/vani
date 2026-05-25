@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 891 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 892 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,21 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Block-expr shadow-name false-move done 2026-05-25**:
+   When the OUTER `consume_if_moved_var` walked into a
+   Block-expr's tail (closure #174), the inner scope had
+   already been popped. `env.lookup_mut(name)` then walked
+   past the gone inner shadow and marked an outer-scope
+   binding of the same name as moved — surfacing a
+   spurious "value 'a' was moved" diagnostic on
+   subsequent uses of the outer `a`. Closure #194's
+   inner `consume_if_moved_var` already marked the inner
+   binding before pop_scope; closure #199 plugs the
+   outer recursion: skip the recursion when the Block's
+   tail is a `Var(name)` and the same Block declares a
+   `Let` with that name. Test totals: 892 lib + 47 e2e
+   passing. Closure #199.
 
    **tree-C tuple-shape collection in control flow done 2026-05-25**:
    `collect_tuple_shapes_in_expr` handled Tuple/

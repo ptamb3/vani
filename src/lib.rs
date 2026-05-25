@@ -13548,6 +13548,36 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn block_expr_inner_shadow_does_not_mark_outer_var_moved() {
+        // Closure #199: when the outer
+        // `consume_if_moved_var` walks into a Block-expr's
+        // `tail`, the inner scope has already been popped.
+        // A naive `lookup_mut` then walks past the gone
+        // inner shadow and marks an outer-scope binding of
+        // the same name as moved — surfacing a spurious
+        // "value 'a' was moved" diagnostic on subsequent
+        // uses of the outer `a`. Closure #194's inner
+        // `consume_if_moved_var` already marked the inner
+        // binding before pop_scope; closure #199 plugs the
+        // outer recursion to bail when the tail names a
+        // binding declared inside the Block.
+        let source = r#"
+            fn main() -> i64 {
+              let a: OwnedStr = "outer-a" + "";
+              let r: OwnedStr = {
+                let a: OwnedStr = "inner-a" + "";
+                let b: OwnedStr = "inner-b" + "";
+                a
+              };
+              assert (len(a) as i64) == 7;
+              assert (len(r) as i64) == 7;
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("shadowing inner Let in Block-expr must not move outer var");
+    }
+
+    #[test]
     fn tree_c_collects_tuple_shapes_inside_block_expr() {
         // Closure #198: tree-C's `collect_tuple_shapes_in_expr`
         // handled Tuple/TupleAccess/Unary/Binary/Call/ArrayLit/

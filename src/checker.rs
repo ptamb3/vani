@@ -5976,7 +5976,26 @@ fn consume_if_moved_var(
         // tail, the Var's scope-exit drop fires AND the
         // binding frees the same heap → double-free.
         // Closure #174.
-        ExprKind::Block { tail, .. } => {
+        ExprKind::Block { stmts, tail } => {
+            // Skip the recursion when the tail is a bare Var
+            // that names a binding declared INSIDE the Block.
+            // The inner scope has already been popped by the
+            // time the outer caller (Let RHS, etc.) reaches
+            // here, so a naive `lookup_mut` would walk past the
+            // gone-inner shadow and mark an outer-scope binding
+            // of the same name as moved — incorrectly. The
+            // inner Block-expr's own `consume_if_moved_var`
+            // (closure #194) already marked the inner binding
+            // before pop_scope. Closure #199 plugs the
+            // shadowing case left open by closure #174.
+            if let ExprKind::Var(name) = &tail.kind {
+                let declared_inside = stmts.iter().any(|s| {
+                    matches!(s, Stmt::Let { name: n, .. } if n == name)
+                });
+                if declared_inside {
+                    return;
+                }
+            }
             consume_if_moved_var(tail, checked, env);
         }
         _ => {}
