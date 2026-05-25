@@ -13548,6 +13548,37 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_c_collects_tuple_shapes_inside_block_expr() {
+        // Closure #198: tree-C's `collect_tuple_shapes_in_expr`
+        // handled Tuple/TupleAccess/Unary/Binary/Call/ArrayLit/
+        // Cast/Index/Len/CallIndirect but fell through `_ =>
+        // {}` for Block/IfExpr/Match. A tuple type that only
+        // appeared inside a Block-expr inner Let (e.g.
+        // `let r = { let p: (i64, i64) = (1, 2); p.0 + p.1 }`)
+        // never had its `intent_tuple_<…>` typedef emitted and
+        // cc rejected with `unknown type name`. Vec/Match
+        // walkers already had Block/IfExpr/Match arms — the
+        // tuple walker was the outlier. Mirrored the same
+        // three arms.
+        let source = r#"
+            fn main() -> i64 {
+              let r: i64 = {
+                let p: (i64, i64) = (1, 2);
+                p.0 + p.1
+              };
+              assert r == 3;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("tuple inside Block-expr compiles");
+        assert!(
+            c.contains("} intent_tuple_int64_t_int64_t;"),
+            "expected the tuple typedef to be emitted even when the tuple only appears in a Block-expr inner Let:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn block_expr_inner_let_with_type_alias_annotation_compiles() {
         // Closure #197: the type-alias substitution pass
         // (`sub_aliases_in_stmt`) had the same pre-existing

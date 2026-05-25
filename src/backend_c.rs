@@ -932,6 +932,31 @@ fn collect_tuple_shapes_in_expr(
                 collect_tuple_shapes_in_expr(a, seen, out);
             }
         }
+        // Closure #198: control-flow expressions can carry
+        // tuple-typed sub-expressions (e.g. inner Lets of a
+        // Block-expr, branch values of an IfExpr/Match). The
+        // collector previously fell through `_ => {}` for
+        // these shapes, so a tuple type that only appeared
+        // inside a Block-expr inner Let never got its
+        // `intent_tuple_<…>` typedef emitted and cc rejected
+        // with `unknown type name intent_tuple_<…>`.
+        TypedExprKind::Block { stmts, tail } => {
+            for s in stmts {
+                collect_tuple_shapes_in_stmt(s, seen, out);
+            }
+            collect_tuple_shapes_in_expr(tail, seen, out);
+        }
+        TypedExprKind::IfExpr { cond, then_value, else_value } => {
+            collect_tuple_shapes_in_expr(cond, seen, out);
+            collect_tuple_shapes_in_expr(then_value, seen, out);
+            collect_tuple_shapes_in_expr(else_value, seen, out);
+        }
+        TypedExprKind::Match { scrutinee, arms } => {
+            collect_tuple_shapes_in_expr(scrutinee, seen, out);
+            for arm in arms {
+                collect_tuple_shapes_in_expr(&arm.body, seen, out);
+            }
+        }
         _ => {}
     }
 }

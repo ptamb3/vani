@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #197)
+## ⏳ Resume here (paused 2026-05-25, after closure #198)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -509,6 +509,15 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#198 tree-C tuple-shape collection in control flow:
+`collect_tuple_shapes_in_expr` had Tuple/TupleAccess/
+Unary/Binary/Call/ArrayLit/Cast/Index/Len/CallIndirect
+arms but fell through `_ => {}` for Block/IfExpr/Match.
+A tuple type that only appeared inside a Block-expr
+inner Let never had its `intent_tuple_<…>` typedef
+emitted; cc rejected. Vec walker already handled
+Block/IfExpr/Match (#129). Mirrored the same three arms.
+Test totals: 891 lib + 47 e2e passing.
 #197 Block-expr inner type-alias resolution: parallel
 to #196 for the type-alias substitution pass.
 `sub_aliases_in_stmt` had the same pre-existing

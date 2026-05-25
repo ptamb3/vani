@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 890 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 891 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,20 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **tree-C tuple-shape collection in control flow done 2026-05-25**:
+   `collect_tuple_shapes_in_expr` handled Tuple/
+   TupleAccess/Unary/Binary/Call/ArrayLit/Cast/Index/
+   Len/CallIndirect but fell through `_ => {}` for
+   Block/IfExpr/Match. A tuple type that only appeared
+   inside a Block-expr inner Let (`let p: (i64, i64) =
+   (1, 2)`) never had its `intent_tuple_<…>` typedef
+   emitted and cc rejected with `unknown type name
+   intent_tuple_<…>`. The Vec walker already handled
+   Block/IfExpr/Match arms (closure #129); the tuple
+   walker was the outlier. Mirrored the same three
+   arms. Test totals: 891 lib + 47 e2e passing.
+   Closure #198.
 
    **Block-expr inner type-alias resolution done 2026-05-25**:
    Parallel to closure #196 for the type-alias
