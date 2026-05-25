@@ -7131,16 +7131,56 @@ fn check_expr(
             }
             let tail_checked = check_expr(tail, env, signatures, diagnostics);
             let block_ty = tail_checked.ty().clone();
+            // Mark Vars consumed by the tail as moved before
+            // computing scope-exit drops. consume_if_moved_var
+            // recurses into Var/IfExpr/Match/Block/FieldAccess
+            // tails — Call/Binary args already marked themselves
+            // moved during check_expr of the tail (closure #178
+            // for vec-elements, str_concat for binary, named-
+            // call args). Closure #194.
+            consume_if_moved_var(tail, &tail_checked, env);
+            // Collect scope-exit drops for non-moved non-Copy
+            // bindings in the inner Block-expr scope. Without
+            // this, a sibling `let b = "x"+""` declared next to
+            // the tail-yielded `let a = …; a` leaks b's heap.
+            let mut drop_stmts: Vec<TypedStmt> = Vec::new();
+            emit_current_scope_drops(env, &mut drop_stmts, diagnostics);
             env.pop_scope();
-            CheckedExpr::new(
+            let block_expr_kind = if drop_stmts.is_empty() {
                 TypedExprKind::Block {
                     stmts: typed_stmts,
                     tail: Box::new(tail_checked.expr),
-                },
-                block_ty,
-                None,
-                expr.span,
-            )
+                }
+            } else {
+                // Spill the tail into `__block_tail_<span>` so
+                // the scope-exit drops fire AFTER the tail
+                // evaluates but BEFORE the Block yields. Without
+                // the spill, the drops would precede the tail
+                // and any borrow of a sibling binding in the
+                // tail (e.g. `len(a)`) would UAF. Synthetic
+                // binding name; not inserted into env (it's
+                // typed-IR-only). Closure #194.
+                let tmp_name = format!("__block_tail_{}", expr.span.start);
+                let tail_ty = tail_checked.ty().clone();
+                typed_stmts.push(TypedStmt::Let {
+                    name: tmp_name.clone(),
+                    ty: tail_ty.clone(),
+                    expr: tail_checked.expr,
+                });
+                typed_stmts.extend(drop_stmts);
+                let new_tail = TypedExpr {
+                    kind: TypedExprKind::Var(tmp_name),
+                    ty: tail_ty,
+                    constant: None,
+                    span: expr.span,
+                    binding_decl_span: None,
+                };
+                TypedExprKind::Block {
+                    stmts: typed_stmts,
+                    tail: Box::new(new_tail),
+                }
+            };
+            CheckedExpr::new(block_expr_kind, block_ty, None, expr.span)
         }
         ExprKind::Try { inner } => {
             // T2.6 Phase 1: `try EXPR` is reserved as a

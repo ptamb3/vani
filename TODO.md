@@ -3,7 +3,7 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
-## ⏳ Resume here (paused 2026-05-24, after closure #193)
+## ⏳ Resume here (paused 2026-05-24, after closure #194)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -493,6 +493,22 @@ arm now emits `switch (v.tag) { case T: free; break;
 default: break; }` for payloaded enums. Mirrors the
 Reassign Enum drop (#147). Test totals: 885 lib +
 47 e2e passing.
+#194 Block-expression sibling-let leak: `let r = {
+let a = …; let b = …; a };` leaked b. The Block-expr
+check pushed and popped a scope but never emitted
+scope-exit Drops. Fix in `check_expr` for
+`ExprKind::Block`: call `consume_if_moved_var(tail,
+…)` to propagate tail-Var moves into the inner scope,
+then push Drops for non-moved non-Copy bindings.
+When drops exist, spill the tail into a synthetic
+`__block_tail_<span>` Let so the Drops fire AFTER
+the tail evaluates (avoids UAF for tails that borrow
+a sibling, e.g. `{ let a = …; len(a) }`). When the
+tail consumes every sibling (binary concat, fn args)
+the drops list is empty and no spill is emitted.
+Tree-C and tree-LLVM both benefit — Block emit was
+already wired for Drop stmts (#160, #192, #193).
+Test totals: 887 lib + 47 e2e passing.
 
 ### Recommended next (pick one)
 

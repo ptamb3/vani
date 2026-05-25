@@ -13499,6 +13499,95 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tree_c_block_expr_emits_sibling_let_scope_drops() {
+        // Closure #194: Block-expr `{ let a = …; let b = …; a }`
+        // was leaking b's heap. The Block-expr type-checker
+        // pushed/popped a scope but never called
+        // `emit_current_scope_drops`, so sibling lets that the
+        // tail neither consumed nor moved were never freed.
+        // Fix: mark tail-consumed Vars moved, then push scope-
+        // exit Drops to the Block's stmts. When drops are
+        // non-empty, spill the tail to `__block_tail_<span>`
+        // so the Drops fire AFTER tail evaluation (avoiding
+        // UAF for tails that borrow a sibling, like `len(a)`).
+        let source = r#"
+            struct Box { name: OwnedStr }
+
+            fn make_box() -> Box {
+              let result: Box = {
+                let a: Box = Box { name: "alpha" + "" };
+                let b: Box = Box { name: "beta" + "" };
+                a
+              };
+              return result;
+            }
+
+            fn main() -> i64 {
+              let r: Box = make_box();
+              assert (len(r.name) as i64) == 5;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("Block-expr sibling-let probe compiles");
+        let make_start = c
+            .find("static Struct_Box fn_make_box(void) {")
+            .expect("fn_make_box definition present");
+        let make_end = c[make_start..]
+            .find("\nstatic int64_t fn_main")
+            .map(|i| make_start + i)
+            .unwrap_or(c.len());
+        let make_body = &c[make_start..make_end];
+        // The Block must free v_b.name inside the statement
+        // expression — without the fix it would leak past
+        // fn_make_box's return.
+        assert!(
+            make_body.contains("__block_tail_") && make_body.contains("free((void*)v_b.name)"),
+            "expected __block_tail_ spill + free(v_b.name) inside Block-expr:\n{}",
+            make_body
+        );
+    }
+
+    #[test]
+    fn tree_c_block_expr_skips_spill_when_no_drops_needed() {
+        // Closure #194: when the Block's tail consumes every
+        // sibling (e.g. `{ let a = …; let b = …; a + b }`),
+        // emit_current_scope_drops finds no work and the
+        // spill is skipped — keeps the simpler shape.
+        let source = r#"
+            fn make() -> OwnedStr {
+              let r: OwnedStr = {
+                let a: OwnedStr = "alpha-" + "";
+                let b: OwnedStr = "beta" + "";
+                a + b
+              };
+              return r;
+            }
+
+            fn main() -> i64 {
+              let s: OwnedStr = make();
+              assert (len(s) as i64) == 9;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("concat-tail Block-expr compiles");
+        let make_start = c
+            .find("static char* fn_make(void) {")
+            .expect("fn_make definition present");
+        let make_end = c[make_start..]
+            .find("\nstatic int64_t fn_main")
+            .map(|i| make_start + i)
+            .unwrap_or(c.len());
+        let make_body = &c[make_start..make_end];
+        // Concat consumes both Vars (str_concat marks them
+        // moved) → drops empty → no spill emitted.
+        assert!(
+            !make_body.contains("__block_tail_"),
+            "expected no spill when tail consumes all siblings:\n{}",
+            make_body
+        );
+    }
+
+    #[test]
     fn task_body_with_for_loop_continue_compiles() {
         // Closure #191: task body containing a for-loop
         // with `continue` was failing both SSA-C and

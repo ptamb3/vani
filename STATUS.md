@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-23
-**Test totals:** 885 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-24
+**Test totals:** 887 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,28 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Block-expr sibling-let scope-exit drops done 2026-05-24**:
+   `let r = { let a = …; let b = …; a };` was leaking
+   b's heap. The Block-expr type-checker pushed and
+   popped a scope but never called
+   `emit_current_scope_drops`, so sibling lets that the
+   tail neither consumed nor moved were never freed.
+   Fix in `check_expr` for `ExprKind::Block`: after the
+   tail is checked, call `consume_if_moved_var(tail,
+   …)` to propagate tail-Var moves into the inner
+   scope, then synthesize Drop stmts for the remaining
+   non-moved non-Copy bindings. When drops exist, spill
+   the tail into a synthetic `__block_tail_<span>` Let
+   so the Drops fire AFTER the tail evaluates (avoids
+   UAF for tails that borrow a sibling, e.g.
+   `{ let a = …; len(a) }`). When the tail already
+   consumes every sibling (binary concat, fn args), the
+   drops list is empty and no spill is emitted. Both
+   tree-C and tree-LLVM benefit since the Block emit
+   was already wired for Drop stmts (closures #160,
+   #192, #193). Test totals: 887 lib + 47 e2e passing.
+   Closure #194.
 
    **tree-C Block Drop Enum: tag switch + payload free done 2026-05-24**:
    Parallel to closure #192's Struct arm. Block-expr
