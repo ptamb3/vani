@@ -2246,6 +2246,49 @@ mod tests {
     }
 
     #[test]
+    fn english_keyword_aliases_lex_to_canonical_tokens() {
+        // Closure #234: conservative English alias set —
+        // `record` (struct), `trait` (interface), `impl`
+        // (implement), `give` (return), `yields` (->).
+        // Aliases that would collide with common identifier
+        // shapes (def / function / bind / mutable / etc.)
+        // are NOT added; the per-file language-purity gate
+        // (queued) is the path to safely expanding the set.
+        let source = r#"
+            record Point { x: i64, y: i64 }
+
+            trait HasOrigin {
+              fn at_origin(self: Point) -> bool;
+            }
+
+            impl HasOrigin for Point {
+              fn at_origin(self: Point) -> bool {
+                return self.x == 0 && self.y == 0;
+              }
+            }
+
+            fn make() yields Point {
+              give Point { x: 0, y: 0 };
+            }
+
+            fn main() yields i64 {
+              let p: Point = make();
+              if p.at_origin() { give 42; } else { give 0; }
+            }
+        "#;
+        let c = compile_to_c(source)
+            .expect("conservative English aliases should compile");
+        assert!(
+            c.contains("Struct_Point"),
+            "expected `record` to behave as `struct`:\n{c}"
+        );
+        assert!(
+            c.contains("fn_Point_at_origin"),
+            "expected `trait`/`impl` to hoist the method:\n{c}"
+        );
+    }
+
+    #[test]
     fn try_keyword_in_unsupported_shape_surfaces_phase_1_gate() {
         // The Phase 2 desugar only fires for the restricted
         // `[Let(try), Let*, Return]` shape. A `try` outside

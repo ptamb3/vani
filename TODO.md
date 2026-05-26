@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #233 — dyn_dispatch.intent example)
+## ⏳ Resume here (paused 2026-05-26, after closure #234 — English keyword aliases Phase 1)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,21 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#234 English keyword aliases (Phase 1, conservative set):
+the lexer now accepts five high-value alternate spellings
+that don't collide with common identifier shapes:
+`struct`/`record`, `interface`/`trait`, `implement`/`impl`,
+`return`/`give`, `->`/`returns`/`yields`. Each alias group
+maps to the same TokenKind. Riskier aliases (`def`,
+`function`, `bind`, `mutable`, `constant`, `otherwise`)
+were deliberately omitted — they'd silently break user
+programs using those words as identifiers (verified: an
+initial attempt with `def` broke a test's `def: i64`
+parameter). The per-file language-purity gate (queued)
+is the path to safely expanding the set. Sanskrit /
+Hindi / Marathi alias tables to mirror this in a
+follow-up. Test totals: 921 lib + 47 e2e + 11
+vtables-phase3 + 2 user-drop-by-ref.
 #233 `examples/dyn_dispatch.intent` added: first example
 exercising the vtables epic end-to-end. Declares Circle
 + Square impls of Drawable, demonstrates owned-dyn,
@@ -1138,9 +1153,13 @@ likely impact / blast radius, not implementation order.
   Y" diagnostic. Cross-file mixing (one .vani in English,
   another in Sanskrit, same program) stays allowed — purity
   is per-file.
-- **Within-language keyword aliases.** Extend the keyword
-  table so each language can declare multiple spellings for
-  the same concept. Concrete English aliases to consider:
+- **Within-language keyword aliases.** *Phase 1 done
+  2026-05-26 (closure #234)* — conservative English set
+  shipped: `struct`/`record`, `interface`/`trait`,
+  `implement`/`impl`, `return`/`give`, `->`/`returns`/
+  `yields`. Sanskrit / Hindi / Marathi tables to mirror.
+  Phase 2 — riskier aliases that need the language-purity
+  gate first to avoid identifier collisions:
   - `struct` / `record` (data shape)
   - `return` / `give` (function exit)
   - `->` / `returns` / `yields` (return-type marker — `fn f()

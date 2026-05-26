@@ -537,6 +537,30 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **English keyword aliases (Phase 1, conservative set) done 2026-05-26**:
+   the lexer's keyword table now recognizes five high-value
+   English aliases that don't collide with common
+   user-identifier shapes:
+   - `struct` / `record`
+   - `interface` / `trait`
+   - `implement` / `impl`
+   - `return` / `give`
+   - `->` / `returns` / `yields`
+
+   Each alias group maps to the same `TokenKind` so the
+   parser doesn't see the difference; the formatter picks
+   a canonical spelling per file based on what the user
+   first used. Riskier aliases like `def` / `function` /
+   `bind` / `mutable` / `constant` / `otherwise` were
+   deliberately NOT added — they'd silently break existing
+   programs that use them as parameter / variable / field
+   names (the `def` alias was added in a first attempt and
+   broke an existing test's `def: i64` parameter). The
+   per-file language-purity gate (queued in TODO) is the
+   path to safely expanding the set. Test totals: 921 lib
+   + 47 e2e + 11 vtables-phase3 + 2 user-drop-by-ref
+   passing. Closure #234.
+
    **`examples/dyn_dispatch.intent` added 2026-05-25**: the
    first example exercising the vtables epic end-to-end. The
    program declares two impls (Circle + Square of Drawable),

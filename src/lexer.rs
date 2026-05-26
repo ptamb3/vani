@@ -700,6 +700,20 @@ impl<'a> Lexer<'a> {
         }
 
         let text = &self.source[start..self.pos];
+        // English keyword table — primary spelling on the
+        // left, alias rows below it. Each alias maps to the
+        // same TokenKind so the parser doesn't need to know
+        // about the alternate spelling. Alias selection is
+        // conservative: only word forms that are very
+        // unlikely to collide with user-chosen identifiers
+        // (variable / param / field names). Common
+        // identifier-shaped words like `def`, `function`,
+        // `bind`, `mutable`, `constant`, `otherwise` are
+        // deliberately NOT added — they'd silently break
+        // existing user code that uses them as names. Once
+        // per-file language purity (TODO item) ships, that
+        // gate can declare safe-vs-collision contexts and
+        // unlock the broader set.
         let kind = match text {
             "fn" => TokenKind::Fn,
             "pure" => TokenKind::Pure,
@@ -716,7 +730,9 @@ impl<'a> Lexer<'a> {
             // and other names called `min`/`max` without
             // collision.
             "let" => TokenKind::Let,
-            "return" => TokenKind::Return,
+            // Function exit: `return` / `give` (give reads
+            // naturally as "give back the value").
+            "return" | "give" => TokenKind::Return,
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
             "while" => TokenKind::While,
@@ -728,12 +744,15 @@ impl<'a> Lexer<'a> {
             "ref" => TokenKind::Ref,
             "from" => TokenKind::From,
             "to" => TokenKind::To,
-            "struct" => TokenKind::Struct,
+            // Data shape: `struct` / `record`.
+            "struct" | "record" => TokenKind::Struct,
             "enum" => TokenKind::Enum,
             "match" => TokenKind::Match,
             "then" => TokenKind::Then,
-            "interface" => TokenKind::Interface,
-            "implement" => TokenKind::Implement,
+            // Interface: `interface` / `trait` (Rust-style).
+            "interface" | "trait" => TokenKind::Interface,
+            // Implementation: `implement` / `impl` (Rust-style).
+            "implement" | "impl" => TokenKind::Implement,
             "where" => TokenKind::Where,
             "is" => TokenKind::Is,
             "const" => TokenKind::Const,
@@ -752,6 +771,11 @@ impl<'a> Lexer<'a> {
             "as" => TokenKind::As,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
+            // Return-type arrow word forms: `returns` /
+            // `yields` mean the same as `->`. Reads
+            // naturally: `fn f(x: i64) yields i64 { ... }`.
+            // Both words are uncommon as identifiers.
+            "returns" | "yields" => TokenKind::Arrow,
             "i8" => TokenKind::I8,
             "i16" => TokenKind::I16,
             "i32" => TokenKind::I32,
