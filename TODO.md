@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #232 — guard-if between try and return)
+## ⏳ Resume here (paused 2026-05-25, after closure #233 — dyn_dispatch.intent example)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,13 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#233 `examples/dyn_dispatch.intent` added: first example
+exercising the vtables epic end-to-end. Declares Circle
++ Square impls of Drawable, demonstrates owned-dyn,
+ref-dyn, and heterogeneous Vec<dyn> dispatch. Wired
+into `check_examples_all_succeed` and the cross-backend
+parity runner. Test totals: 920 lib + 47 e2e + 11
+vtables-phase3 + 2 user-drop-by-ref.
 #232 Guard-if between try and return:
 `if cond { return X; } ... return Y;` now composes
 with `try` on both backends. New AST pre-pass

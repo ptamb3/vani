@@ -537,6 +537,18 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **`examples/dyn_dispatch.intent` added 2026-05-25**: the
+   first example exercising the vtables epic end-to-end. The
+   program declares two impls (Circle + Square of Drawable),
+   demonstrates owned-`dyn` dispatch, `ref dyn` dispatch, and
+   heterogeneous `Vec<dyn>` iteration. Wired into both the
+   `check_examples_all_succeed` and the cross-backend parity
+   runner so any future regression in the vtable codegen path
+   surfaces immediately. SSA example walker picks it up
+   automatically via `read_dir`. Test totals: 920 lib + 47
+   e2e + 11 vtables-phase3 + 2 user-drop-by-ref passing.
+   Closure #233.
+
    **Guard-if between `try` and `return` done 2026-05-25**:
    `if cond { return X; }` early-return guards now compose
    with `try`. New AST-level pre-pass

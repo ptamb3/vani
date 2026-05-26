@@ -1,0 +1,86 @@
+intent "T1.5 phase 3: dynamic dispatch via `dyn Iface` fat pointers";
+
+// Vtables epic (closures #220-#228) adds runtime polymorphism
+// on top of the static-dispatch interfaces from #7:
+//
+// * `dyn IfaceName` is a fat pointer `{ &vtable, &data }` —
+//   16 bytes regardless of the concrete type behind it.
+// * Implicit `T → dyn Iface` coercion at let bindings, fn
+//   args, struct fields, and Vec elements whenever an
+//   `implement Iface for T` is in scope.
+// * `obj.method(args)` on a `dyn Iface` receiver dispatches
+//   through the vtable slot (declaration-order index).
+// * Heterogeneous `Vec<dyn Iface>` works: each element gets
+//   its own per-(T, Iface) vtable, and method calls reach
+//   the right impl for that element.
+// * `ref dyn Iface` / `mut ref dyn Iface` parameters work the
+//   same way — the dispatch loads the fat pointer through
+//   the borrow.
+//
+// V1 restrictions:
+// * No inheritance / abstract base types; composition + tagged
+//   enums cover the inheritance use case.
+// * Coercion source must be a let-bound variable so the fat
+//   pointer's data side has a stable address.
+// * Methods declare a concrete receiver type (`self: Circle`)
+//   per current static-dispatch convention.
+
+struct Circle { r: i64 }
+struct Square { side: i64 }
+
+interface Drawable {
+  fn area(self: Circle) -> i64;
+}
+
+implement Drawable for Circle {
+  fn area(self: Circle) -> i64 { return self.r * self.r; }
+}
+
+implement Drawable for Square {
+  fn area(self: Square) -> i64 { return self.side * self.side; }
+}
+
+// Owned `dyn Iface` parameter: caller materializes the fat
+// pointer once at the coercion site and passes it by value.
+fn area_of_dyn(d: dyn Drawable) -> i64 {
+  return d.area();
+}
+
+// Borrowed `ref dyn Iface` parameter: caller passes the fat
+// pointer through a borrow. The dispatch loads the fat
+// pointer through the borrow before extracting the vtable
+// and data slots.
+fn area_of_ref_dyn(d: ref dyn Drawable) -> i64 {
+  return d.area();
+}
+
+fn main() -> i64 {
+  // Single-receiver dispatch — value form.
+  let c: Circle = Circle { r: 5 };
+  let area_c: i64 = area_of_dyn(c);
+  assert area_c == 25;
+
+  // Single-receiver dispatch — borrowed form.
+  let s: Square = Square { side: 3 };
+  let dyn_s: dyn Drawable = s;
+  let area_s: i64 = area_of_ref_dyn(ref dyn_s);
+  assert area_s == 9;
+
+  // Heterogeneous Vec<dyn Iface>: the canonical vtable use
+  // case. Each element has its own concrete type but they
+  // all expose the Drawable method.
+  let c2: Circle = Circle { r: 4 };
+  let s2: Square = Square { side: 6 };
+  let xs: Vec<dyn Drawable> = vec(c2, s2);
+  let total: i64 = 0;
+  for x in xs {
+    total = total + x.area();
+  }
+  assert total == 52;
+
+  print "Circle area =", area_c;
+  print "Square area =", area_s;
+  print "Vec total =", total;
+
+  return 0;
+}
