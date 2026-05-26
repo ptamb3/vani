@@ -112,6 +112,41 @@ pub fn iface_method_lookup(iface: &str, method: &str) -> Option<(usize, Vec<Type
     })
 }
 
+pub fn iface_methods_for(iface: &str) -> Option<Vec<(String, Vec<Type>, Type)>> {
+    IFACE_METHOD_REGISTRY.with(|cell| cell.borrow().get(iface).cloned())
+}
+
+pub fn all_iface_names() -> Vec<String> {
+    IFACE_METHOD_REGISTRY.with(|cell| {
+        let mut names: Vec<String> = cell.borrow().keys().cloned().collect();
+        names.sort();
+        names
+    })
+}
+
+thread_local! {
+    /// Per-interface impl list in declaration order: iface_name
+    /// → Vec<type_name>. Populated alongside the impl pair set
+    /// so Phase 3 codegen can iterate (iface, type) pairs in
+    /// stable order without HashSet noise.
+    pub(crate) static IFACE_IMPLS_LIST: std::cell::RefCell<std::collections::HashMap<String, Vec<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+pub fn set_iface_impls_list<I: IntoIterator<Item = (String, Vec<String>)>>(entries: I) {
+    IFACE_IMPLS_LIST.with(|cell| {
+        let mut map = cell.borrow_mut();
+        map.clear();
+        for (iface, types) in entries {
+            map.insert(iface, types);
+        }
+    });
+}
+
+pub fn impls_for_iface(iface: &str) -> Vec<String> {
+    IFACE_IMPLS_LIST.with(|cell| cell.borrow().get(iface).cloned().unwrap_or_default())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     pub intents: Vec<Intent>,

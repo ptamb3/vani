@@ -4440,6 +4440,14 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             }
             tail_val
         }
+        TypedExprKind::DynDispatch { iface_name, .. }
+        | TypedExprKind::DynCoerce { iface_name, .. } => {
+            panic!(
+                "tree-LLVM codegen for `dyn {}` is pending vtables Phase 3b — \
+                 use `--backend=c` for programs that use dyn interface dispatch",
+                iface_name
+            );
+        }
         kind => unreachable!(
             "backend: TypedExprKind not lowered as standalone expression: {:?}",
             kind
@@ -5942,6 +5950,9 @@ fn collect_strings_in_expr<F>(
             collect_strings_in_expr(receiver, msgs, idx, intern);
             for a in args { collect_strings_in_expr(a, msgs, idx, intern); }
         }
+        TypedExprKind::DynCoerce { value, .. } => {
+            collect_strings_in_expr(value, msgs, idx, intern);
+        }
         TypedExprKind::Int(_)
         | TypedExprKind::Float(_)
         | TypedExprKind::Bool(_)
@@ -6409,6 +6420,9 @@ pub(crate) fn walk_expr(
             for a in args {
                 walk_expr(a, declared, order, seen);
             }
+        }
+        TypedExprKind::DynCoerce { value, .. } => {
+            walk_expr(value, declared, order, seen);
         }
     }
 }

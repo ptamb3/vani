@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #222 — vtables Phase 2b)
+## ⏳ Resume here (paused 2026-05-25, after closure #223 — vtables Phase 3a tree-C codegen)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,25 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#223 Vtables Phase 3a (tree-C codegen): dyn-using
+programs now compile + run via the C backend. New
+`TypedExprKind::DynCoerce { value, iface_name,
+from_type_name, from_ty }` IR node inserted by
+`coerce_checked` for Struct/Enum → `dyn Iface`
+coercions. tree-C emits per-Iface vtable typedef +
+fat-pointer typedef, gated on whether the interface
+is actually used as `dyn`; per-(T, Iface) trampolines
+cast `void* self` to the declared self shape and
+forward to the hoisted `fn_<T>_<method>`; per-(T,
+Iface) static `intent_vtbl_<Iface>_<T>` populates
+slot fn-ptrs in declaration order. Dispatch lowers to
+`recv.vtable->m<slot>(recv.data, args...)`. Coercion
+site uses `(intent_dyn_<Iface>){ .vtable = &..., .data
+= (void*)&v_<name> }`; v1 restricts source to Var.
+tree-LLVM panics with a clear "use --backend=c"
+message (Phase 3b queued). New e2e test
+`vtables_phase3.rs` exercises emit_c + cc + run.
+Test totals: 920 lib + 47 e2e + 2 vtables-phase3.
 #222 Vtables Phase 2b: `obj.method(args)` dispatch on
 `dyn Iface`. New `IFACE_METHOD_REGISTRY` thread-local
 maps each interface to its declaration-order method
@@ -837,7 +856,15 @@ totals: 888 lib + 47 e2e passing.
     emits per-(T, Iface) global vtables and the dispatch
     via GEP+load+CallIndirect. SSA backends route through
     tree (no dyn lowering yet — same gate as Vec<Atomic>).
-    Effort: ~6-8 hours per backend.
+    Effort: ~6-8 hours per backend. **Phase 3a (tree-C)
+    done 2026-05-25 (closure #223)** — vtable typedef +
+    per-(T, Iface) trampolines + DynCoerce/DynDispatch
+    emit; v1 restricts coercion source to Var. **Phase 3b
+    (tree-LLVM) still queued** — backend currently panics
+    with "use --backend=c" when it encounters a
+    DynDispatch/DynCoerce node. v1 also pending: non-Var
+    coercion sources (need IR rewrite to hoist into
+    synthetic let).
 
   - **Phase 4 — collections & polish.** `Vec<dyn Iface>`,
     struct field of `dyn Iface`, method calls on borrows

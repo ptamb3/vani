@@ -1958,6 +1958,21 @@ fn hoist_impls_into_functions(
         .collect();
     crate::ast::set_iface_impls(iface_impl_pairs);
 
+    // Vtables Phase 3: per-iface impl list in declaration
+    // order so codegen can walk (iface, type) pairs to emit
+    // trampolines + static vtables stably.
+    let mut iface_impls_list: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for imp in &program.impls {
+        if let Type::Struct(n) | Type::Enum(n) = &imp.for_type {
+            iface_impls_list
+                .entry(imp.interface_name.clone())
+                .or_default()
+                .push(n.clone());
+        }
+    }
+    crate::ast::set_iface_impls_list(iface_impls_list);
+
     // Vtables Phase 2b: register per-interface method
     // signatures so `obj.method()` dispatch on a
     // `dyn Iface` receiver can validate the call and
@@ -10941,6 +10956,29 @@ fn coerce_checked(
         return CheckedExpr::fallback(target.clone(), span);
     }
 
+    // Vtables Phase 3: materialize the `T → dyn Iface`
+    // coercion as a dedicated IR node so backends can emit
+    // the fat pointer literal without re-deriving the
+    // source type from the inner expression. Only fires for
+    // a concrete nominal source (struct or enum); other
+    // shapes still go through the generic Cast lowering.
+    if let Type::Object(iface_name) = target {
+        if let Type::Struct(type_name) | Type::Enum(type_name) = checked.ty().clone() {
+            let from_ty = checked.ty().clone();
+            return CheckedExpr::new(
+                TypedExprKind::DynCoerce {
+                    value: Box::new(checked.expr),
+                    iface_name: iface_name.clone(),
+                    from_type_name: type_name,
+                    from_ty,
+                },
+                target.clone(),
+                None,
+                span,
+            );
+        }
+    }
+
     let constant = checked
         .constant()
         .and_then(|constant| eval_cast_constant(constant, target, span, diagnostics));
@@ -12248,6 +12286,9 @@ fn verify_pure_body(
                     walk_expr(a, signatures, context, diagnostics);
                 }
             }
+            TypedExprKind::DynCoerce { value, .. } => {
+                walk_expr(value, signatures, context, diagnostics);
+            }
         }
     }
     walk(body, signatures, context, diagnostics);
@@ -13527,6 +13568,7 @@ fn typed_to_expr(t: &TypedExpr) -> Expr {
             method_span: *method_span,
             args: args.iter().map(typed_to_expr).collect(),
         },
+        TypedExprKind::DynCoerce { value, .. } => typed_to_expr(value).kind,
     };
     Expr { kind, span: t.span }
 }

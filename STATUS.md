@@ -537,6 +537,32 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Vtables Phase 3a (tree-C codegen) done 2026-05-25**: dyn-using
+   programs now produce running C. New `TypedExprKind::DynCoerce
+   { value, iface_name, from_type_name, from_ty }` IR node inserted
+   by `coerce_checked` whenever a `Struct`/`Enum` value flows into
+   a `dyn Iface` slot. tree-C emits `intent_vtbl_<Iface>` typedef
+   (struct of fn pointers in declaration order, each taking
+   `void* self` as the first arg) + `intent_dyn_<Iface>` fat-
+   pointer typedef, gated on whether the interface is actually
+   used as `dyn Iface` somewhere (avoids generating bogus
+   trampolines for interfaces that only use static dispatch).
+   Per-(T, Iface) trampoline functions cast `void* self` to the
+   declared self shape (by-value, ref, or mut-ref) and forward
+   to the hoisted `fn_<T>_<method>`; the per-(T, Iface) static
+   `intent_vtbl_<Iface>_<T>` populates the vtable slots in
+   declaration order. `DynDispatch` lowers to
+   `recv.vtable->m<slot>(recv.data, args...)`. The coercion
+   site materializes `(intent_dyn_<Iface>){ .vtable = &..., .data
+   = (void*)&v_<name> }`; v1 restricts source to a Var binding
+   so the data address is a stable lvalue. Tree-LLVM intentionally
+   panics with a clear "use --backend=c" message — Phase 3b
+   (LLVM mirror) is queued. New e2e test `vtables_phase3.rs`
+   exercises emit_c + cc + run for a Circle/Drawable program;
+   the dispatched call returns 25 for `area(Circle { r: 5 })`.
+   Test totals: 920 lib + 47 e2e + 2 vtables-phase3 passing.
+   Closure #223.
+
    **Vtables Phase 2b: `obj.method(args)` dispatch on `dyn Iface` done 2026-05-25**:
    Continued epic A. The checker now recognizes method
    calls on a `dyn Iface` receiver, looks up the method in

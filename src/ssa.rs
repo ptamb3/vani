@@ -2299,6 +2299,11 @@ fn lower_expr_to_operand(
                       (vtables Phase 3 — route through tree backend)".to_string(),
             span: expr.span,
         }),
+        TypedExprKind::DynCoerce { .. } => Err(LowerError {
+            message: "SSA lowering of dyn-interface coercion is not yet supported \
+                      (vtables Phase 3 — route through tree backend)".to_string(),
+            span: expr.span,
+        }),
     }
 }
 
@@ -2333,6 +2338,7 @@ fn expr_kind_name(kind: &TypedExprKind) -> &'static str {
         TypedExprKind::IfExpr { .. } => "IfExpr",
         TypedExprKind::Block { .. } => "Block",
         TypedExprKind::DynDispatch { .. } => "DynDispatch",
+        TypedExprKind::DynCoerce { .. } => "DynCoerce",
     }
 }
 

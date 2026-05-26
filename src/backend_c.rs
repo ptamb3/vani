@@ -350,10 +350,25 @@ pub fn emit_c(program: &TypedProgram) -> String {
         body.push('\n');
     }
 
+    // Vtables Phase 3: emit per-Iface vtable typedef +
+    // `intent_dyn_<Iface>` fat-pointer typedef BEFORE the
+    // function prototypes so any prototype carrying a
+    // `dyn Iface` parameter or return type sees the type
+    // declaration. Only emit for interfaces actually used
+    // as `dyn Iface` — interface decls without dyn use
+    // don't need vtable scaffolding. The per-(T, Iface)
+    // static vtables + trampolines come AFTER prototypes
+    // (they call the hoisted impl functions, which must
+    // be declared first).
+    let used_dyn_ifaces = collect_used_dyn_ifaces(program);
+    emit_dyn_iface_typedefs(&mut body, &used_dyn_ifaces);
+
     for function in &program.functions {
         emit_prototype(function, &mut body);
     }
     body.push('\n');
+
+    emit_dyn_iface_vtables(&mut body, &used_dyn_ifaces);
 
     // Emit function bodies into a separate buffer so the
     // task-outlining side-effect (TASK_OUTLINES) can be
@@ -3594,19 +3609,51 @@ fn emit_expr(expr: &TypedExpr) -> String {
             body.push_str(&format!("({}); }})", emit_expr(tail)));
             body
         }
-        TypedExprKind::DynDispatch { iface_name, method, .. } => {
-            // Vtables Phase 2b emits the typed-IR node but
-            // Phase 3 codegen (per-(T, Iface) vtable + indirect
-            // call lowering) hasn't landed. The checker has
-            // validated the call site; this is the explicit
-            // "code gen not implemented yet" signal so any test
-            // that runs the C backend on a dyn-dispatch program
-            // surfaces a clear failure instead of silently
-            // emitting nonsense.
-            panic!(
-                "tree-C codegen for `dyn {}.{}` is pending vtables Phase 3",
-                iface_name, method
-            );
+        TypedExprKind::DynDispatch {
+            receiver, iface_name: _, method: _, slot_index, args, ..
+        } => {
+            // Vtables Phase 3 (tree-C): dispatch through the
+            // fat pointer's vtable slot. The receiver is a
+            // value of type `intent_dyn_<Iface>` carrying
+            // `{ vtable, data }`; the call lowers to
+            // `recv.vtable->m<slot>(recv.data, args...)`.
+            let recv_c = emit_expr(receiver);
+            let mut arg_parts: Vec<String> = Vec::with_capacity(args.len() + 1);
+            arg_parts.push(format!("({}).data", recv_c));
+            for a in args {
+                arg_parts.push(emit_expr(a));
+            }
+            format!(
+                "(({}).vtable->m{}({}))",
+                recv_c, slot_index, arg_parts.join(", ")
+            )
+        }
+        TypedExprKind::DynCoerce { value, iface_name, from_type_name, from_ty: _ } => {
+            // Vtables Phase 3 (tree-C): materialize the fat
+            // pointer literal. The data slot must hold the
+            // address of a stable lvalue, so v1 only supports
+            // Var sources — `&v_<name>` is the binding's stack
+            // address, which lives for the enclosing block.
+            // Non-Var sources would need the IR to hoist them
+            // into a synthetic let first; tracked as Phase 3
+            // follow-up.
+            match &value.kind {
+                TypedExprKind::Var(name) => {
+                    format!(
+                        "((intent_dyn_{iface}){{ .vtable = &intent_vtbl_{iface}_{ty}, .data = (void*)&{lvalue} }})",
+                        iface = iface_name,
+                        ty = from_type_name,
+                        lvalue = local_name(name),
+                    )
+                }
+                _ => {
+                    panic!(
+                        "vtables Phase 3: coercion to `dyn {}` from non-Var source is \
+                         pending — let-bind the value before passing it",
+                        iface_name
+                    );
+                }
+            }
         }
     }
 }
@@ -4259,6 +4306,7 @@ fn c_type_name(ty: &Type) -> String {
         Type::Atomic(element) => c_atomic_storage(element),
         Type::Channel(element, capacity) => c_channel_storage(element, *capacity),
         Type::Tuple(elements) => tuple_c_struct(elements),
+        Type::Object(iface) => format!("intent_dyn_{}", iface),
         Type::Struct(name) => struct_c_name(name),
         // T1.3 phase 2b: payloaded enums lower to the
         // tagged-union struct (`Enum_<Name>`); plain enums
@@ -4343,6 +4391,7 @@ fn format_declarator(ty: &Type, name: &str) -> String {
         }
         Type::Vec(element) => format!("{} {}", vec_c_struct(element), name),
         Type::Tuple(elements) => format!("{} {}", tuple_c_struct(elements), name),
+        Type::Object(iface) => format!("intent_dyn_{} {}", iface, name),
         Type::Struct(sname) => format!("{} {}", struct_c_name(sname), name),
         // T1.3 phase 2b: payloaded enums lower to the
         // tagged-union struct (Enum_<Name>); plain enums
@@ -4589,4 +4638,277 @@ fn escape_c_string(text: &str) -> String {
 
 fn escape_comment(text: &str) -> String {
     text.replace("*/", "* /")
+}
+
+/// Walk a TypedProgram and collect the set of interface names
+/// that are actually used as `dyn Iface` somewhere — either
+/// in a function param/return, struct/enum field, local
+/// binding, or expression position. Interfaces declared with
+/// `interface` + `implement` but never coerced to dyn don't
+/// need vtable scaffolding (and would surface trampoline
+/// compile errors against unused signatures).
+fn collect_used_dyn_ifaces(program: &TypedProgram) -> std::collections::HashSet<String> {
+    fn walk_type(ty: &Type, set: &mut std::collections::HashSet<String>) {
+        match ty {
+            Type::Object(name) => {
+                set.insert(name.clone());
+            }
+            Type::Vec(inner) | Type::Atomic(inner) | Type::Mutex(inner)
+            | Type::Guard(inner) | Type::Ref(inner) | Type::RefMut(inner) => walk_type(inner, set),
+            Type::Channel(inner, _) => walk_type(inner, set),
+            Type::Tuple(elements) => elements.iter().for_each(|t| walk_type(t, set)),
+            Type::FnPtr(params, ret) => {
+                params.iter().for_each(|t| walk_type(t, set));
+                walk_type(ret, set);
+            }
+            Type::Array { element, .. } => walk_type(element, set),
+            _ => {}
+        }
+    }
+    fn walk_expr(expr: &TypedExpr, set: &mut std::collections::HashSet<String>) {
+        walk_type(&expr.ty, set);
+        match &expr.kind {
+            TypedExprKind::Unary { expr, .. } => walk_expr(expr, set),
+            TypedExprKind::Binary { left, right, .. } => {
+                walk_expr(left, set);
+                walk_expr(right, set);
+            }
+            TypedExprKind::Call { args, .. } | TypedExprKind::ArrayLit { elements: args } => {
+                args.iter().for_each(|a| walk_expr(a, set));
+            }
+            TypedExprKind::Cast { expr, ty } => {
+                walk_expr(expr, set);
+                walk_type(ty, set);
+            }
+            TypedExprKind::Index { array, index, .. } => {
+                walk_expr(array, set);
+                walk_expr(index, set);
+            }
+            TypedExprKind::Len { array, .. } => walk_expr(array, set),
+            TypedExprKind::CallIndirect { callee, args } => {
+                walk_expr(callee, set);
+                args.iter().for_each(|a| walk_expr(a, set));
+            }
+            TypedExprKind::Tuple { elements } => elements.iter().for_each(|e| walk_expr(e, set)),
+            TypedExprKind::TupleAccess { tuple, .. } => walk_expr(tuple, set),
+            TypedExprKind::StructLit { fields, .. } => {
+                fields.iter().for_each(|(_, e)| walk_expr(e, set));
+            }
+            TypedExprKind::FieldAccess { object, .. } => walk_expr(object, set),
+            TypedExprKind::EnumVariantWithPayload { payload, payload_ty, .. } => {
+                walk_expr(payload, set);
+                walk_type(payload_ty, set);
+            }
+            TypedExprKind::Match { scrutinee, arms } => {
+                walk_expr(scrutinee, set);
+                arms.iter().for_each(|a| walk_expr(&a.body, set));
+            }
+            TypedExprKind::IfExpr { cond, then_value, else_value } => {
+                walk_expr(cond, set);
+                walk_expr(then_value, set);
+                walk_expr(else_value, set);
+            }
+            TypedExprKind::Block { stmts, tail } => {
+                stmts.iter().for_each(|s| walk_stmt(s, set));
+                walk_expr(tail, set);
+            }
+            TypedExprKind::DynDispatch { receiver, args, iface_name, .. } => {
+                set.insert(iface_name.clone());
+                walk_expr(receiver, set);
+                args.iter().for_each(|a| walk_expr(a, set));
+            }
+            TypedExprKind::DynCoerce { value, iface_name, from_ty, .. } => {
+                set.insert(iface_name.clone());
+                walk_expr(value, set);
+                walk_type(from_ty, set);
+            }
+            _ => {}
+        }
+    }
+    fn walk_stmt(stmt: &TypedStmt, set: &mut std::collections::HashSet<String>) {
+        match stmt {
+            TypedStmt::Let { ty, expr, .. } => {
+                walk_type(ty, set);
+                walk_expr(expr, set);
+            }
+            TypedStmt::Reassign { ty, expr, .. } => {
+                walk_type(ty, set);
+                walk_expr(expr, set);
+            }
+            TypedStmt::Drop { ty, .. } => walk_type(ty, set),
+            TypedStmt::Discard { expr } => walk_expr(expr, set),
+            TypedStmt::Return { expr } => walk_expr(expr, set),
+            TypedStmt::Assert { expr, .. } | TypedStmt::Prove { expr } => walk_expr(expr, set),
+            TypedStmt::Print { items } => {
+                for item in items {
+                    if let crate::ir::TypedPrintItem::Expr(e) = item {
+                        walk_expr(e, set);
+                    }
+                }
+            }
+            TypedStmt::If { cond, then_body, else_body } => {
+                walk_expr(cond, set);
+                then_body.iter().for_each(|s| walk_stmt(s, set));
+                else_body.iter().for_each(|s| walk_stmt(s, set));
+            }
+            TypedStmt::While { cond, body } => {
+                walk_expr(cond, set);
+                body.iter().for_each(|s| walk_stmt(s, set));
+            }
+            TypedStmt::For { ty, start, end, body, .. } => {
+                walk_type(ty, set);
+                walk_expr(start, set);
+                walk_expr(end, set);
+                body.iter().for_each(|s| walk_stmt(s, set));
+            }
+            TypedStmt::ForIter { element_ty, collection_ty, body, .. } => {
+                walk_type(element_ty, set);
+                walk_type(collection_ty, set);
+                body.iter().for_each(|s| walk_stmt(s, set));
+            }
+            TypedStmt::IndexAssign { index, value, base_ty, .. } => {
+                walk_type(base_ty, set);
+                walk_expr(index, set);
+                walk_expr(value, set);
+            }
+            TypedStmt::FieldAssign { object, value, .. } => {
+                walk_expr(object, set);
+                walk_expr(value, set);
+            }
+            TypedStmt::TaskSpawn { body, captures, .. } => {
+                captures.iter().for_each(|(_, t)| walk_type(t, set));
+                body.iter().for_each(|s| walk_stmt(s, set));
+            }
+            TypedStmt::TaskJoin { .. } | TypedStmt::Break | TypedStmt::Continue => {}
+        }
+    }
+    let mut set = std::collections::HashSet::new();
+    for f in &program.functions {
+        walk_type(&f.return_type, &mut set);
+        for p in &f.params { walk_type(&p.ty, &mut set); }
+        for s in &f.body { walk_stmt(s, &mut set); }
+    }
+    for sd in &program.structs {
+        for (_, fty) in &sd.fields { walk_type(fty, &mut set); }
+    }
+    for ed in &program.enums {
+        for pt in &ed.payload_types {
+            if let Some(t) = pt { walk_type(t, &mut set); }
+        }
+    }
+    set
+}
+
+/// Vtables Phase 3: emit `intent_vtbl_<Iface>` (struct of fn
+/// pointers — one per declaration-order method, taking `void*
+/// self` as the first arg) and `intent_dyn_<Iface>` (the fat
+/// pointer carrying `{ vtable, data }`) typedefs. Only emits
+/// for interfaces actually used as `dyn Iface` somewhere in
+/// the program.
+fn emit_dyn_iface_typedefs(out: &mut String, used: &std::collections::HashSet<String>) {
+    for iface in crate::ast::all_iface_names() {
+        if !used.contains(&iface) { continue; }
+        let Some(methods) = crate::ast::iface_methods_for(&iface) else {
+            continue;
+        };
+        out.push_str(&format!("typedef struct intent_vtbl_{} {{\n", iface));
+        for (idx, (_name, params, ret)) in methods.iter().enumerate() {
+            let ret_ty = c_type_name(ret);
+            let arg_decls: Vec<String> = std::iter::once("void*".to_string())
+                .chain(params.iter().skip(1).map(|t| format_declarator(t, "").trim().to_string()))
+                .collect();
+            out.push_str(&format!(
+                "    {} (*m{})({});\n",
+                ret_ty, idx, arg_decls.join(", ")
+            ));
+        }
+        out.push_str(&format!("}} intent_vtbl_{};\n", iface));
+        out.push_str(&format!(
+            "typedef struct intent_dyn_{iface} {{ \
+const intent_vtbl_{iface}* vtable; void* data; \
+}} intent_dyn_{iface};\n",
+            iface = iface
+        ));
+    }
+}
+
+/// Vtables Phase 3: emit per-(T, Iface) trampolines and the
+/// static vtable instances they populate. A trampoline
+/// converts `void* self` to the concrete self shape declared
+/// by the impl method (by-value, ref, or mut-ref) and forwards
+/// to the hoisted `<Type>_<method>` function.
+fn emit_dyn_iface_vtables(out: &mut String, used: &std::collections::HashSet<String>) {
+    for iface in crate::ast::all_iface_names() {
+        if !used.contains(&iface) { continue; }
+        let Some(methods) = crate::ast::iface_methods_for(&iface) else {
+            continue;
+        };
+        for type_name in crate::ast::impls_for_iface(&iface) {
+            for (idx, (method_name, params, ret)) in methods.iter().enumerate() {
+                let ret_ty = c_type_name(ret);
+                let self_ty = &params[0];
+                let mut sig_args: Vec<String> = vec!["void* __intent_self".to_string()];
+                let mut forwarded: Vec<String> = Vec::new();
+                let self_forward = match self_ty {
+                    Type::Struct(_) | Type::Enum(_) => {
+                        let storage = c_type_name(self_ty);
+                        format!("*(({}*)__intent_self)", storage)
+                    }
+                    Type::Ref(inner) => {
+                        let inner_storage = c_type_name(inner);
+                        format!("(const {}*)__intent_self", inner_storage)
+                    }
+                    Type::RefMut(inner) => {
+                        let inner_storage = c_type_name(inner);
+                        format!("({}*)__intent_self", inner_storage)
+                    }
+                    other => {
+                        panic!(
+                            "vtables Phase 3: unsupported self shape `{}` for \
+                             interface '{}' method '{}' — v1 supports value, \
+                             ref, and mut-ref receivers only",
+                            other, iface, method_name
+                        );
+                    }
+                };
+                forwarded.push(self_forward);
+                for (i, pt) in params.iter().enumerate().skip(1) {
+                    let pname = format!("__intent_arg{}", i);
+                    sig_args.push(format_declarator(pt, &pname));
+                    forwarded.push(pname);
+                }
+                out.push_str(&format!(
+                    "static {ret} intent_trampoline_{type_name}_{iface}_{slot}_{method}({sig}) {{\n",
+                    ret = ret_ty,
+                    type_name = type_name,
+                    iface = iface,
+                    slot = idx,
+                    method = method_name,
+                    sig = sig_args.join(", "),
+                ));
+                out.push_str(&format!(
+                    "    return fn_{type_name}_{method}({fwd});\n",
+                    type_name = type_name,
+                    method = method_name,
+                    fwd = forwarded.join(", "),
+                ));
+                out.push_str("}\n");
+            }
+            out.push_str(&format!(
+                "static const intent_vtbl_{iface} intent_vtbl_{iface}_{type_name} = {{\n",
+                iface = iface,
+                type_name = type_name,
+            ));
+            for (idx, (method_name, _, _)) in methods.iter().enumerate() {
+                out.push_str(&format!(
+                    "    .m{slot} = intent_trampoline_{type_name}_{iface}_{slot}_{method},\n",
+                    slot = idx,
+                    type_name = type_name,
+                    iface = iface,
+                    method = method_name,
+                ));
+            }
+            out.push_str("};\n");
+        }
+    }
 }

@@ -411,6 +411,23 @@ pub enum TypedExprKind {
         then_value: Box<TypedExpr>,
         else_value: Box<TypedExpr>,
     },
+    /// Vtables Phase 3: implicit `T → dyn Iface` coercion.
+    /// Inserted by the checker when a concrete-typed value
+    /// flows into a `dyn Iface`-typed slot (let binding, fn
+    /// arg, struct field, vec element). Backends lower this
+    /// to a fat-pointer materialization:
+    /// `{ &<T>_<Iface>_vtable, &<value spill slot> }`. The
+    /// `from_type_name` identifies the concrete type so
+    /// codegen can name the per-(T, Iface) vtable
+    /// constant without re-deriving it from the inner
+    /// expression's type. `from_ty` retains the source's
+    /// Type for backends that need to size the spill slot.
+    DynCoerce {
+        value: Box<TypedExpr>,
+        iface_name: String,
+        from_type_name: String,
+        from_ty: Type,
+    },
     /// Vtables Phase 2b: method dispatch on a `dyn Iface`
     /// receiver. The receiver is a fat-pointer value
     /// (`{ &vtable, &data }`); `slot_index` is the
