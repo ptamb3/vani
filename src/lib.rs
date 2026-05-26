@@ -14814,6 +14814,106 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn ssa_c_emits_multi_block_parallel_for_body() {
+        // Closure #251 (Step 3b emit half): when a parallel-for
+        // body contains internal control flow (`if` guard, etc.),
+        // the recognizer accepts it (#241) and the SSA-C emit now
+        // inlines all body-region blocks inside the `#pragma omp
+        // parallel for` for-loop with `bbN:` labels + `goto`
+        // edges. The merge block (unique back-edge to step) has
+        // its terminator replaced with the reduction-update
+        // rebind + fall-through to the for-loop's closing `}`.
+        // Pre-#251 the emit only inlined `body_block.instructions`
+        // and dropped the body's terminator, producing C that
+        // gcc rejected with `label used but not defined`.
+        let source = r#"
+            fn main() -> i64 {
+              let total: i64 = 0;
+              parallel for i from 0 to 10
+              reduce total with +;
+              {
+                if i > 4 {
+                  total = total + i;
+                }
+              }
+              return total;
+            }
+        "#;
+        let checked = compile(source).expect("multi-block parallel-for compiles");
+        let (module, errs) = crate::ssa::lower_program(&checked.ir);
+        assert!(errs.is_empty(), "SSA lowering errors: {:?}", errs);
+        let c = crate::ssa_backend_c::emit(&module).expect("SSA-C emit");
+        // Pragma carries the `+` reduction clause for `total`.
+        assert!(
+            c.contains("_Pragma(\"omp parallel for reduction(+:"),
+            "expected reduction clause:\n{}",
+            c
+        );
+        // The body's if-guard surfaces inside the for-loop as a
+        // standard `if (…) { goto bbX; } else { goto bbY; }`. The
+        // then/else target labels MUST be defined inside the
+        // loop body — that's the regression the emit half fixes.
+        let pragma_pos = c.find("_Pragma(\"omp parallel for").expect("pragma present");
+        let after_pragma = &c[pragma_pos..];
+        let for_open = after_pragma.find("for ").expect("for-loop present");
+        let body_start = after_pragma[for_open..]
+            .find('{')
+            .expect("for-loop body opens");
+        // Find the for-loop's matching `}` by counting brace
+        // depth from its opener. Flat-pattern matching on
+        // `\n  }\n` doesn't work because the if/else braces
+        // sit at the same indent as the for-loop body.
+        let body_region = &after_pragma[for_open + body_start..];
+        let mut depth = 0i32;
+        let mut close: Option<usize> = None;
+        for (i, ch) in body_region.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close.expect("for-loop closes with matching `}`");
+        // The if-guard goto must appear inside the for-loop body
+        // (before `close`). Pre-#251 the body's terminator was
+        // dropped, so the if shape didn't surface at all.
+        let goto_pos = body_region
+            .find("    goto bb")
+            .expect("if-guard goto inside parallel-for body");
+        assert!(
+            goto_pos < close,
+            "if-guard goto must live inside the for-loop body"
+        );
+        // Extract the goto target (e.g. "bb5") and verify a
+        // matching `bbN:` label exists before `close`. Pre-#251
+        // those labels were never defined inside the loop, so
+        // gcc rejected with `label used but not defined`.
+        let goto_tail = &body_region[goto_pos + "    goto ".len()..];
+        let target: String = goto_tail
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
+        let label = format!("\n{}:", target);
+        let label_pos = body_region.find(&label).expect("goto target label exists");
+        assert!(
+            label_pos < close,
+            "goto target label `{}` must be defined inside the for-loop body \
+             (label at {}, close at {}); body region:\n{}",
+            target, label_pos, close, body_region
+        );
+        // And both backends must agree at runtime — the LLVM
+        // path falls back to tree-LLVM for multi-block bodies
+        // (SSA-LLVM's multi-block emit is a future step). Tree
+        // fallback is the safety net.
+    }
+
+    #[test]
     fn tree_c_match_on_bool_casts_to_int_for_switch() {
         // Closure #205: gcc warns `switch condition has
         // boolean value` (-Wswitch-bool) when the dispatch

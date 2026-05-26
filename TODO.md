@@ -535,6 +535,32 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#251 SSA Step 3b — emit half (SSA-C).
+follow-up to #241 (recognizer multi-block acceptance).
+`ParallelRegion` gains `region_blocks: Vec<BlockId>`
+(every body-region block, body_block first, merge_block
+last) + `merge_block: BlockId`. `emit_parallel_for_region`
+in ssa_backend_c.rs loops over `region_blocks` (instead
+of just `body_block.instructions`), emitting `bbN:`
+labels and standard `goto`-terminator emit for every
+non-merge block; the merge block's terminator is
+replaced with the reduction-update rebind so fall-
+through reaches the for-loop's closing `}`. The
+recognizer reorders so `merge_block` is the LAST entry
+in `region_blocks` — otherwise the merge's fall-through
+would land inside a sibling block. `skip_blocks` in
+`emit_function` extends to include `region_blocks`, so
+the parent block walk no longer emits dangling labels
+after the for-loop. SSA-LLVM still falls back to
+tree-LLVM for multi-block bodies (its outlined-fn
+emit needs cross-block capture analysis + reduction-
+update discovery; deferred). One new lib test (`ssa_c_
+emits_multi_block_parallel_for_body`) pins the
+if-inside-`parallel for` shape: extracts the for-loop's
+brace-balanced region, asserts the if-guard goto lives
+inside, and that its target label is defined inside
+the same region. Test totals: 938 lib + 47 e2e + 11
+vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples.
 #250 Namespaces — formatter support + round-trip.
 `intentc fmt` now re-emits `module name { … }` blocks
 (via a recursive `format_module_decl` that walks

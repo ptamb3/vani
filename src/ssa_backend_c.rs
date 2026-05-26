@@ -333,11 +333,21 @@ fn emit_function(f: &Function, out: &mut String) -> Result<(), EmitError> {
             // — it's absorbed into the C for-loop's update
             // clause (i++), not emitted as a free-standing
             // basic block.
-            [
+            //
+            // Closure #251 (Step 3b emit half): also skip every
+            // block in `region_blocks`. For single-block bodies
+            // that set is just `[body_block]`; for multi-block
+            // bodies (recognizer accepts them via #241) it
+            // additionally contains the in-region if/then/else
+            // / merge blocks. All of these get inlined into the
+            // for-loop body during `emit_parallel_for_region`.
+            let mut blocks = vec![
                 r.shape.header_block,
                 r.shape.body_block,
                 r.shape.step_block,
-            ]
+            ];
+            blocks.extend(r.region_blocks.iter().copied());
+            blocks
         })
         .collect();
     let par_by_begin: std::collections::BTreeMap<BlockId, &ParallelRegion> =
@@ -553,6 +563,19 @@ pub(crate) struct ParallelRegion {
     /// the back-edge's "store back to header param" with a
     /// reduction-var assignment from this value.
     pub(crate) reduction_update_values: Vec<ValueId>,
+    /// Closure #251 (SSA Step 3b emit half): every block that
+    /// belongs to the body sub-CFG, in the order the recognizer
+    /// discovered them (body_block first, then DFS successors).
+    /// All of these get emitted inside the `for (…) { … }` body;
+    /// the parent block walk in `emit_function` skips them.
+    /// Excludes `step_block` (handled by the for-loop's `i++`).
+    pub(crate) region_blocks: Vec<BlockId>,
+    /// The unique block in `region_blocks` that jumps to
+    /// `step_block` (the back-edge). Its instructions are emitted
+    /// normally; its terminator is REPLACED by the reduction
+    /// rebinds + an implicit fall-through to the `for`'s closing
+    /// `}` (so the next iteration restarts at `body_block`).
+    pub(crate) merge_block: BlockId,
 }
 
 pub(crate) fn collect_parallel_regions(
@@ -797,6 +820,17 @@ pub(crate) fn recognize_parallel_region(
         })
         .collect::<Result<_, _>>()?;
 
+    // Reorder so `merge_block` is the LAST entry in
+    // `region_blocks`. The C emit replaces the merge block's
+    // terminator with reduction rebinds + fall-through to the
+    // for-loop's closing `}`; placing it last makes that fall-
+    // through correct without a synthetic `goto loop_end`
+    // label.
+    if let Some(pos) = region_blocks.iter().position(|b| *b == merge_block_id) {
+        let m = region_blocks.remove(pos);
+        region_blocks.push(m);
+    }
+
     Ok(ParallelRegion {
         begin_block,
         shape: shape.clone(),
@@ -805,6 +839,8 @@ pub(crate) fn recognize_parallel_region(
         reduction_inits,
         counter_increment_value,
         reduction_update_values,
+        region_blocks,
+        merge_block: merge_block_id,
     })
 }
 
@@ -884,28 +920,57 @@ fn emit_parallel_for_region(
     )
     .unwrap();
 
-    // Body block instructions, except:
-    //   - the counter-increment (`%i_next = %i + 1`) — the
-    //     for-loop's `i++` takes care of it.
-    //   - the back-edge terminator (jumps to header) — the
-    //     for-loop's loop-back takes care of it.
-    let body = &f.blocks[region.shape.body_block.0 as usize];
-    for instr in &body.instructions {
-        if instr.result == region.counter_increment_value {
-            continue;
+    // Body region: closure #251 (Step 3b emit half). For
+    // single-block bodies, `region_blocks == [body_block]` and
+    // the loop below collapses to exactly the pre-#251 form
+    // (emit body's instructions; skip the body's terminator
+    // since the for-loop handles the back-edge). For multi-
+    // block bodies (recognized via #241), we emit EVERY block
+    // in the region with `bb<n>:` labels and standard
+    // gotos — the same shape the parent block walk uses, just
+    // nested inside the for-loop. The `merge_block` (unique
+    // back-edge to step) is special: its terminator gets
+    // replaced by the reduction rebind + fall-through to the
+    // for's closing `}` (which loops back to body_block at the
+    // top of the next iteration).
+    for &bid in &region.region_blocks {
+        let blk = &f.blocks[bid.0 as usize];
+        // Emit a label for every region block except the entry
+        // (body_block), which is reached by fall-through from
+        // the `for (…) {` opener. Other blocks are goto'd to
+        // from in-region branches, so they always need labels.
+        if bid != region.shape.body_block {
+            writeln!(out, "bb{}:", bid.0).unwrap();
         }
-        emit_instr(instr, value_types, out)?;
-    }
-    // For each reduction, the body produces a new SSA value
-    // (e.g. `%total_next = %total + %i`). OpenMP's reduction
-    // clause requires us to update the named accumulator
-    // (`v_<carry>`) in place. Emit the rebind at the bottom
-    // of the loop body so the next iteration's "current
-    // value" is correct.
-    for (carry_v, update_v) in
-        region.reduction_carries.iter().zip(region.reduction_update_values.iter())
-    {
-        writeln!(out, "    v_{} = v_{};", carry_v.0, update_v.0).unwrap();
+        for instr in &blk.instructions {
+            if instr.result == region.counter_increment_value {
+                continue;
+            }
+            emit_instr(instr, value_types, out)?;
+        }
+        if bid == region.merge_block {
+            // Replace the back-edge with the reduction-update
+            // rebinds. OpenMP's `reduction(op: v_<carry>)`
+            // requires us to update the named accumulator
+            // in place, so each iteration's "current value" is
+            // correct.
+            for (carry_v, update_v) in region
+                .reduction_carries
+                .iter()
+                .zip(region.reduction_update_values.iter())
+            {
+                writeln!(out, "    v_{} = v_{};", carry_v.0, update_v.0).unwrap();
+            }
+            // Fall through to `}` — the for-loop iterates.
+        } else {
+            // Non-merge in-region block: emit its terminator
+            // unchanged. Targets land in `region_blocks` (in-
+            // region edge) or in `step_block` (in v1, only the
+            // merge_block reaches step). Branch / Jump goto
+            // forms match the parent block walk's emit so the
+            // surrounding for-body reads as a tiny nested CFG.
+            emit_terminator(&blk.terminator, f, out)?;
+        }
     }
     out.push_str("  }\n");
 

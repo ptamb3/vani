@@ -537,6 +537,31 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **SSA Step 3b — emit half (SSA-C) done 2026-05-26**:
+   `emit_parallel_for_region` in
+   [`src/ssa_backend_c.rs`](src/ssa_backend_c.rs) now
+   inlines every block in `ParallelRegion::region_blocks`
+   inside the `#pragma omp parallel for` for-loop, not
+   just `body_block.instructions`. Each in-region block
+   gets a `bbN:` label + its standard `goto` terminator
+   so the if/else (and other in-body control flow) the
+   recognizer accepted via #241 now actually runs. The
+   merge block (unique back-edge to step) is reordered
+   to be last in `region_blocks` so its replaced
+   terminator — the reduction-update rebind — falls
+   through to the for-loop's closing `}` correctly.
+   `skip_blocks` extends to cover all region blocks so
+   the parent block walk no longer emits orphan
+   `bbN:` labels after the loop. SSA-LLVM still routes
+   multi-block bodies through tree-LLVM as before
+   (its `emit_outlined_parallel_for_llvm` only walks
+   `body_block`; capture analysis + reduction-update
+   discovery across multi-block bodies is the next
+   step). One new lib test exercises the end-to-end
+   shape via `if`-inside-`parallel for`. Test totals:
+   938 lib + 47 e2e + 11 vtables-phase3 + 2 user-drop-
+   by-ref + 1 ssa-examples. Closure #251.
+
    **Namespaces — formatter support + round-trip done 2026-05-26**:
    `intentc fmt` now re-emits `module name { … }` blocks
    (with nested children and `pub` markers) and
