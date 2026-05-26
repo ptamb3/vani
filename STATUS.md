@@ -537,6 +537,24 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Move / clone / copy story documented in README 2026-05-26**:
+   added a *vāṇī vs Rust — ownership at a glance* subsection
+   under the *Memory safety & concurrency model* section.
+   Confirms vāṇī's model already matches Rust's
+   move-by-default semantics: affine types (Vec, OwnedStr,
+   Atomic, Mutex, Guard, Channel, Task, [T;N], structs/enums
+   with affine fields) MOVE on assignment / fn call; Copy
+   types (primitives, references, all-Copy aggregates) copy.
+   **No implicit clone anywhere** in the language — the only
+   deep-copy paths are explicit `.clone()` and `clone_at(ref
+   xs, i)`. Auto-borrow handles `==` / Str-param contexts so
+   the binding stays usable without consuming. No code
+   changes — the model is already shipping. TODO.md gains a
+   "Move / clone polish" subsection with small Q-of-L
+   follow-ups (diagnostic hints, auto-borrow extension survey,
+   `pop` builtin, fallible allocation API) — all
+   future-polish, not correctness fixes.
+
    **Parallel-for implicit-reduction race check done 2026-05-26**:
    `parallel for { total = total + i; }` over a captured
    Copy-typed primitive (no `reduce` clause) previously

@@ -162,6 +162,54 @@ type-checked + affine-tracked. The compiler doesn't trade safety for
 ergonomics anywhere — including for raw pointer arithmetic, mmap,
 syscalls, or FFI. Those are out of scope for v1.
 
+### vāṇī vs Rust — ownership at a glance
+
+vāṇī uses **the same move-by-default model as Rust**. The goal is
+that users live with `move` semantics by construction; explicit
+`clone()` only happens when the user types it (and the compiler
+makes it clear when that's needed). There is **no implicit clone
+anywhere** in the language.
+
+| Property | Rust | vāṇī |
+|---|---|---|
+| Primitive scalars (`i64`, `bool`, …) | Copy | Copy |
+| Borrowed string view (`&str` / `Str`) | Copy (pointer) | Copy (pointer) |
+| References (`&T` / `&mut T` vs `ref T` / `mut ref T`) | Copy | Copy (second-class, param-only) |
+| Heap string (`String` / `OwnedStr`) | Move (affine) | Move (affine) |
+| Heap vector (`Vec<T>` / `Vec<T>`) | Move (affine) | Move (affine) |
+| Fixed array (`[T; N]`) | Copy if `T: Copy`, else Move | Affine (Move) always — explicit |
+| Struct (every field Copy) | Copy if `#[derive(Copy)]` | Copy automatically (no derive needed) |
+| Struct (any affine field) | Move | Move |
+| Enum (every payload Copy) | Copy if derived | Copy automatically |
+| Enum (any affine payload) | Move | Move |
+| `Atomic<T>` / `Mutex<T>` / `Channel<T, N>` | Affine via lifetime / `Arc` | Affine, single-owner — no `Arc` equivalent |
+| Thread handle (`JoinHandle` / `Task`) | Affine; must `join` or detach | Affine; **must `join`** (no detach in v1) |
+| Implicit clone anywhere? | Never | Never |
+| Explicit `.clone()` cost | Visible at the call site | Visible at the call site |
+
+Two practical takeaways:
+
+- **Reach for `ref` first, `clone()` last.** If a function only needs
+  to *read* a `Vec<T>`, declare the parameter as `xs: ref Vec<T>` and
+  call it as `f(ref xs)`. The borrow is cheap (pointer-sized) and the
+  caller keeps ownership — no copy, no clone, no diagnostic. If the
+  callee needs to mutate, use `mut ref Vec<T>` + `f(mut ref xs)`. The
+  same convention works through struct fields with `ref t.field`.
+- **Auto-borrow does the obvious thing.** Comparing two `OwnedStr` /
+  `Vec<T>` operands via `==` or feeding an `OwnedStr` to a function
+  that wants `Str` auto-borrows the operand — the binding stays
+  usable on the next line. No silent clone.
+
+For deep-copying a single `Vec<T>` slot whose element type is
+non-Copy (e.g. `Vec<OwnedStr>`), use the explicit builtin
+`clone_at(ref xs, i)`. There is no implicit pathway.
+
+If you write code that *requires* a clone to compile — say,
+two threads both need their own copy of a `Vec` — the diagnostic
+will point at the consume site with the binding's earlier move
+location and the suggestion to either restructure or call
+`clone()` explicitly. The compiler never picks the clone for you.
+
 ### What's NOT in the language (deliberate)
 
 - **No garbage collector.** Affine ownership + deterministic Drop

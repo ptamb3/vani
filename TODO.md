@@ -535,6 +535,87 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+## Move / clone / copy — current state + future polish (2026-05-26)
+
+vāṇī's ownership model matches Rust's by construction:
+- **Affine types** (Vec, OwnedStr, Atomic, Mutex, Guard, Channel,
+  Task, [T;N], structs with affine fields, enums with affine
+  payloads) — MOVE on assignment / fn call. Source becomes
+  unreadable; double-use is a compile error.
+- **Copy types** (primitives, references, structs/enums with
+  all-Copy fields) — COPY on assignment / fn call. No move
+  tracking needed.
+- **No implicit clone anywhere.** `.clone()` and `clone_at(ref xs, i)`
+  are the only deep-copy paths and both are explicit at the call
+  site.
+- **Auto-borrow** does the obvious thing for `==` / Str-param
+  contexts (OwnedStr auto-borrows to Str so the binding stays
+  usable).
+
+The move-by-default story is **already shipping**; no semantic
+gap remains in v1. Small polish items below are quality-of-life
+improvements, not correctness fixes.
+
+### Move/clone polish — small items
+
+- **Move-rejection diagnostic should suggest `.clone()` /
+  `ref` / restructuring.** Today the unknown-use-after-move
+  diagnostic shows the earlier move location but doesn't
+  suggest a fix. A small-effort follow-up: emit a "consider
+  borrowing with `ref x` instead of moving, or call
+  `clone()` explicitly if you need both bindings" hint.
+- **Auto-borrow extension survey.** Today `==` / `<` /
+  `+`-on-Str auto-borrow. Other binary op shapes
+  (e.g. arithmetic on a `Vec` reference) may still consume
+  unnecessarily — needs a sweep of the binary-op checker to
+  list cases that could be auto-borrow rather than auto-move.
+  Small / medium.
+- **`pop(mut ref xs)` builtin.** `push(mut ref xs, v)` exists;
+  the symmetric `pop` that moves the last element out would
+  complete the affine Stack pattern. Today the workaround is
+  `clone_at + truncate` which is awkward. Small.
+- **`Atomic<T>` clone is forbidden by design** — re-document
+  in the README that there's no `Arc`-equivalent (shared
+  ownership across threads goes through `Atomic<T>` /
+  `Mutex<T>` / `Channel<T>` references, not by cloning the
+  cell).
+
+### Memory-safety checks — current vs future
+
+**Caught at compile time today** (see README *Memory safety &
+concurrency model* section): heap leak, double-free, use-
+after-free, dangling reference, aliasing, data races in
+parallel-for / task (incl. implicit-reduction race via #259),
+unjoined task, forgotten mutex unlock, integer overflow
+(SMT-discharged), array OOB (SMT-discharged), divide-by-zero
+(SMT-discharged).
+
+**Future compile-time checks worth adding** (none change
+language semantics, all are pure analyses):
+
+- **Recursion depth bound.** A `#[bounded(N)]` annotation
+  on a fn lets the checker emit a guard or reject calls past
+  the depth. Larger lift if we want it inferred without an
+  annotation (would need call-graph analysis + cycle
+  detection). Today: runtime stack overflow.
+- **Mutex lock-ordering analysis.** Two-lock ordering check
+  to catch deadlocks at compile time. Research-grade
+  (interacts with branching). Today: runtime hang.
+- **Channel deadlock detection.** Producer/consumer balance
+  analysis. Research-grade. Today: runtime hang.
+- **Fallible allocation API.** A `try_vec(N) -> Result<Vec<T>,
+  AllocError>` variant for size-checked allocations. Lets
+  programs handle OOM gracefully instead of aborting. Medium
+  scope (new builtin + Result wiring).
+- **`assert` with side-effects diagnostic.** Today
+  `assert cond, "msg"` is rejected in pure contexts. A
+  parallel guard for `assert` with non-pure RHS in regular
+  fns could surface the same warning + a "wrap with
+  `if !cond { panic … }`" rewrite hint. Small.
+
+These all line up behind the SSA-LLVM multi-block work + the
+kosh package-manager arc on the canonical queue.
+
 #259 Parallel-for implicit-reduction race — compile-time check.
 the effects checker's pure-body walker already rejected
 impure ops (print, impure calls, indexed writes on
