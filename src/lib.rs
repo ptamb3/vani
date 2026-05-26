@@ -14914,6 +14914,99 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn glob_use_brings_direct_public_items_into_scope() {
+        // Closure #253: `use foo::*;` expands to every direct
+        // public child of `foo`, bringing each into scope as
+        // an unprefixed alias. Direct = `foo__<leaf>` with no
+        // further `__` in the suffix; nested-module items
+        // (`foo__bar__baz`) and private items
+        // (`foo__priv__name`) are filtered out so source-level
+        // semantics match Rust's `use foo::*;`.
+        let source = r#"
+            module geo {
+              pub struct Point { x: i64, y: i64 }
+              pub fn origin() -> Point {
+                return Point { x: 0, y: 0 };
+              }
+              pub fn shift(p: Point, dx: i64) -> Point {
+                return Point { x: p.x + dx, y: p.y };
+              }
+            }
+
+            use geo::*;
+
+            fn main() -> i64 {
+              let p: Point = origin();
+              let q: Point = shift(p, 5);
+              return q.x;
+            }
+        "#;
+        compile(source).expect("glob use compiles + resolves all references");
+    }
+
+    #[test]
+    fn glob_use_excludes_private_items() {
+        // Private items mangle to `foo__priv__<name>`. The
+        // glob expansion filters those out — calling a
+        // private function via the imported bare name must
+        // still raise an unknown-name diagnostic.
+        let source = r#"
+            module geo {
+              pub fn pub_one() -> i64 { return 1; }
+              fn priv_helper() -> i64 { return 2; }
+            }
+
+            use geo::*;
+
+            fn main() -> i64 {
+              return priv_helper();
+            }
+        "#;
+        let errors = compile(source).expect_err("private item must not be glob-imported");
+        assert!(
+            errors.iter().any(|e| e.message.contains("priv_helper")),
+            "expected unknown-name diagnostic for private item; got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn glob_use_does_not_cross_into_nested_modules() {
+        // `use foo::*;` only pulls DIRECT children of `foo`.
+        // Items inside nested submodules (`foo::bar::baz`)
+        // need their own explicit import — matches Rust's
+        // non-transitive glob semantics. This avoids the
+        // namespace-pollution surprise where importing a top-
+        // level facade module silently drags in every
+        // descendant's identifier.
+        let source = r#"
+            module geo {
+              pub fn outer_fn() -> i64 { return 10; }
+              module bounds {
+                pub fn area() -> i64 { return 100; }
+              }
+            }
+
+            use geo::*;
+
+            fn main() -> i64 {
+              // outer_fn IS imported (direct child).
+              let a: i64 = outer_fn();
+              // area is NOT imported — must use full path
+              // or its own `use geo::bounds::area;`.
+              let b: i64 = area();
+              return a + b;
+            }
+        "#;
+        let errors = compile(source).expect_err("nested item must not glob-import");
+        assert!(
+            errors.iter().any(|e| e.message.contains("area")),
+            "expected unknown-name diagnostic for nested item; got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn ssa_llvm_multi_block_parallel_for_falls_back_to_tree_llvm() {
         // Closure #252: SSA-LLVM's outlined-fn emit only handles
         // single-block parallel-for bodies — atomicrmw needs the

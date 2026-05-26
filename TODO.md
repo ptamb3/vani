@@ -535,6 +535,28 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#253 Namespaces — glob `use foo::*;` import.
+the parser accepts `*` as the leaf segment after
+`module::` (alongside single-item and brace-list
+forms), stored as a sentinel `UsePath { item: "*" }`.
+The checker — after the flatten pass has already
+mangled module items into top-level names — scans
+`program.functions / structs / enums / interfaces /
+consts / type_aliases` for entries matching
+`foo__<leaf>`, filters out private
+(`foo__priv__<leaf>`) and transitive
+(`foo__bar__<leaf>`) entries, and inserts each into
+the alias map alongside the explicit imports.
+Matches Rust's non-transitive glob semantics —
+`use foo::*;` brings in DIRECT children only; nested
+submodule items need their own explicit import. The
+formatter round-trips automatically (the existing
+emit prints `up.module::up.item`, which yields
+`foo::*` for the sentinel form). Three new lib tests
+pin the expansion, private-item filtering, and
+non-transitivity. Test totals: 942 lib + 47 e2e +
+11 vtables-phase3 + 2 user-drop-by-ref + 1
+ssa-examples.
 #252 SSA-LLVM — multi-block parallel-for fallback gate.
 follow-up to #251 (SSA-C emit half landed). The
 SSA-LLVM `emit_parallel_for_region_llvm` now early-

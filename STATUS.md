@@ -537,6 +537,29 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Namespaces — glob `use foo::*;` import done 2026-05-26**:
+   `use foo::*;` now expands to every direct public child
+   of `foo`, bringing each into scope as an unprefixed
+   alias. The parser accepts `*` as the leaf segment
+   after `module::` (alongside the existing single-item
+   and brace-list forms) and stores it as a sentinel
+   `UsePath { item: "*" }`. The checker — after the
+   flatten pass has already mangled module items into
+   top-level names — scans `program.functions`,
+   `structs`, `enums`, `interfaces`, `consts`, and
+   `type_aliases` for entries matching `foo__<leaf>`;
+   filters out private (`foo__priv__<leaf>`) and
+   transitive (`foo__bar__<leaf>`) entries; and inserts
+   each into the alias map. Matches Rust's
+   non-transitive glob semantics — `use foo::*;` does
+   NOT pull in `foo::bar::baz`, just the direct
+   children. The formatter already round-trips
+   correctly (`up.module + "::" + up.item` produces
+   `foo::*`). Three new lib tests pin the expansion,
+   private filtering, and non-transitivity. Test
+   totals: 942 lib + 47 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #253.
+
    **SSA-LLVM — multi-block parallel-for fallback gate done 2026-05-26**:
    the SSA-LLVM `emit_parallel_for_region_llvm` now
    early-exits with a clear EmitError when the recognized

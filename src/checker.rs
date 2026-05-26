@@ -1673,7 +1673,49 @@ fn flatten_modules_in_program(
     let mut use_aliases: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     let use_paths = std::mem::take(&mut program.use_paths);
+    // Closure #253: build a snapshot of every top-level item
+    // name (functions, structs, enums, interfaces, consts,
+    // type aliases) so glob imports can expand. The flatten
+    // pass has already run, so module items now live at the
+    // top level with mangled names (`mod__name` for public,
+    // `mod__priv__name` for private — the latter aren't
+    // brought into scope by globs).
+    let mut all_top_level_names: Vec<String> = Vec::new();
+    all_top_level_names.extend(program.functions.iter().map(|f| f.name.clone()));
+    all_top_level_names.extend(program.structs.iter().map(|s| s.name.clone()));
+    all_top_level_names.extend(program.enums.iter().map(|e| e.name.clone()));
+    all_top_level_names.extend(program.interfaces.iter().map(|i| i.name.clone()));
+    all_top_level_names.extend(program.consts.iter().map(|c| c.name.clone()));
+    all_top_level_names.extend(program.type_aliases.iter().map(|a| a.name.clone()));
     for up in use_paths {
+        if up.item == "*" {
+            // Glob import: bring every DIRECT public child of
+            // `up.module` into scope unprefixed. A direct
+            // child has name `up.module__<leaf>` with no
+            // further `__` (no transitive descent into
+            // nested modules). Private items mangle to
+            // `up.module__priv__<leaf>` and are filtered out
+            // by the `__priv__` test.
+            let prefix = format!("{}__", up.module);
+            for top in &all_top_level_names {
+                if !top.starts_with(&prefix) {
+                    continue;
+                }
+                let suffix = &top[prefix.len()..];
+                // Skip private items.
+                if suffix.starts_with("priv__") {
+                    continue;
+                }
+                // Skip transitive descendants — globs only
+                // pull direct children (matches Rust's
+                // `use foo::*;` semantics).
+                if suffix.contains("__") {
+                    continue;
+                }
+                use_aliases.insert(suffix.to_string(), top.clone());
+            }
+            continue;
+        }
         let mangled = format!("{}__{}", up.module, up.item);
         use_aliases.insert(up.item.clone(), mangled);
     }

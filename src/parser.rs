@@ -631,18 +631,20 @@ impl Parser {
         // — closure #248 added support for deep paths
         // (nested modules). Everything before the final
         // segment is the module prefix; the final segment is
-        // the item (single-item form) or the `{…}` brace
-        // list (multi-item form).
+        // the item (single-item form), the `{…}` brace list
+        // (multi-item form), or `*` (glob form — closure #253
+        // brings every direct public child of the module into
+        // scope).
         let mod_tok = self.expect_ident()?;
         let mut module = ident_text(mod_tok);
         self.expect_keyword("'::' in `use` path", |k| matches!(k, TokenKind::ColonColon))?;
         // Greedily consume `IDENT ::` segments until we see
-        // either an ident-not-followed-by-`::` (single-item)
-        // or a `{` (multi-item). The final ident before `;`
-        // or `{` is the item; earlier idents are module
-        // segments joined with `__`.
+        // either an ident-not-followed-by-`::` (single-item),
+        // a `{` (multi-item), or a `*` (glob). The final ident
+        // before `;` or `{` is the item; earlier idents are
+        // module segments joined with `__`.
         loop {
-            if self.check(|k| matches!(k, TokenKind::LBrace)) {
+            if self.check(|k| matches!(k, TokenKind::LBrace | TokenKind::Star)) {
                 break;
             }
             // Peek one ahead to decide: if `IDENT ::` we
@@ -663,6 +665,24 @@ impl Parser {
                 "'::' in `use` path",
                 |k| matches!(k, TokenKind::ColonColon),
             )?;
+        }
+        // Glob form: `use foo::*;` — closure #253. Capture as a
+        // UsePath with the sentinel item `*`; the checker
+        // expands it after module flattening (so it can see
+        // which items are public). v1 imports only DIRECT
+        // children of the named module — `use foo::*;` does
+        // NOT pull in `foo::bar::baz` (the nested-module
+        // bar's items). Users who want deeper imports write
+        // them explicitly (`use foo::bar::baz;` or
+        // `use foo::bar::*;`).
+        if self.check(|k| matches!(k, TokenKind::Star)) {
+            let star = self.bump();
+            let semi = self.expect_keyword("';'", |kind| matches!(kind, TokenKind::Semicolon))?;
+            return Ok(UseDecl::Path(crate::ast::UsePath {
+                module,
+                item: "*".to_string(),
+                span: start.span.merge(semi.span.merge(star.span)),
+            }));
         }
         // Multi-item form: `use foo::{a, b};`.
         if self.check(|k| matches!(k, TokenKind::LBrace)) {
