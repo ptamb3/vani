@@ -1201,9 +1201,17 @@ likely impact / blast radius, not implementation order.
   `कार्यान्वयन` (kāryānvayan = "implementation"). Hindi /
   Marathi need separate evaluation. Don't ship without
   language-expert confirmation.
-  Phase 2 (English) — riskier aliases that need the
-  language-purity gate first to avoid identifier
-  collisions:
+  Phase 2 (English) — riskier aliases (`def`, `function`,
+  `bind`, `mutable`, `constant`, `otherwise`, etc.) remain
+  **permanently blocked** by identifier-collision risk
+  (these words frequently appear as parameter / variable
+  names in user code). The language-purity gate (#236)
+  doesn't help — that prevents script-mixing, not
+  within-language identifier collisions. Unblocking Phase 2
+  would need raw-identifier escape syntax (Rust's `r#def`)
+  or a major-version migration. Not worth shipping
+  without that. Concrete candidates for the deferred
+  set:
   - `struct` / `record` (data shape)
   - `return` / `give` (function exit)
   - `->` / `returns` / `yields` (return-type marker — `fn f()
