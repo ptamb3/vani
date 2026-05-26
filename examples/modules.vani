@@ -1,0 +1,60 @@
+intent "Namespaces — modules, visibility, paths, `use`, nested";
+
+// Closures #242-#249. Rust-style modules: explicit paths
+// with `::` separator, private-by-default with `pub`,
+// `use foo::bar;` aliases, nested modules with implicit
+// sibling lookup, and orphan rules for `implement`.
+
+module geo {
+  pub struct Point { x: i64, y: i64 }
+
+  // Private helper — accessible only inside `geo`.
+  fn shift(p: Point, dx: i64) -> Point {
+    return Point { x: p.x + dx, y: p.y };
+  }
+
+  pub fn origin() -> Point {
+    return Point { x: 0, y: 0 };
+  }
+
+  // Public — uses the private helper. Intra-module bare
+  // names resolve to `geo__shift` via the flattening pass.
+  pub fn step_right(p: Point) -> Point {
+    return shift(p, 1);
+  }
+
+  // Nested module. The inner sees `Point` via the parent
+  // module's bare-name resolution.
+  module bounds {
+    pub fn area(p: geo::Point) -> i64 {
+      return p.x * p.y;
+    }
+  }
+}
+
+// Single-item import: bring `Point` into scope unprefixed.
+use geo::Point;
+
+// Multi-item import from the inner module.
+use geo::bounds::{area};
+
+fn main() -> i64 {
+  // Constructor via the imported alias.
+  let p: Point = Point { x: 4, y: 7 };
+  assert p.x == 4;
+
+  // Module-qualified path still works alongside `use`.
+  let q: Point = geo::origin();
+  assert q.x == 0;
+
+  // Public sibling call from outside the module.
+  let r: Point = geo::step_right(p);
+  assert r.x == 5;
+
+  // Imported `area` via the deep path `geo::bounds::area`.
+  let z: i64 = area(r);
+  assert z == 5 * 7;
+
+  write "step_right + area =", z;
+  return 0;
+}

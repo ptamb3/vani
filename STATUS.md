@@ -537,6 +537,20 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Namespaces — formatter support + round-trip done 2026-05-26**:
+   `intentc fmt` now re-emits `module name { … }` blocks
+   (with nested children and `pub` markers) and
+   `use foo::bar;` path imports. Internal `__`-mangled
+   type names (e.g. `Type::Struct("geo__Point")` from a
+   `geo::Point` parse) are rendered back as `geo::Point`
+   via a new `type_to_source` helper so the round-trip
+   parses back to the same AST. `examples/modules.vani`
+   demonstrates the full feature set (visibility,
+   path imports, nested modules, orphan-respecting
+   `implement`) and is now wired into the format
+   round-trip / parity runners. All 937 lib + 47 e2e
+   tests still green. Closure #242–#249 ship-complete.
+
    **Namespaces — implicit sibling-module references done 2026-05-26**:
    from inside `module outer`, references to a nested
    module's items work with just `inner::item` (no

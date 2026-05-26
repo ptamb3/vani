@@ -201,6 +201,24 @@ pub fn format_program_with_comments(
     if !p.uses.is_empty() {
         out.push('\n');
     }
+    // `use foo::bar;` / `use foo::bar::baz;` path imports.
+    // Stored with `__` between path segments — replace back to
+    // `::` for the source-level form. Multi-item `use foo::{a,b}`
+    // is desugared into one `UsePath` per item, so we emit each
+    // on its own line; the round-trip AST is identical.
+    for up in &p.use_paths {
+        ctx.drain_to(up.span.start, 0, &mut out);
+        ctx.maybe_preserve_blank(up.span.start, &mut out);
+        out.push_str("use ");
+        out.push_str(&up.module.replace("__", "::"));
+        out.push_str("::");
+        out.push_str(&up.item);
+        out.push_str(";\n");
+        ctx.try_attach_trailing(up.span.end, &mut out);
+    }
+    if !p.use_paths.is_empty() {
+        out.push('\n');
+    }
     for intent in &p.intents {
         ctx.drain_to(intent.span.start, 0, &mut out);
         ctx.maybe_preserve_blank(intent.span.start, &mut out);
@@ -225,6 +243,7 @@ pub fn format_program_with_comments(
         TypeAlias(usize),
         Methods(usize),
         Function(usize),
+        Module(usize),
     }
     let mut order: Vec<(usize, TopItem)> = Vec::new();
     for (i, s) in p.structs.iter().enumerate() {
@@ -250,6 +269,9 @@ pub fn format_program_with_comments(
     }
     for (i, f) in p.functions.iter().enumerate() {
         order.push((f.span.start, TopItem::Function(i)));
+    }
+    for (i, m) in p.modules.iter().enumerate() {
+        order.push((m.span.start, TopItem::Module(i)));
     }
     order.sort_by_key(|(pos, _)| *pos);
     for (idx, (_, item)) in order.iter().enumerate() {
@@ -305,17 +327,220 @@ pub fn format_program_with_comments(
                 ctx.maybe_preserve_blank(f.span.start, &mut out);
                 format_function(f, &mut ctx, &mut out);
             }
+            TopItem::Module(i) => {
+                let m = &p.modules[*i];
+                ctx.drain_to(m.span.start, 0, &mut out);
+                ctx.maybe_preserve_blank(m.span.start, &mut out);
+                format_module_decl(m, false, &mut ctx, &mut out);
+            }
         }
     }
     ctx.drain_remaining(&mut out);
     out
 }
 
+/// Emit `module NAME { … }` with `pub` markers on items per the
+/// module's parallel visibility bitmaps. Recurses for nested
+/// modules. `outer_pub` is the visibility of *this* module from
+/// the standpoint of its parent (only meaningful for nested
+/// modules — top-level modules are always implicitly public, the
+/// keyword is just a syntactic marker).
+fn format_module_decl(
+    m: &crate::ast::ModuleDecl,
+    outer_pub: bool,
+    ctx: &mut FmtCtx,
+    out: &mut String,
+) {
+    if outer_pub {
+        out.push_str("pub ");
+    }
+    out.push_str("module ");
+    out.push_str(&m.name);
+    out.push_str(" {\n");
+    // Interleave items in original source order via spans, the
+    // same strategy as the top-level emit. Each variant pulls
+    // the matching visibility bit so `pub` markers re-attach.
+    enum ModItem {
+        Struct(usize),
+        Enum(usize),
+        Interface(usize),
+        Impl(usize),
+        Const(usize),
+        TypeAlias(usize),
+        Methods(usize),
+        Function(usize),
+        Module(usize),
+    }
+    let mut order: Vec<(usize, ModItem)> = Vec::new();
+    for (i, s) in m.structs.iter().enumerate() {
+        order.push((s.span.start, ModItem::Struct(i)));
+    }
+    for (i, e) in m.enums.iter().enumerate() {
+        order.push((e.span.start, ModItem::Enum(i)));
+    }
+    for (i, ifc) in m.interfaces.iter().enumerate() {
+        order.push((ifc.span.start, ModItem::Interface(i)));
+    }
+    for (i, im) in m.impls.iter().enumerate() {
+        order.push((im.span.start, ModItem::Impl(i)));
+    }
+    for (i, c) in m.consts.iter().enumerate() {
+        order.push((c.span.start, ModItem::Const(i)));
+    }
+    for (i, a) in m.type_aliases.iter().enumerate() {
+        order.push((a.span.start, ModItem::TypeAlias(i)));
+    }
+    for (i, mb) in m.methods_blocks.iter().enumerate() {
+        order.push((mb.span.start, ModItem::Methods(i)));
+    }
+    for (i, f) in m.functions.iter().enumerate() {
+        order.push((f.span.start, ModItem::Function(i)));
+    }
+    for (i, sub) in m.modules.iter().enumerate() {
+        order.push((sub.span.start, ModItem::Module(i)));
+    }
+    order.sort_by_key(|(pos, _)| *pos);
+    for (idx, (_, item)) in order.iter().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        let mut sub = String::new();
+        match item {
+            ModItem::Struct(i) => {
+                let s = &m.structs[*i];
+                if *m.visibility.structs_pub.get(*i).unwrap_or(&false) {
+                    sub.push_str("pub ");
+                }
+                format_struct_decl(s, &mut sub);
+            }
+            ModItem::Enum(i) => {
+                let e = &m.enums[*i];
+                if *m.visibility.enums_pub.get(*i).unwrap_or(&false) {
+                    sub.push_str("pub ");
+                }
+                format_enum_decl(e, &mut sub);
+            }
+            ModItem::Interface(i) => {
+                let ifc = &m.interfaces[*i];
+                if *m.visibility.interfaces_pub.get(*i).unwrap_or(&false) {
+                    sub.push_str("pub ");
+                }
+                format_interface_decl(ifc, &mut sub);
+            }
+            ModItem::Impl(i) => {
+                let im = &m.impls[*i];
+                if *m.visibility.impls_pub.get(*i).unwrap_or(&false) {
+                    sub.push_str("pub ");
+                }
+                format_impl_decl(im, ctx, &mut sub);
+            }
+            ModItem::Const(i) => {
+                let c = &m.consts[*i];
+                if *m.visibility.consts_pub.get(*i).unwrap_or(&false) {
+                    sub.push_str("pub ");
+                }
+                format_const_decl(c, &mut sub);
+            }
+            ModItem::TypeAlias(i) => {
+                let a = &m.type_aliases[*i];
+                if *m.visibility.type_aliases_pub.get(*i).unwrap_or(&false) {
+                    sub.push_str("pub ");
+                }
+                format_type_alias(a, &mut sub);
+            }
+            ModItem::Methods(i) => {
+                let mb = &m.methods_blocks[*i];
+                if *m.visibility.methods_blocks_pub.get(*i).unwrap_or(&false) {
+                    sub.push_str("pub ");
+                }
+                format_methods_block(mb, ctx, &mut sub);
+            }
+            ModItem::Function(i) => {
+                let f = &m.functions[*i];
+                if *m.visibility.functions_pub.get(*i).unwrap_or(&false) {
+                    sub.push_str("pub ");
+                }
+                format_function(f, ctx, &mut sub);
+            }
+            ModItem::Module(i) => {
+                let nested = &m.modules[*i];
+                let is_pub = *m.visibility.modules_pub.get(*i).unwrap_or(&false);
+                format_module_decl(nested, is_pub, ctx, &mut sub);
+            }
+        }
+        for line in sub.lines() {
+            if line.is_empty() {
+                out.push('\n');
+            } else {
+                out.push_str(INDENT);
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out.push_str("}\n");
+}
+
+/// Render a type for source emission. Replaces the internal `__`
+/// path separator (used in `Type::Struct`/`Type::Enum` names that
+/// come from `geo::Point` parses) with the source-level `::` so
+/// the round-trip parses back to the same mangled name. Walks
+/// composite types recursively. Top-level user-named types never
+/// contain `__` in practice, so the substitution is safe.
+fn type_to_source(ty: &crate::ast::Type) -> String {
+    use crate::ast::Type;
+    match ty {
+        Type::Struct(name) | Type::Enum(name) => name.replace("__", "::"),
+        Type::Array { element, length } => {
+            format!("[{}; {}]", type_to_source(element), length)
+        }
+        Type::Vec(inner) => format!("Vec<{}>", type_to_source(inner)),
+        Type::Ref(inner) => format!("ref {}", type_to_source(inner)),
+        Type::RefMut(inner) => format!("mut ref {}", type_to_source(inner)),
+        Type::Atomic(inner) => format!("Atomic<{}>", type_to_source(inner)),
+        Type::Channel(inner, capacity) => {
+            if *capacity == 16 {
+                format!("Channel<{}>", type_to_source(inner))
+            } else {
+                format!("Channel<{}, {}>", type_to_source(inner), capacity)
+            }
+        }
+        Type::Mutex(inner) => format!("Mutex<{}>", type_to_source(inner)),
+        Type::Guard(inner) => format!("Guard<{}>", type_to_source(inner)),
+        Type::FnPtr(params, ret) => {
+            let mut s = String::from("fn(");
+            for (i, p) in params.iter().enumerate() {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                s.push_str(&type_to_source(p));
+            }
+            s.push_str(") -> ");
+            s.push_str(&type_to_source(ret));
+            s
+        }
+        Type::Tuple(elements) => {
+            let mut s = String::from("(");
+            for (i, e) in elements.iter().enumerate() {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                s.push_str(&type_to_source(e));
+            }
+            s.push(')');
+            s
+        }
+        Type::Object(iface) => format!("dyn {}", iface),
+        // Primitives / Str / Param: no `__` substitution needed.
+        _ => format!("{}", ty),
+    }
+}
+
 fn format_const_decl(c: &crate::ast::ConstDecl, out: &mut String) {
     out.push_str("const ");
     out.push_str(&c.name);
     out.push_str(": ");
-    out.push_str(&format!("{}", c.ty));
+    out.push_str(&type_to_source(&c.ty));
     out.push_str(" = ");
     format_expr(&c.value, false, out);
     out.push_str(";\n");
@@ -325,7 +550,7 @@ fn format_type_alias(a: &crate::ast::TypeAlias, out: &mut String) {
     out.push_str("type ");
     out.push_str(&a.name);
     out.push_str(" = ");
-    out.push_str(&format!("{}", a.target));
+    out.push_str(&type_to_source(&a.target));
     out.push_str(";\n");
 }
 
@@ -335,7 +560,7 @@ fn format_methods_block(
     out: &mut String,
 ) {
     out.push_str("methods on ");
-    out.push_str(&format!("{}", m.for_type));
+    out.push_str(&type_to_source(&m.for_type));
     out.push_str(" {\n");
     for (i, method) in m.methods.iter().enumerate() {
         if i > 0 {
@@ -367,7 +592,7 @@ fn format_struct_decl(s: &crate::ast::StructDecl, out: &mut String) {
         out.push_str(INDENT);
         out.push_str(&f.name);
         out.push_str(": ");
-        out.push_str(&format!("{}", f.ty));
+        out.push_str(&type_to_source(&f.ty));
         out.push_str(",\n");
     }
     out.push_str("}\n");
@@ -386,7 +611,7 @@ fn format_enum_decl(e: &crate::ast::EnumDecl, out: &mut String) {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                out.push_str(&format!("{}", ty));
+                out.push_str(&type_to_source(ty));
             }
             out.push(')');
         }
@@ -412,7 +637,7 @@ fn format_interface_decl(ifc: &crate::ast::InterfaceDecl, out: &mut String) {
         }
         out.push(')');
         out.push_str(" -> ");
-        out.push_str(&format!("{}", m.return_type));
+        out.push_str(&type_to_source(&m.return_type));
         out.push_str(";\n");
     }
     out.push_str("}\n");
@@ -422,7 +647,7 @@ fn format_impl_decl(im: &crate::ast::ImplDecl, ctx: &mut FmtCtx, out: &mut Strin
     out.push_str("implement ");
     out.push_str(&im.interface_name);
     out.push_str(" for ");
-    out.push_str(&format!("{}", im.for_type));
+    out.push_str(&type_to_source(&im.for_type));
     out.push_str(" {\n");
     for (i, m) in im.methods.iter().enumerate() {
         if i > 0 {
@@ -470,7 +695,7 @@ fn format_function(f: &Function, ctx: &mut FmtCtx, out: &mut String) {
     }
     out.push(')');
     out.push_str(" -> ");
-    out.push_str(&format!("{}", f.return_type));
+    out.push_str(&type_to_source(&f.return_type));
     if !f.where_clauses.is_empty() {
         out.push_str(" where ");
         for (i, w) in f.where_clauses.iter().enumerate() {
@@ -515,7 +740,7 @@ fn format_function(f: &Function, ctx: &mut FmtCtx, out: &mut String) {
 fn format_param(p: &Param, out: &mut String) {
     out.push_str(&p.name);
     out.push_str(": ");
-    out.push_str(&format!("{}", p.ty));
+    out.push_str(&type_to_source(&p.ty));
 }
 
 fn format_stmt(s: &Stmt, depth: usize, ctx: &mut FmtCtx, out: &mut String) {
@@ -534,7 +759,7 @@ fn format_stmt(s: &Stmt, depth: usize, ctx: &mut FmtCtx, out: &mut String) {
             out.push_str(name);
             if let Some(ty) = annotation {
                 out.push_str(": ");
-                out.push_str(&format!("{}", ty));
+                out.push_str(&type_to_source(ty));
             }
             out.push_str(" = ");
             format_expr(expr, false, out);
@@ -552,7 +777,7 @@ fn format_stmt(s: &Stmt, depth: usize, ctx: &mut FmtCtx, out: &mut String) {
             out.push(')');
             if let Some(ty) = annotation {
                 out.push_str(": ");
-                out.push_str(&format!("{}", ty));
+                out.push_str(&type_to_source(ty));
             }
             out.push_str(" = ");
             format_expr(expr, false, out);
@@ -836,7 +1061,7 @@ fn format_expr(e: &Expr, parens_if_binary: bool, out: &mut String) {
             out.push('(');
             format_expr(expr, true, out);
             out.push_str(" as ");
-            out.push_str(&format!("{}", ty));
+            out.push_str(&type_to_source(ty));
             out.push(')');
         }
         ExprKind::ArrayLit { elements } => {

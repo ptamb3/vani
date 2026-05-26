@@ -535,6 +535,28 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#250 Namespaces — formatter support + round-trip.
+`intentc fmt` now re-emits `module name { … }` blocks
+(via a recursive `format_module_decl` that walks
+nested children and prepends `pub` per the parallel
+visibility bitmaps) and `use foo::bar;` path imports
+(emitting each `UsePath` on its own line; multi-item
+`use foo::{a, b};` already desugars into one
+UsePath per item, so the AST round-trips intact).
+Internal `__`-mangled type names — produced by
+parsing `geo::Point` into `Type::Struct("geo__Point")`
+— are converted back to `geo::Point` in the source
+output via a new `type_to_source` helper (Display
+impl unchanged, so checker error messages keep
+their existing form). `examples/modules.vani` is
+now wired into the fmt round-trip / parity runners
+and exits 0 on both backends. Closure #242–#249
+namespace work is now ship-complete; nothing in
+the format pass drops module structure. Test
+totals: 937 lib + 47 e2e + 11 vtables-phase3 + 2
+user-drop-by-ref + 1 ssa-examples (unchanged —
+the round-trip test now passes for the new
+example).
 #249 Namespaces — implicit sibling-module references.
 Inside `module outer`, references to a child module's
 items work with just `inner::item` instead of the full
