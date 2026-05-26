@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #236 — per-file language purity)
+## ⏳ Resume here (paused 2026-05-26, after closure #237 — write alias + लिखो)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -1189,6 +1189,46 @@ likely impact / blast radius, not implementation order.
   grammar-consultant review because the current alias
   table has ambiguous entries (`यदि` is both Sanskrit and
   Hindi). Cross-file mixing stays allowed by design.
+
+- **Devanagari word order — SOV grammar fit (NEW
+  2026-05-26).** Indo-Aryan languages are SOV (subject-
+  object-verb) with **postpositions**, where English is
+  SVO with prepositions. The current Devanagari aliases
+  swap word-for-word but keep English's word ORDER —
+  which sounds unnatural to native speakers. Examples:
+  - `for i in 0 to 5` → currently `के लिए i से 0 तक 5`.
+    Natural Hindi: `0 से 5 तक i के लिए { ... }` (from-0
+    to-5 i for) — postpositions `से` / `तक` / `के लिए`
+    follow their operands.
+  - `if cond { ... }` → currently `यदि cond { ... }`.
+    Natural Sanskrit/Hindi works OK in prefix because
+    conditional clauses can lead.
+  - `let x: i64 = 5;` → currently `मान x: i64 = 5;`.
+    Natural: `x: i64 = 5 मान;` (x: i64 = 5 take/assume)
+    — but this conflicts with the `=` assignment grammar.
+
+  Properly fixing requires a per-language parser mode
+  that swaps to SOV/postfix grammar when the file is
+  detected as Devanagari (via the existing purity gate).
+  Affected constructs:
+    - For-loops: `EXPR से EXPR तक VAR के लिए { ... }`
+    - Method calls: receiver-first is OK
+    - `where T is Cmp` clauses: postposition style would
+      be `T Cmp है` (T Cmp is) — verb-final.
+    - Return-type marker: instead of `fn f() -> i64`,
+      natural Hindi might be `f() : i64 फलन` (f(): i64
+      function).
+
+  This is multi-session work and probably needs grammar
+  consultant validation before shipping. Tracked here so
+  the gap doesn't get lost.
+
+- **Print → write rename.** *Done 2026-05-26 (closure
+  #237).* `write` is now an English alias for `print`;
+  Devanagari `लिख` / `लिखो` (likh / likho = "write")
+  replaced `छाप` (chāp = "imprint/stamp") which felt
+  unnatural for screen output. Three Devanagari example
+  files updated.
 - **Within-language keyword aliases.** *Phase 1 done
   2026-05-26 (closure #234)* — conservative English set
   shipped: `struct`/`record`, `interface`/`trait`,

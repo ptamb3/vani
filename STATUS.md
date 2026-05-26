@@ -537,6 +537,30 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **`write` alias for `print` + Devanagari `लिखो` done 2026-05-26**:
+   user feedback flagged two issues with the print
+   keyword. `print` is C/Python heritage; `write` is more
+   versatile (matches `write(stdout, ...)` style). The
+   Devanagari `छाप` (chāp = "imprint/stamp") felt
+   unnatural for screen output; `लिख` / `लिखो` (likh /
+   likho = "write") is the natural verb across Sanskrit /
+   Hindi / Marathi. Lexer accepts `write` as English alias
+   for `print`; Devanagari table swaps `छाप` for
+   `लिख` / `लिखो`. Three Devanagari examples updated.
+   Test totals: 924 lib + 47 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples passing. Closure #237.
+
+   *Word-order issue (queued)*: user flagged that the
+   Devanagari aliases swap words but keep English's word
+   ORDER, producing unnatural sentences (e.g. `के लिए i
+   से 0 तक 5` instead of the natural Hindi `0 से 5 तक i
+   के लिए`). Indo-Aryan languages are SOV with
+   postpositions — `से` (from) follows the noun, not
+   precedes it. Properly fixing requires a per-language
+   parser mode that swaps to SOV grammar when the file is
+   detected as Devanagari. Multi-session work; tracked in
+   TODO under "Devanagari word order — SOV grammar fit".
+
    **Per-file language purity done 2026-05-26**: the lexer
    now rejects files that mix English structure keywords
    with Devanagari aliases in the same file. A new

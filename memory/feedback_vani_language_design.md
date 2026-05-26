@@ -66,6 +66,42 @@ aliases together. Don't introduce new keywords that
 collide with planned aliases. Sanskrit / Hindi / Marathi
 tables grow proportionally to English's alias set.
 
+## Devanagari is SOV with postpositions — word order matters
+
+When extending the Devanagari alias table, translating
+keywords word-for-word from English keeps English's word
+ORDER, which sounds unnatural to native speakers of
+Hindi / Sanskrit / Marathi. Indo-Aryan languages are
+**SOV (subject-object-verb)** with **postpositions**:
+- `से` (from) goes AFTER the noun: `0 से`, not `से 0`
+- `तक` (to / until) goes AFTER: `5 तक`, not `तक 5`
+- `के लिए` (for / for-the-sake-of) goes AFTER: `i के लिए`,
+  not `के लिए i`
+
+**Why:** native speakers will read the current
+`के लिए i से 0 तक 5` as grammatically broken (the
+particles are in the wrong slots). Natural Hindi is
+`0 से 5 तक i के लिए { ... }` (postfix order).
+
+**How to apply:** parser-level word order needs per-
+language modes — when the file's language is Devanagari
+(via the purity gate from #236), the parser should
+accept SOV/postfix grammar for at least the for-loop,
+return-type marker, and `where T is Cmp` clauses.
+This is multi-session work; tracked in TODO under
+"Devanagari word order — SOV grammar fit". Don't ship
+keyword translations without considering whether the
+SURROUNDING SYNTAX will parse naturally.
+
+**Print → write (related decision 2026-05-26):** `छाप`
+(chāp = "imprint") was the original Devanagari alias
+for `print`. User flagged it feels off for screen
+output. Better: `लिख` / `लिखो` (likh / likho = "write")
+across all three Devanagari languages. English also
+gained a `write` alias for `print`. The verb "write"
+is more idiomatic for stdout output than "print" —
+print suggests paper.
+
 ## Cranelift + x86_64-asm backends are far-future
 
 Cranelift JIT and direct x86_64 assembly are tracked in

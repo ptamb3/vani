@@ -233,8 +233,14 @@ fn devanagari_keyword(text: &str) -> Option<TokenKind> {
         // bool literals
         "सत्य" => TokenKind::True,         // satya (Sanskrit: "truth")
         "असत्य" => TokenKind::False,       // asatya (Sanskrit: "untruth")
-        // print
-        "छाप" => TokenKind::Print,         // chāp (Hindi/Marathi: "print/imprint")
+        // print / write — `लिख` (likh, root for "write") +
+        // imperative `लिखो` (likho, "write!"). `छाप` (chāp,
+        // "imprint/stamp") was the previous spelling but
+        // feels off for screen output; removed in favor of
+        // the natural "write" verb across all three
+        // Devanagari-script languages.
+        "लिख" => TokenKind::Print,         // likh (Sanskrit root: "write")
+        "लिखो" => TokenKind::Print,        // likho (Hindi/Marathi imperative: "write!")
         // pure
         "शुद्ध" => TokenKind::Pure,        // śuddha (Sanskrit: "pure")
         // struct / enum
@@ -886,7 +892,11 @@ impl<'a> Lexer<'a> {
             "invariant" => TokenKind::Invariant,
             "assert" => TokenKind::Assert,
             "prove" => TokenKind::Prove,
-            "print" => TokenKind::Print,
+            // Output: `print` (legacy / C-Python heritage) /
+            // `write` (matches `write(stdout, ...)` style).
+            // `write` is preferred in new code; both currently
+            // accepted.
+            "print" | "write" => TokenKind::Print,
             "try" => TokenKind::Try,
             "len" => TokenKind::Len,
             "as" => TokenKind::As,

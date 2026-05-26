@@ -2246,6 +2246,22 @@ mod tests {
     }
 
     #[test]
+    fn write_alias_for_print_lexes_correctly() {
+        // Closure #237: `write` is an English alias for
+        // `print`. Devanagari `लिख` / `लिखो` (likh / likho =
+        // "write") replaced `छाप` (chāp = "imprint/stamp")
+        // which felt unnatural for screen output.
+        let source = r#"
+            fn main() -> i64 {
+              let n: i64 = 42;
+              write "answer is", n;
+              return 0;
+            }
+        "#;
+        compile(source).expect("`write` should alias to print");
+    }
+
+    #[test]
     fn english_keyword_aliases_lex_to_canonical_tokens() {
         // Closure #234: conservative English alias set —
         // `record` (struct), `trait` (interface), `impl`

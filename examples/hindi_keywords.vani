@@ -2,7 +2,7 @@
 // Per-file language purity (closure #236) requires a single
 // language per file. This file uses Hindi structure keywords
 // throughout; English `print` is replaced with the Hindi
-// alias `छाप`.
+// alias `लिखो`.
 
 फलन add(a: i64, b: i64) -> i64 {
   परत a + b;
@@ -21,6 +21,6 @@
   खात्री sum == 12;
   खात्री doubled == 24;
 
-  छाप "a=", a, " b=", b, " sum=", sum, " doubled=", doubled;
+  लिखो "a=", a, " b=", b, " sum=", sum, " doubled=", doubled;
   परत 0;
 }
