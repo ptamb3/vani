@@ -537,6 +537,27 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Vtables Phase 4a (struct field of `dyn Iface`) done 2026-05-25**:
+   structs can now declare a field of type `dyn Iface` and
+   the field works through both backends. Two small
+   plumbing fixes: (1) `c_element_storage(Type::Object)`
+   returns `intent_dyn_<Iface>` so struct field declarations
+   spell correctly; (2) the per-Iface vtable typedef is now
+   forward-declared in two stages — the tag + fat-pointer
+   typedef BEFORE struct typedefs (so structs can carry
+   `dyn Iface` fields), and the full `struct
+   intent_vtbl_<Iface> { ... }` body AFTER struct typedefs
+   (so the slot fn-ptrs can reference `Struct_<T>` arg
+   types should the interface declare any). LLVM IR's
+   named-type model handles forward refs natively; no
+   reordering needed. New e2e tests in `vtables_phase3.rs`
+   cover the Holder { d: dyn Drawable } pattern through
+   both backends. Vec<dyn Iface> (Phase 4b) still pending:
+   the checker needs vec-literal element coercion to the
+   declared `Vec<dyn Iface>` element type. Test totals:
+   920 lib + 47 e2e + 5 vtables-phase3 passing. Closure
+   #225.
+
    **Vtables Phase 3b (tree-LLVM codegen) done 2026-05-25**: lli now
    runs dyn-dispatching programs identically to tree-C. New
    `%intent_vtbl_<Iface>` and `%intent_dyn_<Iface>` named struct

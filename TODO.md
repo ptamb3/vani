@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #224 — vtables Phase 3b tree-LLVM codegen)
+## ⏳ Resume here (paused 2026-05-25, after closure #225 — vtables Phase 4a struct-field-of-dyn)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,18 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#225 Vtables Phase 4a (struct field of `dyn Iface`):
+`c_element_storage(Type::Object)` now returns
+`intent_dyn_<Iface>` so struct field declarations spell
+the per-Iface fat-pointer typedef correctly. The vtable
+typedef emission was split into two stages so a Struct
+can declare a `dyn Iface` field: the tag forward decl
++ fat-pointer typedef come BEFORE struct typedefs, the
+full `struct intent_vtbl_<Iface> { ... }` body comes
+AFTER (its slot fn-ptrs can reference `Struct_<T>` arg
+types when iface methods take structs by value). LLVM
+named types handle forward refs natively. Test totals:
+920 lib + 47 e2e + 5 vtables-phase3.
 #224 Vtables Phase 3b (tree-LLVM codegen): lli now
 runs dyn-dispatching programs identically to tree-C.
 Preamble emits `%intent_vtbl_<Iface>` (struct of
@@ -895,7 +907,17 @@ totals: 888 lib + 47 e2e passing.
   - **Phase 4 — collections & polish.** `Vec<dyn Iface>`,
     struct field of `dyn Iface`, method calls on borrows
     (`ref dyn Iface`). Verify cross-backend parity. Add
-    examples. Effort: ~4-6 hours.
+    examples. Effort: ~4-6 hours. **Phase 4a (struct field
+    of dyn) done 2026-05-25 (closure #225)** —
+    `c_element_storage(Object)` returns
+    `intent_dyn_<Iface>`; vtable typedef split into
+    forward tag (before structs) + full body (after
+    structs) so a Struct can carry a dyn field. **Phase
+    4b (Vec<dyn Iface>) queued** — needs checker-side
+    vec-literal element coercion to the annotation's
+    element type so heterogeneous element values get
+    coerced individually rather than unified by inference.
+    **Phase 4c (`ref dyn Iface` borrows) queued.**
 
   - **Phase 5 — auto-`==` desugar (separate but related).**
     Lower `a == b` to `a.eq(ref b)` when `implement Eq for

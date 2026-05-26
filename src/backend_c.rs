@@ -217,6 +217,17 @@ pub fn emit_c(program: &TypedProgram) -> String {
     if !struct_field_vec_elements.is_empty() {
         body.push('\n');
     }
+    // Vtables Phase 4: forward-declare the per-Iface vtable
+    // tag + `intent_dyn_<Iface>` fat-pointer typedef BEFORE
+    // struct typedefs so structs can carry `dyn Iface`
+    // fields. The full vtable struct body is emitted AFTER
+    // struct typedefs by `emit_dyn_iface_vtable_bodies`
+    // (its fn-ptr slots may reference `Struct_<T>` types).
+    let used_dyn_ifaces_forward = collect_used_dyn_ifaces(program);
+    emit_dyn_iface_typedefs(&mut body, &used_dyn_ifaces_forward);
+    if !used_dyn_ifaces_forward.is_empty() {
+        body.push('\n');
+    }
     // Emit user-declared struct typedefs. Topologically sort
     // first so a struct that references another by value
     // (direct field of `Struct(S)` or `[S; N]`) is emitted
@@ -350,18 +361,12 @@ pub fn emit_c(program: &TypedProgram) -> String {
         body.push('\n');
     }
 
-    // Vtables Phase 3: emit per-Iface vtable typedef +
-    // `intent_dyn_<Iface>` fat-pointer typedef BEFORE the
-    // function prototypes so any prototype carrying a
-    // `dyn Iface` parameter or return type sees the type
-    // declaration. Only emit for interfaces actually used
-    // as `dyn Iface` — interface decls without dyn use
-    // don't need vtable scaffolding. The per-(T, Iface)
-    // static vtables + trampolines come AFTER prototypes
-    // (they call the hoisted impl functions, which must
-    // be declared first).
     let used_dyn_ifaces = collect_used_dyn_ifaces(program);
-    emit_dyn_iface_typedefs(&mut body, &used_dyn_ifaces);
+    // Phase 4: the full vtable struct body needs `Struct_<T>`
+    // visible, so emit it AFTER struct typedefs (line below).
+    // The body is appended to a separate buffer that gets
+    // spliced in after structs are declared.
+    emit_dyn_iface_vtable_bodies(&mut body, &used_dyn_ifaces);
 
     for function in &program.functions {
         emit_prototype(function, &mut body);
@@ -1538,6 +1543,13 @@ pub(crate) fn c_element_storage(ty: &Type) -> String {
         // `_Atomic <c_leaf_type(element)>` — the right
         // per-element width.
         Type::Atomic(element) => c_atomic_storage(element),
+        // Vtables Phase 4: `dyn Iface` storage spells as
+        // `intent_dyn_<Iface>` (the per-Iface fat-pointer
+        // typedef emitted in the preamble). Without this arm
+        // a struct field / Vec element of `dyn Iface` falls
+        // through to the placeholder `intent_dyn` from
+        // `c_leaf_type` and cc rejects with "unknown type".
+        Type::Object(iface) => format!("intent_dyn_{}", iface),
         _ => c_leaf_type(ty).to_string(),
     }
 }
@@ -4799,19 +4811,44 @@ pub(crate) fn collect_used_dyn_ifaces(program: &TypedProgram) -> std::collection
     set
 }
 
-/// Vtables Phase 3: emit `intent_vtbl_<Iface>` (struct of fn
-/// pointers — one per declaration-order method, taking `void*
-/// self` as the first arg) and `intent_dyn_<Iface>` (the fat
-/// pointer carrying `{ vtable, data }`) typedefs. Only emits
-/// for interfaces actually used as `dyn Iface` somewhere in
-/// the program.
+/// Vtables Phase 3 + Phase 4: emit per-Iface vtable forward
+/// decl + `intent_dyn_<Iface>` fat-pointer typedef so structs
+/// declared LATER can carry `dyn Iface` fields. The full
+/// `struct intent_vtbl_<Iface>` body is emitted by
+/// `emit_dyn_iface_vtable_bodies` AFTER struct typedefs so
+/// it can reference `Struct_<T>` arg types if any iface
+/// method takes a struct by value. Only emits for ifaces
+/// actually used as `dyn Iface` somewhere.
 fn emit_dyn_iface_typedefs(out: &mut String, used: &std::collections::HashSet<String>) {
+    for iface in crate::ast::all_iface_names() {
+        if !used.contains(&iface) { continue; }
+        out.push_str(&format!(
+            "typedef struct intent_vtbl_{iface} intent_vtbl_{iface};\n",
+            iface = iface,
+        ));
+        out.push_str(&format!(
+            "typedef struct intent_dyn_{iface} {{ \
+const intent_vtbl_{iface}* vtable; void* data; \
+}} intent_dyn_{iface};\n",
+            iface = iface
+        ));
+    }
+}
+
+/// Vtables Phase 4: emit the full body of each
+/// `struct intent_vtbl_<Iface>` after struct typedefs are
+/// declared, so the fn-ptr slots can reference `Struct_<T>`
+/// for methods that take structs by value.
+fn emit_dyn_iface_vtable_bodies(
+    out: &mut String,
+    used: &std::collections::HashSet<String>,
+) {
     for iface in crate::ast::all_iface_names() {
         if !used.contains(&iface) { continue; }
         let Some(methods) = crate::ast::iface_methods_for(&iface) else {
             continue;
         };
-        out.push_str(&format!("typedef struct intent_vtbl_{} {{\n", iface));
+        out.push_str(&format!("struct intent_vtbl_{} {{\n", iface));
         for (idx, (_name, params, ret)) in methods.iter().enumerate() {
             let ret_ty = c_type_name(ret);
             let arg_decls: Vec<String> = std::iter::once("void*".to_string())
@@ -4822,13 +4859,7 @@ fn emit_dyn_iface_typedefs(out: &mut String, used: &std::collections::HashSet<St
                 ret_ty, idx, arg_decls.join(", ")
             ));
         }
-        out.push_str(&format!("}} intent_vtbl_{};\n", iface));
-        out.push_str(&format!(
-            "typedef struct intent_dyn_{iface} {{ \
-const intent_vtbl_{iface}* vtable; void* data; \
-}} intent_dyn_{iface};\n",
-            iface = iface
-        ));
+        out.push_str("};\n");
     }
 }
 

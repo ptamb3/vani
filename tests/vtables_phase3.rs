@@ -110,6 +110,80 @@ fn run_with_lli(ll_source: &str, tag: &str) -> i32 {
 }
 
 #[test]
+fn dyn_struct_field_dispatches_via_vtable_tree_c() {
+    if !cc_available() {
+        return;
+    }
+    let source = r#"
+        struct Circle { r: i64 }
+
+        interface Drawable {
+          fn area(self: Circle) -> i64;
+        }
+
+        implement Drawable for Circle {
+          fn area(self: Circle) -> i64 { return self.r * self.r; }
+        }
+
+        struct Holder { d: dyn Drawable }
+
+        fn use_holder(h: Holder) -> i64 {
+          return h.d.area();
+        }
+
+        fn main() -> i64 {
+          let c: Circle = Circle { r: 4 };
+          let h: Holder = Holder { d: c };
+          return use_holder(h);
+        }
+    "#;
+    let c = compile_to_c(source).expect("dyn-field struct compiles to C");
+    let code = compile_and_run(&c, "dyn_struct_field_c");
+    assert_eq!(
+        code, 16,
+        "expected area(Circle {{ r: 4 }}) == 16 via struct field dispatch, got {}",
+        code
+    );
+}
+
+#[test]
+fn dyn_struct_field_dispatches_via_vtable_llvm() {
+    if !lli_available() {
+        return;
+    }
+    let source = r#"
+        struct Circle { r: i64 }
+
+        interface Drawable {
+          fn area(self: Circle) -> i64;
+        }
+
+        implement Drawable for Circle {
+          fn area(self: Circle) -> i64 { return self.r * self.r; }
+        }
+
+        struct Holder { d: dyn Drawable }
+
+        fn use_holder(h: Holder) -> i64 {
+          return h.d.area();
+        }
+
+        fn main() -> i64 {
+          let c: Circle = Circle { r: 4 };
+          let h: Holder = Holder { d: c };
+          return use_holder(h);
+        }
+    "#;
+    let ll = compile_to_llvm(source).expect("dyn-field struct compiles to LLVM");
+    let code = run_with_lli(&ll, "dyn_struct_field_llvm");
+    assert_eq!(
+        code, 16,
+        "expected area(Circle {{ r: 4 }}) == 16 via struct field dispatch (LLVM), got {}",
+        code
+    );
+}
+
+#[test]
 fn dyn_dispatch_returns_value_via_vtable_indirect_call_llvm() {
     if !lli_available() {
         return;
