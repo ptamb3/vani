@@ -537,6 +537,19 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Namespaces — implicit sibling-module references done 2026-05-26**:
+   from inside `module outer`, references to a nested
+   module's items work with just `inner::item` (no
+   `outer::` prefix needed). The `qualify` function in
+   the flattening pass now recognizes the first segment
+   of an `__`-separated path; if it matches a child
+   module's name, the parent path is prepended. Mirrors
+   Rust's sibling-module lookup inside `mod outer { … }`.
+
+   Test totals: 937 lib + 47 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples passing. Closure
+   #249.
+
    **Namespaces — nested modules done 2026-05-26**:
    `module outer { module inner { … } }` now parses and
    flattens. Items in the inner module mangle to

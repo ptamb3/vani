@@ -1339,21 +1339,47 @@ fn flatten_modules_in_program(
             visibility.insert(a.name.clone(), is_pub);
         }
 
-        // Helper: rewrite a name reference. If the bare name
-        // matches an intra-module item, mangle based on
-        // visibility. Public → `<mod>__<name>`; private →
-        // `<mod>__priv__<name>` (form the parser can't
-        // produce, so outside refs can't reach private items).
+        // Closure #249: collect the names of nested modules
+        // so we can recognize sibling references and prepend
+        // the parent path. From inside `module outer`, the
+        // user writes `inner::f` (parser produces `inner__f`);
+        // qualify rewrites that to `outer__inner__f` so the
+        // checker sees the fully-qualified flattened name.
+        let nested_module_names: std::collections::HashSet<String> = module
+            .modules
+            .iter()
+            .map(|m| m.name.clone())
+            .collect();
+
+        // Helper: rewrite a name reference. Three cases:
+        // 1. Bare intra-module item → `<mod>__<name>` (public)
+        //    or `<mod>__priv__<name>` (private).
+        // 2. Path starting with `<nested>__…` where `<nested>`
+        //    is a child-module name → prepend `<mod>__` so the
+        //    reference resolves to the fully-qualified
+        //    flattened name. Lets users write `inner::f`
+        //    from inside `outer` instead of
+        //    `outer::inner::f`.
+        // 3. Anything else stays bare.
         let qualify = |name: &str| -> String {
             if let Some(&is_pub) = visibility.get(name) {
-                if is_pub {
+                return if is_pub {
                     format!("{}__{}", mod_name, name)
                 } else {
                     format!("{}__priv__{}", mod_name, name)
-                }
-            } else {
-                name.to_string()
+                };
             }
+            // Implicit sibling-module path: bare `inner::f`
+            // from inside `outer` becomes `outer__inner__f`.
+            // The parser already turned `inner::f` into
+            // `inner__f`; we check if the first segment
+            // matches a sibling module.
+            if let Some(first_seg) = name.split("__").next() {
+                if nested_module_names.contains(first_seg) {
+                    return format!("{}__{}", mod_name, name);
+                }
+            }
+            name.to_string()
         };
 
         // Walk an expression tree and rewrite intra-module

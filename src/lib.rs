@@ -2352,6 +2352,31 @@ mod tests {
     }
 
     #[test]
+    fn implicit_sibling_module_reference_resolves() {
+        // Closure #249: inside `module outer`, references to
+        // a nested module's items can use the bare path
+        // (`helpers::triple`) without the outer prefix. The
+        // qualify function recognizes the first segment as
+        // a sibling module and prepends `outer__`.
+        let source = r#"
+            module outer {
+              module helpers {
+                pub fn triple(x: i64) -> i64 { return x * 3; }
+              }
+
+              pub fn use_sibling(x: i64) -> i64 {
+                return helpers::triple(x) + 1;
+              }
+            }
+
+            fn main() -> i64 {
+              return outer::use_sibling(5);
+            }
+        "#;
+        compile(source).expect("implicit sibling-module reference should compile");
+    }
+
+    #[test]
     fn nested_modules_flatten_with_deep_path_resolution() {
         // Closure #248: nested `module outer { module inner
         // { ... } }` blocks parse + flatten. Items in the

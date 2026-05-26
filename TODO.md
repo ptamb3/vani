@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #248 — nested modules + deep paths)
+## ⏳ Resume here (paused 2026-05-26, after closure #249 — implicit sibling-module references)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,18 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#249 Namespaces — implicit sibling-module references.
+Inside `module outer`, references to a child module's
+items work with just `inner::item` instead of the full
+`outer::inner::item` path. The `qualify` function in
+`flatten_modules_in_program` now first checks the
+nested-module-name set: if the first `__`-separated
+segment of a reference matches a child module name,
+prepend the parent's mod_name. Mirrors Rust's
+sibling-module lookup. One new lib test
+(`implicit_sibling_module_reference_resolves`). Test
+totals: 937 lib + 47 e2e + 11 vtables-phase3 + 2
+user-drop-by-ref + 1 ssa-examples.
 #248 Namespaces — nested modules + deep paths.
 `module outer { module inner { … } }` now parses and
 flattens. Implementation touches three layers:
@@ -1379,9 +1391,13 @@ likely impact / blast radius, not implementation order.
   explicit `outer::inner::item` paths from outside the
   inner module (no implicit sibling-lookup); deep paths
   work everywhere via loop-based `::` consumption.
-  *Still queued*: implicit sibling-module references
-  (`inner::f` from inside `outer`); glob `use foo::*;`;
-  `pub(crate)` tiers; re-exports.
+  *Implicit sibling-module references done 2026-05-26
+  (closure #249)*: `qualify` recognizes
+  `<nested_module>__<rest>` patterns and prepends the
+  parent path, so `inner::f` from inside `outer` resolves
+  to `outer__inner__f`. Mirrors Rust's sibling lookup.
+  *Still queued*: glob `use foo::*;`; `pub(crate)` tiers;
+  re-exports.
 - **Multiple source files for one compilation.** `use "path"`
   already exists for single-file imports; extend to a full
   multi-file pipeline so the compiler ingests a set of `.vani`
