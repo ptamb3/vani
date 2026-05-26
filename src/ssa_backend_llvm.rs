@@ -1275,6 +1275,34 @@ fn emit_parallel_for_region_llvm(
             });
         }
     }
+    // Closure #252: SSA-LLVM only optimizes single-block
+    // parallel-for bodies today. Multi-block bodies (which the
+    // recognizer accepts via #241 since 2026-05-26) need
+    // Phi-traceback to find the actual `+`/`*`/etc. update
+    // operation inside the conditional branch — the back-edge
+    // arg is a block-param (`v_<merge>` Phi result), not the
+    // arithmetic instruction itself. SSA-C handles this via
+    // labels + gotos in #251, but SSA-LLVM's atomicrmw-based
+    // reduction strategy needs to identify where the update
+    // physically lives so it can replace it in place. That
+    // analysis is deferred — the tree-LLVM fallback (already
+    // wired via `emit_llvm_via_ssa` in main.rs) handles multi-
+    // block bodies correctly using GOMP's non-atomic reduction
+    // combine. Surfacing the gate as a clear EmitError keeps
+    // the fallback automatic and gives a precise reason in
+    // debug builds.
+    if region.region_blocks.len() != 1 {
+        return Err(EmitError {
+            message: format!(
+                "SSA-LLVM parallel-for: body has {} blocks (multi-block); \
+                 falling back to tree-LLVM. Single-block bodies (no internal \
+                 control flow) are the only shape SSA-LLVM lowers to \
+                 atomicrmw directly today.",
+                region.region_blocks.len()
+            ),
+        });
+    }
+
     // Capture analysis: collect every body-instruction
     // operand that's NOT the counter, NOT a Const, NOT a
     // value defined IN the body block, AND not a reduction

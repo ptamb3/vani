@@ -537,6 +537,26 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **SSA-LLVM — multi-block parallel-for fallback gate done 2026-05-26**:
+   the SSA-LLVM `emit_parallel_for_region_llvm` now
+   early-exits with a clear EmitError when the recognized
+   region has more than one block — surfacing the
+   intentional gate instead of silently failing deeper
+   in the reduction-update analysis. The
+   `emit_llvm_via_ssa` wrapper in main.rs catches the
+   error and routes through tree-LLVM, which already
+   handles multi-block bodies correctly via GOMP's
+   reduction combine. The SSA-LLVM optimization path
+   (atomicrmw against parent-side allocas) requires
+   Phi-traceback to find where the actual `+`/`*` update
+   physically lives — the back-edge arg in multi-block is
+   a block-param (merge's Phi-equivalent), not the
+   arithmetic op. Implementing that traceback is a
+   follow-up; for now, the fallback is automatic and
+   correct. One new lib test pins the fallback shape.
+   Test totals: 939 lib + 47 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #252.
+
    **SSA Step 3b — emit half (SSA-C) done 2026-05-26**:
    `emit_parallel_for_region` in
    [`src/ssa_backend_c.rs`](src/ssa_backend_c.rs) now

@@ -535,6 +535,28 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#252 SSA-LLVM — multi-block parallel-for fallback gate.
+follow-up to #251 (SSA-C emit half landed). The
+SSA-LLVM `emit_parallel_for_region_llvm` now early-
+exits with `region.region_blocks.len() != 1` and a
+clear EmitError, surfacing the intentional gate
+instead of failing deeper at reduction-update lookup.
+The `emit_llvm_via_ssa` wrapper in main.rs catches
+the Err and routes through tree-LLVM, which already
+handles multi-block bodies correctly via GOMP's
+reduction combine. The actual SSA-LLVM optimization
+path (atomicrmw on parent-side allocas) for multi-
+block needs Phi-traceback to find where the
+`+`/`*`/etc. update physically lives — the back-edge
+arg in multi-block is the merge block's Phi-equivalent
+param, not the arithmetic op itself. Deferred to a
+follow-up. One new lib test (`ssa_llvm_multi_block_
+parallel_for_falls_back_to_tree_llvm`) pins the
+fallback shape: asserts SSA-LLVM emits Err with
+"multi-block" in the message AND that tree-LLVM
+emits `@GOMP_parallel`. Test totals: 939 lib + 47
+e2e + 11 vtables-phase3 + 2 user-drop-by-ref + 1
+ssa-examples.
 #251 SSA Step 3b — emit half (SSA-C).
 follow-up to #241 (recognizer multi-block acceptance).
 `ParallelRegion` gains `region_blocks: Vec<BlockId>`
