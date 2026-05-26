@@ -4667,26 +4667,26 @@ mod tests {
     }
 
     #[test]
-    fn array_return_position_clean_diagnostic() {
-        // V1 limitation: arrays can't appear in fn return
-        // position (the SSA layer doesn't lower
-        // by-value-array returns yet). Diagnostic is
-        // explicit and forward-looking.
+    fn array_return_position_compiles() {
+        // Closure #239: arrays in return position now work
+        // on both backends. tree-LLVM accepts `[N x T]`
+        // returns natively; tree-C wraps in a per-shape
+        // struct `intent_arr_ret_<N>_<T>` with `.data[N]`
+        // inside. The return-stmt emits a compound literal
+        // and the caller's let-from-call memcpys `.data`
+        // into the local array.
         let source = r#"
-            fn make() -> [i64; 3] { return [1, 2, 3]; }
+            fn make() -> [i64; 3] { return [10, 20, 30]; }
             fn main() -> i64 {
               let xs: [i64; 3] = make();
-              return xs[0];
+              return xs[1];
             }
         "#;
-        let errors = compile(source)
-            .expect_err("array return position is rejected");
+        let c = compile_to_c(source)
+            .expect("array return should compile to C after #239");
         assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("array types are not allowed in return position")),
-            "expected array-return diagnostic, got: {:?}",
-            errors
+            c.contains("intent_arr_ret_3_int64_t"),
+            "expected the array-return struct wrapper in:\n{c}"
         );
     }
 

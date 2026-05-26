@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #238 — while between try and return)
+## ⏳ Resume here (paused 2026-05-26, after closure #239 — array return tree-C struct-wrap)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,23 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#239 Array types in fn return position: `fn make() -> [i64;
+3] { return [10, 20, 30]; }` compiles + runs on both
+backends. tree-LLVM accepts `[N x T]` returns natively
+(the gate removal sufficed). tree-C needed a per-shape
+struct wrapper: new `typedef struct { T data[N]; }
+intent_arr_ret_<N>_<T>;` emitted in preamble for each
+array return shape used in the program. `c_type_name`
+spells Array as the struct wrapper for the
+return-position case; the return-stmt wraps in the
+struct compound literal (or memcpys through a stack
+temp for non-ArrayLit sources); let-from-call unwraps
+via a spilled struct temp + memcpy into the local
+array. Locals / params / struct-fields / Vec-elements
+keep the existing bare-array declarator form. Previous
+rejection test inverted to verify the new accept
+behavior. Test totals: 925 lib + 47 e2e + 11
+vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples.
 #238 `while` loop between `try` and `return`: Block-expr
 checker accepts `Stmt::While` whose body uses Assign /
 Print only; try desugar's `intermediate_ok` admits

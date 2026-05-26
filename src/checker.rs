@@ -969,15 +969,12 @@ fn collect_signatures(
     let mut signatures = HashMap::new();
 
     for function in &program.functions {
-        if function.return_type.is_array() {
-            diagnostics.push(Diagnostic::new(
-                function.span,
-                "array types are not allowed in return position yet — \
-                 tree-LLVM accepts `[N x T]` natively but tree-C requires \
-                 a per-shape struct wrapper which isn't wired through \
-                 yet; wrap the result in a tuple or struct, or use Vec<T>",
-            ));
-        }
+        // Closure #239: array types in return position are
+        // now supported on both backends. Tree-LLVM accepts
+        // `[N x T]` natively; tree-C wraps in a per-shape
+        // `typedef struct { T data[N]; } intent_arr_ret_<N>_<T>;`
+        // and the return-stmt / let-from-call emit handle
+        // the wrap/unwrap automatically.
         validate_no_ref(
             &function.return_type,
             function.span,

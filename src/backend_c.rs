@@ -342,6 +342,36 @@ pub fn emit_c(program: &TypedProgram) -> String {
     if !array_typedefs_seen.is_empty() {
         body.push('\n');
     }
+
+    // Closure #239: array-return struct wrappers. C can't
+    // return values of bare array type (arrays decay to
+    // pointers in return position), so we wrap each array
+    // return type in a per-shape `typedef struct { T data[N]; }
+    // intent_arr_ret_<N>_<T>;` and emit at fn boundaries:
+    // - Prototype/definition use the struct as the return
+    //   type spelling (instead of the placeholder
+    //   `/* array */`).
+    // - Return statement wraps the array value in the struct
+    //   compound literal.
+    // - Let from an array-returning call unwraps via
+    //   `__tmp.data` + memcpy to populate the local array.
+    let mut array_return_seen = BTreeSet::<String>::new();
+    for function in &program.functions {
+        if let Type::Array { element, length } = &function.return_type {
+            let name = array_return_struct_name(element, *length);
+            if array_return_seen.insert(name.clone()) {
+                body.push_str(&format!(
+                    "typedef struct {{ {} data[{}]; }} {};\n",
+                    c_element_storage(element),
+                    length,
+                    name,
+                ));
+            }
+        }
+    }
+    if !array_return_seen.is_empty() {
+        body.push('\n');
+    }
     for element in &element_types {
         // Skip Vec bundles already emitted in the pre-struct
         // pass for fields like `struct Bag { contents: Vec<i64> }`.
@@ -1566,6 +1596,14 @@ pub(crate) fn array_c_typedef(ty: &Type) -> String {
     format!("intent_arr{}_{}", length, element_tag(element))
 }
 
+/// Closure #239: per-shape struct wrapping `[T; N]` for use
+/// in return position. C arrays can't be values in return
+/// position; the struct gets passed by value and the caller
+/// memcpys `.data` into a local array.
+pub(crate) fn array_return_struct_name(element: &Type, length: u64) -> String {
+    format!("intent_arr_ret_{}_{}", length, element_tag(element))
+}
+
 /// Walk a Vec-element type and emit a `typedef` for every
 /// `Array<T, N>` shape that appears, deduplicated against
 /// `seen` (keyed on the typedef name). Recurses through
@@ -1844,18 +1882,49 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                     out.push_str(&element_strs.join(", "));
                     out.push_str(" };\n");
                 } else {
-                    out.push_str(c_leaf_type(element));
+                    // Closure #239: if the RHS is a Call /
+                    // Block / other shape whose value-type is
+                    // Array, it returns the struct wrapper
+                    // (`intent_arr_ret_<N>_<T>`). Spill into a
+                    // struct temp first, then memcpy `.data`
+                    // into the local array. Plain Var / FieldAccess
+                    // / Index sources that emit as an lvalue
+                    // (decaying naturally to the element-type
+                    // pointer) still work with the original
+                    // memcpy-from-array form.
+                    let needs_struct_unwrap = matches!(
+                        &expr.kind,
+                        TypedExprKind::Call { .. }
+                            | TypedExprKind::Block { .. }
+                            | TypedExprKind::IfExpr { .. }
+                            | TypedExprKind::Match { .. }
+                    );
+                    out.push_str(&c_element_storage(element));
                     out.push(' ');
                     out.push_str(&local_name(name));
                     out.push('[');
                     out.push_str(&length.to_string());
-                    out.push_str("];\n  memcpy(");
-                    out.push_str(&local_name(name));
-                    out.push_str(", ");
-                    out.push_str(&emit_expr(expr));
-                    out.push_str(", sizeof(");
-                    out.push_str(&local_name(name));
-                    out.push_str("));\n");
+                    out.push_str("];\n");
+                    if needs_struct_unwrap {
+                        let wrapper = array_return_struct_name(element, *length);
+                        out.push_str(&format!(
+                            "  {} _intent_ret_{} = {};\n  memcpy({}, _intent_ret_{}.data, sizeof({}));\n",
+                            wrapper,
+                            name,
+                            emit_expr(expr),
+                            local_name(name),
+                            name,
+                            local_name(name),
+                        ));
+                    } else {
+                        out.push_str("  memcpy(");
+                        out.push_str(&local_name(name));
+                        out.push_str(", ");
+                        out.push_str(&emit_expr(expr));
+                        out.push_str(", sizeof(");
+                        out.push_str(&local_name(name));
+                        out.push_str("));\n");
+                    }
                 }
             } else if matches!(ty, Type::FnPtr(_, _)) {
                 // C function-pointer declarators have to wrap
@@ -2321,6 +2390,41 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
             }
         },
         TypedStmt::Return { expr } => {
+            // Closure #239: when returning an array-typed
+            // value, wrap it in the per-shape struct wrapper.
+            // `return [1, 2, 3];` for an `[i64; 3]` return
+            // type becomes `return (intent_arr_ret_3_int64_t){
+            //   .data = {1, 2, 3}};` so C can pass it by value.
+            if let Type::Array { element, length } = &expr.ty {
+                let wrapper = array_return_struct_name(element, *length);
+                // Inline-array-literal path emits the elements
+                // directly into the .data initializer. For
+                // any other shape (e.g. a Var referencing a
+                // local array), use a memcpy through a stack
+                // temp to materialize the struct value.
+                if let TypedExprKind::ArrayLit { elements } = &expr.kind {
+                    let parts: Vec<String> = elements.iter().map(emit_expr).collect();
+                    out.push_str(&format!(
+                        "  return ({}){{ .data = {{ {} }} }};\n",
+                        wrapper,
+                        parts.join(", ")
+                    ));
+                } else {
+                    let elem_storage = c_element_storage(element);
+                    out.push_str(&format!(
+                        "  {{ {} __intent_ret_data[{}]; \
+memcpy(__intent_ret_data, ({}), sizeof(__intent_ret_data)); \
+{} __intent_ret = {{0}}; \
+memcpy(__intent_ret.data, __intent_ret_data, sizeof(__intent_ret_data)); \
+return __intent_ret; }}\n",
+                        elem_storage,
+                        length,
+                        emit_expr(expr),
+                        wrapper,
+                    ));
+                }
+                return;
+            }
             out.push_str("  return ");
             out.push_str(&emit_expr(expr));
             out.push_str(";\n");
@@ -4374,6 +4478,14 @@ pub(crate) fn c_leaf_type(ty: &Type) -> &'static str {
 fn c_type_name(ty: &Type) -> String {
     match ty {
         Type::Vec(element) => vec_c_struct(element),
+        // Closure #239: arrays in return-type position are
+        // spelled as the struct wrapper `intent_arr_ret_<N>_<T>`.
+        // c_type_name is called by emit_prototype +
+        // emit_function for the return type and (mostly) by
+        // Let stmts for binding storage. The Let path passes
+        // through `format_declarator` instead so the array
+        // declarator form keeps working for locals.
+        Type::Array { element, length } => array_return_struct_name(element, *length),
         Type::Ref(_) | Type::RefMut(_) => {
             unreachable!("reference types do not appear in return positions")
         }

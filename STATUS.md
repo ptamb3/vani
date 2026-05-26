@@ -537,6 +537,28 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Array types in fn return position done 2026-05-26**:
+   `fn make() -> [i64; 3] { return [10, 20, 30]; }` now
+   compiles + runs on both backends. tree-LLVM already
+   accepted `[N x T]` returns natively (the gate was the
+   only blocker). tree-C needed a per-shape struct wrapper
+   because C can't return values of bare array type; new
+   `typedef struct { T data[N]; } intent_arr_ret_<N>_<T>;`
+   gets emitted in the preamble (one per shape, only when
+   the program actually uses array returns). Return-stmt
+   wraps array values in the struct literal
+   (`return (intent_arr_ret_3_int64_t){ .data = {10, 20,
+   30} };`) — direct array-literal source path or via a
+   memcpy stack temp for other expression shapes. Let
+   stmts from array-returning calls unwrap through
+   `_intent_ret_<name>.data` + memcpy into the local
+   array. `c_type_name(Array)` returns the struct
+   typedef name; locals + struct fields + Vec elements
+   still use the bare-array declarator form. Test
+   totals: 925 lib + 47 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples passing. Closure
+   #239.
+
    **`while` loop between `try` and `return` done 2026-05-26**:
    the try desugar's intermediate-stmt vocabulary gained
    `Stmt::While`, and Block-expr's checker now type-checks
