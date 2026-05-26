@@ -1,105 +1,124 @@
 ---
 name: project-vani-backend
-description: "vani (formerly future-compiler) backend status — LLVM is default, parallelism + reductions shipped"
-metadata: 
+description: "vāṇī compiler state — pipeline, backends, verifier; refreshed 2026-05-25 to reflect closures #1-#220 landed"
+metadata:
   node_type: memory
   type: project
-  originSessionId: 656e7218-5702-41e7-a9dd-1764e5b8ee2c
 ---
 
-> **Project renamed 2026-05-21**: `~/future-compiler/` → `~/vani/`,
-> crate `future_compiler` → `vani`. VANI = *Verbose Alternative
-> Natural Interface*; वाणी = Sanskrit for "speech". Same compiler
-> pipeline, same code, new identity. Refer to the new path going
-> forward.
+`~/vani/` (renamed from `~/future-compiler/` on 2026-05-21) is
+a Rust-based verified-affine compiler. **VANI** = *Verbose
+Alternative Natural Interface*; *वाणी* = Sanskrit for "speech".
 
-The `~/vani/` project's compiler pipeline is now Lexer
-→ Parser → Type checker / SMT verifier → Typed IR (tree-shaped)
-→ backend, with two backend implementations: `LlvmBackend`
-([src/backend_llvm.rs](src/backend_llvm.rs)) and `CBackend`
-([src/backend_c.rs](src/backend_c.rs)). Both implement the
-`Backend` trait in [src/backend.rs](src/backend.rs).
+## Pipeline
 
-**Why this memory exists:** the project went through a mid-2026
-re-platforming from a C-only backend to LLVM-first. Some older
-notes still anchor on the C backend as primary; that's stale.
+Lexer → Parser → Type-checker / SMT verifier (z3) → Typed IR
+(tree-shaped, [`src/ir.rs`](src/ir.rs)) → SSA IR
+([`src/ssa.rs`](src/ssa.rs), [`src/ssa_pass.rs`](src/ssa_pass.rs))
+→ one of four backends:
 
-**Status (2026-05-19):**
+| Backend | Module | Role |
+|---|---|---|
+| `LlvmBackend` | [`src/backend_llvm.rs`](src/backend_llvm.rs) | Tree-LLVM — fallback for shapes SSA-LLVM doesn't cover |
+| `CBackend` | [`src/backend_c.rs`](src/backend_c.rs) | Tree-C — same role for C output |
+| `ssa_backend_llvm` | [`src/ssa_backend_llvm.rs`](src/ssa_backend_llvm.rs) | Default LLVM path |
+| `ssa_backend_c` | [`src/ssa_backend_c.rs`](src/ssa_backend_c.rs) | Default C path |
 
-- **SSA pipeline is now first-class.** `intentc emit/run/build`
-  (both `--backend=c` and `--backend=llvm`) routes through
-  `emit_c_via_ssa` / `emit_llvm_via_ssa` helpers in
-  [src/main.rs](src/main.rs). Each helper runs a module-wide
-  `ssa_path_supports(&TypedProgram)` gate: programs that use
-  Vec/Array/Channel/Atomic/Mutex/Guard/OwnedStr (in params or
-  returns), parallel-for, Tasks, multi-item Print, Str-literal
-  Print items, Assert with a custom message, or
-  OwnedStr-producing exprs (Str+Str concat) bypass SSA and
-  emit via the tree backends. The rest of the suite flows
-  through `lower_program` → `ssa_backend_c` /
-  `ssa_backend_llvm`. SSA-LLVM's `intent_print` emits per-type
-  format-string globals + `@printf`; `Terminator::Return`
-  now uses the function's declared return type; `Const::Float`
-  uses `fadd <T> 0.0, c` so float literals stay typed.
-- **LLVM is the default** for `intentc emit`, `intentc run`, and
-  `intentc build` (the last AOT-compiles to a native binary via
-  `llc -filetype=obj` → `cc` linker). C backend is preserved for
-  back-compat (`intentc emit-c`, `intentc emit --backend=c`,
-  `intentc run --backend=c`) and is on the deprecation path.
-- **Verifier surface** that already landed: BitVec overflow-aware
-  arithmetic, IEEE-754 floats with casts, shifts, contracts
-  (requires/ensures with inline-call discharge), loop invariants
-  with post-loop narrowing, contradictory-requires detection,
-  Vec-builtin length facts (vec/push/set/clone), SMT array
-  theory for `xs[i]` reasoning, bounds elision, an
-  effects/ownership verifier (`pure fn`, affine `Vec<T>` /
-  `OwnedStr`), and **race-freedom proofs for `parallel for`**.
-- **Parallelism** is built end-to-end. C lowers `parallel for`
-  to `_Pragma("omp parallel for")` (the `run` driver auto-adds
-  `-fopenmp` when toolchain probe succeeds). LLVM lifts each
-  body into `@__intent_par_<N>` outlined fns that call
-  `@GOMP_parallel` from libgomp; captures pass by pointer
-  through an inline ctx struct.
-- **Reduction ops** supported on `parallel for`: `+`, `*`, `&&`,
-  `||`, `min`, `max`. LLVM lowering: `atomicrmw add` for `+`,
-  `cmpxchg`-retry for `*` (atomicrmw doesn't expose mul),
-  `atomicrmw min`/`max` (signed) or `umin`/`umax` (unsigned)
-  for `min`/`max`, and `atomicrmw and`/`or i8*` against a
-  parent-allocated i8 shadow for `&&`/`||` (atomicrmw rejects
-  i1; the shadow is zext-initialized, atomically updated by
-  the outlined fn, and on exit the parent does `icmp ne i8 …,
-  0` and stores back into the original i1 alloca).
-- **LLVM backend TODO paper-cuts** got a sweep on 2026-05-18:
-  14 defensive sites converted to `unreachable!` with clear
-  panic messages; array-let-from-var copies via whole-aggregate
-  load/store (LLVM optimizes to memcpy, matching the C
-  backend's `memcpy(v_ys, v_xs, sizeof(v_ys))`); Discard of a
-  Vec extracts the data pointer and calls `@free`.
+The `emit_c_via_ssa` / `emit_llvm_via_ssa` helpers in
+[`src/main.rs`](src/main.rs) run a per-program
+`ssa_path_supports` gate and fall through to the tree backend
+when SSA can't represent a shape (Vec<Atomic|Channel>,
+parallel-for-with-payloaded-enums, etc.).
 
-**How to apply:**
+## Language surface (as of #220)
 
-- **Default to LLVM** for new backend work. Touch the C backend
-  only for parity bug fixes or explicit `--backend=c` paths.
-- **Use `llvm_type_string` for aggregates and references**
-  (`[N x T]`, `%intent_vec_<elt>`, `<inner>*`); `llvm_type`
-  intentionally panics on those types so callers don't silently
-  pick `i64` as a fallback.
-- **OMP_NUM_THREADS=1 under lli.** MCJIT isn't thread-safe for
-  concurrent function resolution; `intentc run` and the
-  `run_lli` test helper both cap to one thread. AOT builds
-  (`intentc build`) leave the env alone for real parallelism.
-- **libgomp `-load=` probing** lives in two places:
-  `add_libgomp_load_flags` in [src/main.rs](src/main.rs) and a
-  test-local mirror `add_libgomp_load_flags_for_tests` in
-  [src/backend_llvm.rs](src/backend_llvm.rs) (the tests can't
-  reach `main.rs`). Honor `INTENT_LIBGOMP` as the env override.
+- **Scalars:** i8/i16/i32/i64, u8/u16/u32/u64, f32/f64, bool
+- **Aggregates:** `Vec<T>` (heap, affine, monomorphized), `[T;N]` (stack), `Tuple` (Copy-only in v1)
+- **Strings:** `Str` (borrowed `const char*`), `OwnedStr` (heap, affine)
+- **User types:** `struct {...}`, `enum {Variant, Variant(payload)}`
+- **References:** second-class `ref T` / `mut ref T` (params only)
+- **Function-pointers:** `fn(T) -> R` — first-class, Copy
+- **`dyn IfaceName`:** Phase 1 parsed (#220); coercion + dispatch pending Phase 2-3
+- **Concurrency:** `parallel for` with reductions, `task` + `join`, `Atomic<T>`, `Channel<T,N>`, `Mutex<T>` + `Guard<T>` (i64 only)
+- **Control flow:** if/else, while, for-range, for-iter, break, continue, match (int/bool/enum/Str patterns), `try` keyword (Rust `?` sugar for early-return on None/Err)
+- **Block expressions:** `let r = { stmts; tail };` — Let + Print stmts before tail (closures #129, #194-#201 hardened the scope drops)
+- **Builtins:** `vec(...)`, `push`, `push_mut`, `pop` (#219), `set`, `clone`, `clone_at`, `len`, `atomic_*`, `channel_send/recv`, `mutex_lock`, `guard_get/set`
 
-**Pending roadmap items** (snapshot — see
-[TODO.md](TODO.md) in the repo for the live list):
-bitwise `&`/`|`/`^` reductions (need new `BinaryOp` variants
-first), `task` keyword, CFG/SSA IR refactor, LSP, Cranelift
-backend.
+## Verifier (z3)
 
-**Test totals (2026-05-19 post-SSA-flip):** 439 lib +
-47 e2e tests passing. Bool-reduction lli tests are gated on
-`lli_available()`; the helper also -loads libgomp.
+`requires` / `ensures` / `invariant` / `prove` clauses discharge
+via z3. BitVec overflow-aware arithmetic, IEEE-754 floats with
+casts, shifts, inline-call discharge of callee ensures, loop
+invariants with post-loop narrowing, contradictory-requires
+detection, Vec-builtin length facts, SMT array theory for
+indexing, bounds elision, effects/ownership analysis
+(`pure fn`, affine `Vec<T>` / `OwnedStr`), race-freedom proofs
+for `parallel for`.
+
+## Affine ownership
+
+Auto-Drop at scope exit for every non-Copy non-moved binding.
+Partial-move tracking is one-level deep (`let xs = t.x` works;
+nested `let y = t.x.inner` rejected). Multi-field drop order
+is declaration-order today (Rust convention = reverse-decl;
+deferred). `Drop for T` is suppressed when T has heap fields
+(per-field free runs instead).
+
+## Big items closed this session (#193-#220)
+
+- Block-expression family: scope-exit drops, sibling-let drops,
+  shadow-name handling, `let _` discard, RHS move tracking,
+  walker recursion for enum/alias/tuple resolution, user-Drop
+  for Copy structs (closures #194-#201, #207).
+- Parametric type spelling (Atomic / Channel / FnPtr) across
+  every type-spelling helper: `c_element_storage`,
+  `element_tag`, `vec_struct_tag`, `format_declarator`. Eight
+  separate bugs fixed (closures #208-#215).
+- `try` keyword polish: nested blocks, multiple trys in one
+  body (#217, #218).
+- `pop(mut ref xs) -> T` builtin — completes the Vec-as-stack
+  story (#219).
+- Vtables Phase 1 — `Type::Object` + `dyn Iface` parsing
+  (#220). Phase 2 (coercion + method dispatch) and Phase 3
+  (codegen) queued.
+- Tree-C / SSA-C codegen quality: `-Wstrict-prototypes`,
+  `-Wmissing-braces`, `-Wunused-label`, `-Wswitch-bool`,
+  `-Wuninitialized`, `-Wdiscarded-qualifiers` clean across all
+  58 examples.
+
+## Default-behavior reminders
+
+- **LLVM is the default backend.** `intentc emit` /
+  `intentc run` / `intentc build` route through
+  `emit_llvm_via_ssa`. C backend stays available via
+  `--backend=c`.
+- **Use `llvm_type_string` for aggregates and references** —
+  `llvm_type` intentionally panics on those so callers don't
+  silently pick i64 as a fallback.
+- **OMP_NUM_THREADS=1 under lli** — MCJIT isn't thread-safe
+  for concurrent function resolution.
+- **libgomp `-load=` probing** lives in
+  `add_libgomp_load_flags` (in main.rs) and a test-local
+  mirror in backend_llvm.rs. Honor `INTENT_LIBGOMP`.
+
+## Test totals (2026-05-25 post-#220)
+
+**915 lib + 47 e2e tests passing.** Cross-backend parity
+runner covers all 58 examples. ASan / UBSan clean across all
+examples. LLVM `opt -verify` / `opt -O3` clean.
+
+## Pending epics
+
+| # | Item | Effort | Status |
+|---|---|---|---|
+| A | Vtables — Phase 2 (coercion + method dispatch) | ~6-8h | Phase 1 done (#220); Phase 2 next |
+| A | Vtables — Phase 3 (codegen) | ~12-16h | Queued after Phase 2 |
+| B | Partial-move expansion (per-field `moved`, multi-field reverse-decl drop, Mutex<non-i64>) | medium per item | Queued |
+| C | `Drop for T` with heap fields (`fn drop(mut self: T)` signature design) | medium | Needs design |
+| #5 last | Non-let stmts between `try` and `return` | low | Needs Block-expr stmt vocabulary extension |
+| Devanagari | Script-aware diagnostics + grammar review | medium | Parked per user request |
+
+## Related memory
+
+- [[project-vani-status-file]] — STATUS.md update protocol
+- [[feedback-vani-file-access]] — standing approval for /tmp + ~/vani access

@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #220 — vtables Phase 1)
+## ⏳ Resume here (paused 2026-05-25, after closure #221 — vtables Phase 2a)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,13 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#221 Vtables Phase 2a: `T → dyn Iface` coercion validation.
+New `IFACE_IMPL_REGISTRY` thread-local populated from
+`program.impls` before they drain. `can_assign` accepts
+the coercion when (Iface, T) is registered; standard
+diagnostic otherwise. Method dispatch (2b) and codegen
+(Phase 3) still pending. Test totals: 917 lib + 47 e2e
+passing.
 #220 Vtables Phase 1: `Type::Object` + `dyn Iface` parsing.
 Started epic A per user direction (original-intent
 dynamic dispatch, no inheritance). New

@@ -52,6 +52,31 @@ pub fn enum_has_non_copy_payload(name: &str) -> bool {
     ENUM_NON_COPY_REGISTRY.with(|cell| cell.borrow().contains(name))
 }
 
+thread_local! {
+    /// (interface_name, concrete_type_name) pairs that have an
+    /// `implement Iface for T { … }` declared. Populated by the
+    /// checker before any `dyn Iface` coercion check fires.
+    /// Consulted by `coerce_checked` to validate
+    /// `let d: dyn Iface = t;`-style assignments. Epic A
+    /// Phase 2 (closure #221).
+    pub(crate) static IFACE_IMPL_REGISTRY: std::cell::RefCell<std::collections::HashSet<(String, String)>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+pub fn set_iface_impls<I: IntoIterator<Item = (String, String)>>(pairs: I) {
+    IFACE_IMPL_REGISTRY.with(|cell| {
+        let mut set = cell.borrow_mut();
+        set.clear();
+        set.extend(pairs);
+    });
+}
+
+pub fn iface_impl_exists(iface: &str, type_name: &str) -> bool {
+    IFACE_IMPL_REGISTRY.with(|cell| {
+        cell.borrow().contains(&(iface.to_string(), type_name.to_string()))
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     pub intents: Vec<Intent>,

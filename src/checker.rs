@@ -1941,6 +1941,23 @@ fn hoist_impls_into_functions(
         .iter()
         .map(|i| (i.name.clone(), i))
         .collect();
+    // Closure #221 / vtables Phase 2a: register (iface, type)
+    // pairs so `coerce_checked` can validate `T → dyn Iface`
+    // coercions. Populated before the impls get drained by
+    // the hoist loop below.
+    let iface_impl_pairs: Vec<(String, String)> = program
+        .impls
+        .iter()
+        .filter_map(|imp| {
+            let type_name = match &imp.for_type {
+                Type::Struct(n) | Type::Enum(n) => Some(n.clone()),
+                _ => None,
+            }?;
+            Some((imp.interface_name.clone(), type_name))
+        })
+        .collect();
+    crate::ast::set_iface_impls(iface_impl_pairs);
+
     let mut hoisted: Vec<Function> = Vec::new();
     for imp in &program.impls {
         // T2.7 phase 1: `implement Drop for T` is recognized as
@@ -11187,6 +11204,28 @@ fn can_assign(actual: &CheckedExpr, expected: &Type) -> bool {
     // stays live; its drop fires at the original scope's end.
     if matches!(actual.ty(), Type::OwnedStr) && matches!(expected, Type::Str) {
         return true;
+    }
+
+    // Closure #221 / vtables Phase 2a: `T → dyn Iface` coercion.
+    // Accept when (Iface, T's struct/enum name) has an impl
+    // declared. The actual fat-pointer materialization is
+    // codegen work (Phase 3); the type-checker just validates
+    // the coercion is legal. Tree-C currently emits a
+    // placeholder typedef (`intent_dyn`); programs that
+    // exercise dyn Iface won't run to completion until Phase
+    // 3 lands. Diagnostic for missing impl surfaces from
+    // `coerce_checked`'s fallback path with a clear "got T"
+    // message.
+    if let Type::Object(iface_name) = expected {
+        let actual_name = match actual.ty() {
+            Type::Struct(name) | Type::Enum(name) => Some(name.as_str()),
+            _ => None,
+        };
+        if let Some(name) = actual_name {
+            if crate::ast::iface_impl_exists(iface_name, name) {
+                return true;
+            }
+        }
     }
 
     if !actual.ty().is_numeric() || !expected.is_numeric() {

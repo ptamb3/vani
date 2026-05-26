@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 915 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 917 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,23 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Vtables Phase 2a: `T → dyn Iface` coercion validation done 2026-05-25**:
+   Continued epic A. The checker now accepts implicit
+   coercion from a concrete `T` to `dyn Iface` when an
+   `implement Iface for T` is in scope; rejects with the
+   standard "must be assignable to dyn Iface, got T"
+   diagnostic when no impl is found. New
+   `IFACE_IMPL_REGISTRY` thread-local in
+   [`src/ast.rs`](src/ast.rs) populated by
+   `hoist_impls_into_functions` BEFORE the impl drain;
+   queried from `can_assign` in [`src/checker.rs`](src/checker.rs).
+   Method dispatch through the fat pointer (Phase 2b) and
+   the actual codegen emit (Phase 3) still pending — programs
+   that use `dyn Iface` will type-check but won't link
+   yet (tree-C's placeholder `intent_dyn` typedef from #220
+   surfaces as a cc error). Test totals: 917 lib + 47 e2e
+   passing. Closure #221.
 
    **Vtables Phase 1: `Type::Object` + `dyn Iface` parsing done 2026-05-25**:
    Started epic A (vtables) per user direction "use with

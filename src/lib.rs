@@ -13805,6 +13805,74 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn dyn_iface_coercion_accepts_when_impl_exists() {
+        // Closure #221 / vtables Phase 2a: `T → dyn Iface`
+        // coercion is accepted at the type-checker when an
+        // `implement Iface for T` is in scope. Codegen
+        // (Phase 3) hasn't landed yet, so we only validate
+        // the checker — not the emitted backend.
+        let source = r#"
+            struct Circle { r: i64 }
+
+            interface Drawable {
+              fn draw(self: Circle) -> i64;
+            }
+
+            implement Drawable for Circle {
+              fn draw(self: Circle) -> i64 { return self.r; }
+            }
+
+            fn area_of_dyn(_d: dyn Drawable) -> i64 { return 0; }
+
+            fn main() -> i64 {
+              let c: Circle = Circle { r: 5 };
+              let _ = area_of_dyn(c);
+              return 0;
+            }
+        "#;
+        // Should type-check cleanly (the codegen will emit a
+        // placeholder typedef that wouldn't link, but check
+        // doesn't run cc).
+        crate::compile(source).expect("dyn coercion type-checks when impl exists");
+    }
+
+    #[test]
+    fn dyn_iface_coercion_rejects_when_impl_missing() {
+        // Closure #221: without an `implement Iface for T`,
+        // the coercion is rejected with the standard
+        // `must be assignable to dyn Iface, got T`
+        // diagnostic.
+        let source = r#"
+            struct Circle { r: i64 }
+
+            interface Drawable {
+              fn draw(self: Circle) -> i64;
+            }
+
+            // No `implement Drawable for Circle` — coercion fails.
+
+            fn area_of_dyn(_d: dyn Drawable) -> i64 { return 0; }
+
+            fn main() -> i64 {
+              let c: Circle = Circle { r: 5 };
+              let _ = area_of_dyn(c);
+              return 0;
+            }
+        "#;
+        let res = crate::compile(source);
+        assert!(res.is_err(), "expected coercion without impl to be rejected");
+        let diags = res.err().unwrap();
+        let has_msg = diags.iter().any(|d| {
+            d.message.contains("dyn Drawable") && d.message.contains("got Circle")
+        });
+        assert!(
+            has_msg,
+            "expected `must be assignable to dyn Drawable, got Circle`, got:\n{:?}",
+            diags
+        );
+    }
+
+    #[test]
     fn pop_builtin_returns_last_element_and_decrements_len() {
         // Closure #219: new `pop(mut ref xs) -> T` builtin.
         // Completes the Vec-as-stack story (push + pop). For
