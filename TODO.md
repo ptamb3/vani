@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #240 — array-return tree-LLVM polish + example)
+## ⏳ Resume here (paused 2026-05-26, after closure #241 — SSA Step 3b recognizer half)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,23 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#241 SSA Step 3b — recognizer multi-block body acceptance:
+`recognize_parallel_region` in ssa_backend_c.rs (shared
+by SSA-C + SSA-LLVM via re-export) now walks the body
+sub-CFG from `body_block` collecting reachable blocks
+until step_block. v1 requires exactly one block to
+terminate by jumping to step (the "merge block"); the
+merge's Jump args are used as reduction-update values.
+Multi-back-edge / nested-cycle / Return-from-body shapes
+surface clean EmitError. The emit half (lowering all
+body-region blocks in `emit_parallel_for_region` and
+`emit_outlined_parallel_for_llvm`) is still pending —
+both backends iterate only `body_block.instructions`
+today. Tree fallback handles multi-block correctness, so
+the recognizer extension is a foundation step without
+behavior change. Test totals unchanged: 925 lib + 47 e2e
++ 11 vtables-phase3 + 2 user-drop-by-ref + 1
+ssa-examples.
 #240 Array-return tree-LLVM polish + parity example:
 follow-up to #239. SSA-LLVM's array-return emit returned
 a pointer to a stack-alloca'd array (dangling after fn
@@ -1570,8 +1587,9 @@ highest-leverage first.
          back to tree-LLVM via the recognizer's "Body must be
          a single block" check; that's tracked separately
          below as "Step 3b: multi-block parallel-for body".
-       - **Step 3b: multi-block parallel-for body** — not
-         started. `recognize_parallel_region` rejects bodies
+       - **Step 3b: multi-block parallel-for body** —
+         **recognizer half done 2026-05-26 (closure #241)**;
+         emit half still pending. `recognize_parallel_region` rejects bodies
          with internal control flow (if/else inside the
          loop). Tree-LLVM fallback handles these correctly
          today — Step 3b is an optimization, not a

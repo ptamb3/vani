@@ -631,19 +631,111 @@ pub(crate) fn recognize_parallel_region(
         header.params.iter().skip(1).map(|(v, _)| *v).collect();
     let reduction_inits: Vec<Operand> = jump_args.iter().skip(1).cloned().collect();
 
-    // Body must be a single block. Multi-block bodies
-    // (if/else inside the loop) aren't recognized yet.
-    // Since closure #187 the loop's structure is
-    // body → step → header (step does the counter +1
-    // so `continue` doesn't skip the increment). So
-    // accept body jumping to step.
-    let body = &f.blocks[shape.body_block.0 as usize];
+    // Closure #241 (SSA Step 3b): walk the body sub-CFG to
+    // collect every block reachable from `body_block` that
+    // isn't `step_block` (the step is the "outside" of the
+    // body region). v1 requires exactly one block in the
+    // region to terminate by jumping to step_block — that
+    // block carries the reduction-update args.
+    //
+    // Pre-#241 the recognizer only accepted single-block
+    // bodies (`body.terminator == Jump(step)`), causing
+    // parallel-for with internal if/while/etc. to fall back
+    // to tree-LLVM. Multi-block bodies arise from the
+    // common `if cond { reduce_update; }` guard pattern
+    // inside a parallel-for body.
+    let mut region_blocks: Vec<crate::ssa::BlockId> = Vec::new();
+    let mut visited: std::collections::HashSet<crate::ssa::BlockId> =
+        std::collections::HashSet::new();
+    let mut stack: Vec<crate::ssa::BlockId> = vec![shape.body_block];
+    while let Some(bid) = stack.pop() {
+        if !visited.insert(bid) {
+            continue;
+        }
+        if bid == shape.step_block {
+            // step_block is the "exit" of the body region —
+            // don't include it but don't error either.
+            continue;
+        }
+        region_blocks.push(bid);
+        let blk = &f.blocks[bid.0 as usize];
+        let mut successors: Vec<crate::ssa::BlockId> = Vec::new();
+        match &blk.terminator {
+            Terminator::Jump { target, .. } => successors.push(*target),
+            Terminator::Branch { then_block, else_block, .. } => {
+                successors.push(*then_block);
+                successors.push(*else_block);
+            }
+            Terminator::Return(_) | Terminator::Unreachable => {
+                return Err(EmitError {
+                    message: format!(
+                        "parallel-for body block {:?} terminates with {:?} — \
+                         control flow exits the loop in a way the recognizer \
+                         doesn't model yet (would need to handle the early-return \
+                         case separately)",
+                        bid, blk.terminator
+                    ),
+                });
+            }
+        }
+        for succ in successors {
+            if succ == shape.body_block {
+                return Err(EmitError {
+                    message: "parallel-for body forms an inner cycle \
+                              (body_block is reachable from itself); \
+                              recognizer rejects nested loops in v1"
+                        .to_string(),
+                });
+            }
+            stack.push(succ);
+        }
+    }
+
+    // Find the unique block in the region that jumps to
+    // step_block. Multi-back-edge bodies (where two
+    // different blocks both jump to step) need per-edge
+    // reduction tracking which v1 doesn't model — reject.
+    let mut merge_block_id: Option<crate::ssa::BlockId> = None;
+    for bid in &region_blocks {
+        let blk = &f.blocks[bid.0 as usize];
+        let jumps_to_step = match &blk.terminator {
+            Terminator::Jump { target, .. } => *target == shape.step_block,
+            Terminator::Branch { then_block, else_block, .. } => {
+                *then_block == shape.step_block || *else_block == shape.step_block
+            }
+            _ => false,
+        };
+        if jumps_to_step {
+            if merge_block_id.is_some() {
+                return Err(EmitError {
+                    message: "parallel-for body has multiple back-edges to step \
+                              (recognizer requires a single merge block in v1)"
+                        .to_string(),
+                });
+            }
+            merge_block_id = Some(*bid);
+        }
+    }
+    let merge_block_id = merge_block_id.ok_or_else(|| EmitError {
+        message: "parallel-for body region has no back-edge to step \
+                  (one block must terminate by jumping to step)"
+            .to_string(),
+    })?;
+
+    let body = &f.blocks[merge_block_id.0 as usize];
     let (back_args, back_target) = match &body.terminator {
         Terminator::Jump { target, args } => (args.clone(), *target),
+        Terminator::Branch { .. } => {
+            return Err(EmitError {
+                message: "parallel-for back-edge from a CondBranch isn't \
+                          recognized in v1 (the merge block's terminator \
+                          must be Jump(step, [args]))".to_string(),
+            });
+        }
         other => {
             return Err(EmitError {
                 message: format!(
-                    "parallel-for body terminator must be Jump (single-block body), got {:?}",
+                    "parallel-for back-edge block terminator must be Jump, got {:?}",
                     other
                 ),
             });
@@ -652,7 +744,7 @@ pub(crate) fn recognize_parallel_region(
     if back_target != shape.step_block {
         return Err(EmitError {
             message: format!(
-                "parallel-for body jumps to {:?}, expected back-edge to step {:?}",
+                "parallel-for back-edge block jumps to {:?}, expected step {:?}",
                 back_target, shape.step_block
             ),
         });

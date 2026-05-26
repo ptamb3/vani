@@ -537,6 +537,26 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **SSA Step 3b — recognizer multi-block body acceptance done 2026-05-26**:
+   `recognize_parallel_region` in
+   [`src/ssa_backend_c.rs`](src/ssa_backend_c.rs) now
+   accepts multi-block parallel-for bodies. The recognizer
+   walks the body sub-CFG from `body_block`, collecting all
+   reachable blocks until reaching `step_block`. v1 still
+   requires exactly one block in the region to terminate
+   by jumping to step (the "merge block"); multiple
+   back-edges or nested cycles surface clean `EmitError`s.
+   The merge block's Jump args are used as reduction-
+   update values (same shape as the single-block case).
+   This is the FIRST half of Step 3b — the recognizer
+   accepts the shape, but neither SSA-C nor SSA-LLVM's
+   emit yet lowers multi-block bodies (they still iterate
+   only `body_block.instructions`). Tree fallback handles
+   multi-block correctness today, so the recognizer change
+   is a foundation without behavior change. Test totals:
+   925 lib + 47 e2e + 11 vtables-phase3 + 2 user-drop-
+   by-ref + 1 ssa-examples passing. Closure #241.
+
    **Array-return follow-up: tree-LLVM array-from-call + SSA gate + example done 2026-05-26**:
    while wiring up the tree-LLVM array-return path, two
    issues surfaced:
