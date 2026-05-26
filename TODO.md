@@ -535,6 +535,38 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#259 Parallel-for implicit-reduction race — compile-time check.
+the effects checker's pure-body walker already rejected
+impure ops (print, impure calls, indexed writes on
+captured arrays). It missed the simplest race shape:
+`total = total + i;` on a captured Copy-typed primitive
+where `total` was declared OUTSIDE the parallel-for body
+and no `reduce total with +;` clause was present. The
+runtime result raced.
+
+`verify_pure_body_with_reductions` now follows the
+reduction-strip pass with a new `check_for_captured_
+mutations` walker. The walker tracks body-local `let`
+bindings (per-iteration, mutation is fine) and emits a
+precise diagnostic on any Reassign whose target is
+NOT in the locals set AND NOT in the declared
+reductions:
+
+  "'parallel for' body mutates captured variable
+  '<name>' without declaring it as a reduction; this
+  races at runtime. Add `reduce <name> with <op>;`
+  before the body, or use `Atomic<T>` for a concurrent
+  counter."
+
+Three new lib tests pin: race shape errors with the
+precise hint, body-local lets pass, declared reductions
+still parse + compile. README's *Memory safety &
+concurrency model* section updated to show the catch
+end-to-end. Closes the largest compile-time gap in
+the parallel-for safety story.
+
+Test totals: 963 lib + 47 e2e + 11 vtables-phase3 + 2
+user-drop-by-ref + 1 ssa-examples.
 #258 Namespaces — `pub(kosh)` visibility tier.
 modules now accept `pub(kosh)` as a finer-grained
 visibility marker. Today behaves identically to plain

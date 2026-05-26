@@ -13224,6 +13224,72 @@ fn verify_pure_body_with_reductions(
         .collect();
     let stripped = strip_reduction_uses(body, &by_name, context, diagnostics);
     verify_pure_body(&stripped, signatures, context, diagnostics);
+    // Closure #259: implicit-reduction race check. After the
+    // strip pass has removed legitimate reduction-reassigns, any
+    // surviving `Reassign` targeting a binding NOT declared
+    // inside this body is a capture being mutated without a
+    // declared reduction — a runtime race waiting to happen.
+    // Walk the original body (not the stripped one — strip
+    // replaced the reduction reassigns with discards) and flag
+    // each non-body-local Copy reassign.
+    let mut body_locals: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    check_for_captured_mutations(body, &by_name, &mut body_locals, diagnostics);
+}
+
+/// Walk a parallel-for body collecting names introduced via
+/// `Let` (so a reassign to one of them is per-iteration, not a
+/// capture). Any Reassign to a name NOT in the set AND NOT in
+/// the declared reductions is the implicit-reduction race the
+/// effects checker missed pre-#259.
+fn check_for_captured_mutations(
+    stmts: &[TypedStmt],
+    reductions: &HashMap<String, crate::ast::ReductionOp>,
+    body_locals: &mut std::collections::HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for stmt in stmts {
+        match stmt {
+            TypedStmt::Let { name, .. } => {
+                body_locals.insert(name.clone());
+            }
+            TypedStmt::Reassign { name, expr, .. } => {
+                if !body_locals.contains(name) && !reductions.contains_key(name) {
+                    diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        format!(
+                            "'parallel for' body mutates captured variable \
+                             '{}' without declaring it as a reduction; this \
+                             races at runtime. Add `reduce {} with <op>;` \
+                             before the body, or use `Atomic<T>` for a \
+                             concurrent counter.",
+                            name, name
+                        ),
+                    ));
+                }
+            }
+            TypedStmt::If { then_body, else_body, .. } => {
+                // Nested scopes inherit outer locals; their own
+                // lets are scope-local but the conservative
+                // approximation (treating them as
+                // visible-to-rest-of-body) doesn't change the
+                // diagnostic outcome here — a captured reassign
+                // inside a branch is still racy.
+                check_for_captured_mutations(then_body, reductions, body_locals, diagnostics);
+                check_for_captured_mutations(else_body, reductions, body_locals, diagnostics);
+            }
+            TypedStmt::While { body, .. } => {
+                check_for_captured_mutations(body, reductions, body_locals, diagnostics);
+            }
+            TypedStmt::For { body, .. } => {
+                check_for_captured_mutations(body, reductions, body_locals, diagnostics);
+            }
+            TypedStmt::ForIter { body, .. } => {
+                check_for_captured_mutations(body, reductions, body_locals, diagnostics);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Walk the body, validate each Reassign whose target is a

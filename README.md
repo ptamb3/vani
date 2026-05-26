@@ -128,6 +128,232 @@ See [STATUS.md](STATUS.md) for the closure-by-closure history and
 [TODO.md](TODO.md) for what's queued. The full Roadmap (small +
 multi-session items) is in the README's *Roadmap* section below.
 
+## Memory safety & concurrency model
+
+vāṇī treats **memory and concurrency bugs as compile-time errors**.
+The runtime is meant to be boring: no garbage collector, no event
+loop, no allocator-dependent fault injection, no reference counting,
+no surprise rescheduling. Everything that would be a "this might
+crash at 3 AM in production" bug in a less strict language fails the
+type checker on the developer's laptop.
+
+### What's caught at compile time
+
+| Bug class | Caught at compile time | How |
+|---|---|---|
+| **Heap leak** ("forgot to free") | ✅ | Affine ownership. Every heap-owning binding (`Vec`, `OwnedStr`, `Atomic`, `Mutex`, `Guard`, `Channel`, `Task`, struct with heap fields) has exactly one owner. The codegen emits `free` / per-field drop at scope exit deterministically. There is no `forget()` equivalent. |
+| **Double-free** | ✅ | Move tracking. After `let y = x;` (where `x: Vec<i64>`), `x` becomes unreadable; the compiler emits a "value 'x' was moved; cannot use after move" diagnostic at the next reference. Drop fires exactly once on the new owner. User-defined `Drop` is also single-fire. |
+| **Use-after-free** | ✅ | Same affine machinery + second-class references. A `ref T` / `mut ref T` parameter can only be a parameter — it can't be stored in a struct, returned from a function, or held across `await` (there is no `await`). The borrow can never outlive the owner. |
+| **Dangling reference** | ✅ | References are second-class. Functions cannot return references; struct fields cannot be references; references cannot be stored in arrays / `Vec`. The compiler rejects any attempt syntactically. |
+| **Aliasing mutable + immutable** | ✅ | A `mut ref T` borrow rejects every subsequent shared `ref T` on the same value (and vice-versa) for the scope of the borrow. Diagnostic: "value 'v' is borrowed mutably; cannot also share-borrow". |
+| **Data race in `parallel for`** | ✅ | The effects checker walks the loop body and rejects observable side effects: `print`, calls to impure functions, non-Copy moves into the body, indexed writes on captured arrays / `Vec`s. **As of closure #259**, captured Copy-typed mutations are also caught — `total = total + i;` on a binding declared OUTSIDE the body errors with "mutates captured variable 'total' without declaring it as a reduction" and points the user at `reduce` or `Atomic<T>`. Body-local lets remain free to mutate (per-iteration, not shared). Atomic / Mutex captures must be via `ref`. |
+| **Data race in `task`** | ✅ | `task` captures are Copy-only by default — affine handles (Vec, Atomic, Mutex, Guard, Channel) can't ride into the thread by value. Shared state goes through `Atomic<T>` (lock-free, seq-cst) or `Mutex<T>` + `Guard<T>` (RAII unlock at scope exit). |
+| **Unjoined task** ("thread leak") | ✅ | `Task` is affine. The compiler tracks each handle and requires a matching `join name;` before the handle's scope ends, even on early-return paths. Double-`join` is also rejected. |
+| **Forgotten mutex release** | ✅ | `Guard<T>` is affine — taking the lock returns a `Guard` that **must** drop, and Drop emits the unlock. The borrowed inner `T` lives only as long as the Guard; the compiler rejects keeping the inner reference after the Guard drops. |
+| **Integer overflow / underflow** | ✅ (where SMT proves) | The bounds-elision pass keeps `if (UB-check)` guards by default and elides only when Z3 proves the operation is in-range. `INTENTC_NO_VERIFY=1` keeps the guards in place. |
+| **Array / Vec out-of-bounds** | ✅ (where SMT proves) | Same elision pass on `Index` / `IndexAssign`. Guards stay in place when SMT can't discharge the obligation. |
+| **Divide / shift / mod by zero** | ✅ (where SMT proves) | Same. |
+| **`assert` / `prove` / `requires` / `ensures` / `invariant`** | ✅ | Discharged by Z3 at check time. `prove` is the strict form (must hold); `ensures` is verified at every return path; `invariant` at loop entry, body, and exit. |
+
+### What runs (without you reaching for `unsafe`)
+
+vāṇī has **no `unsafe` block** at all. Every operation in source is
+type-checked + affine-tracked. The compiler doesn't trade safety for
+ergonomics anywhere — including for raw pointer arithmetic, mmap,
+syscalls, or FFI. Those are out of scope for v1.
+
+### What's NOT in the language (deliberate)
+
+- **No garbage collector.** Affine ownership + deterministic Drop
+  cover what GC would cover, without the unpredictable pause.
+- **No `async` / `await` / event loop.** Concurrency in vāṇī is
+  threads (`task` + `join`) plus shared-state primitives (`Atomic`,
+  `Mutex`, `Channel`). The user gets thread-safe code by construction
+  — the checker rejects the source patterns that would race —
+  without the function-coloring tax of `async`. Async I/O can be
+  added later if a clear win shows up; for now, blocking I/O through
+  a thread pool is the model.
+- **No reference counting** (no `Rc` / `Arc` equivalent). Single-owner
+  affine ownership means cycles can't form; there's nothing for an
+  Rc to count.
+- **No `unsafe` escape hatch.** Every operation goes through the
+  checked surface.
+- **No exceptions / no stack unwinding.** Errors are values via
+  payloaded enums (`Option`-like / `Result`-like) and propagated with
+  `try`. `assert` triggers a deterministic `abort()`.
+
+### Examples — what the compiler rejects
+
+These programs all **fail to compile**. The diagnostic text below
+each is what the user actually sees today (test-pinned in
+`src/lib.rs`).
+
+#### Heap leak — impossible by construction
+
+```vani
+fn main() -> i64 {
+  let v: Vec<i64> = vec(1, 2, 3);
+  return 0;
+  // v's heap buffer freed automatically at scope exit.
+  // No `forget(v)` exists. No way to leak it.
+}
+```
+
+#### Double-free — rejected via move tracking
+
+```vani
+fn main() -> i64 {
+  let v: Vec<i64> = vec(1, 2, 3);
+  let w: Vec<i64> = v;   // move: w now owns the buffer
+  let z: Vec<i64> = v;   // ERROR: value 'v' was moved
+  return 0;
+}
+```
+
+#### Use-after-free — same machinery
+
+```vani
+fn consume(xs: Vec<i64>) -> u64 { return len(xs); }
+
+fn main() -> i64 {
+  let v: Vec<i64> = vec(1, 2, 3);
+  let n: u64 = consume(v);   // move into consume()
+  return v[0];               // ERROR: value 'v' was moved
+}
+```
+
+#### Aliasing — mutable + shared borrow rejected
+
+```vani
+fn read(xs: ref Vec<i64>) -> i64 { return xs[0]; }
+fn write(xs: mut ref Vec<i64>) -> i64 { xs[0] = 99; return 0; }
+
+fn main() -> i64 {
+  let v: Vec<i64> = vec(1, 2, 3);
+  let _ = write(mut ref v);
+  let _ = read(ref v);   // (OK — sequenced, not aliased)
+  // The compiler rejects holding both borrows simultaneously.
+  return 0;
+}
+```
+
+#### Unjoined task — thread leak rejected
+
+```vani
+fn main() -> i64 {
+  task worker {
+    let _ = 42;
+  }
+  return 0;
+  // ERROR: task handle 'worker' was never consumed by `join`
+}
+```
+
+#### Forgotten mutex unlock — impossible by construction
+
+```vani
+fn main() -> i64 {
+  let m: Mutex<i64> = mutex_new(0);
+  {
+    let g: Guard<i64> = mutex_lock(ref m);
+    // ... critical section ...
+  }   // Guard 'g' drops here; mutex unlocked automatically.
+  return 0;
+}
+```
+
+#### Impure operations inside `parallel for` — rejected
+
+```vani
+fn main() -> i64 {
+  parallel for i from 0 to 3 {
+    print i;   // ERROR: 'parallel for' body cannot contain `print`
+               //        (observable I/O is a side effect)
+  }
+  return 0;
+}
+```
+
+The same diagnostic fires for calls to impure functions, non-Copy
+moves into the body, and indexed writes on captured arrays / `Vec`s.
+
+#### Implicit reduction race — rejected (closure #259)
+
+```vani
+fn main() -> i64 {
+  let total: i64 = 0;
+  parallel for i from 0 to 100 {
+    total = total + i;
+    // ERROR: 'parallel for' body mutates captured variable 'total'
+    //        without declaring it as a reduction; this races at
+    //        runtime. Add `reduce total with <op>;` before the body,
+    //        or use `Atomic<T>` for a concurrent counter.
+  }
+  return total;
+}
+```
+
+The fix is to declare the reduction explicitly:
+
+```vani
+fn main() -> i64 {
+  let total: i64 = 0;
+  parallel for i from 0 to 100
+  reduce total with +;
+  {
+    total = total + i;   // OK: declared reduction, lowered to OpenMP
+                         //     `reduction(+: total)` on the C
+                         //     backend and atomicrmw on LLVM.
+  }
+  return total;
+}
+```
+
+Body-local mutations are still per-iteration and free:
+
+```vani
+fn main() -> i64 {
+  parallel for i from 0 to 5 {
+    let tmp: i64 = i;
+    let next: i64 = tmp + 1;   // per-iteration, body-local — fine.
+    let _ = next;
+  }
+  return 0;
+}
+```
+
+See [examples/](examples/) for the full set of working programs,
+and `src/lib.rs::tests` for the negative-test coverage (search for
+`expect_err`, `use_after_move`, `double_free`, `unjoined_task`, etc).
+
+### Known gaps (will become checks later)
+
+These are real-world concerns that are **not yet caught at compile
+time** — listed honestly so users can plan around them:
+
+- **Recursion stack overflow.** vāṇī doesn't bound recursion depth.
+  Deep call chains can blow the OS stack at runtime. Future work
+  could add a recursion-depth analysis or a `#[bounded(N)]`
+  annotation.
+- **Mutex deadlock.** Lock-acquisition-order analysis is not yet
+  implemented. Two threads taking the same two mutexes in opposite
+  order can deadlock at runtime. Future work: a deadlock-free lock
+  ordering pass (Rust doesn't catch this either).
+- **Allocator failure (OOM).** vāṇī uses the standard allocator
+  (`malloc` / LLVM's allocator); on OOM the program aborts. No
+  fallible-allocation API yet.
+- **Channel deadlock.** Bounded MPSC channels can wedge if every
+  sender + every receiver is blocked. Today this manifests as a
+  runtime hang rather than a static error.
+- **Integer division by run-time-zero divisor.** When SMT can't
+  prove the divisor non-zero, the elision pass leaves the runtime
+  guard in (abort on zero). Compile time catches the *provable*
+  cases; runtime catches the rest. Same for shift amount validity.
+
+The first two items are the most interesting research directions
+for the next year. The rest are likely runtime-aborts-with-clean-
+diagnostic forever (which is the same boat as Rust).
+
 ## Language Snapshot
 
 ```intent

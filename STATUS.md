@@ -537,6 +537,30 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Parallel-for implicit-reduction race check done 2026-05-26**:
+   `parallel for { total = total + i; }` over a captured
+   Copy-typed primitive (no `reduce` clause) previously
+   compiled cleanly even though the runtime race produced
+   non-deterministic results. The effects checker walked
+   the body but only flagged *impure* operations (print,
+   impure calls, indexed writes); naked Copy mutations of
+   a captured binding slipped through. The new
+   `check_for_captured_mutations` pass runs after the
+   reduction-strip pass, walks the body tracking
+   body-local `let` bindings, and emits a precise
+   "mutates captured variable '<name>' without declaring
+   it as a reduction; this races at runtime. Add
+   `reduce <name> with <op>;` … or use `Atomic<T>` …"
+   diagnostic on any non-local non-reduction Reassign.
+   Body-local mutations remain free (per-iteration, not
+   shared). Three new lib tests cover: the race shape
+   errors with the precise hint, body-local lets pass,
+   declared reductions still parse + compile. Closes
+   the largest documented compile-time gap in the
+   parallel-for safety story. Test totals: 963 lib + 47
+   e2e + 11 vtables-phase3 + 2 user-drop-by-ref + 1
+   ssa-examples. Closure #259.
+
    **Namespaces — `pub(kosh)` visibility tier done 2026-05-26**:
    modules now accept the qualifier `pub(kosh)` to mark
    an item as exported within the kosh but NOT through

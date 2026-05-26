@@ -14914,6 +14914,74 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn parallel_for_rejects_captured_copy_mutation_without_reduce() {
+        // Closure #259: previously, `parallel for { total = total
+        // + i; }` over a captured Copy-typed i64 compiled cleanly
+        // because the effects checker only flagged impure ops
+        // (print, calls to impure fns, indexed writes). The
+        // resulting program would race at runtime. Now the
+        // capture-mutation pass tracks body-local lets and
+        // emits a clear diagnostic on any naked reassign to a
+        // non-local non-reduction binding.
+        let source = r#"
+            fn main() -> i64 {
+              let total: i64 = 0;
+              parallel for i from 0 to 100 {
+                total = total + i;
+              }
+              return total;
+            }
+        "#;
+        let errors = compile(source).expect_err("racy capture-mutation must error");
+        assert!(
+            errors.iter().any(|e|
+                e.message.contains("mutates captured variable 'total'")
+                    && e.message.contains("races at runtime")
+                    && e.message.contains("reduce total")),
+            "expected captured-mutation diagnostic with reduce hint; got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parallel_for_accepts_body_local_reassign() {
+        // Regression guard for #259: reassigning a body-LOCAL
+        // binding (declared inside the parallel-for body) is
+        // per-iteration, not a race. The capture tracker
+        // distinguishes via the body_locals set.
+        let source = r#"
+            fn main() -> i64 {
+              parallel for i from 0 to 5 {
+                let tmp: i64 = i;
+                let next: i64 = tmp + 1;
+                let _ = next;
+              }
+              return 0;
+            }
+        "#;
+        compile(source).expect("body-local lets are fine");
+    }
+
+    #[test]
+    fn parallel_for_accepts_declared_reduction() {
+        // Regression guard: the same `total = total + i;` shape
+        // with an explicit `reduce total with +;` declaration is
+        // the supported parallel-accumulator pattern.
+        let source = r#"
+            fn main() -> i64 {
+              let total: i64 = 0;
+              parallel for i from 0 to 100
+              reduce total with +;
+              {
+                total = total + i;
+              }
+              return total;
+            }
+        "#;
+        compile(source).expect("declared reduction parses + compiles");
+    }
+
+    #[test]
     fn pub_kosh_qualifier_parses_and_compiles() {
         // Closure #258: `pub(kosh) fn helper()` is accepted as
         // a preparatory visibility tier — today it behaves
