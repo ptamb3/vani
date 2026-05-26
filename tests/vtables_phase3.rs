@@ -110,6 +110,84 @@ fn run_with_lli(ll_source: &str, tag: &str) -> i32 {
 }
 
 #[test]
+fn vec_of_dyn_iface_iterates_with_polymorphic_dispatch_tree_c() {
+    if !cc_available() {
+        return;
+    }
+    let source = r#"
+        struct Circle { r: i64 }
+        struct Square { side: i64 }
+
+        interface Drawable {
+          fn area(self: Circle) -> i64;
+        }
+
+        implement Drawable for Circle {
+          fn area(self: Circle) -> i64 { return self.r * self.r; }
+        }
+
+        implement Drawable for Square {
+          fn area(self: Square) -> i64 { return self.side * self.side; }
+        }
+
+        fn main() -> i64 {
+          let c: Circle = Circle { r: 3 };
+          let s: Square = Square { side: 5 };
+          let xs: Vec<dyn Drawable> = vec(c, s);
+          let total: i64 = 0;
+          for x in xs { total = total + x.area(); }
+          return total;
+        }
+    "#;
+    let c = compile_to_c(source).expect("Vec<dyn> compiles to C");
+    let code = compile_and_run(&c, "vec_dyn_c");
+    assert_eq!(
+        code, 34,
+        "expected Circle(3).area + Square(5).area == 9 + 25 == 34, got {}",
+        code
+    );
+}
+
+#[test]
+fn vec_of_dyn_iface_iterates_with_polymorphic_dispatch_llvm() {
+    if !lli_available() {
+        return;
+    }
+    let source = r#"
+        struct Circle { r: i64 }
+        struct Square { side: i64 }
+
+        interface Drawable {
+          fn area(self: Circle) -> i64;
+        }
+
+        implement Drawable for Circle {
+          fn area(self: Circle) -> i64 { return self.r * self.r; }
+        }
+
+        implement Drawable for Square {
+          fn area(self: Square) -> i64 { return self.side * self.side; }
+        }
+
+        fn main() -> i64 {
+          let c: Circle = Circle { r: 3 };
+          let s: Square = Square { side: 5 };
+          let xs: Vec<dyn Drawable> = vec(c, s);
+          let total: i64 = 0;
+          for x in xs { total = total + x.area(); }
+          return total;
+        }
+    "#;
+    let ll = compile_to_llvm(source).expect("Vec<dyn> compiles to LLVM");
+    let code = run_with_lli(&ll, "vec_dyn_llvm");
+    assert_eq!(
+        code, 34,
+        "expected Circle(3).area + Square(5).area == 9 + 25 == 34 via lli, got {}",
+        code
+    );
+}
+
+#[test]
 fn dyn_struct_field_dispatches_via_vtable_tree_c() {
     if !cc_available() {
         return;

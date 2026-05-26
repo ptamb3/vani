@@ -10423,6 +10423,71 @@ fn check_vec_builtin(
         ));
     }
 
+    // Vtables Phase 4b: when element types are not all
+    // identical but every element implements a single
+    // common interface, treat the result as
+    // `Vec<dyn Iface>` and wrap each element in a
+    // DynCoerce. Lets `vec(circle, square)` yield
+    // `Vec<dyn Drawable>` when both implement Drawable.
+    // If multiple shared interfaces exist OR none, fall
+    // through to the regular homogeneity check (which will
+    // surface the existing "must be assignable to T"
+    // diagnostic the user can fix with an annotation).
+    let all_same = typed.iter().all(|e| e.ty() == &element_type);
+    if !all_same {
+        let nominal_names: Option<Vec<String>> = typed
+            .iter()
+            .map(|e| match e.ty() {
+                Type::Struct(n) | Type::Enum(n) => Some(n.clone()),
+                _ => None,
+            })
+            .collect();
+        if let Some(names) = nominal_names {
+            // Intersect the set of interfaces implemented by
+            // every element.
+            let mut common: Option<std::collections::HashSet<String>> = None;
+            for n in &names {
+                let ifaces = crate::ast::ifaces_implemented_by(n);
+                common = Some(match common {
+                    Some(prev) => prev.intersection(&ifaces).cloned().collect(),
+                    None => ifaces,
+                });
+            }
+            if let Some(set) = common {
+                if set.len() == 1 {
+                    let iface_name = set.into_iter().next().unwrap();
+                    let mut coerced_args: Vec<TypedExpr> = Vec::with_capacity(typed.len());
+                    for (idx, element) in typed.into_iter().enumerate() {
+                        let type_name = names[idx].clone();
+                        let elem_ty = element.expr.ty.clone();
+                        coerced_args.push(TypedExpr {
+                            kind: TypedExprKind::DynCoerce {
+                                value: Box::new(element.expr),
+                                iface_name: iface_name.clone(),
+                                from_type_name: type_name,
+                                from_ty: elem_ty,
+                            },
+                            ty: Type::Object(iface_name.clone()),
+                            constant: None,
+                            span: args[idx].span,
+                            binding_decl_span: None,
+                        });
+                    }
+                    return CheckedExpr::new(
+                        TypedExprKind::Call {
+                            name: "vec".to_string(),
+                            name_span: span,
+                            args: coerced_args,
+                        },
+                        Type::Vec(Box::new(Type::Object(iface_name))),
+                        None,
+                        span,
+                    );
+                }
+            }
+        }
+    }
+
     let mut coerced_args = Vec::with_capacity(typed.len());
     for (index, element) in typed.into_iter().enumerate() {
         let arg_span = element.expr.span;
@@ -10881,6 +10946,62 @@ fn coerce_checked(
                 }
             }
         }
+    }
+
+    // Vtables Phase 4b: `Vec<T> → Vec<dyn Iface>` coercion
+    // when the vec literal's elements all have an
+    // `implement Iface for T`. The element T can vary
+    // across positions (heterogeneous Vec<dyn Iface> is the
+    // canonical vtable use case). Recheck each element
+    // against `dyn Iface`; coerce_checked emits a DynCoerce
+    // per element. Restricted to the literal `vec(...)` call
+    // shape — for arbitrary Vec<T> sources Phase 4 doesn't
+    // try to convert in place.
+    if let (Type::Vec(src_elem), Type::Vec(tgt_elem)) = (checked.ty(), target) {
+        if let Type::Object(iface_name) = tgt_elem.as_ref() {
+            if let TypedExprKind::Call { name, args, .. } = &checked.expr.kind {
+                if name == "vec" {
+                    let mut new_args: Vec<TypedExpr> = Vec::with_capacity(args.len());
+                    let mut all_ok = true;
+                    for elem in args.iter() {
+                        let elem_type_name = match &elem.ty {
+                            Type::Struct(n) | Type::Enum(n) => Some(n.clone()),
+                            _ => None,
+                        };
+                        match elem_type_name {
+                            Some(tn) if crate::ast::iface_impl_exists(iface_name, &tn) => {
+                                new_args.push(TypedExpr {
+                                    kind: TypedExprKind::DynCoerce {
+                                        value: Box::new(elem.clone()),
+                                        iface_name: iface_name.clone(),
+                                        from_type_name: tn,
+                                        from_ty: elem.ty.clone(),
+                                    },
+                                    ty: (**tgt_elem).clone(),
+                                    constant: None,
+                                    span: elem.span,
+                                    binding_decl_span: None,
+                                });
+                            }
+                            _ => { all_ok = false; break; }
+                        }
+                    }
+                    if all_ok {
+                        return CheckedExpr::new(
+                            TypedExprKind::Call {
+                                name: "vec".to_string(),
+                                name_span: span,
+                                args: new_args,
+                            },
+                            target.clone(),
+                            None,
+                            span,
+                        );
+                    }
+                }
+            }
+        }
+        let _ = src_elem;
     }
 
     // Channel construction widening: `channel_new()` always

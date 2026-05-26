@@ -537,6 +537,44 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Vtables Phase 4b (`Vec<dyn Iface>` heterogeneous collections) done 2026-05-25**:
+   the canonical vtable use case — `vec(circle, square)` typed
+   as `Vec<dyn Drawable>` — now compiles + runs identically on
+   both backends, with a per-element trampoline dispatching to
+   each impl's concrete `area`. Three pieces landed:
+
+   1. **Checker**: `check_vec_builtin` no longer requires
+      strict element homogeneity. When elements have different
+      nominal types but all share exactly one common
+      `implement Iface for T`, the result is
+      `Vec<dyn Iface>` and each element is wrapped in a
+      `TypedExprKind::DynCoerce`. Multiple shared interfaces
+      → ambiguous (the existing "must be assignable to T"
+      diagnostic surfaces). New `ast::ifaces_implemented_by`
+      helper inverts the impl registry. `coerce_checked` also
+      gained a `Vec<T> → Vec<dyn Iface>` arm that re-coerces a
+      homogeneous vec literal's elements when the destination
+      is annotated as `Vec<dyn Iface>` (handles the
+      `vec(c)` single-element case where homogeneity inference
+      still triggers).
+   2. **Trampoline shape fix**: the per-(T, Iface) trampolines
+      previously inherited the iface declaration's example
+      self type (e.g. `Struct_Circle` for Drawable). For Square's
+      `area` impl the cast was wrong. Both tree-C and
+      tree-LLVM now cast `void* self` to `Struct_<type_name>`
+      where type_name is the impl's actual `for_type`.
+   3. **Sizing + tags**: tree-LLVM's `vec_struct_tag` and
+      `vec_element_byte_size` gained `Type::Object` arms
+      (`intent_dyn_<Iface>` tag, 16-byte fat-pointer width)
+      so the Vec runtime layout matches what the C backend
+      already produces.
+
+   New e2e tests exercise `for x in xs { total = total + x.area(); }`
+   over a `Vec<dyn Drawable>` containing both a Circle and a
+   Square; both backends return 34 (= 3*3 + 5*5).
+   Test totals: 920 lib + 47 e2e + 7 vtables-phase3 passing.
+   Closure #226.
+
    **Vtables Phase 4a (struct field of `dyn Iface`) done 2026-05-25**:
    structs can now declare a field of type `dyn Iface` and
    the field works through both backends. Two small

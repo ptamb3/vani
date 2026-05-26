@@ -4880,18 +4880,25 @@ fn emit_dyn_iface_vtables(out: &mut String, used: &std::collections::HashSet<Str
                 let self_ty = &params[0];
                 let mut sig_args: Vec<String> = vec!["void* __intent_self".to_string()];
                 let mut forwarded: Vec<String> = Vec::new();
+                // The trampoline's self-shape follows the
+                // iface declaration (value, ref, or mut-ref)
+                // but the underlying nominal type comes from
+                // THIS impl's concrete `for_type` — not the
+                // example self the iface declaration spelled.
+                // Otherwise heterogeneous impls (Circle.area,
+                // Square.area) would all cast to the iface's
+                // first declared self, which is wrong for any
+                // non-first impl.
+                let impl_struct_name = format!("Struct_{}", type_name);
                 let self_forward = match self_ty {
                     Type::Struct(_) | Type::Enum(_) => {
-                        let storage = c_type_name(self_ty);
-                        format!("*(({}*)__intent_self)", storage)
+                        format!("*(({}*)__intent_self)", impl_struct_name)
                     }
-                    Type::Ref(inner) => {
-                        let inner_storage = c_type_name(inner);
-                        format!("(const {}*)__intent_self", inner_storage)
+                    Type::Ref(_) => {
+                        format!("(const {}*)__intent_self", impl_struct_name)
                     }
-                    Type::RefMut(inner) => {
-                        let inner_storage = c_type_name(inner);
-                        format!("({}*)__intent_self", inner_storage)
+                    Type::RefMut(_) => {
+                        format!("({}*)__intent_self", impl_struct_name)
                     }
                     other => {
                         panic!(

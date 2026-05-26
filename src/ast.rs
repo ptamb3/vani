@@ -147,6 +147,21 @@ pub fn impls_for_iface(iface: &str) -> Vec<String> {
     IFACE_IMPLS_LIST.with(|cell| cell.borrow().get(iface).cloned().unwrap_or_default())
 }
 
+/// Return the set of interface names that have an
+/// `implement Iface for <type_name>` registered. Used by the
+/// vec literal checker to find a common interface for
+/// heterogeneous elements.
+pub fn ifaces_implemented_by(type_name: &str) -> std::collections::HashSet<String> {
+    IFACE_IMPL_REGISTRY.with(|cell| {
+        cell.borrow()
+            .iter()
+            .filter_map(|(iface, ty)| {
+                if ty == type_name { Some(iface.clone()) } else { None }
+            })
+            .collect()
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     pub intents: Vec<Intent>,

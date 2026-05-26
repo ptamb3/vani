@@ -5900,6 +5900,9 @@ pub(crate) fn vec_element_byte_size(element: &Type) -> u64 {
         // the checker today so this is defensive.
         Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) => 24,
         Type::Atomic(inner) => vec_element_byte_size(inner),
+        // Vtables Phase 4b: `dyn Iface` is a fat pointer
+        // (vtable pointer + data pointer) — 16 bytes.
+        Type::Object(_) => 16,
         _ => (element.bits().unwrap_or(64) / 8) as u64,
     }
 }
@@ -6175,6 +6178,11 @@ pub(crate) fn vec_struct_tag(element: &Type) -> String {
         // same `<ret> (<params>)*` LLVM type so a single
         // tag works.
         Type::FnPtr(_, _) => "fnptr".to_string(),
+        // Vtables Phase 4b: `Vec<dyn Iface>` element tag is
+        // the per-Iface fat-pointer typedef name. Without this
+        // arm `llvm_type(Object)` panics ("use llvm_type_string
+        // for aggregate type").
+        Type::Object(name) => format!("intent_dyn_{}", name),
         // Scalars + ref/atomic/channel go through the
         // existing leaf spelling, with `%`/`*`/space replaced
         // by `_` so the identifier stays well-formed.
@@ -7745,26 +7753,31 @@ fn emit_dyn_iface_llvm_vtables(out: &mut String, used: &std::collections::HashSe
                 let mut sig_args: Vec<String> = vec!["i8* %__intent_self".to_string()];
                 let mut forwarded: Vec<String> = Vec::new();
                 let mut body = String::new();
+                // Vtables Phase 4b: cast to THIS impl's
+                // concrete nominal type (`%Struct_<type_name>`),
+                // not the iface declaration's first-declared
+                // self type. Heterogeneous Vec<dyn Iface>
+                // depends on each trampoline knowing its own
+                // impl's storage shape.
+                let impl_storage = format!("%Struct_{}", type_name);
                 let self_forward = match self_ty {
                     Type::Struct(_) | Type::Enum(_) => {
-                        let storage = llvm_type_string(self_ty);
                         body.push_str(&format!(
                             "  %__intent_self_ptr = bitcast i8* %__intent_self to {}*\n",
-                            storage
+                            impl_storage
                         ));
                         body.push_str(&format!(
                             "  %__intent_self_val = load {}, {}* %__intent_self_ptr\n",
-                            storage, storage
+                            impl_storage, impl_storage
                         ));
-                        format!("{} %__intent_self_val", storage)
+                        format!("{} %__intent_self_val", impl_storage)
                     }
-                    Type::Ref(inner) | Type::RefMut(inner) => {
-                        let inner_storage = llvm_type_string(inner);
+                    Type::Ref(_) | Type::RefMut(_) => {
                         body.push_str(&format!(
                             "  %__intent_self_ptr = bitcast i8* %__intent_self to {}*\n",
-                            inner_storage
+                            impl_storage
                         ));
-                        format!("{}* %__intent_self_ptr", inner_storage)
+                        format!("{}* %__intent_self_ptr", impl_storage)
                     }
                     other => {
                         panic!(

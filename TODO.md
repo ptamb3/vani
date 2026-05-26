@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #225 — vtables Phase 4a struct-field-of-dyn)
+## ⏳ Resume here (paused 2026-05-25, after closure #226 — vtables Phase 4b Vec<dyn Iface>)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,26 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#226 Vtables Phase 4b (`Vec<dyn Iface>` heterogeneous
+collections): `vec(circle, square)` typed as
+`Vec<dyn Drawable>` now compiles + runs on both
+backends. Three pieces landed. (1) Checker:
+`check_vec_builtin` no longer requires strict
+element homogeneity when elements share exactly one
+common iface impl; new
+`ast::ifaces_implemented_by` helper inverts the impl
+registry. `coerce_checked` also gained a
+`Vec<T> → Vec<dyn Iface>` arm for the
+single-element annotated case. (2) Trampoline shape
+fix: per-(T, Iface) trampolines now cast `void* self`
+to `Struct_<type_name>` (impl's actual `for_type`)
+rather than inheriting the iface declaration's
+example self — heterogeneous impls were all casting
+to the first impl's struct before. (3) Sizing:
+tree-LLVM's `vec_struct_tag` /
+`vec_element_byte_size` gained `Type::Object` arms
+(`intent_dyn_<Iface>` tag, 16-byte fat pointer).
+Test totals: 920 lib + 47 e2e + 7 vtables-phase3.
 #225 Vtables Phase 4a (struct field of `dyn Iface`):
 `c_element_storage(Type::Object)` now returns
 `intent_dyn_<Iface>` so struct field declarations spell
@@ -913,11 +933,13 @@ totals: 888 lib + 47 e2e passing.
     `intent_dyn_<Iface>`; vtable typedef split into
     forward tag (before structs) + full body (after
     structs) so a Struct can carry a dyn field. **Phase
-    4b (Vec<dyn Iface>) queued** — needs checker-side
-    vec-literal element coercion to the annotation's
-    element type so heterogeneous element values get
-    coerced individually rather than unified by inference.
-    **Phase 4c (`ref dyn Iface` borrows) queued.**
+    4b (Vec<dyn Iface>) done 2026-05-25 (closure #226)** —
+    heterogeneous vec literal infers a common impl
+    interface; per-(T, Iface) trampoline now casts to
+    its impl's actual `for_type` (not the iface's first-
+    declared self); LLVM vec_struct_tag /
+    vec_element_byte_size handle Object. **Phase 4c
+    (`ref dyn Iface` borrows) queued.**
 
   - **Phase 5 — auto-`==` desugar (separate but related).**
     Lower `a == b` to `a.eq(ref b)` when `implement Eq for
