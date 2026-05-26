@@ -8,34 +8,125 @@
 
 Pronounced **vaa-NEE** (Sanskrit *vāṇī* — long-a, retroflex-n, long-i;
 stress on the second syllable). वाणी is the Sanskrit word for *speech*,
-*voice*, or *language itself*. The name captures the design goal: a
-programming language whose source reads like prose, not like a thicket
-of punctuation. Where most languages reach
-for `&`, `&mut`, `::`, `??`, `&*`, or `<>` to denote behavior, VANI uses
-the keywords you would already say out loud — `ref`, `mut ref`, `then`,
-`ensures`, `requires`, `parallel for`, `methods on`. The compiler does the
-heavy lifting; the source stays human-shaped.
+*voice*, or *language itself*.
 
-This is a small Rust-based compiler prototype that demonstrates the
-approach end-to-end:
+## Philosophy
 
-- intent metadata
-- typed functions, structs, enums, methods, tuples, type aliases, consts
-- typed IR lowered to SSA form
-- verifiable `requires`, `ensures`, `assert`, `prove`, and `invariant`
-  constraints, discharged by a Z3-backed SMT layer
-- compile-time bounds / divisor / shift / overflow checking
-- affine ownership with automatic destructors (Vec, OwnedStr, Atomic,
-  Mutex, Guard, Channel, Task)
-- LLVM IR as the default backend (with AOT via `llc + cc`), C as the
-  legacy / portability backend, both reached through a shared SSA pipeline
-- `parallel for` with verified race-freedom + reductions, and
-  `task` / `join` with real-thread spawning on Linux and Windows
+vāṇī is a small systems language **inspired by Rust and C/C++** in
+its semantic model — static types, affine ownership, references with
+explicit `mut` / `ref` discipline, compile-time monomorphization,
+direct LLVM / C code generation, and predictable cost — but with a
+surface that **reads as close to natural language as a strict compiler
+will let it**.
 
-The production compiler core is in Rust. Python is excellent for
-experiments, testing, and AI orchestration, but Rust is the better default
-for a compiler that must be fast, memory-safe, deterministic, and close to
+The goal is to let users *express the same program* in whichever
+spelling reads most naturally to them, without weakening the
+language's correctness or performance guarantees. Three concrete
+commitments make that work:
+
+1. **Same execution model as Rust / C / C++.** The output is
+   fully deterministic. The same source compiles to the same LLVM IR
+   / C, with the same runtime behavior on a given target, every time.
+   No interpreter, no garbage collector, no surprise allocator, no
+   hidden control flow. `prove` / `ensures` / `requires` constraints
+   are discharged at compile time by Z3-backed SMT; runtime cost is
+   what you'd get in idiomatic Rust.
+2. **Multiple keywords + aliases let the writer choose tone.** Most
+   constructs accept more than one spelling. `let` and `assign` both
+   declare a binding. `return`, `give`, `give_back`, and the two-word
+   `give back` are all the same. `pub` and `public` are interchangeable.
+   `module` accepts `mod`. **Devanagari surface (Phase 1)** further
+   aliases the same tokens to Sanskrit (`कार्य`, `पुनरागम`, `माना`, …),
+   Hindi (`फ़ंक्शन`, `लौटाओ`, …), and Marathi (`परत`, …) so a program
+   can read like Indo-Aryan prose without the lexer caring which
+   form was used. Per-file language purity (closure #237) lets a
+   project opt into a single language and have the checker reject
+   out-of-language identifiers.
+3. **Keywords replace punctuation where it matters most.** Where Rust
+   reaches for `&`, `&mut`, `::`, `?`, `<T>`, `'a`, vāṇī uses the words
+   you'd say out loud — `ref`, `mut ref`, `module foo::bar`, `try`,
+   `<T>` (kept for generics), and `where T is Trait`. The result reads
+   left-to-right at speaking pace without losing the strictness of the
+   Rust semantic model.
+
+The compiler core is in Rust. Python is fine for experiments, AI
+orchestration, and testing, but Rust is the better default for a
+compiler that must be fast, memory-safe, deterministic, and close to
 ABI / native code generation.
+
+## Feature set (closures #1–#258)
+
+vāṇī today is a working systems language with the following shipped
+features. Surface that **reads natural-language** sits on top of a
+semantic model **borrowed from Rust** and a code-generator that
+**emits LLVM IR or C** with no runtime layer in between.
+
+**Type system + memory:**
+- Scalars (`i8`–`i64`, `u8`–`u64`, `f32`/`f64`, `bool`); fixed-size
+  arrays `[T; N]`; heap `Vec<T>`; tuples (2–4 elements); structs (up
+  to 64 fields); enums (with payloaded variants); type aliases;
+  `const` bindings with literal initializers.
+- `Str` (borrowed string) and `OwnedStr` (heap, affine, produced by
+  `+` concat).
+- **Affine ownership.** `Vec`, `OwnedStr`, `Atomic`, `Mutex`, `Guard`,
+  `Channel`, `Task` are all single-owner; the checker tracks moves +
+  partial moves and the backends emit deterministic destructors at
+  scope exit. User-defined `Drop` interface lets a struct hook into
+  the scope-exit flow.
+- **References** are second-class keyword-first: `ref T` / `mut ref T`
+  in parameter position, `ref x` / `mut ref x` at call sites, with
+  aliasing rejected at compile time.
+
+**Generics + dispatch:**
+- **Monomorphized generics** (`fn id<T>(x: T) -> T`) — specialized per
+  call-site concrete type.
+- **Interfaces** (`interface Show { … }` + `implement Show for T { … }`)
+  with **static dispatch** by default and **dynamic dispatch via
+  `dyn Iface`** (16-byte fat pointer) for heterogeneous collections.
+  Bounded generics: `fn min<T>(a: T, b: T) -> T where T is Cmp`.
+
+**Control flow + verification:**
+- `if`/`else`/`else if`, `while`, `for i from lo to hi`, `for x in xs`,
+  `break` / `continue`, `match` with payloaded-variant destructure,
+  `try` keyword for early-return on Option/Result-like enums.
+- **SMT-discharged** `requires` / `ensures` / `assert` / `prove` /
+  `invariant` via Z3. Bounds / divisor / shift / overflow checks
+  elided when proven safe.
+
+**Parallelism + concurrency:**
+- `parallel for` with verified race-freedom + reductions
+  (`reduce x with +`, `*`, `&&`, `||`, `&` / `|` / `^`, `min`, `max`).
+- `task <name> { … }` / `join <name>;` with real pthread (Linux)
+  and CreateThread (Windows) backing. `Atomic<T>` for shared
+  counters, `Mutex<T>` + `Guard<T>` for critical sections,
+  `Channel<T, N>` for queues.
+
+**Namespaces + modules:**
+- `module foo { … }` (inline + nested + deep `a::b::c::Item` paths).
+- Per-item `pub` and `pub(kosh)` visibility.
+- `use foo::bar [as baz];`, `use foo::{a, b};`, `use foo::*;` (direct
+  children only), `pub use foo::bar;` re-exports (transitively
+  resolved), module-local `use` inside `module { }` bodies, orphan
+  rules on `implement Iface for T`, collision diagnostics with
+  precise `use … as …;` hints.
+
+**Backends + tooling:**
+- LLVM IR (default) — tree path + SSA path with automatic fallback.
+- C — same dual-path arrangement.
+- `intentc check` (typecheck + SMT), `emit` (lowered source), `run`
+  (compile + execute), `build` (AOT to native binary), `fmt`
+  (formatter with round-trip + comment preservation), `ast` (AST
+  dump), LSP integration.
+- Cross-backend parity test pins identical stdout + exit code on
+  every example under both backends.
+
+**Multi-file projects:**
+- `use "path.vani";` for file-level inclusion; cycle detection;
+  diagnostics resolve to the original file:line via a `FileMap`.
+
+See [STATUS.md](STATUS.md) for the closure-by-closure history and
+[TODO.md](TODO.md) for what's queued. The full Roadmap (small +
+multi-session items) is in the README's *Roadmap* section below.
 
 ## Language Snapshot
 
@@ -56,36 +147,46 @@ fn main() -> i64 {
 ```
 
 Read it aloud: *"function add takes a and b of type int-64, returns int-64;
-return a + b."* — no `::`, no `<>`, no `&`. Every operator is a word that
-makes sense when spoken.
+return a + b."* The source reads left-to-right at speaking pace.
 
-### Why keyword-first
+### Translation from Rust / C++ punctuation
 
-Most language friction comes from punctuation: `&mut self`, `Option<Box<T>>`,
-`if let Some(x) = …`, `xs.iter().filter(…).map(…)`. VANI deliberately
-trades brevity for readability:
+vāṇī keeps the **semantic model** of Rust / C++ (static types, affine
+ownership, monomorphized generics, references with explicit `mut`)
+but replaces the punctuation soup with keywords. Most of the column
+on the left will compile on the right with identical generated code:
 
-| Other languages | VANI |
-|---|---|
-| `&xs` (borrow) | `ref xs` |
-| `&mut xs` (mut borrow) | `mut ref xs` |
-| `fn(&self)` (method) | `fn name(self: ref Type)` |
-| `Vec::with_capacity(n)` (path call) | (free function — no `::`) |
-| `impl Drop for T` (interface impl) | `implement Drop for T` (auto-called on scope exit) |
-| `match Some(x) => …` | `match Some(x) then …` |
-| `xs?` (try operator) | `try foo(…)` (keyword form) |
-| `loop { … }` | `while true { … }` |
-| `for x in &xs` | `for x in ref xs` |
-| `mod foo { … }` | `module foo { … }` (`mod` accepted as alias) |
-| `pub(crate) fn …` | `pub(kosh) fn …` (कोश = "treasure / repository") |
-| `pub use foo::bar;` | `pub use foo::bar;` (re-exports through the current module) |
-| `use foo::*;` (glob) | `use foo::*;` (direct children only, non-transitive) |
-| `let x = …` | `let x = …` or `assign x = …` |
-| `return x` | `return x` / `give x` / `give_back x` / `give back x` |
+| Rust / C++ | vāṇī | Notes |
+|---|---|---|
+| `&xs` (shared borrow) | `ref xs` | second-class, param-only |
+| `&mut xs` (mut borrow) | `mut ref xs` | same semantics |
+| `fn(&self)` | `fn name(self: ref Type)` | receiver is explicit |
+| `Vec::with_capacity(n)` | `vec_with_capacity(n)` | free function — no path |
+| `impl Drop for T` | `implement Drop for T` | auto-called at scope exit |
+| `match Some(x) => …` | `match Opt.Some(x) then …` | `then` instead of `=>` |
+| `xs?` (try operator) | `try expr` (keyword form) | Option / Result early-return |
+| `loop { … }` | `while true { … }` | one looping construct |
+| `for x in &xs` | `for x in ref xs` | borrow at the loop header |
+| `mod foo { … }` | `module foo { … }` | `mod` accepted as alias |
+| `pub(crate) fn …` | `pub(kosh) fn …` | कोश = "treasure / repository" |
+| `pub use foo::bar;` | `pub use foo::bar;` | re-exports through current module |
+| `use foo::*;` (glob) | `use foo::*;` | direct children only, non-transitive |
+| `let x = …` | `let x = …` *or* `assign x = …` | aliases pick tone |
+| `return x` | `return x` / `give x` / `give_back x` / `give back x` | all canonical |
 
 The compiler never silently changes the meaning of source. Aliasing,
-ownership transfer, and pure-vs-effectful boundaries are all visible in
-the words on screen.
+ownership transfer, and pure-vs-effectful boundaries are all visible
+in the words on screen — surface aliases never relax a check.
+
+### Deterministic output, multiple ways to spell it
+
+Every alias resolves to the same `TokenKind` at the lexer boundary,
+so the AST is identical regardless of which spelling the user picked.
+The checker, SMT layer, SSA pass, and backends all see the same IR.
+Two source files that differ only in alias choice produce
+**byte-identical LLVM IR / C** (after `intentc fmt` re-emits to a
+canonical form). The same program in English vs Hindi vs Sanskrit
+runs the same instructions on the same target.
 
 ### वाणी (*vāṇī*) — Devanagari notation (Phase 1 shipped)
 
