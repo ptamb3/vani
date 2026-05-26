@@ -1269,6 +1269,17 @@ fn flatten_modules_in_program(
     // function 'math__double'".
     let mut private_items: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    // Closure #257: re-export map. Built from each module's
+    // `pub use foo::bar;` declarations. Key is the source
+    // name that external callers see (`<mod_name>__<local>`);
+    // value is the actual flattened name (`<imported_mod>__<item>`).
+    // After per-module flattening completes, the map is
+    // resolved transitively (so chained re-exports collapse
+    // to a single hop) and applied to every reference in
+    // every top-level item, rewriting the source-visible name
+    // to the actual implementation name.
+    let mut re_exports: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     // Closure #248: worklist over modules with their full
     // dotted path prefix. Top-level modules start with an
     // empty prefix; nested modules get pushed with the
@@ -1382,6 +1393,31 @@ fn flatten_modules_in_program(
                     ),
                 ));
                 continue;
+            }
+            // Closure #257: `pub use foo::bar;` re-export.
+            // External callers writing `<this_mod>::bar` (which
+            // parses to `<this_mod>__bar`) should resolve to
+            // `foo__bar`. Record the rewrite in the global
+            // re-export map; the post-flatten rewriting pass
+            // will apply it transitively.
+            if up.is_pub {
+                let exported_name = format!("{}__{}", mod_name, local);
+                if let Some(prev) = re_exports.get(&exported_name) {
+                    diagnostics.push(Diagnostic::new(
+                        up.span,
+                        format!(
+                            "re-export collision: `{}::{}` is already \
+                             re-exported (would point to both `{}` and \
+                             `{}`); rename one with `pub use … as …;`",
+                            mod_name.replace("__", "::"),
+                            local,
+                            prev.replace("__", "::"),
+                            mangled.replace("__", "::")
+                        ),
+                    ));
+                } else {
+                    re_exports.insert(exported_name, mangled.clone());
+                }
             }
             module_use_aliases.insert(local, mangled);
         }
@@ -1709,6 +1745,81 @@ fn flatten_modules_in_program(
     // top-level `use` aliases inside module bodies in v1
     // (the explicit `module::item` path always works from
     // anywhere).
+    // Closure #257: resolve the re-export map transitively, so
+    // chained re-exports (`mod1::pub use mod2::X`,
+    // `mod2::pub use mod3::X`) collapse to a single hop
+    // (`mod1__X → mod3__X`). Iterate until fixed-point —
+    // chains can't loop (the parser produces a DAG by
+    // construction since `pub use` paths name CONCRETE module
+    // items, not re-export entries; we just resolve through
+    // the levels that share keys).
+    if !re_exports.is_empty() {
+        loop {
+            let mut changed = false;
+            let entries: Vec<(String, String)> = re_exports
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            for (k, v) in entries {
+                if let Some(deeper) = re_exports.get(&v).cloned() {
+                    if deeper != v {
+                        re_exports.insert(k, deeper);
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        // Apply the re-export map to every top-level item's
+        // body, types, and signatures. The rewrite swaps
+        // re-exported source names (`facade__Item`) for their
+        // implementation names (`deep__Item`) so the type
+        // checker sees only the real items.
+        let qualify_reexport = |name: &str| -> String {
+            re_exports.get(name).cloned().unwrap_or_else(|| name.to_string())
+        };
+        for f in &mut program.functions {
+            for s in &mut f.body {
+                rewrite_stmt_for_alias(s, &qualify_reexport);
+            }
+            rewrite_type_for_alias(&mut f.return_type, &qualify_reexport);
+            for p in &mut f.params {
+                rewrite_type_for_alias(&mut p.ty, &qualify_reexport);
+            }
+        }
+        for im in &mut program.impls {
+            rewrite_type_for_alias(&mut im.for_type, &qualify_reexport);
+            for m in &mut im.methods {
+                for s in &mut m.body {
+                    rewrite_stmt_for_alias(s, &qualify_reexport);
+                }
+                rewrite_type_for_alias(&mut m.return_type, &qualify_reexport);
+                for p in &mut m.params {
+                    rewrite_type_for_alias(&mut p.ty, &qualify_reexport);
+                }
+            }
+        }
+        for mb in &mut program.methods_blocks {
+            rewrite_type_for_alias(&mut mb.for_type, &qualify_reexport);
+            for m in &mut mb.methods {
+                for s in &mut m.body {
+                    rewrite_stmt_for_alias(s, &qualify_reexport);
+                }
+                rewrite_type_for_alias(&mut m.return_type, &qualify_reexport);
+                for p in &mut m.params {
+                    rewrite_type_for_alias(&mut p.ty, &qualify_reexport);
+                }
+            }
+        }
+        for s in &mut program.structs {
+            for fld in &mut s.fields {
+                rewrite_type_for_alias(&mut fld.ty, &qualify_reexport);
+            }
+        }
+    }
+
     let mut use_aliases: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     // Closure #254: track the source-form of each alias's first

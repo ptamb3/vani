@@ -477,8 +477,12 @@ fn format_module_decl(
             }
             ModItem::Use(i) => {
                 // Module-local `use foo::bar [as baz];` —
-                // mirrors the top-level emit shape.
+                // mirrors the top-level emit shape. `pub use`
+                // (closure #257) prefixes `pub `.
                 let up = &m.use_paths[*i];
+                if up.is_pub {
+                    sub.push_str("pub ");
+                }
                 sub.push_str("use ");
                 sub.push_str(&up.module.replace("__", "::"));
                 sub.push_str("::");

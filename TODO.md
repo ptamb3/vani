@@ -535,6 +535,43 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#257 Namespaces — re-exports `pub use foo::bar;` inside modules.
+`pub use` inside a module body re-exports an item
+under the current module's namespace — external
+callers reach it as `<this_mod>::<local>`. Builds on
+#256's module-local `use` machinery.
+
+`UsePath` gains `is_pub: bool`; the parser peeks for
+`Pub` immediately followed by `Use` (so regular `pub
+fn` / `pub struct` paths aren't disturbed). The
+checker builds a global `re_exports` map during
+per-module flatten (key:
+`<this_mod>__<local>`; value: `<imported_mod>__<item>`),
+then resolves transitively via fixed-point iteration
+so chained re-exports collapse to a single hop. After
+resolution, a rewriting pass walks every top-level
+function, impl, methods block, and struct, swapping
+source-visible re-export names for their actual
+implementation names. The type checker subsequently
+sees only real items.
+
+Five new lib tests cover: single-hop re-export
+resolves, multi-layer transitive chain collapses,
+duplicate local name produces the module-local
+collision diagnostic (already caught by closure
+#256's check), `as`-rename disambiguates two
+colliding re-exports, plain non-pub `use` inside a
+module does NOT re-export.
+
+Formatter round-trips: `format_module_decl`'s
+`ModItem::Use` arm prefixes `pub ` when
+`up.is_pub == true`. Top-level `pub use` is
+accepted syntactically but is currently a no-op
+(top-level items are already globally visible;
+the `pub` only matters once the future kosh
+boundary exists). Test totals: 957 lib + 47 e2e +
+11 vtables-phase3 + 2 user-drop-by-ref + 1
+ssa-examples.
 #256 Namespaces — `use foo::bar [as baz];` inside `module { }` blocks.
 modules now admit local `use` declarations alongside
 item definitions; the alias is scoped to the module

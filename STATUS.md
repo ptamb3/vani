@@ -537,6 +537,34 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Namespaces — re-exports `pub use foo::bar;` done 2026-05-26**:
+   `pub use` inside a module body re-exports an item
+   under the current module's namespace — external
+   callers reach it as `<this_mod>::<local>` even though
+   the actual implementation lives in another module.
+   `UsePath` gains an `is_pub: bool` field; the parser
+   peeks for `Pub` immediately followed by `Use` so the
+   token is consumed only when the re-export form is
+   intended (regular `pub fn`, `pub struct` etc. still
+   work). The checker builds a global re-export map
+   (`<this_mod>__<local> → <imported_mangled>`) during
+   per-module flattening, then resolves transitively via
+   fixed-point iteration so chained re-exports
+   (`top::pub use middle::X` → `middle::pub use deepest::X`)
+   collapse to a single hop. After resolution, a rewriting
+   pass walks every top-level function, impl, methods
+   block, and struct, substituting source-visible
+   re-export names for their implementation names so the
+   type checker only ever sees real items. Five new lib
+   tests pin: single-hop re-export resolves, transitive
+   chain collapses, duplicate local name diagnoses
+   cleanly, `as`-rename disambiguates colliding
+   re-exports, and a regression guard confirms plain
+   (non-pub) `use` inside a module does NOT re-export.
+   Formatter round-trips the `pub` prefix on use paths.
+   Test totals: 957 lib + 47 e2e + 11 vtables-phase3 +
+   2 user-drop-by-ref + 1 ssa-examples. Closure #257.
+
    **Namespaces — `use` inside `module { }` blocks done 2026-05-26**:
    modules now admit local `use foo::bar;` declarations
    alongside item definitions. The alias is scoped to

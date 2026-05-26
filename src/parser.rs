@@ -92,7 +92,10 @@ impl Parser {
                     }
                 }
             } else if self.check(|kind| matches!(kind, TokenKind::Use)) {
-                match self.parse_use() {
+                // Top-level `use` — `is_pub` is meaningless
+                // here (top-level items are globally visible
+                // already); pass false.
+                match self.parse_use(false) {
                     Ok(UseDecl::File(u)) => uses.push(u),
                     Ok(UseDecl::Path(p)) => use_paths.push(p),
                     Ok(UseDecl::PathMulti(ps)) => use_paths.extend(ps),
@@ -220,10 +223,29 @@ impl Parser {
             // path is scoped to this module — the checker's
             // per-module `qualify` adds it to the local alias
             // map so bare references inside the body resolve
-            // through it. Cannot be marked `pub` in v1
-            // (re-exports are a follow-up).
-            if self.check(|k| matches!(k, TokenKind::Use)) {
-                match self.parse_use() {
+            // through it.
+            //
+            // Closure #257: `pub use foo::bar;` is the re-export
+            // form. The `pub` is parsed here so it precedes the
+            // `use`; UsePath's `is_pub` flag picks it up. After
+            // flattening, the checker builds a global re-export
+            // map (`<this_mod>__<local> → <imported_mangled>`)
+            // and rewrites external references to the renamed
+            // form.
+            //
+            // Peek for `pub use` so we don't accidentally grab a
+            // `pub` that belongs to an upcoming item declaration.
+            let pub_use_form = self.check(|k| matches!(k, TokenKind::Pub))
+                && matches!(
+                    self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                    Some(TokenKind::Use)
+                );
+            if pub_use_form || self.check(|k| matches!(k, TokenKind::Use)) {
+                let is_use_pub = pub_use_form;
+                if pub_use_form {
+                    self.bump(); // consume `pub`
+                }
+                match self.parse_use(is_use_pub) {
                     Ok(UseDecl::Path(p)) => local_use_paths.push(p),
                     Ok(UseDecl::PathMulti(ps)) => local_use_paths.extend(ps),
                     Ok(UseDecl::File(u)) => {
@@ -646,8 +668,12 @@ impl Parser {
         })
     }
 
-    /// Parse a `use` declaration. Five forms (closures
-    /// #245, #247, #248, #253, #254):
+    /// Parse a `use` declaration. The `is_pub` flag is set
+    /// by the caller when a `pub` keyword precedes the
+    /// `use` (closure #257) — only meaningful inside
+    /// `module { }` bodies, where it marks the import as
+    /// a re-export. Five forms (closures #245, #247, #248,
+    /// #253, #254):
     /// - File import: `use "path/to/file.vani";` (quoted
     ///   string, used by the multi-file pipeline).
     /// - Module-path single import: `use foo::bar;` (deep
@@ -660,7 +686,11 @@ impl Parser {
     /// - Optional `as <local>` rename: `use foo::bar as baz;`
     ///   and per-entry inside brace lists. Closure #254 —
     ///   resolves collisions between same-leaf imports.
-    fn parse_use(&mut self) -> Result<UseDecl, Diagnostic> {
+    /// - Optional `pub` prefix (`pub use foo::bar;`) marks
+    ///   the import as a re-export when inside a module
+    ///   body — closure #257. The caller passes `is_pub`;
+    ///   `parse_use` itself doesn't consume the `pub` token.
+    fn parse_use(&mut self, is_pub: bool) -> Result<UseDecl, Diagnostic> {
         let start = self.expect_keyword("'use'", |kind| matches!(kind, TokenKind::Use))?;
         // Peek: string token means file import; identifier
         // means module-path import.
@@ -730,6 +760,7 @@ impl Parser {
                 module,
                 item: "*".to_string(),
                 alias: None,
+                is_pub,
                 span: start.span.merge(semi.span.merge(star.span)),
             }));
         }
@@ -780,6 +811,7 @@ impl Parser {
                     module: module.clone(),
                     item,
                     alias,
+                    is_pub,
                     span: start.span.merge(item_span),
                 })
                 .collect();
@@ -804,6 +836,7 @@ impl Parser {
             module,
             item,
             alias,
+            is_pub,
             span: start.span.merge(semi.span),
         }))
     }

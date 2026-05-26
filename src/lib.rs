@@ -14914,6 +14914,126 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn pub_use_re_exports_item_under_module_namespace() {
+        // Closure #257: `pub use deep::Widget;` inside `module
+        // facade { }` lets external callers reach the item as
+        // `facade::Widget` (which the parser mangles to
+        // `facade__Widget`). After the flatten pass, the
+        // re-export rewrite pass swaps every `facade__Widget`
+        // reference for the real `deep__Widget`.
+        let source = r#"
+            module deep {
+              pub struct Widget { id: i64 }
+              pub fn make(id: i64) -> Widget {
+                return Widget { id: id };
+              }
+            }
+
+            module facade {
+              pub use deep::make;
+              pub use deep::Widget;
+            }
+
+            fn main() -> i64 {
+              let w: facade::Widget = facade::make(7);
+              return w.id;
+            }
+        "#;
+        compile(source).expect("pub use re-export resolves through external path");
+    }
+
+    #[test]
+    fn pub_use_chains_through_multiple_layers() {
+        // Re-exports are resolved transitively in the checker
+        // — `top::jewel` → `middle::jewel` → `deepest::jewel`
+        // collapses to a single rewrite hop in the map, so the
+        // final reference points straight at the implementation.
+        let source = r#"
+            module deepest {
+              pub fn jewel() -> i64 { return 42; }
+            }
+            module middle { pub use deepest::jewel; }
+            module top { pub use middle::jewel; }
+
+            fn main() -> i64 { return top::jewel(); }
+        "#;
+        compile(source).expect("chained pub use compiles + resolves");
+    }
+
+    #[test]
+    fn pub_use_collision_with_same_local_name_diagnoses() {
+        // Two `pub use` entries in the same module that both
+        // export the same local name catch the existing
+        // module-local `use` collision check (closure #256
+        // catches duplicate `use` of the same name inside one
+        // module body, regardless of `pub`). The hint tells
+        // the user to rename one with `use … as …;`.
+        let source = r#"
+            module a { pub fn item() -> i64 { return 1; } }
+            module b { pub fn item() -> i64 { return 2; } }
+            module facade {
+              pub use a::item;
+              pub use b::item;
+            }
+            fn main() -> i64 { return facade::item(); }
+        "#;
+        let errors = compile(source).expect_err("duplicate re-exports must error");
+        assert!(
+            errors.iter().any(|e|
+                e.message.contains("already imported")
+                    && e.message.contains("module `facade`")),
+            "expected duplicate-import diagnostic in module `facade`; got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn pub_use_with_as_rename_avoids_collision() {
+        // The `as` form (closure #254) extended to `pub use`
+        // lets the user disambiguate two re-exports that
+        // would otherwise share a local name. The exported
+        // names land at `facade::item_a` and `facade::item_b`.
+        let source = r#"
+            module a { pub fn item() -> i64 { return 11; } }
+            module b { pub fn item() -> i64 { return 22; } }
+            module facade {
+              pub use a::item as item_a;
+              pub use b::item as item_b;
+            }
+            fn main() -> i64 {
+              return facade::item_a() + facade::item_b();
+            }
+        "#;
+        compile(source).expect("pub use with as disambiguates");
+    }
+
+    #[test]
+    fn plain_use_inside_module_does_not_re_export() {
+        // Closure #256 added module-local `use foo::bar;` —
+        // body-scoped, NOT re-exported. External callers must
+        // not see it as a child of the module. Regression
+        // guard for the `pub use` separator: plain `use`
+        // stays private to the module body.
+        let source = r#"
+            module deep { pub fn x() -> i64 { return 1; } }
+            module facade {
+              use deep::x;  // plain use — body-scoped only
+              pub fn caller() -> i64 { return x(); }
+            }
+            fn main() -> i64 {
+              return facade::x();
+            }
+        "#;
+        let errors = compile(source).expect_err("plain use is not a re-export");
+        assert!(
+            errors.iter().any(|e| e.message.contains("facade")
+                || e.message.contains("unknown")),
+            "expected unknown-name diagnostic for `facade::x`; got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn use_inside_module_aliases_resolve_inside_body() {
         // Closure #256: `use foo::bar;` inside a module body
         // is scoped to that module — references inside the

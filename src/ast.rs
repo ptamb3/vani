@@ -475,6 +475,15 @@ pub struct UsePath {
     /// leaf, and gives code a clearer local name without
     /// re-using the (possibly conflicting) original.
     pub alias: Option<String>,
+    /// `pub use foo::bar;` inside a module re-exports `bar`
+    /// under the current module's namespace — external
+    /// callers reach the imported item via `<this_mod>::bar`
+    /// (or its `as`-renamed name). Closure #257. Only
+    /// meaningful for use-paths inside `module { }` bodies;
+    /// at the top level we accept the syntax for symmetry
+    /// but it's currently a no-op (re-export to what?
+    /// awaits the future kosh boundary).
+    pub is_pub: bool,
     pub span: Span,
 }
 
