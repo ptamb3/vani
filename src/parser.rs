@@ -55,8 +55,24 @@ impl Parser {
         let mut consts = Vec::new();
         let mut type_aliases = Vec::new();
         let mut methods_blocks = Vec::new();
+        let mut modules: Vec<crate::ast::ModuleDecl> = Vec::new();
 
         while !self.check(|kind| matches!(kind, TokenKind::Eof)) {
+            // Closure #242: module declarations. v1 supports
+            // only top-level modules (no nesting). Items inside
+            // are stored in the ModuleDecl; the checker walks
+            // them later and mangles names + enforces
+            // visibility.
+            if self.check(|k| matches!(k, TokenKind::Module)) {
+                match self.parse_module_decl() {
+                    Ok(m) => modules.push(m),
+                    Err(e) => {
+                        self.errors.push(e);
+                        self.sync_to_top_level();
+                    }
+                }
+                continue;
+            }
             if self.check(|kind| matches!(kind, TokenKind::Intent)) {
                 match self.parse_intent() {
                     Ok(i) => intents.push(i),
@@ -158,6 +174,159 @@ impl Parser {
             consts,
             type_aliases,
             methods_blocks,
+            modules,
+        }
+    }
+
+    /// Closure #242: parse a `module name { items… }` block.
+    /// Items inside follow the same grammar as top-level items;
+    /// each can be prefixed with `pub` to export. v1 forbids
+    /// nested `module` declarations.
+    fn parse_module_decl(&mut self) -> Result<crate::ast::ModuleDecl, Diagnostic> {
+        let start = self.expect_keyword("'module'", |k| matches!(k, TokenKind::Module))?;
+        let name_tok = self.expect_ident()?;
+        let name_span = name_tok.span;
+        let name = ident_text(name_tok);
+        self.expect_keyword("'{' after module name", |k| matches!(k, TokenKind::LBrace))?;
+
+        let mut functions = Vec::new();
+        let mut structs = Vec::new();
+        let mut enums = Vec::new();
+        let mut interfaces = Vec::new();
+        let mut impls = Vec::new();
+        let mut consts = Vec::new();
+        let mut type_aliases = Vec::new();
+        let mut methods_blocks = Vec::new();
+        let mut vis = crate::ast::ModuleVisibility::default();
+
+        while !self.check(|k| matches!(k, TokenKind::RBrace | TokenKind::Eof)) {
+            // Reject nested modules (v1 doesn't support them).
+            if self.check(|k| matches!(k, TokenKind::Module)) {
+                let tok = self.bump();
+                self.errors.push(Diagnostic::new(
+                    tok.span,
+                    "nested `module` declarations are not supported in v1; \
+                     define modules only at the top level",
+                ));
+                self.sync_past_brace();
+                continue;
+            }
+            // Optional `pub` modifier. Top-level item parsing
+            // doesn't see `pub` today; inside a module it
+            // declares visibility.
+            let is_pub = self
+                .match_token(|k| matches!(k, TokenKind::Pub))
+                .is_some();
+
+            if self.check(|k| matches!(k, TokenKind::Struct)) {
+                match self.parse_struct_decl() {
+                    Ok(s) => {
+                        structs.push(s);
+                        vis.structs_pub.push(is_pub);
+                    }
+                    Err(e) => { self.errors.push(e); self.sync_past_brace(); }
+                }
+            } else if self.check(|k| matches!(k, TokenKind::Enum)) {
+                match self.parse_enum_decl() {
+                    Ok(e) => {
+                        enums.push(e);
+                        vis.enums_pub.push(is_pub);
+                    }
+                    Err(e) => { self.errors.push(e); self.sync_past_brace(); }
+                }
+            } else if self.check(|k| matches!(k, TokenKind::Interface)) {
+                match self.parse_interface_decl() {
+                    Ok(d) => {
+                        interfaces.push(d);
+                        vis.interfaces_pub.push(is_pub);
+                    }
+                    Err(e) => { self.errors.push(e); self.sync_past_brace(); }
+                }
+            } else if self.check(|k| matches!(k, TokenKind::Implement)) {
+                match self.parse_impl_decl() {
+                    Ok(d) => {
+                        impls.push(d);
+                        vis.impls_pub.push(is_pub);
+                    }
+                    Err(e) => { self.errors.push(e); self.sync_past_brace(); }
+                }
+            } else if self.check(|k| matches!(k, TokenKind::Const)) {
+                match self.parse_const_decl() {
+                    Ok(c) => {
+                        consts.push(c);
+                        vis.consts_pub.push(is_pub);
+                    }
+                    Err(e) => { self.errors.push(e); self.sync_past_brace(); }
+                }
+            } else if self.check(|k| matches!(k, TokenKind::Type)) {
+                match self.parse_type_alias() {
+                    Ok(a) => {
+                        type_aliases.push(a);
+                        vis.type_aliases_pub.push(is_pub);
+                    }
+                    Err(e) => { self.errors.push(e); self.sync_past_brace(); }
+                }
+            } else if self.check(|k| matches!(k, TokenKind::Methods)) {
+                match self.parse_methods_block() {
+                    Ok(m) => {
+                        methods_blocks.push(m);
+                        vis.methods_blocks_pub.push(is_pub);
+                    }
+                    Err(e) => { self.errors.push(e); self.sync_past_brace(); }
+                }
+            } else if self.check(|k| matches!(k, TokenKind::Fn | TokenKind::Pure)) {
+                match self.parse_function() {
+                    Ok(f) => {
+                        functions.push(f);
+                        vis.functions_pub.push(is_pub);
+                    }
+                    Err(e) => { self.errors.push(e); self.sync_past_brace(); }
+                }
+            } else {
+                let err = self.error_here(
+                    "expected an item declaration (fn / struct / enum / interface / implement / methods / const / type) inside `module`"
+                );
+                self.errors.push(err);
+                if !self.check(|kind| matches!(kind, TokenKind::Eof | TokenKind::RBrace)) {
+                    self.bump();
+                }
+            }
+        }
+
+        let close_tok = self.expect_keyword(
+            "'}' to close module",
+            |k| matches!(k, TokenKind::RBrace),
+        )?;
+        Ok(crate::ast::ModuleDecl {
+            name,
+            name_span,
+            functions,
+            structs,
+            enums,
+            interfaces,
+            impls,
+            consts,
+            type_aliases,
+            methods_blocks,
+            visibility: vis,
+            span: start.span.merge(close_tok.span),
+        })
+    }
+
+    /// Helper: skip tokens until past the next `}` (for error
+    /// recovery inside a module body when a single item fails).
+    fn sync_past_brace(&mut self) {
+        let mut depth = 0i32;
+        while !self.check(|k| matches!(k, TokenKind::Eof)) {
+            if self.check(|k| matches!(k, TokenKind::LBrace)) {
+                depth += 1;
+            } else if self.check(|k| matches!(k, TokenKind::RBrace)) {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            }
+            self.bump();
         }
     }
 
@@ -940,6 +1109,36 @@ impl Parser {
                 let n = name.clone();
                 self.bump();
                 return Ok(Type::Param(n));
+            }
+            // Closure #242: module-qualified type names. A
+            // lowercase-leading ident followed by `::` and an
+            // uppercase ident parses as a Type::Struct with
+            // the mangled name `<module>__<Type>`. v1 supports
+            // a single `::` segment (no nested modules).
+            if self
+                .tokens
+                .get(self.pos + 1)
+                .map(|t| matches!(t.kind, TokenKind::ColonColon))
+                .unwrap_or(false)
+            {
+                let mod_name = name.clone();
+                self.bump(); // module name
+                self.bump(); // ::
+                let type_tok = self.expect_ident()?;
+                let type_name = ident_text(type_tok);
+                let starts_uppercase = type_name
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_uppercase())
+                    .unwrap_or(false);
+                if !starts_uppercase {
+                    return Err(Diagnostic::new(
+                        self.current().span,
+                        "expected an uppercase type name after `::` \
+                         (only types can appear in type position)",
+                    ));
+                }
+                return Ok(Type::Struct(format!("{}__{}", mod_name, type_name)));
             }
             if name
                 .chars()
@@ -2316,7 +2515,34 @@ impl Parser {
                     span: token.span.merge(close.span),
                 })
             }
-            TokenKind::Ident(name) => {
+            TokenKind::Ident(first_name) => {
+                // Closure #242: path expression
+                // `module::item`. v1 supports a single `::`
+                // (no nested modules). The resulting `name`
+                // is the joined path string; later parser
+                // logic (struct literal / call / var) uses
+                // it unchanged. The checker recognizes
+                // `::` in identifier names and routes
+                // through module resolution.
+                let mut name = first_name.clone();
+                let mut name_span = token.span;
+                if self.check(|k| matches!(k, TokenKind::ColonColon)) {
+                    self.bump(); // consume ::
+                    let next_tok = self.expect_ident()?;
+                    let next_span = next_tok.span;
+                    let next_name = ident_text(next_tok);
+                    // Internal name uses `__` (backend-safe
+                    // identifier) instead of `::`. The lexer's
+                    // ColonColon token marks the module
+                    // boundary at parse time; downstream
+                    // (checker + backends) sees the
+                    // sanitized form. Diagnostics would
+                    // ideally preserve the source spelling
+                    // via spans, but for v1 the `__` form
+                    // appears in error messages.
+                    name = format!("{}__{}", name, next_name);
+                    name_span = name_span.merge(next_span);
+                }
                 // Struct literal `Name { field: val, … }` —
                 // we recognize the shape by looking past
                 // `{` for `ident :`. Anything else means
@@ -2325,11 +2551,11 @@ impl Parser {
                 // (struct names start uppercase) gates the
                 // attempt so plain variables never trip the
                 // lookahead. T1.2.
-                // `Type {` followed by either `<ident> :` (a
-                // field initializer) OR `}` (an empty struct
-                // literal). Empty-struct literals exist for
-                // marker types declared as `struct E {}`.
-                let starts_uppercase = name
+                // For module-qualified names like `foo__Point`
+                // the LAST segment's capitalization is what
+                // counts.
+                let last_segment: &str = name.rsplit("__").next().unwrap_or(&name);
+                let starts_uppercase = last_segment
                     .chars()
                     .next()
                     .map(|c| c.is_ascii_uppercase())
@@ -2369,15 +2595,15 @@ impl Parser {
                     return Ok(Expr {
                         kind: ExprKind::StructLit {
                             type_name: name,
-                            type_name_span: token.span,
+                            type_name_span: name_span,
                             fields,
                         },
-                        span: token.span.merge(close.span),
+                        span: name_span.merge(close.span),
                     });
                 }
                 Ok(Expr {
                     kind: ExprKind::Var(name),
-                    span: token.span,
+                    span: name_span,
                 })
             }
             TokenKind::LParen => {

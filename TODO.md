@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #241 — SSA Step 3b recognizer half)
+## ⏳ Resume here (paused 2026-05-26, after closure #242 — namespaces Phase 1)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,25 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#242 Namespaces — Phase 1 (parser + checker flatten):
+Rust-style `module foo { items… }` blocks now parse +
+type-check. Items inside get renamed to
+`<module>__<name>` at the AST level (the `__`
+separator is backend-safe; the source-form `::` is
+mapped at parse time). Intra-module references to
+sibling items get the same prefix automatically.
+New `ModuleDecl` + `ModuleVisibility` in ast.rs;
+`module`/`mod` and `pub`/`public` keyword pairs in
+the lexer; `::` operator (already present);
+`flatten_modules_in_program` pre-pass in the
+checker rewrites Call/Var/StructLit/Match/Cast/Type
+references in bodies. Path syntax works in both
+expression and type position. Visibility (`pub`)
+parsed but not yet enforced (Phase 2). Two new lib
+tests cover functions, structs, intra-module calls,
+and type-position paths. Test totals: 927 lib + 47
+e2e + 11 vtables-phase3 + 2 user-drop-by-ref + 1
+ssa-examples.
 #241 SSA Step 3b — recognizer multi-block body acceptance:
 `recognize_parallel_region` in ssa_backend_c.rs (shared
 by SSA-C + SSA-LLVM via re-export) now walks the body
@@ -1225,15 +1244,20 @@ totals: 888 lib + 47 e2e passing.
 User-requested additions to the language surface. Ordered by
 likely impact / blast radius, not implementation order.
 
-- **Namespaces / modules.** Today every fn / struct / enum /
-  interface lives in one flat global scope. Large programs
-  (and standard-library work) need a way to partition names.
-  Rust uses `mod foo { ... }` + `pub`; C++ uses
-  `namespace foo { ... }`. Open questions: do `use` paths
-  carry namespaces (`use "lib.vani"::foo`)? Are namespaces
-  file-scoped by default (mirror Rust) or do they declare
-  explicitly (mirror C++)? How do interface/impl resolution
-  cross namespaces?
+- **Namespaces / modules.** *Phase 1 done 2026-05-26 (closure
+  #242)* — Rust-style explicit `module foo { items… }` blocks
+  parse + type-check. Items inside get renamed to
+  `<module>__<name>`; intra-module references get the same
+  prefix automatically. Path syntax `foo::bar` /
+  `geo::Point` in expression and type position works.
+  Visibility (`pub`) is parsed but not yet enforced. *Phase 2
+  queued*: visibility enforcement (private items unreachable
+  from outside the module); `use foo::bar;` declarations;
+  orphan rules for `implement` blocks (impl must live in
+  the module of either Iface or T); cross-namespace
+  diagnostics. *Phase 3 queued*: nested modules, glob
+  imports, multi-item `use foo::{bar, baz};`, `pub(crate)`
+  tiers, re-exports.
 - **Multiple source files for one compilation.** `use "path"`
   already exists for single-file imports; extend to a full
   multi-file pipeline so the compiler ingests a set of `.vani`

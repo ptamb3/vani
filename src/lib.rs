@@ -2277,6 +2277,56 @@ mod tests {
     }
 
     #[test]
+    fn modules_namespace_items_and_intra_module_refs_resolve() {
+        // Closure #242 v1: module declarations introduce a
+        // namespace; items inside are renamed to
+        // `<module>__<item>` at the AST level (the `__`
+        // separator is backend-safe — the source-form `::`
+        // gets mapped at parse time). Intra-module references
+        // to sibling items get the same prefix automatically.
+        let source = r#"
+            module math {
+              pub fn square(x: i64) -> i64 { return x * x; }
+              pub fn double(x: i64) -> i64 { return x * 2; }
+              pub fn quad(x: i64) -> i64 {
+                return double(double(x));
+              }
+            }
+
+            fn main() -> i64 {
+              let a: i64 = math::square(5);
+              let b: i64 = math::double(7);
+              let c: i64 = math::quad(3);
+              assert a == 25;
+              assert b == 14;
+              assert c == 12;
+              return 0;
+            }
+        "#;
+        compile(source).expect("module + intra-module references compile");
+    }
+
+    #[test]
+    fn modules_with_struct_and_call_compile() {
+        // Module-scoped struct gets a path-qualified type
+        // name (`math::Point` → `math__Point` internally).
+        // Struct literals + field accesses + function args
+        // all resolve through the mangled name.
+        let source = r#"
+            module geo {
+              pub struct Point { x: i64, y: i64 }
+              pub fn x_of(p: geo::Point) -> i64 { return p.x; }
+            }
+
+            fn main() -> i64 {
+              let p: geo::Point = geo::Point { x: 7, y: 9 };
+              return geo::x_of(p);
+            }
+        "#;
+        compile(source).expect("module struct + fn args compile");
+    }
+
+    #[test]
     fn write_alias_for_print_lexes_correctly() {
         // Closure #237: `write` is an English alias for
         // `print`. Devanagari `लिख` / `लिखो` (likh / likho =

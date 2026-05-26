@@ -289,6 +289,18 @@ impl CheckedExpr {
 
 pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
+    let mut program = program;
+
+    // Closure #242: flatten modules into the global program
+    // before anything else runs. Items inside a module
+    // `M { fn bar() … }` get renamed to `M::bar`, and any
+    // intra-module reference (Call/Var/StructLit) to a
+    // sibling item gets rewritten with the `M::` prefix.
+    // After this pass, `program.modules` is empty and the
+    // rest of the checker sees a flat program with
+    // colon-colon-mangled names.
+    flatten_modules_in_program(&mut program, &mut diagnostics);
+
     // Pre-pass: resolve `Type::Struct(name)` → `Type::Enum(name)`
     // for every name declared as an enum. The parser can't
     // distinguish at parse time, so we run this before anything
@@ -296,7 +308,6 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // analysis sees the right Type variant. T1.3.
     let enum_names_pre: std::collections::HashSet<String> =
         program.enums.iter().map(|e| e.name.clone()).collect();
-    let mut program = program;
     resolve_enum_types_in_program(&mut program, &enum_names_pre);
 
     // T4.15 alias half: build the alias registry, detect
@@ -1224,6 +1235,268 @@ fn validate_main(
 /// `Type::Enum(name)` everywhere the name matches a declared
 /// enum. The parser can't distinguish struct vs enum at parse
 /// time (both look like uppercase identifiers in type
+/// Closure #242: flatten `module M { items… }` declarations
+/// into the program's global item lists. Each item inside M
+/// gets renamed to `M::<original_name>`; intra-module
+/// references (Call / Var / StructLit using the bare name)
+/// get rewritten with the `M::` prefix so they resolve to the
+/// mangled item.
+///
+/// V1 restrictions:
+/// - No nested modules (parser rejects them).
+/// - Visibility (`pub` modifier) is parsed but not yet
+///   enforced — every module item is effectively public. The
+///   enforcement layer lands in a follow-up commit; this
+///   first cut establishes the name-flow infrastructure.
+/// - Cross-module impl orphan rules unchecked in v1.
+fn flatten_modules_in_program(
+    program: &mut Program,
+    _diagnostics: &mut Vec<Diagnostic>,
+) {
+    use crate::ast::Pattern;
+    let modules = std::mem::take(&mut program.modules);
+    for module in modules {
+        let mod_name = module.name.clone();
+        // Collect the set of intra-module item names so we
+        // can rewrite bare references inside item bodies.
+        let mut item_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for f in &module.functions { item_names.insert(f.name.clone()); }
+        for s in &module.structs { item_names.insert(s.name.clone()); }
+        for e in &module.enums { item_names.insert(e.name.clone()); }
+        for i in &module.interfaces { item_names.insert(i.name.clone()); }
+        for c in &module.consts { item_names.insert(c.name.clone()); }
+        for a in &module.type_aliases { item_names.insert(a.name.clone()); }
+
+        // Helper: rewrite a name reference. If the bare name
+        // matches an intra-module item, prepend `M::`.
+        let qualify = |name: &str| -> String {
+            if item_names.contains(name) {
+                // Internal separator is `__` so the
+                // backend's identifier emit sees a valid C /
+                // LLVM identifier. Source-form `::` is mapped
+                // by the parser; the AST never carries `::`
+                // in name strings.
+                format!("{}__{}", mod_name, name)
+            } else {
+                name.to_string()
+            }
+        };
+
+        // Walk an expression tree and rewrite intra-module
+        // references. The set of name-sites that need rewriting:
+        // Var, Call(name), MethodCall on a struct constructor
+        // (Type-associated fn `Type.helper`), StructLit type_name,
+        // and Type::Struct/Enum names inside Cast / annotations.
+        fn rewrite_expr(
+            expr: &mut Expr,
+            qualify: &dyn Fn(&str) -> String,
+        ) {
+            match &mut expr.kind {
+                ExprKind::Var(n) => {
+                    *n = qualify(n);
+                }
+                ExprKind::Call { name, args, .. } => {
+                    *name = qualify(name);
+                    for a in args { rewrite_expr(a, qualify); }
+                }
+                ExprKind::MethodCall { receiver, args, .. } => {
+                    rewrite_expr(receiver, qualify);
+                    for a in args { rewrite_expr(a, qualify); }
+                }
+                ExprKind::StructLit { type_name, fields, .. } => {
+                    *type_name = qualify(type_name);
+                    for (_, v) in fields { rewrite_expr(v, qualify); }
+                }
+                ExprKind::Unary { expr, .. } => rewrite_expr(expr, qualify),
+                ExprKind::Binary { left, right, .. } => {
+                    rewrite_expr(left, qualify);
+                    rewrite_expr(right, qualify);
+                }
+                ExprKind::Cast { expr, ty } => {
+                    rewrite_expr(expr, qualify);
+                    rewrite_type(ty, qualify);
+                }
+                ExprKind::ArrayLit { elements } => {
+                    for e in elements { rewrite_expr(e, qualify); }
+                }
+                ExprKind::Index { array, index } => {
+                    rewrite_expr(array, qualify);
+                    rewrite_expr(index, qualify);
+                }
+                ExprKind::Len { array } => rewrite_expr(array, qualify),
+                ExprKind::Ref { inner } | ExprKind::RefMut { inner } => {
+                    rewrite_expr(inner, qualify);
+                }
+                ExprKind::Tuple(es) => {
+                    for e in es { rewrite_expr(e, qualify); }
+                }
+                ExprKind::TupleAccess { tuple, .. } => rewrite_expr(tuple, qualify),
+                ExprKind::FieldAccess { object, .. } => rewrite_expr(object, qualify),
+                ExprKind::Match { scrutinee, arms } => {
+                    rewrite_expr(scrutinee, qualify);
+                    for a in arms {
+                        rewrite_pattern(&mut a.pattern, qualify);
+                        rewrite_expr(&mut a.body, qualify);
+                    }
+                }
+                ExprKind::IfExpr { cond, then_value, else_value } => {
+                    rewrite_expr(cond, qualify);
+                    rewrite_expr(then_value, qualify);
+                    rewrite_expr(else_value, qualify);
+                }
+                ExprKind::Block { stmts, tail } => {
+                    for s in stmts { rewrite_stmt(s, qualify); }
+                    rewrite_expr(tail, qualify);
+                }
+                ExprKind::Try { inner } => rewrite_expr(inner, qualify),
+                _ => {}
+            }
+        }
+        fn rewrite_type(ty: &mut Type, qualify: &dyn Fn(&str) -> String) {
+            match ty {
+                Type::Struct(name) | Type::Enum(name) => *name = qualify(name),
+                Type::Ref(inner) | Type::RefMut(inner)
+                | Type::Vec(inner) | Type::Atomic(inner)
+                | Type::Mutex(inner) | Type::Guard(inner) => rewrite_type(inner, qualify),
+                Type::Channel(inner, _) => rewrite_type(inner, qualify),
+                Type::Array { element, .. } => rewrite_type(element, qualify),
+                Type::Tuple(elts) => for t in elts { rewrite_type(t, qualify); },
+                Type::FnPtr(params, ret) => {
+                    for p in params { rewrite_type(p, qualify); }
+                    rewrite_type(ret, qualify);
+                }
+                _ => {}
+            }
+        }
+        fn rewrite_pattern(pat: &mut Pattern, qualify: &dyn Fn(&str) -> String) {
+            match pat {
+                Pattern::Variant { enum_name, .. }
+                | Pattern::VariantWithBinding { enum_name, .. } => {
+                    *enum_name = qualify(enum_name);
+                }
+                _ => {}
+            }
+        }
+        fn rewrite_stmt(stmt: &mut Stmt, qualify: &dyn Fn(&str) -> String) {
+            match stmt {
+                Stmt::Let { expr, annotation, .. } | Stmt::LetTuple { expr, annotation, .. } => {
+                    if let Some(ann) = annotation { rewrite_type(ann, qualify); }
+                    rewrite_expr(expr, qualify);
+                }
+                Stmt::Return { expr, .. } | Stmt::Assert { expr, .. }
+                | Stmt::Prove { expr, .. } | Stmt::Assign { expr, .. } => {
+                    rewrite_expr(expr, qualify);
+                }
+                Stmt::Print { items, .. } => {
+                    for item in items {
+                        if let crate::ast::PrintItem::Expr(e) = item {
+                            rewrite_expr(e, qualify);
+                        }
+                    }
+                }
+                Stmt::If { cond, then_body, else_body, .. } => {
+                    rewrite_expr(cond, qualify);
+                    for s in then_body { rewrite_stmt(s, qualify); }
+                    for s in else_body { rewrite_stmt(s, qualify); }
+                }
+                Stmt::While { cond, body, .. } => {
+                    rewrite_expr(cond, qualify);
+                    for s in body { rewrite_stmt(s, qualify); }
+                }
+                Stmt::For { body, start, end, .. } => {
+                    rewrite_expr(start, qualify);
+                    rewrite_expr(end, qualify);
+                    for s in body { rewrite_stmt(s, qualify); }
+                }
+                Stmt::ForIter { body, .. } => {
+                    for s in body { rewrite_stmt(s, qualify); }
+                }
+                Stmt::TaskSpawn { body, .. } => {
+                    for s in body { rewrite_stmt(s, qualify); }
+                }
+                _ => {}
+            }
+        }
+
+        // Now rename items + rewrite bodies, then push onto
+        // the global lists.
+        for mut f in module.functions {
+            f.name = qualify(&f.name);
+            rewrite_type(&mut f.return_type, &qualify);
+            for p in &mut f.params {
+                rewrite_type(&mut p.ty, &qualify);
+            }
+            for s in &mut f.body {
+                rewrite_stmt(s, &qualify);
+            }
+            program.functions.push(f);
+        }
+        for mut s in module.structs {
+            s.name = qualify(&s.name);
+            for fld in &mut s.fields { rewrite_type(&mut fld.ty, &qualify); }
+            program.structs.push(s);
+        }
+        for mut e in module.enums {
+            e.name = qualify(&e.name);
+            for v in &mut e.variants {
+                for p in &mut v.payload { rewrite_type(p, &qualify); }
+            }
+            program.enums.push(e);
+        }
+        for mut i in module.interfaces {
+            i.name = qualify(&i.name);
+            for m in &mut i.methods {
+                rewrite_type(&mut m.return_type, &qualify);
+                for p in &mut m.params {
+                    rewrite_type(&mut p.ty, &qualify);
+                }
+            }
+            program.interfaces.push(i);
+        }
+        for mut imp in module.impls {
+            imp.interface_name = qualify(&imp.interface_name);
+            rewrite_type(&mut imp.for_type, &qualify);
+            for f in &mut imp.methods {
+                f.name = qualify(&f.name);
+                rewrite_type(&mut f.return_type, &qualify);
+                for p in &mut f.params {
+                    rewrite_type(&mut p.ty, &qualify);
+                }
+                for s in &mut f.body {
+                    rewrite_stmt(s, &qualify);
+                }
+            }
+            program.impls.push(imp);
+        }
+        for mut c in module.consts {
+            c.name = qualify(&c.name);
+            rewrite_type(&mut c.ty, &qualify);
+            rewrite_expr(&mut c.value, &qualify);
+            program.consts.push(c);
+        }
+        for mut a in module.type_aliases {
+            a.name = qualify(&a.name);
+            rewrite_type(&mut a.target, &qualify);
+            program.type_aliases.push(a);
+        }
+        for mut m in module.methods_blocks {
+            rewrite_type(&mut m.for_type, &qualify);
+            for f in &mut m.methods {
+                f.name = qualify(&f.name);
+                rewrite_type(&mut f.return_type, &qualify);
+                for p in &mut f.params {
+                    rewrite_type(&mut p.ty, &qualify);
+                }
+                for s in &mut f.body {
+                    rewrite_stmt(s, &qualify);
+                }
+            }
+            program.methods_blocks.push(m);
+        }
+    }
+}
+
 /// position), so this post-parse fixup keeps the AST honest
 /// before the checker runs. T1.3.
 fn resolve_enum_types_in_program(

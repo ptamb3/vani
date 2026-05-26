@@ -162,6 +162,17 @@ pub enum TokenKind {
     OrOr,
     Caret,
     Arrow,
+    /// `module name { ... }` — namespace declaration (closure
+    /// #242). vāṇī uses Rust-style modules: explicit paths
+    /// with `::` separator, `pub` for export, private-by-default
+    /// inside the module. Top-level items stay globally visible
+    /// for back-compat.
+    Module,
+    /// `pub` modifier: makes an item visible from outside its
+    /// module. Default visibility for module-scoped items is
+    /// private. Top-level items (not inside any `module`) stay
+    /// globally visible.
+    Pub,
     Eof,
 }
 
@@ -390,6 +401,8 @@ fn is_structure_keyword_kind(kind: &TokenKind) -> bool {
             | TokenKind::Prove
             | TokenKind::Print
             | TokenKind::Try
+            | TokenKind::Module
+            | TokenKind::Pub
     )
 }
 
@@ -583,6 +596,7 @@ impl<'a> Lexer<'a> {
                 b'}' => self.push(TokenKind::RBrace, start),
                 b'[' => self.push(TokenKind::LBracket, start),
                 b']' => self.push(TokenKind::RBracket, start),
+                b':' if self.match_byte(b':') => self.push(TokenKind::ColonColon, start),
                 b':' => self.push(TokenKind::Colon, start),
                 b';' => self.push(TokenKind::Semicolon, start),
                 b',' => self.push(TokenKind::Comma, start),
@@ -880,6 +894,14 @@ impl<'a> Lexer<'a> {
             "interface" | "trait" => TokenKind::Interface,
             // Implementation: `implement` / `impl` (Rust-style).
             "implement" | "impl" => TokenKind::Implement,
+            // Module declaration: `module` (canonical) / `mod`
+            // (Rust-shorthand alias). Closure #242.
+            "module" | "mod" => TokenKind::Module,
+            // Visibility modifier: `pub` (canonical, Rust-style)
+            // / `public` (alias for newcomers). Makes a
+            // module-scoped item visible from outside the
+            // module. Closure #242.
+            "pub" | "public" => TokenKind::Pub,
             "where" => TokenKind::Where,
             "is" => TokenKind::Is,
             "const" => TokenKind::Const,

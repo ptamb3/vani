@@ -537,6 +537,48 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Namespaces / modules — Phase 1 (parser + checker flatten) done 2026-05-26**:
+   Rust-style `module foo { items… }` blocks now parse and
+   type-check. Items inside are renamed to `<module>__<name>`
+   at the AST level (the `__` separator is backend-safe; the
+   source-form `::` gets mapped at parse time). Intra-module
+   references to sibling items get the same prefix
+   automatically — `quad` inside `module math` calling
+   `double(x)` resolves to `math__double` without the
+   user spelling the prefix.
+
+   Pieces shipped in this phase:
+   - **Lexer**: new `module`/`mod` keyword pair (English
+     canonical + Rust shorthand alias); new `pub`/`public`
+     keyword pair (Rust canonical + readable alias); `::`
+     operator (already in the lexer; ColonColon).
+   - **AST**: `ModuleDecl` carrying parallel lists of every
+     item kind plus a `ModuleVisibility` bitmap; `Program`
+     gains a `modules: Vec<ModuleDecl>`.
+   - **Parser**: top-level `module IDENT { items… }` blocks;
+     `pub` modifier on each item; rejects nested `module`
+     in v1; path expressions `IDENT::IDENT(args)` parse to
+     a single `Var("module__item")` so downstream code
+     resolves naturally. Type-position paths `geo::Point`
+     parse to `Type::Struct("geo__Point")`.
+   - **Checker**: `flatten_modules_in_program` pre-pass
+     renames items, rewrites intra-module references in
+     bodies (Call/Var/StructLit/Match/Cast/types), then
+     pushes the items onto Program's global lists. The rest
+     of the checker sees a flat program with mangled
+     names. Visibility (`pub`) is parsed but not yet
+     enforced — v1 effectively makes every item public.
+   - **Tests**: two lib tests
+     (`modules_namespace_items_and_intra_module_refs_resolve`
+     + `modules_with_struct_and_call_compile`) cover
+     functions, structs, intra-module calls, and type-
+     position paths.
+
+   Test totals: 927 lib + 47 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples passing. Closure
+   #242. Phase 2 (visibility enforcement, `use` statements,
+   orphan rules) is queued.
+
    **SSA Step 3b — recognizer multi-block body acceptance done 2026-05-26**:
    `recognize_parallel_region` in
    [`src/ssa_backend_c.rs`](src/ssa_backend_c.rs) now

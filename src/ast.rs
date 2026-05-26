@@ -209,6 +209,57 @@ pub struct Program {
     /// function table with name mangled as
     /// `<TypeName>_<methodName>`. T1.2 phase 2a.
     pub methods_blocks: Vec<MethodsBlock>,
+    /// `module name { items… }` blocks (closure #242). Each
+    /// module groups a set of items behind a namespace so
+    /// `module::item` references work from outside the
+    /// module. Items inside default to private; `pub` exports
+    /// them. The checker walks modules at the start of
+    /// type-checking, mangles every item name to
+    /// `<module>::<item>`, registers it in the global
+    /// signature/type maps, and records visibility for the
+    /// resolution layer. Top-level items (not inside any
+    /// `module`) stay globally visible — no back-compat break.
+    pub modules: Vec<ModuleDecl>,
+}
+
+/// `module foo { fn bar() -> i64 { … } pub struct Point {…} }`
+/// — closure #242 namespace declaration. v1 carries only
+/// top-level items (no nested modules); the parser will reject
+/// `module a { module b { … } }`. The checker flattens this
+/// into the existing `Program::functions` / `structs` / etc.
+/// with mangled names.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModuleDecl {
+    pub name: String,
+    pub name_span: Span,
+    pub functions: Vec<Function>,
+    pub structs: Vec<StructDecl>,
+    pub enums: Vec<EnumDecl>,
+    pub interfaces: Vec<InterfaceDecl>,
+    pub impls: Vec<ImplDecl>,
+    pub consts: Vec<ConstDecl>,
+    pub type_aliases: Vec<TypeAlias>,
+    pub methods_blocks: Vec<MethodsBlock>,
+    /// Parallel to each field above; `true` if the item is
+    /// `pub` (exported). Top-level items have no entry here —
+    /// they're globally visible by default. Index ordering
+    /// matches the corresponding Vec.
+    pub visibility: ModuleVisibility,
+    pub span: Span,
+}
+
+/// Per-item-list visibility bitmaps for a `ModuleDecl`.
+/// Indices align with the same-named Vec in `ModuleDecl`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModuleVisibility {
+    pub functions_pub: Vec<bool>,
+    pub structs_pub: Vec<bool>,
+    pub enums_pub: Vec<bool>,
+    pub interfaces_pub: Vec<bool>,
+    pub impls_pub: Vec<bool>,
+    pub consts_pub: Vec<bool>,
+    pub type_aliases_pub: Vec<bool>,
+    pub methods_blocks_pub: Vec<bool>,
 }
 
 /// `methods on Point { fn dist(self: Point) -> i64 { … } }`
