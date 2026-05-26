@@ -535,6 +535,26 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#255 English keyword aliases — `assign` (let), `give_back` / `give back` (return).
+follow-up to the earlier alias work that added `give`
+as `return`. The lexer's single-token keyword match
+now also folds `assign` → `Let` and adds `give_back` →
+`Return`. The two-word `give back` form goes through
+a small post-lex merger (`merge_give_back_ascii_alias`)
+that fuses `Return + Ident("back")` into a single
+Return token — but ONLY when the preceding Return
+token's source text was exactly `give`, so canonical
+`return back;` (where `back` is a user variable) is
+unaffected. The merger reuses the Devanagari merger's
+whitespace-only adjacency check.
+
+Pure surface alias — identical AST, no semantic
+divergence. Three new lib tests pin: `assign` parses
+as Let, `give` / `give_back` / `give back` all reach
+the AST as Return, and the regression guard
+(`return back;` keeps the variable). Test totals:
+948 lib + 47 e2e + 11 vtables-phase3 + 2 user-drop-
+by-ref + 1 ssa-examples.
 #254 Namespaces — `use ... as ...;` rename + collision diagnostic.
 single-item and brace-list `use` entries gain an
 optional `as <local>` suffix. UsePath grows an

@@ -537,6 +537,21 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **English keyword aliases — `assign` for `let`, `give_back`/`give back` for `return` done 2026-05-26**:
+   the lexer now recognizes `assign` as a single-token
+   alias for `let`, and adds two more aliases for
+   `return` alongside the existing `give`: `give_back`
+   (snake-case multi-word) and the two-word `give back`
+   (folded by a small post-lex pass
+   `merge_give_back_ascii_alias`). The merger only fires
+   when the preceding `Return` token's *source text* was
+   exactly `give`, so canonical `return back;` (where
+   `back` is a user variable) is unaffected — the SSA
+   value of `back` still flows into the return expr.
+   Three new lib tests pin each form + the regression
+   guard. The aliases are pure surface — identical AST,
+   no semantic divergence. Closure #255.
+
    **Namespaces — `use foo::bar as baz;` rename + collision diagnostic done 2026-05-26**:
    single-item and brace-list `use` entries now accept
    an optional `as <local>` suffix that overrides the

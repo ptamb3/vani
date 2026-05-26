@@ -280,6 +280,7 @@ fn devanagari_keyword(text: &str) -> Option<TokenKind> {
 pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
     let mut tokens = Lexer::new(source).lex()?;
     merge_multi_word_devanagari_aliases(&mut tokens, source);
+    merge_give_back_ascii_alias(&mut tokens, source);
     enforce_language_purity(&tokens, source)?;
     Ok(tokens)
 }
@@ -447,6 +448,58 @@ fn merge_multi_word_devanagari_aliases(tokens: &mut Vec<Token>, source: &str) {
                     continue;
                 }
             }
+        }
+        i += 1;
+    }
+}
+
+/// Closure #255: fold the two-word ASCII phrase `give back`
+/// into a single `Return` token. The lexer's main pass already
+/// maps the standalone words `give` and `give_back` to
+/// `TokenKind::Return`; this pass picks up the writer who
+/// preferred two whitespace-separated words. We don't reuse
+/// the Devanagari merger because it intentionally rejects
+/// ASCII pairs to avoid accidentally merging unrelated
+/// identifiers (e.g. `let x` would have collided with a
+/// hypothetical `let x` alias). The pattern here is
+/// specific: a `Return` token whose source text is exactly
+/// `give`, followed by an `Ident` whose source text is
+/// exactly `back`, with only whitespace between them. Real
+/// `return back;` style code is unaffected because `return`
+/// (the canonical form) doesn't trigger.
+fn merge_give_back_ascii_alias(tokens: &mut Vec<Token>, source: &str) {
+    let mut i = 0;
+    while i + 1 < tokens.len() {
+        if !matches!(tokens[i].kind, TokenKind::Return) {
+            i += 1;
+            continue;
+        }
+        if !matches!(tokens[i + 1].kind, TokenKind::Ident(_)) {
+            i += 1;
+            continue;
+        }
+        let a_span = tokens[i].span;
+        let b_span = tokens[i + 1].span;
+        if !whitespace_only(source, a_span.end, b_span.start) {
+            i += 1;
+            continue;
+        }
+        let a_text = source.get(a_span.start..a_span.end);
+        let b_text = source.get(b_span.start..b_span.end);
+        if matches!(a_text, Some("give")) && matches!(b_text, Some("back")) {
+            // Extend the Return token's span to cover both
+            // words so diagnostics underline the full phrase,
+            // then drop the trailing `back`.
+            let merged_span = a_span.merge(b_span);
+            tokens[i] = Token {
+                kind: TokenKind::Return,
+                span: merged_span,
+            };
+            tokens.remove(i + 1);
+            // Don't advance: the new token at `i` might be
+            // followed by another mergeable pair (unlikely
+            // but cheap to allow).
+            continue;
         }
         i += 1;
     }
@@ -870,10 +923,19 @@ impl<'a> Lexer<'a> {
             // Users can declare struct fields, locals,
             // and other names called `min`/`max` without
             // collision.
-            "let" => TokenKind::Let,
-            // Function exit: `return` / `give` (give reads
-            // naturally as "give back the value").
-            "return" | "give" => TokenKind::Return,
+            // Local binding: `let` is the idiomatic form;
+            // `assign` reads naturally for newcomers approaching
+            // from a Python / pseudo-code background. Closure
+            // #255 — pure surface alias, identical AST.
+            "let" | "assign" => TokenKind::Let,
+            // Function exit: `return` and three English-natural
+            // aliases. `give` is the verb form ("give the
+            // value"); `give_back` is the snake-case multi-word
+            // form; the two-word `give back` is folded later in
+            // a post-lex pass (`merge_multi_word_give_back`) so
+            // the surface accepts whichever spelling the writer
+            // prefers. Closure #255.
+            "return" | "give" | "give_back" => TokenKind::Return,
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
             "while" => TokenKind::While,

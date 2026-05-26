@@ -14914,6 +14914,70 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn assign_keyword_aliases_let() {
+        // Closure #255: `assign` reads as a more newcomer-
+        // friendly form for `let`. Same AST, same scoping rules.
+        let source = r#"
+            fn main() -> i64 {
+              assign x: i64 = 4;
+              assign y: i64 = 3;
+              return x + y;
+            }
+        "#;
+        let c = compile_to_c(source).expect("`assign` parses as `let`");
+        // Both bindings flow into the emitted C as locals.
+        assert!(
+            c.contains("v_x") || c.contains("int64_t x") || c.contains("= ((int64_t)4LL)"),
+            "expected the `assign x: i64 = 4` binding to surface in C:\n{}",
+            c.lines().take(80).collect::<Vec<_>>().join("\n")
+        );
+    }
+
+    #[test]
+    fn give_keyword_forms_all_alias_return() {
+        // Closure #255: `give`, `give_back`, and the two-word
+        // `give back` all lower to a `Return` AST node. The
+        // last form goes through a small post-lex merge pass
+        // (`merge_give_back_ascii_alias`) — only when the
+        // preceding `Return` token's source text was `give`.
+        let source = r#"
+            fn one() -> i64 { give 1; }
+            fn two() -> i64 { give_back 2; }
+            fn three() -> i64 { give back 3; }
+            fn main() -> i64 {
+              return one() + two() + three();
+            }
+        "#;
+        compile(source).expect("all three give-forms compile + reach the AST");
+    }
+
+    #[test]
+    fn return_back_with_variable_does_not_collapse() {
+        // Regression guard: the `give back` merger pattern
+        // (`Return` followed by `Ident("back")`) must NOT fire
+        // when the `Return` was lexed from the canonical
+        // `return` spelling. Otherwise `return back;` (where
+        // `back` is a user variable) would lose its value
+        // and the function would either fail to type-check
+        // (no expr after return) or silently return junk.
+        let source = r#"
+            fn main() -> i64 {
+              let back: i64 = 99;
+              return back;
+            }
+        "#;
+        let c = compile_to_c(source).expect("`return back;` preserves the variable");
+        // The emitted C should reference v_back (the SSA
+        // value of the `back` binding) — confirming the
+        // return carries an expression.
+        assert!(
+            c.contains("v_back") || c.contains("return ((int64_t)99LL)"),
+            "expected the `return back;` to carry the variable, got:\n{}",
+            c.lines().take(60).collect::<Vec<_>>().join("\n")
+        );
+    }
+
+    #[test]
     fn use_as_renames_imported_item() {
         // Closure #254: `use foo::bar as baz;` binds `baz`
         // locally to `foo__bar`. The renamed alias resolves
