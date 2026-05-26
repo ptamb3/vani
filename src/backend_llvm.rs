@@ -1557,6 +1557,17 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
             ctx.loops.pop();
             ctx.terminated = outer_terminated;
             out.push_str(&format!("{}:\n", exit));
+            // Closure #238: update ctx.current_block so a
+            // surrounding Block-expr emit (e.g. inside a match
+            // arm body) captures the post-while block as the
+            // PHI's incoming predecessor. Without this, a
+            // while-loop nested in a Block-expr would emit a
+            // PHI that names the match arm's entry block as
+            // the incoming predecessor — but the actual
+            // predecessor is the while's exit block, breaking
+            // `opt -verify` ("PHI node entries do not match
+            // predecessors").
+            ctx.current_block = exit;
         }
         TypedStmt::Break => {
             if let Some(frame) = ctx.loops.last() {
@@ -4448,13 +4459,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     TypedStmt::Print { .. }
                     | TypedStmt::Drop { .. }
                     | TypedStmt::Discard { .. }
-                    | TypedStmt::Reassign { .. } => {
-                        // Forward Print/Drop/Discard/Reassign
-                        // through the stmt-level emit. Reassign
-                        // hits the alloca address that the
-                        // enclosing scope's Let already set up,
-                        // so the store is identical to the
-                        // fn-body Reassign emit.
+                    | TypedStmt::Reassign { .. }
+                    | TypedStmt::While { .. } => {
+                        // Forward Print/Drop/Discard/Reassign/
+                        // While through the stmt-level emit. The
+                        // fn-body emit already knows how to lower
+                        // a while-loop into LLVM basic blocks
+                        // (header / body / exit); calling it from
+                        // inside a Block-expr just splices those
+                        // blocks into the surrounding fn.
                         emit_stmt(s, ctx, out);
                     }
                     _ => {}

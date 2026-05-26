@@ -2525,11 +2525,14 @@ fn try_rewrite_at_top(
     // Validate intermediate stmt shapes once up front. The
     // desugar wraps post-try stmts in a Block-expr, so its
     // stmt vocabulary determines what's admissible here.
-    // V1 accepts Let, Print, and Assign (rebind).
+    // V1 accepts Let, Print, Assign, and While.
     let intermediate_ok = body[0..last_idx].iter().all(|s| {
         matches!(
             s,
-            Stmt::Let { .. } | Stmt::Print { .. } | Stmt::Assign { .. }
+            Stmt::Let { .. }
+                | Stmt::Print { .. }
+                | Stmt::Assign { .. }
+                | Stmt::While { .. }
         )
     });
     if !intermediate_ok {
@@ -8000,10 +8003,91 @@ fn check_expr(
                             drop_old: false,
                         });
                     }
+                    Stmt::While { cond, body: while_body, .. } => {
+                        // Block-expr While loop (closure #238).
+                        // Cond must be bool; the loop body is
+                        // type-checked against the same restricted
+                        // stmt vocabulary the outer Block-expr
+                        // accepts (Let / Print / Assign / While).
+                        // This unblocks `while` between `try` and
+                        // `return` — the most common iteration
+                        // shape in a try-error-propagation chain.
+                        let cond_checked = check_expr(cond, env, signatures, diagnostics);
+                        if !matches!(cond_checked.ty(), Type::Bool) {
+                            diagnostics.push(Diagnostic::new(
+                                cond.span,
+                                format!(
+                                    "while condition must be bool, got {}",
+                                    cond_checked.ty()
+                                ),
+                            ));
+                        }
+                        let mut body_typed: Vec<TypedStmt> = Vec::new();
+                        for inner in while_body {
+                            match inner {
+                                Stmt::Assign { name: aname, expr: rhs, .. } => {
+                                    let Some(info) = env.lookup(aname).cloned() else {
+                                        diagnostics.push(Diagnostic::new(
+                                            inner.span(),
+                                            format!(
+                                                "reassignment to unknown binding '{}'",
+                                                aname
+                                            ),
+                                        ));
+                                        continue;
+                                    };
+                                    let raw = check_expr(rhs, env, signatures, diagnostics);
+                                    let coerced = coerce_checked(
+                                        raw,
+                                        &info.ty,
+                                        rhs.span,
+                                        "while-body reassignment",
+                                        diagnostics,
+                                    );
+                                    body_typed.push(TypedStmt::Reassign {
+                                        name: aname.clone(),
+                                        ty: info.ty.clone(),
+                                        expr: coerced.expr,
+                                        drop_old: false,
+                                    });
+                                }
+                                Stmt::Print { items, .. } => {
+                                    let mut typed_items: Vec<crate::ir::TypedPrintItem> =
+                                        Vec::with_capacity(items.len());
+                                    for item in items {
+                                        match item {
+                                            crate::ast::PrintItem::Str(s) => typed_items
+                                                .push(crate::ir::TypedPrintItem::Str(s.clone())),
+                                            crate::ast::PrintItem::Expr(e) => {
+                                                let ce = check_expr(e, env, signatures, diagnostics);
+                                                typed_items.push(
+                                                    crate::ir::TypedPrintItem::Expr(ce.expr),
+                                                );
+                                            }
+                                        }
+                                    }
+                                    body_typed.push(TypedStmt::Print { items: typed_items });
+                                }
+                                _ => {
+                                    diagnostics.push(Diagnostic::new(
+                                        inner.span(),
+                                        "while body inside a block expression \
+                                         supports only assignments and prints in v1 \
+                                         (closure #238); hoist nested control flow \
+                                         outside the block",
+                                    ));
+                                }
+                            }
+                        }
+                        typed_stmts.push(TypedStmt::While {
+                            cond: cond_checked.expr,
+                            body: body_typed,
+                        });
+                    }
                     _ => {
                         diagnostics.push(Diagnostic::new(
                             s.span(),
-                            "block expressions in v1 only allow `let` bindings, `print` statements, and reassignments before the tail expression — hoist control flow or other constructs outside the block",
+                            "block expressions in v1 only allow `let` bindings, `print` statements, reassignments, and `while` loops before the tail expression — hoist `if`/`for` / other constructs outside the block",
                         ));
                     }
                 }

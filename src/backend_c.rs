@@ -3420,6 +3420,34 @@ fn emit_expr(expr: &TypedExpr) -> String {
                             emit_expr(rhs),
                         ));
                     }
+                    TypedStmt::While { cond, body: while_body } => {
+                        // Block-expr While loop (closure #238).
+                        // Emit `while (cond) { body }` inside the
+                        // GCC statement-expression. Inner body
+                        // currently restricted to Assign / Print
+                        // by the Block-expr checker, both of
+                        // which round-trip through the top-level
+                        // stmt emitter cleanly.
+                        body.push_str(&format!("while (({})) {{ ", emit_expr(cond)));
+                        for inner in while_body {
+                            match inner {
+                                TypedStmt::Reassign { name, expr: rhs, .. } => {
+                                    body.push_str(&format!(
+                                        "v_{} = ({}); ",
+                                        name,
+                                        emit_expr(rhs),
+                                    ));
+                                }
+                                TypedStmt::Print { items } => {
+                                    emit_print_items(items, &mut body);
+                                }
+                                _ => {
+                                    body.push_str("/* unsupported while-body stmt */ ");
+                                }
+                            }
+                        }
+                        body.push_str("} ");
+                    }
                     TypedStmt::Discard { expr: discard_expr } => {
                         // Closure #200: `let _ = expr;` inside
                         // a Block-expr. Evaluate the RHS for

@@ -2246,6 +2246,37 @@ mod tests {
     }
 
     #[test]
+    fn while_loop_between_try_and_return_compiles() {
+        // Closure #238: Block-expr now accepts `while` loops
+        // (with Assign / Print body), and the try desugar's
+        // intermediate_ok admits them. tree-LLVM's While
+        // emit also got a ctx.current_block update so a
+        // while nested in a Block-expr inside a match arm
+        // emits a correctly-PHId basic-block exit.
+        let source = r#"
+            enum Opt { Some(i64), None }
+            fn maybe(n: i64) -> Opt {
+              if n > 0 { return Opt.Some(n); } else { return Opt.None; }
+            }
+            fn count_down(n: i64) -> Opt {
+              let v: i64 = try maybe(n);
+              let acc: i64 = 0;
+              while v > 0 {
+                acc = acc + v;
+                v = v - 1;
+              }
+              return Opt.Some(acc);
+            }
+            fn main() -> i64 {
+              let r: Opt = count_down(5);
+              let n: i64 = match r { Opt.Some(x) then x, Opt.None then 0 };
+              return n;
+            }
+        "#;
+        compile(source).expect("while between try and return should compile");
+    }
+
+    #[test]
     fn write_alias_for_print_lexes_correctly() {
         // Closure #237: `write` is an English alias for
         // `print`. Devanagari `लिख` / `लिखो` (likh / likho =

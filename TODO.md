@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #237 — write alias + लिखो)
+## ⏳ Resume here (paused 2026-05-26, after closure #238 — while between try and return)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,30 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#238 `while` loop between `try` and `return`: Block-expr
+checker accepts `Stmt::While` whose body uses Assign /
+Print only; try desugar's `intermediate_ok` admits
+While; tree-C emits while inline inside the GCC stmt-
+expression; tree-LLVM forwards through `emit_stmt`
+plus a `ctx.current_block = exit` fix at the end of
+its While arm so a surrounding match-arm Block-expr
+emits a correctly-PHId predecessor (without the fix,
+the PHI named the arm's entry block but the actual
+predecessor was the while's exit, breaking
+`opt -verify`). New lib test
+`while_loop_between_try_and_return_compiles` exercises
+count_down(5) → 15 on both backends. Closes the #5
+try follow-up queue. Test totals: 925 lib + 47 e2e +
+11 vtables-phase3 + 2 user-drop-by-ref + 1
+ssa-examples.
+#237 `write` alias for `print` + Devanagari `लिख`/
+`लिखो`: replaced `छाप` (chāp = "imprint/stamp") which
+felt off for screen output. English added `write` as
+alias for `print`. Three Devanagari example files
+updated. Also documented Devanagari SOV word-order
+issue (multi-session) and saved a memory entry.
+Test totals: 924 lib + 47 e2e + 11 vtables-phase3 +
+2 user-drop-by-ref + 1 ssa-examples.
 #236 Per-file language purity gate (script-level v1):
 the lexer now rejects files that mix English structure
 keywords with Devanagari aliases in the same file. New
@@ -1122,15 +1146,13 @@ totals: 888 lib + 47 e2e passing.
   the existing `TypedStmt::Drop` lowering so user-declared
   `implement Drop for T` runs automatically. Blocked on B above
   for nested affine fields.
-- **#5 follow-ups remaining**: `while` loops between `try`
-  and `return` (still rejected — would need a deeper rewrite
-  since while-loops don't have a single point of "tail
-  expression"). `try EXPR(args)` parser precedence closed by
-  #230. `try` in nested blocks closed by #217; multiple
-  `try`s in one block closed by #218. Assign between try
-  and return closed by #231. Guard-if (`if cond { return X; }`)
-  between try and return closed by #232 via AST pre-pass
-  that rewrites the guard into a tail match.
+- **#5 follow-ups remaining**: All shipped. `try EXPR(args)`
+  parser precedence closed by #230; `try` in nested blocks
+  by #217; multiple `try`s in one block by #218; Assign by
+  #231; guard-if by #232; while-loop by #238 (Block-expr
+  extended to accept Assign / Print body in while; tree-
+  LLVM ctx.current_block fix lifts the PHI breakage). All
+  reasonable try-desugar shapes now compile.
 - **Devanagari (parked at user's request)**: script-aware
   diagnostics, multi-word alias expansion, grammar-consultant
   review of the Sanskrit / Hindi / Marathi tables.

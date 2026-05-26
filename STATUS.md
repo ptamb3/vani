@@ -537,6 +537,24 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **`while` loop between `try` and `return` done 2026-05-26**:
+   the try desugar's intermediate-stmt vocabulary gained
+   `Stmt::While`, and Block-expr's checker now type-checks
+   while-loops whose body uses only Assign / Print stmts.
+   tree-C emits the while inline inside the GCC stmt-
+   expression (`while ((cond)) { v_x = (...); ... }`).
+   tree-LLVM forwards through the existing `emit_stmt`
+   while handler — plus a small fix where `ctx.current_block`
+   is now updated to the while's exit label so a
+   surrounding match-arm's PHI captures the correct
+   incoming predecessor (without the fix, the PHI named
+   the arm's entry block but the actual predecessor was
+   the while's exit; `opt -verify` rejected the IR).
+   Closes the last actionable item under the `#5` try
+   follow-up queue. Test totals: 925 lib + 47 e2e + 11
+   vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples
+   passing. Closure #238.
+
    **`write` alias for `print` + Devanagari `लिखो` done 2026-05-26**:
    user feedback flagged two issues with the print
    keyword. `print` is C/Python heritage; `write` is more
