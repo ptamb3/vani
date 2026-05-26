@@ -1,0 +1,39 @@
+intent "Arrays in function return position (closure #239)";
+
+// Returning `[T; N]` by value works on both backends.
+// Tree-LLVM accepts `[N x T]` natively; tree-C wraps in a
+// per-shape `typedef struct { T data[N]; }` and unpacks on the
+// caller side via memcpy. The user-level syntax is plain
+// `fn make() -> [i64; 3] { return [...]; }`.
+
+// Build a fixed-size array of doubles from a single seed.
+fn make_doubles(seed: i64) -> [i64; 4] {
+  return [seed, seed * 2, seed * 4, seed * 8];
+}
+
+// Builder that uses an intermediate local — exercises the
+// non-ArrayLit return path (the value-typed Var source goes
+// through the memcpy-into-struct-temp branch in the C emit).
+fn shift_by(n: i64) -> [i64; 3] {
+  let base: [i64; 3] = [10, 20, 30];
+  let result: [i64; 3] = [base[0] + n, base[1] + n, base[2] + n];
+  return result;
+}
+
+fn main() -> i64 {
+  let xs: [i64; 4] = make_doubles(5);
+  assert xs[0] == 5;
+  assert xs[1] == 10;
+  assert xs[2] == 20;
+  assert xs[3] == 40;
+
+  let ys: [i64; 3] = shift_by(7);
+  assert ys[0] == 17;
+  assert ys[1] == 27;
+  assert ys[2] == 37;
+
+  write "make_doubles(5) =", xs[0], xs[1], xs[2], xs[3];
+  write "shift_by(7) =", ys[0], ys[1], ys[2];
+
+  return 0;
+}

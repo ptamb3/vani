@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #239 — array return tree-C struct-wrap)
+## ⏳ Resume here (paused 2026-05-26, after closure #240 — array-return tree-LLVM polish + example)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,19 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#240 Array-return tree-LLVM polish + parity example:
+follow-up to #239. SSA-LLVM's array-return emit returned
+a pointer to a stack-alloca'd array (dangling after fn
+returns); fix is to gate `Type::Array` out of
+`ssa_type_supported` so array-returning programs route
+through tree-LLVM. Tree-LLVM's Let-from-Call array
+handler was an `unreachable!` (only knew about ArrayLit
+and Var sources); extended to fall through to a generic
+emit_expr + store path. New
+`examples/array_return.vani` demonstrates both paths
+(ArrayLit return + Var-source return) and is wired
+into both `check_examples_all_succeed` and the
+cross-backend parity runner.
 #239 Array types in fn return position: `fn make() -> [i64;
 3] { return [10, 20, 30]; }` compiles + runs on both
 backends. tree-LLVM accepts `[N x T]` returns natively

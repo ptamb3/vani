@@ -35,6 +35,7 @@ fn check_examples_all_succeed() {
         "integers.vani",
         "floats_and_shifts.vani",
         "arrays.vani",
+        "array_return.vani",
         "vectors.vani",
         "borrows.vani",
         "control_flow.vani",
@@ -389,6 +390,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
     // example file lands.
     for name in &[
         "array_proofs.vani",
+        "array_return.vani",
         "arrays.vani",
         "assert_messages.vani",
         "atomics.vani",

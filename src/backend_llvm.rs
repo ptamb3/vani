@@ -843,15 +843,20 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                         agg, tmp, agg, addr
                     ));
                 } else {
-                    // No other array-typed expression form is
-                    // currently parseable as a let RHS — the
-                    // checker rejects array returns from
-                    // functions, and arrays don't appear as
-                    // standalone Cast / Binary / etc. results.
-                    unreachable!(
-                        "backend: array let with unsupported RHS kind {:?}",
-                        expr.kind
-                    );
+                    // Closure #239 extension: arrays can now
+                    // come from a Call (an array-returning
+                    // function) or other value-producing
+                    // expression. Emit the expression to
+                    // get an `[N x T]` SSA value, then store
+                    // it into the binding's alloca. LLVM
+                    // handles the array-return ABI (sret for
+                    // larger sizes) automatically when the
+                    // type is the bare aggregate `[N x T]`.
+                    let value = emit_expr(expr, ctx, out);
+                    out.push_str(&format!(
+                        "  store {} {}, {}* {}\n",
+                        agg, value, agg, addr
+                    ));
                 }
                 let _ = length;
                 ctx.locals.insert(name.clone(), (ty.clone(), addr));

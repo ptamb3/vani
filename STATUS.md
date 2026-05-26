@@ -537,6 +537,32 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Array-return follow-up: tree-LLVM array-from-call + SSA gate + example done 2026-05-26**:
+   while wiring up the tree-LLVM array-return path, two
+   issues surfaced:
+   1. SSA-LLVM's array-return emit produces `define [N x T]*
+      @fn_make(...)` returning a pointer to a stack-allocated
+      array — the pointer dangles after the fn returns, so
+      callers read garbage. Fix: `ssa_type_supported` now
+      rejects `Type::Array { .. }` so array-returning
+      programs route through tree-LLVM (which correctly
+      returns `[N x T]` by value, handled by LLVM's
+      built-in struct-return ABI).
+   2. Tree-LLVM's Let-from-array-expression handler only
+      knew about ArrayLit and Var sources; a Call returning
+      an array fell through to `unreachable!`. Now the
+      catch-all path emits the call (which yields the
+      `[N x T]` SSA value), then stores it into the local
+      alloca.
+
+   New `examples/array_return.vani` demonstrates both the
+   ArrayLit-return path and the Var-source-return path,
+   wired into both check + cross-backend parity runners.
+   Both backends now produce `make_doubles(5) = 5 10 20 40`
+   and `shift_by(7) = 17 27 37`. Test totals unchanged:
+   925 lib + 47 e2e + 11 vtables-phase3 + 2 user-drop-by-
+   ref + 1 ssa-examples. Closure #240.
+
    **Array types in fn return position done 2026-05-26**:
    `fn make() -> [i64; 3] { return [10, 20, 30]; }` now
    compiles + runs on both backends. tree-LLVM already

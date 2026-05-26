@@ -194,13 +194,24 @@ fn ssa_c_extra_reject(_stmt: &TypedStmt) -> bool {
     false
 }
 
-fn ssa_type_supported(_ty: &Type) -> bool {
+fn ssa_type_supported(ty: &Type) -> bool {
     // Every concurrency primitive now flows through SSA
     // (Atomic + Mutex/Guard + Channel) on both SSA-C and
     // SSA-LLVM. Anything an SSA backend can't yet handle
     // surfaces `EmitError` from inside its emit and falls
     // back per-backend in `emit_c_via_ssa` /
     // `emit_llvm_via_ssa`.
+    //
+    // Exception (closure #239): `[T; N]` in return position
+    // routes through tree-LLVM. SSA-LLVM's array-return emit
+    // returns a pointer to a stack-alloca'd array (the
+    // pointer dangles after the fn returns); tree-C's
+    // struct-wrap also lives in tree-side emit. Fix by
+    // gating away from SSA when an array return appears
+    // anywhere in the program.
+    if matches!(ty, Type::Array { .. }) {
+        return false;
+    }
     true
 }
 
