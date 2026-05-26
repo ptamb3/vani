@@ -14914,6 +14914,72 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn use_as_renames_imported_item() {
+        // Closure #254: `use foo::bar as baz;` binds `baz`
+        // locally to `foo__bar`. The renamed alias resolves
+        // every bare reference; the original `bar` does NOT
+        // come into scope (no double binding).
+        let source = r#"
+            module a { pub fn item() -> i64 { return 11; } }
+            module b { pub fn item() -> i64 { return 22; } }
+
+            use a::item as a_item;
+            use b::item as b_item;
+
+            fn main() -> i64 {
+              return a_item() + b_item();
+            }
+        "#;
+        compile(source).expect("use-as compiles + resolves both renamed names");
+    }
+
+    #[test]
+    fn use_collision_without_as_diagnoses() {
+        // Pre-#254 the second `use a::bar; use b::bar;`
+        // silently overwrote the first in the alias map,
+        // letting confused code through with no warning. The
+        // checker now catches the duplicate local name and
+        // tells the user to disambiguate with `as`.
+        let source = r#"
+            module a { pub fn item() -> i64 { return 1; } }
+            module b { pub fn item() -> i64 { return 2; } }
+
+            use a::item;
+            use b::item;
+
+            fn main() -> i64 { return item(); }
+        "#;
+        let errors = compile(source).expect_err("duplicate `use` must error");
+        assert!(
+            errors.iter().any(|e|
+                e.message.contains("already imported")
+                    && e.message.contains("use … as …")),
+            "expected collision diagnostic with rename hint; got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn use_brace_list_allows_per_item_as_rename() {
+        // Brace-list entries each accept an optional
+        // `as <alias>` independently. Mixed entries (one
+        // bare, one renamed) must both resolve.
+        let source = r#"
+            module geo {
+              pub fn area() -> i64 { return 7; }
+              pub fn perimeter() -> i64 { return 12; }
+            }
+
+            use geo::{area, perimeter as p};
+
+            fn main() -> i64 {
+              return area() + p();
+            }
+        "#;
+        compile(source).expect("brace-list with mixed renames compiles");
+    }
+
+    #[test]
     fn glob_use_brings_direct_public_items_into_scope() {
         // Closure #253: `use foo::*;` expands to every direct
         // public child of `foo`, bringing each into scope as

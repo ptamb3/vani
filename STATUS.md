@@ -537,6 +537,25 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Namespaces — `use foo::bar as baz;` rename + collision diagnostic done 2026-05-26**:
+   single-item and brace-list `use` entries now accept
+   an optional `as <local>` suffix that overrides the
+   bound name (`use a::item as a_item;` →  `a_item`
+   resolves to `a__item`, the original `item` does NOT
+   come into scope). The checker also tracks
+   `alias_origin` and surfaces a precise diagnostic if
+   the same local name is imported twice ("name `item`
+   is already imported from `a::item`; give one a
+   different local name with `use … as …;`") — closes
+   a silent-last-wins footgun. The collision check
+   covers explicit-vs-explicit, explicit-vs-glob, and
+   glob-vs-glob. Three new lib tests pin: rename
+   resolves, collision diagnostic fires, mixed-rename
+   brace-list compiles. Formatter round-trips
+   automatically via the new `up.alias` field. Test
+   totals: 945 lib + 47 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #254.
+
    **Namespaces — glob `use foo::*;` import done 2026-05-26**:
    `use foo::*;` now expands to every direct public child
    of `foo`, bringing each into scope as an unprefixed

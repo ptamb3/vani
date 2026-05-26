@@ -213,6 +213,10 @@ pub fn format_program_with_comments(
         out.push_str(&up.module.replace("__", "::"));
         out.push_str("::");
         out.push_str(&up.item);
+        if let Some(alias) = &up.alias {
+            out.push_str(" as ");
+            out.push_str(alias);
+        }
         out.push_str(";\n");
         ctx.try_attach_trailing(up.span.end, &mut out);
     }

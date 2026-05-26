@@ -451,6 +451,13 @@ pub struct Use {
 pub struct UsePath {
     pub module: String,
     pub item: String,
+    /// Optional local rename — `use foo::bar as baz;` binds
+    /// `baz` to `foo__bar` instead of `bar`. None for plain
+    /// imports. Closure #254 — lets users resolve name
+    /// collisions between two modules exporting the same
+    /// leaf, and gives code a clearer local name without
+    /// re-using the (possibly conflicting) original.
+    pub alias: Option<String>,
     pub span: Span,
 }
 

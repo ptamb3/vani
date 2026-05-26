@@ -1251,7 +1251,7 @@ fn validate_main(
 /// - Cross-module impl orphan rules unchecked in v1.
 fn flatten_modules_in_program(
     program: &mut Program,
-    _diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
     use crate::ast::Pattern;
     let modules = std::mem::take(&mut program.modules);
@@ -1672,6 +1672,14 @@ fn flatten_modules_in_program(
     // anywhere).
     let mut use_aliases: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    // Closure #254: track the source-form of each alias's first
+    // binding so a duplicate brings a clean diagnostic ("the name
+    // `bar` is already imported from a different module"). Silent
+    // last-wins is a footgun — two `use a::bar; use b::bar;`
+    // imports compiled to a tail program that called only b's
+    // bar, with no warning at the conflict site.
+    let mut alias_origin: std::collections::HashMap<String, (String, String)> =
+        std::collections::HashMap::new();
     let use_paths = std::mem::take(&mut program.use_paths);
     // Closure #253: build a snapshot of every top-level item
     // name (functions, structs, enums, interfaces, consts,
@@ -1712,12 +1720,54 @@ fn flatten_modules_in_program(
                 if suffix.contains("__") {
                     continue;
                 }
+                // Glob collision: a prior explicit `use` (or a
+                // prior glob from another module) already
+                // bound this name. Surface a clear diagnostic
+                // — the user has to rename one with
+                // `use ... as ...;`.
+                if let Some((prev_module, prev_item)) =
+                    alias_origin.get(suffix.as_ref() as &str)
+                {
+                    diagnostics.push(Diagnostic::new(
+                        up.span,
+                        format!(
+                            "`use {}::*;` re-imports `{}` (already imported from `{}::{}`); \
+                             rename one with `use … as …;`",
+                            up.module.replace("__", "::"),
+                            suffix,
+                            prev_module.replace("__", "::"),
+                            prev_item
+                        ),
+                    ));
+                    continue;
+                }
                 use_aliases.insert(suffix.to_string(), top.clone());
+                alias_origin.insert(
+                    suffix.to_string(),
+                    (up.module.clone(), suffix.to_string()),
+                );
             }
             continue;
         }
+        // Closure #254: explicit `use foo::bar [as baz];`. The
+        // local name is the alias if present, else the item.
+        let local = up.alias.clone().unwrap_or_else(|| up.item.clone());
         let mangled = format!("{}__{}", up.module, up.item);
-        use_aliases.insert(up.item.clone(), mangled);
+        if let Some((prev_module, prev_item)) = alias_origin.get(&local) {
+            diagnostics.push(Diagnostic::new(
+                up.span,
+                format!(
+                    "name `{}` is already imported from `{}::{}`; \
+                     give one a different local name with `use … as …;`",
+                    local,
+                    prev_module.replace("__", "::"),
+                    prev_item
+                ),
+            ));
+            continue;
+        }
+        use_aliases.insert(local.clone(), mangled);
+        alias_origin.insert(local, (up.module.clone(), up.item.clone()));
     }
     if !use_aliases.is_empty() {
         let qualify_alias = |name: &str| -> String {

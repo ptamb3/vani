@@ -535,6 +535,30 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#254 Namespaces — `use ... as ...;` rename + collision diagnostic.
+single-item and brace-list `use` entries gain an
+optional `as <local>` suffix. UsePath grows an
+`alias: Option<String>` field; the parser captures
+the rename for both single-item (`use a::b as c;`)
+and per-entry brace-list (`use a::{x, y as yy};`)
+forms. Glob `use a::*;` doesn't take `as` (renames
+N items with one name is undefined). The checker
+uses `up.alias.unwrap_or(up.item)` as the local
+name in the alias map.
+
+While there, the checker also tracks `alias_origin`
+and surfaces a precise diagnostic if the same local
+name is imported twice — pre-#254 the second `use a::bar; use b::bar;`
+silently overwrote the first, with no warning at
+the conflict site. The collision check covers
+explicit-vs-explicit, explicit-vs-glob, and
+glob-vs-glob. Formatter round-trips automatically
+via the new `up.alias` field. Three new lib tests
+(`use_as_renames_imported_item`,
+`use_collision_without_as_diagnoses`,
+`use_brace_list_allows_per_item_as_rename`).
+Test totals: 945 lib + 47 e2e + 11 vtables-phase3
++ 2 user-drop-by-ref + 1 ssa-examples.
 #253 Namespaces — glob `use foo::*;` import.
 the parser accepts `*` as the leaf segment after
 `module::` (alongside single-item and brace-list

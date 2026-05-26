@@ -681,17 +681,32 @@ impl Parser {
             return Ok(UseDecl::Path(crate::ast::UsePath {
                 module,
                 item: "*".to_string(),
+                alias: None,
                 span: start.span.merge(semi.span.merge(star.span)),
             }));
         }
-        // Multi-item form: `use foo::{a, b};`.
+        // Multi-item form: `use foo::{a, b, c as cc};`. Each
+        // entry independently accepts an optional `as rename`.
         if self.check(|k| matches!(k, TokenKind::LBrace)) {
             self.bump(); // {
-            let mut items: Vec<(String, crate::span::Span)> = Vec::new();
+            let mut items: Vec<(String, Option<String>, crate::span::Span)> = Vec::new();
             while !self.check(|k| matches!(k, TokenKind::RBrace | TokenKind::Eof)) {
                 let item_tok = self.expect_ident()?;
                 let item_span = item_tok.span;
-                items.push((ident_text(item_tok), item_span));
+                let item_name = ident_text(item_tok);
+                // Closure #254: optional `as <alias>` after each
+                // brace-list entry.
+                let (alias, end_span) = if self
+                    .match_token(|k| matches!(k, TokenKind::As))
+                    .is_some()
+                {
+                    let alias_tok = self.expect_ident()?;
+                    let span = alias_tok.span;
+                    (Some(ident_text(alias_tok)), span)
+                } else {
+                    (None, item_span)
+                };
+                items.push((item_name, alias, item_span.merge(end_span)));
                 if self
                     .match_token(|k| matches!(k, TokenKind::Comma))
                     .is_none()
@@ -713,21 +728,34 @@ impl Parser {
             }
             let paths: Vec<crate::ast::UsePath> = items
                 .into_iter()
-                .map(|(item, item_span)| crate::ast::UsePath {
+                .map(|(item, alias, item_span)| crate::ast::UsePath {
                     module: module.clone(),
                     item,
+                    alias,
                     span: start.span.merge(item_span),
                 })
                 .collect();
             return Ok(UseDecl::PathMulti(paths));
         }
-        // Single-item form: `use foo::bar;`.
+        // Single-item form: `use foo::bar;` or
+        // `use foo::bar as baz;` (closure #254 — local rename
+        // resolves collisions between same-leaf imports).
         let item_tok = self.expect_ident()?;
         let item = ident_text(item_tok);
+        let alias = if self
+            .match_token(|k| matches!(k, TokenKind::As))
+            .is_some()
+        {
+            let alias_tok = self.expect_ident()?;
+            Some(ident_text(alias_tok))
+        } else {
+            None
+        };
         let semi = self.expect_keyword("';'", |kind| matches!(kind, TokenKind::Semicolon))?;
         Ok(UseDecl::Path(crate::ast::UsePath {
             module,
             item,
+            alias,
             span: start.span.merge(semi.span),
         }))
     }
