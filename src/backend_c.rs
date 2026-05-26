@@ -2064,19 +2064,38 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 out.push_str(");\n");
             }
             Type::Struct(struct_name) => {
-                // Auto-call the user's `Drop` impl if one exists
-                // AND the struct has no owning fields (so the
-                // value-by-self consume can't conflict with
-                // per-field cleanup). T2.7 phase 2.
+                // Auto-call the user's `Drop` impl when one
+                // exists. Two flavors:
+                // * `fn drop(self: T)` (by-value) consumes the
+                //   binding — valid only when the struct has
+                //   no owning fields (otherwise the per-field
+                //   pass would double-free what user-drop
+                //   already consumed). This is the original
+                //   T2.7 phase 2 shape.
+                // * `fn drop(self: mut ref T)` (by-ref) runs
+                //   user cleanup THEN the per-field pass.
+                //   Epic C — unblocks user-Drop for structs
+                //   that own OwnedStr / Vec / nested-struct
+                //   fields. The user code can read/write
+                //   field values; the per-field pass still
+                //   reclaims the heap afterwards.
                 let fields = STRUCT_FIELDS_REGISTRY
                     .with(|r| r.borrow().get(struct_name).cloned())
                     .unwrap_or_default();
                 let has_user_drop = USER_DROP_REGISTRY
                     .with(|r| r.borrow().contains(struct_name));
+                let user_drop_by_ref = crate::ast::user_drop_is_by_ref(struct_name);
                 let has_owning_field = fields.iter().any(|(_, ty)| {
-                    matches!(ty, Type::OwnedStr | Type::Vec(_))
+                    matches!(ty, Type::OwnedStr | Type::Vec(_) | Type::Struct(_))
                 });
-                if has_user_drop && !has_owning_field {
+                if has_user_drop && user_drop_by_ref {
+                    out.push_str("  (void)");
+                    out.push_str(&function_name(&format!("{}_drop", struct_name)));
+                    out.push_str("(&");
+                    out.push_str(&local_name(name));
+                    out.push_str(");\n");
+                    // Fall through to the per-field drop pass.
+                } else if has_user_drop && !has_owning_field {
                     out.push_str("  (void)");
                     out.push_str(&function_name(&format!("{}_drop", struct_name)));
                     out.push_str("(");

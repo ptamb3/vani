@@ -1122,19 +1122,33 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                     out.push_str(&format!("  call void @free(i8* {})\n", ptr));
                 }
             } else if let Type::Struct(struct_name) = ty {
-                // Auto-call the user's `Drop` impl if one exists
-                // and the struct has no owning fields (so the
-                // value-by-self consume can't conflict with
-                // per-field cleanup). T2.7 phase 2.
+                // Auto-call the user's `Drop` impl. Two flavors
+                // (mirrors backend_c):
+                // * by-value `self: T` — consume; valid only
+                //   when struct has no owning fields.
+                // * by-ref `self: mut ref T` (epic C) — run
+                //   user-Drop with a pointer to the binding,
+                //   then fall through to per-field cleanup.
                 let fields = LLVM_STRUCT_FIELDS_REGISTRY
                     .with(|r| r.borrow().get(struct_name).cloned())
                     .unwrap_or_default();
                 let has_user_drop = LLVM_USER_DROP_REGISTRY
                     .with(|r| r.borrow().contains(struct_name));
+                let user_drop_by_ref = crate::ast::user_drop_is_by_ref(struct_name);
                 let has_owning_field = fields.iter().any(|(_, fty)| {
-                    matches!(fty, Type::OwnedStr | Type::Vec(_))
+                    matches!(fty, Type::OwnedStr | Type::Vec(_) | Type::Struct(_))
                 });
-                if has_user_drop && !has_owning_field {
+                if has_user_drop && user_drop_by_ref {
+                    if let Some((_, addr)) = ctx.locals.get(name).cloned() {
+                        let s_ty = format!("%Struct_{}", struct_name);
+                        let ret = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = call i64 @fn_{}_drop({}* {})\n",
+                            ret, struct_name, s_ty, addr
+                        ));
+                    }
+                    // Fall through to per-field cleanup below.
+                } else if has_user_drop && !has_owning_field {
                     if let Some((_, addr)) = ctx.locals.get(name).cloned() {
                         let s_ty = format!("%Struct_{}", struct_name);
                         let loaded = ctx.fresh_tmp();

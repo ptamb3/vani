@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #228 — vtables Phase 5 auto-borrow in `==` desugar)
+## ⏳ Resume here (paused 2026-05-25, after closure #229 — epic C user-Drop for heap-field structs)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,21 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#229 Epic C: user-Drop for structs with heap fields.
+The Drop impl signature now accepts two shapes:
+the original by-value `fn drop(self: T) -> i64`
+(unchanged — consumes self, suppresses per-field
+drops) and a new mut-ref form
+`fn drop(self: mut ref Buffer) -> i64` which runs
+FIRST at scope exit then lets the per-field pass
+reclaim heap. The user code can read/mutate fields
+freely; the per-field free still runs after. New
+`USER_DROP_BY_REF` thread-local in ast.rs steers the
+call shape; tree-C and tree-LLVM emit `(&v_b)` /
+`(%addr)` accordingly. New e2e test
+`tests/user_drop_by_ref.rs` exercises both backends.
+Test totals: 920 lib + 47 e2e + 11 vtables-phase3 + 2
+user-drop-by-ref.
 #228 Vtables Phase 5 (auto-borrow in `==` desugar):
 the existing `a == b` → `<T>_eq(a, b)` lowering didn't
 look at the impl's parameter types and always passed
@@ -998,17 +1013,15 @@ totals: 888 lib + 47 e2e passing.
       shape; need per-backend Drop dispatch.
   Effort: medium per item; can interleave.
 
-- **C. Drop for structs with heap fields.**
-  Today the auto-call is suppressed for structs with OwnedStr /
-  Vec fields (per-field free runs instead). Two designs would
-  unblock the combined case:
-    - Change Drop signature to `fn drop(mut self: T)` so the user
-      can mutate fields before the per-field free runs.
-    - Or run user Drop FIRST (still consuming self), then
-      synthesise a separate field-free pass that operates on a
-      shadow copy. Requires the affine system to model
-      "consumed but field-resources still owned".
-  Effort: medium (design call first).
+- **C. Drop for structs with heap fields.** *Done 2026-05-25
+  (closure #229).* Drop impls now accept both
+  `fn drop(self: T) -> i64` (by-value, suppresses per-field
+  drops to avoid double-free) and
+  `fn drop(self: mut ref T) -> i64` (mut-ref, runs FIRST,
+  then per-field drops reclaim heap). The mut-ref form
+  unblocks user-Drop for OwnedStr / Vec / nested-struct
+  field owners. `USER_DROP_BY_REF` registry steers the
+  call shape per type.
 
 ### Other queued follow-ups (smaller, can interleave)
 

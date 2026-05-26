@@ -1957,6 +1957,9 @@ fn hoist_impls_into_functions(
         })
         .collect();
     crate::ast::set_iface_impls(iface_impl_pairs);
+    // Epic C: reset the USER_DROP_BY_REF registry; entries
+    // get added by the Drop impl validation below.
+    crate::ast::USER_DROP_BY_REF.with(|cell| cell.borrow_mut().clear());
 
     // Vtables Phase 3: per-iface impl list in declaration
     // order so codegen can walk (iface, type) pairs to emit
@@ -2023,6 +2026,13 @@ fn hoist_impls_into_functions(
                 ));
             } else {
                 let m = &imp.methods[0];
+                // Epic C: accept either by-value `self: T` or
+                // mut-ref `self: mut ref T`. The mut-ref form
+                // lets the user run cleanup BEFORE the auto-
+                // emitted per-field drop pass — useful when
+                // the struct owns OwnedStr / Vec fields (the
+                // by-value form had to be suppressed to avoid
+                // double-free).
                 let sig_ok = m.params.len() == 1
                     && m.params[0].name == "self"
                     && m.return_type == Type::I64;
@@ -2031,11 +2041,28 @@ fn hoist_impls_into_functions(
                         m.span,
                         format!(
                             "Drop impl for '{}' must have signature \
-                             `fn drop(self: {}) -> i64` — got {} params, return \
-                             type {}",
-                            type_name, type_name, m.params.len(), m.return_type
+                             `fn drop(self: {}) -> i64` or \
+                             `fn drop(self: mut ref {}) -> i64` — got {} params, \
+                             return type {}",
+                            type_name, type_name, type_name, m.params.len(), m.return_type
                         ),
                     ));
+                } else {
+                    // Track the by-ref form so backends can
+                    // emit the right call shape AND skip the
+                    // suppression of per-field drops.
+                    let is_by_ref = matches!(
+                        &m.params[0].ty,
+                        Type::RefMut(inner) if matches!(
+                            inner.as_ref(),
+                            Type::Struct(n) | Type::Enum(n) if n == &type_name
+                        )
+                    );
+                    if is_by_ref {
+                        crate::ast::USER_DROP_BY_REF.with(|cell| {
+                            cell.borrow_mut().insert(type_name.clone());
+                        });
+                    }
                 }
             }
             // Note about future work — non-blocking informational.

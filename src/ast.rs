@@ -147,10 +147,30 @@ pub fn impls_for_iface(iface: &str) -> Vec<String> {
     IFACE_IMPLS_LIST.with(|cell| cell.borrow().get(iface).cloned().unwrap_or_default())
 }
 
-/// Return the set of interface names that have an
-/// `implement Iface for <type_name>` registered. Used by the
-/// vec literal checker to find a common interface for
-/// heterogeneous elements.
+thread_local! {
+    /// Type names whose `implement Drop for T` declares
+    /// `fn drop(self: mut ref T) -> i64` (epic C). The
+    /// by-ref form lets the user run cleanup BEFORE the
+    /// auto-emitted per-field drop pass; the value form
+    /// (default) suppresses per-field drops to avoid the
+    /// double-free pattern. Populated alongside the rest
+    /// of the impl registries.
+    pub(crate) static USER_DROP_BY_REF: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+pub fn set_user_drop_by_ref<I: IntoIterator<Item = String>>(names: I) {
+    USER_DROP_BY_REF.with(|cell| {
+        let mut set = cell.borrow_mut();
+        set.clear();
+        set.extend(names);
+    });
+}
+
+pub fn user_drop_is_by_ref(type_name: &str) -> bool {
+    USER_DROP_BY_REF.with(|cell| cell.borrow().contains(type_name))
+}
+
 pub fn ifaces_implemented_by(type_name: &str) -> std::collections::HashSet<String> {
     IFACE_IMPL_REGISTRY.with(|cell| {
         cell.borrow()

@@ -537,6 +537,26 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Epic C: user-Drop for structs with heap fields done 2026-05-25**:
+   structs that own `OwnedStr` / `Vec` / nested-struct fields
+   can now declare a user-Drop without losing the per-field
+   cleanup pass. The Drop impl signature now accepts both
+   the original by-value form `fn drop(self: T) -> i64` (for
+   structs without heap fields — consumes self, suppresses
+   per-field drops to avoid double-free) and a new mut-ref
+   form `fn drop(self: mut ref T) -> i64`. The mut-ref form
+   runs FIRST at scope exit, then the per-field drop pass
+   reclaims the heap. The user code can `print self.name`,
+   `self.x = 0`, etc. — full access without ownership. A
+   thread-local `USER_DROP_BY_REF` registry (populated in
+   `hoist_impls_into_functions`) tells the backends which
+   call shape to emit. Both tree-C and tree-LLVM updated.
+   New e2e test `tests/user_drop_by_ref.rs` verifies the
+   user-Drop runs (visible via stdout) AND the program's
+   exit code matches `len(b.items)`. Test totals: 920 lib
+   + 47 e2e + 11 vtables-phase3 + 2 user-drop-by-ref
+   passing. Closure #229.
+
    **Vtables Phase 5 (auto-borrow in `==` desugar) done 2026-05-25**:
    the existing `a == b` → `<T>_eq(a, b)` desugar didn't
    look at the impl's parameter types and always passed both
