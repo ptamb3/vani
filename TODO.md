@@ -1398,19 +1398,25 @@ highest-leverage first.
          gate's `parallel for` clause for SSA-LLVM is now
          gone — defense-in-depth lives in the recognizer.
        - **Step 3-extended: SSA-LLVM reductions + captures** —
-         the simple-shape outlining handles only the
-         no-captures, no-reductions case. To close: (a) walk
-         the body block for free variables defined outside
-         the region, marshal them through additional
-         ctx-struct fields, emit corresponding loads in the
-         outlined fn (mirror tree-LLVM's
-         `collect_outer_captures` + ctx-struct synthesis);
-         (b) for each reduction in `ParallelRegion.reductions`,
-         allocate a per-reduction storage in the parent (or
-         pass through ctx), emit `atomicrmw add`/
-         `cmpxchg`/etc. in the outlined fn body per
-         tree-LLVM's reduction op table (with i8 shadow for
-         bool reductions). ≈ 1 session.
+         done (verified 2026-05-26 — was already shipping at
+         the closure #228 mark or earlier). `collect_capture`
+         walks body operands; reductions are detected from
+         `reduction_update_values` and lower to
+         `atomicrmw add/and/or/xor/smin/smax` (with i8 shadow
+         for bool `&&`/`||`). Multi-block bodies still fall
+         back to tree-LLVM via the recognizer's "Body must be
+         a single block" check; that's tracked separately
+         below as "Step 3b: multi-block parallel-for body".
+       - **Step 3b: multi-block parallel-for body** — not
+         started. `recognize_parallel_region` rejects bodies
+         with internal control flow (if/else inside the
+         loop). Extending requires: capture analysis across
+         all body blocks; reduction-update detection across
+         the multi-block CFG; emit_outlined_parallel_for to
+         lower a sequence of blocks rather than one. The
+         existing scalar SSA-LLVM emit covers most of the
+         instruction-level emit, so the lift is mostly in
+         the recognizer + capture walker. ≈ 1 session.
        - **Step 4: Tasks SSA-C/SSA-LLVM** — not started.
          Extend `Hint::TaskBegin` with a `TaskShape` struct
          (handle name, captures with types, body blocks);
