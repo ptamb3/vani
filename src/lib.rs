@@ -2352,6 +2352,29 @@ mod tests {
     }
 
     #[test]
+    fn use_path_multi_item_brace_list_brings_each_into_scope() {
+        // Closure #247: `use foo::{a, b, c};` parses as
+        // multiple UsePath entries, each bringing the
+        // corresponding item into the file's namespace.
+        // Trailing comma is allowed; empty list is rejected
+        // by the parser.
+        let source = r#"
+            module math {
+              pub fn square(x: i64) -> i64 { return x * x; }
+              pub fn double(x: i64) -> i64 { return x * 2; }
+              pub fn add(a: i64, b: i64) -> i64 { return a + b; }
+            }
+
+            use math::{square, double, add};
+
+            fn main() -> i64 {
+              return add(square(3), double(7));
+            }
+        "#;
+        compile(source).expect("multi-item `use foo::{...}` should compile");
+    }
+
+    #[test]
     fn use_path_brings_item_into_scope() {
         // Closure #245: `use math::square;` introduces
         // `square` as a bare alias for `math::square` in

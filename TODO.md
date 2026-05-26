@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #246 — namespaces Phase 3b orphan rules)
+## ⏳ Resume here (paused 2026-05-26, after closure #247 — namespaces multi-item `use { … }` imports)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,19 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#247 Namespaces — multi-item `use foo::{a, b, c};`
+imports. Parser detects `{` after `module::` and reads
+a comma-separated identifier list (trailing comma
+allowed, empty list rejected). Each ident expands to a
+separate UsePath; the existing flattening alias-map
+walk handles arbitrarily many aliases. The single-item
+form (`use foo::bar;`) and file-import form
+(`use "lib.vani";`) remain unchanged. New parser-side
+internal enum variant `UseDecl::PathMulti(Vec<UsePath>)`
+keeps the parse_use signature clean. New lib test
+`use_path_multi_item_brace_list_brings_each_into_scope`.
+Test totals: 935 lib + 47 e2e + 11 vtables-phase3 + 2
+user-drop-by-ref + 1 ssa-examples.
 #246 Namespaces Phase 3b — orphan rules for `implement`
 blocks. `ImplDecl` gains a `home_module: Option<String>`
 field set by the flattening pass when the impl was
@@ -1329,9 +1342,13 @@ likely impact / blast radius, not implementation order.
   lives in the module of either its interface or its
   for-type (or all three top-level), surfacing an
   `orphan impl` diagnostic when not.
-  *Still queued — Phase 3c/d*: nested modules; glob
-  `use foo::*;`; multi-item `use foo::{bar, baz};`;
-  `pub(crate)` tiers; re-exports.
+  *Phase 3c (multi-item `use { … }`) done 2026-05-26
+  (closure #247)*: parser detects `{` after `module::`,
+  reads a comma-separated list, expands to multiple
+  UsePath entries. Trailing comma allowed; empty list
+  rejected.
+  *Still queued*: nested modules (`module a { module b {} }`);
+  glob `use foo::*;`; `pub(crate)` tiers; re-exports.
 - **Multiple source files for one compilation.** `use "path"`
   already exists for single-file imports; extend to a full
   multi-file pipeline so the compiler ingests a set of `.vani`

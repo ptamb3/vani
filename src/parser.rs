@@ -4,12 +4,13 @@ use crate::ast::{
     ReductionOp, Stmt, StructDecl, StructField, Type, TypeAlias, UnaryOp, Use, WhereClause,
 };
 
-/// Parser-internal sum of the two `use`-statement shapes
-/// (closure #245). The top-level parse loop dispatches each
-/// variant to the matching list on `Program`.
+/// Parser-internal sum of the three `use`-statement shapes
+/// (closures #245, #247). The top-level parse loop dispatches
+/// each variant to the matching list on `Program`.
 enum UseDecl {
     File(Use),
     Path(crate::ast::UsePath),
+    PathMulti(Vec<crate::ast::UsePath>),
 }
 use crate::diagnostic::Diagnostic;
 use crate::lexer::{Token, TokenKind};
@@ -94,6 +95,7 @@ impl Parser {
                 match self.parse_use() {
                     Ok(UseDecl::File(u)) => uses.push(u),
                     Ok(UseDecl::Path(p)) => use_paths.push(p),
+                    Ok(UseDecl::PathMulti(ps)) => use_paths.extend(ps),
                     Err(e) => {
                         self.errors.push(e);
                         self.sync_to_top_level();
@@ -595,13 +597,15 @@ impl Parser {
         })
     }
 
-    /// Parse a `use` declaration. Two forms (closure #245):
+    /// Parse a `use` declaration. Three forms (closures
+    /// #245, #247):
     /// - File import: `use "path/to/file.vani";` (quoted
     ///   string, used by the multi-file pipeline).
-    /// - Module-path import: `use foo::bar;` (identifier
-    ///   followed by `::` and another identifier — brings
-    ///   `bar` into scope as an alias for `foo::bar`).
-    /// The caller distinguishes by the variant returned.
+    /// - Module-path single import: `use foo::bar;`
+    ///   (identifier followed by `::` and another identifier —
+    ///   brings `bar` into scope as an alias for `foo::bar`).
+    /// - Module-path multi-item import: `use foo::{a, b};`
+    ///   (a brace-list expands to one `UsePath` per item).
     fn parse_use(&mut self) -> Result<UseDecl, Diagnostic> {
         let start = self.expect_keyword("'use'", |kind| matches!(kind, TokenKind::Use))?;
         // Peek: string token means file import; identifier
@@ -617,10 +621,51 @@ impl Parser {
                 span: start.span.merge(semi.span),
             }));
         }
-        // Module-path import: `use foo::bar;`.
+        // Module-path import. The next token must be an
+        // ident (the module name); then `::`; then either a
+        // single ident (single-item import) or `{ a, b, … }`
+        // (multi-item import).
         let mod_tok = self.expect_ident()?;
         let module = ident_text(mod_tok);
         self.expect_keyword("'::' in `use` path", |k| matches!(k, TokenKind::ColonColon))?;
+        // Multi-item form: `use foo::{a, b};`.
+        if self.check(|k| matches!(k, TokenKind::LBrace)) {
+            self.bump(); // {
+            let mut items: Vec<(String, crate::span::Span)> = Vec::new();
+            while !self.check(|k| matches!(k, TokenKind::RBrace | TokenKind::Eof)) {
+                let item_tok = self.expect_ident()?;
+                let item_span = item_tok.span;
+                items.push((ident_text(item_tok), item_span));
+                if self
+                    .match_token(|k| matches!(k, TokenKind::Comma))
+                    .is_none()
+                {
+                    break;
+                }
+                // Allow trailing comma.
+                if self.check(|k| matches!(k, TokenKind::RBrace)) {
+                    break;
+                }
+            }
+            self.expect_keyword("'}' in `use { … }` list", |k| matches!(k, TokenKind::RBrace))?;
+            let semi = self.expect_keyword("';'", |kind| matches!(kind, TokenKind::Semicolon))?;
+            if items.is_empty() {
+                return Err(Diagnostic::new(
+                    start.span.merge(semi.span),
+                    "`use foo::{}` must list at least one item",
+                ));
+            }
+            let paths: Vec<crate::ast::UsePath> = items
+                .into_iter()
+                .map(|(item, item_span)| crate::ast::UsePath {
+                    module: module.clone(),
+                    item,
+                    span: start.span.merge(item_span),
+                })
+                .collect();
+            return Ok(UseDecl::PathMulti(paths));
+        }
+        // Single-item form: `use foo::bar;`.
         let item_tok = self.expect_ident()?;
         let item = ident_text(item_tok);
         let semi = self.expect_keyword("';'", |kind| matches!(kind, TokenKind::Semicolon))?;

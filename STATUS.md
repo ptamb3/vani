@@ -537,6 +537,22 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Namespaces Phase 3c (start) — multi-item `use foo::{a, b};` done 2026-05-26**:
+   the brace-list form of module imports parses + applies.
+   The parser detects `{` after `module::` and reads a
+   comma-separated list of item idents (trailing comma
+   allowed, empty list rejected), then expands each into a
+   separate `UsePath` entry. The flattening pass already
+   handles arbitrary numbers of aliases — no additional
+   checker work required. The single-item `use foo::bar;`
+   form remains unchanged.
+
+   `module foo::*;` (glob) and nested modules are still
+   queued; both have additional design + implementation
+   considerations. Test totals: 935 lib + 47 e2e + 11
+   vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples
+   passing. Closure #247.
+
    **Namespaces Phase 3b — orphan rules for `implement` blocks done 2026-05-26**:
    `implement Iface for T` must now live in the same module
    as either the interface or the for-type (or all three at
