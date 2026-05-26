@@ -4224,6 +4224,15 @@ pub(crate) fn c_leaf_type(ty: &Type) -> &'static str {
         // wasn't monomorphized. Fall back to opaque pointer
         // so the build doesn't die; phase 2 will remove. T1.4.
         Type::Param(_) => "void*",
+        // `dyn Iface` is a fat pointer `{ &vtable, &data }`.
+        // c_leaf_type can't synthesize the per-Iface typedef
+        // name (returns &'static str); callers that need
+        // the storage spelling will use a c_object_storage
+        // helper added in Phase 3. Hitting this arm means
+        // a caller treated `dyn Iface` as a leaf — fall
+        // back to a generic two-pointer struct typedef so
+        // the build doesn't break. Phase 1.
+        Type::Object(_) => "intent_dyn",
     }
 }
 
@@ -4492,7 +4501,7 @@ fn divisor_helper(ty: &Type) -> &'static str {
         Type::U64 => "intent_check_u64_divisor",
         Type::F32 => "intent_check_f32_divisor",
         Type::F64 => "intent_check_f64_divisor",
-        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Param(_) => {
+        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Param(_) | Type::Object(_) => {
             unreachable!("non-numeric type cannot be a divisor")
         }
     }
@@ -4522,7 +4531,7 @@ fn shift_helper(ty: &Type) -> &'static str {
         | Type::Channel(_, _)
         | Type::Mutex(_)
         | Type::Guard(_)
-        | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Param(_) => unreachable!("shift count must be an integer"),
+        | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Param(_) | Type::Object(_) => unreachable!("shift count must be an integer"),
     }
 }
 

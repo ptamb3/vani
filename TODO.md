@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #219)
+## ⏳ Resume here (paused 2026-05-25, after closure #220 — vtables Phase 1)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,14 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#220 Vtables Phase 1: `Type::Object` + `dyn Iface` parsing.
+Started epic A per user direction (original-intent
+dynamic dispatch, no inheritance). New
+`Type::Object(iface_name)` variant; parser recognizes
+`dyn IfaceName` contextually. is_copy() returns true.
+~30+ Type-match arms extended. Phase 2 (coercion +
+method dispatch) and Phase 3 (codegen) still queued.
+Test totals: 915 lib + 47 e2e passing.
 #219 `pop(mut ref xs) -> T` builtin: completes the Vec-as-
 stack story. Aborts on empty; non-Copy elements return
 by-move so the Vec's scope-exit drop walks the post-pop

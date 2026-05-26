@@ -846,6 +846,24 @@ impl Parser {
         // come up elsewhere; the type position is the only place we
         // accept it for now. `Task` is recognized the same way.
         if let TokenKind::Ident(name) = &self.current().kind {
+            // `dyn IfaceName` — fat-pointer interface object.
+            // Epic A Phase 1 (closure #220). Contextual keyword
+            // recognition keeps the lexer simple; only the type
+            // position interprets `dyn` specially.
+            if name == "dyn" {
+                self.bump();
+                let iface_token = self.bump();
+                let iface_name = match &iface_token.kind {
+                    TokenKind::Ident(n) => n.clone(),
+                    _ => {
+                        return Err(Diagnostic::new(
+                            iface_token.span,
+                            "expected an interface name after `dyn`",
+                        ));
+                    }
+                };
+                return Ok(Type::Object(iface_name));
+            }
             if name == "Str" {
                 self.bump();
                 return Ok(Type::Str);

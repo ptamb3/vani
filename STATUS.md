@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 913 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 915 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,24 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Vtables Phase 1: `Type::Object` + `dyn Iface` parsing done 2026-05-25**:
+   Started epic A (vtables) per user direction "use with
+   original intent, no inheritance". Phase 1 adds the
+   type-level recognition only — coercion and codegen are
+   Phases 2-3. New `Type::Object(iface_name)` variant
+   carries the interface name; parser recognizes
+   `dyn IfaceName` contextually (no new lexer token). The
+   checker treats `dyn Iface` as a distinct type; assigning
+   an unrelated type to a `dyn Iface`-typed binding
+   surfaces a clean `must be assignable to dyn Iface, got
+   <other>` diagnostic. `is_copy()` returns true (fat
+   pointer is two scalar fields). Every `match` arm on
+   `Type` across the codebase (~30+ sites) extended to
+   handle the new variant. Tree-C's `c_leaf_type` falls
+   back to `"intent_dyn"` placeholder — Phase 3 will
+   emit the actual per-Iface fat-pointer typedef. Test
+   totals: 915 lib + 47 e2e passing. Closure #220.
 
    **`pop(mut ref xs) -> T` builtin done 2026-05-25**:
    Completes the Vec-as-stack story (push + pop). New

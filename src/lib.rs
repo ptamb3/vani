@@ -13757,6 +13757,54 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn dyn_iface_parses_as_type_object() {
+        // Closure #220 / vtables Phase 1: parser recognizes
+        // `dyn IfaceName` as `Type::Object(IfaceName)`. No
+        // coercion / dispatch yet — that's Phase 2. The
+        // type-checker treats `dyn IfaceName` as a distinct
+        // type; assigning an unrelated type to a
+        // `dyn Iface`-typed binding surfaces a clean
+        // "must be assignable to dyn IfaceName" diagnostic
+        // rather than the previous "expected identifier" parse
+        // error.
+        let source = r#"
+            interface Drawable {
+              fn draw(self: i64) -> i64;
+            }
+
+            fn main() -> i64 {
+              let _d: dyn Drawable = 0;
+              return 0;
+            }
+        "#;
+        let res = compile(source);
+        assert!(res.is_err(), "expected dyn-iface assignment from i64 to be rejected");
+        let diags = res.err().unwrap();
+        let has_msg = diags.iter().any(|d| {
+            d.message.contains("dyn Drawable") && d.message.contains("got i64")
+        });
+        assert!(
+            has_msg,
+            "expected `must be assignable to dyn Drawable, got i64` diagnostic, got:\n{:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn dyn_iface_rejects_unknown_name_after_keyword() {
+        // Closure #220: `dyn` followed by a non-identifier
+        // surfaces a clean parse error rather than panicking.
+        let source = r#"
+            fn main() -> i64 {
+              let _d: dyn = 0;
+              return 0;
+            }
+        "#;
+        let res = compile(source);
+        assert!(res.is_err(), "expected `dyn =` to be rejected");
+    }
+
+    #[test]
     fn pop_builtin_returns_last_element_and_decrements_len() {
         // Closure #219: new `pop(mut ref xs) -> T` builtin.
         // Completes the Vec-as-stack story (push + pop). For
