@@ -7,7 +7,8 @@ checklist.
 
 ## Before you open a PR
 
-1. **`cargo test`** (full suite — 731 lib + 47 e2e tests in ~15s).
+1. **`cargo test`** (full suite — 960 lib + 47 e2e + 11 vtables-phase3 +
+   2 user-drop-by-ref + 1 ssa-examples in ~30s).
 2. **`cargo clippy`** (3 known warnings are tolerated;
    anything new should be addressed or justified).
 3. **`cargo build`** — clean with no new warnings.

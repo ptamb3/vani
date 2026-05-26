@@ -71,17 +71,23 @@ trades brevity for readability:
 | `&mut xs` (mut borrow) | `mut ref xs` |
 | `fn(&self)` (method) | `fn name(self: ref Type)` |
 | `Vec::with_capacity(n)` (path call) | (free function — no `::`) |
-| `impl Drop for T` (interface impl, planned) | `methods on T` |
-| `match Some(x) => …` (planned) | `match Some(x) then …` |
-| `xs?` (try operator, planned) | `try foo(…)` (keyword form, planned) |
+| `impl Drop for T` (interface impl) | `implement Drop for T` (auto-called on scope exit) |
+| `match Some(x) => …` | `match Some(x) then …` |
+| `xs?` (try operator) | `try foo(…)` (keyword form) |
 | `loop { … }` | `while true { … }` |
 | `for x in &xs` | `for x in ref xs` |
+| `mod foo { … }` | `module foo { … }` (`mod` accepted as alias) |
+| `pub(crate) fn …` | `pub(kosh) fn …` (कोश = "treasure / repository") |
+| `pub use foo::bar;` | `pub use foo::bar;` (re-exports through the current module) |
+| `use foo::*;` (glob) | `use foo::*;` (direct children only, non-transitive) |
+| `let x = …` | `let x = …` or `assign x = …` |
+| `return x` | `return x` / `give x` / `give_back x` / `give back x` |
 
 The compiler never silently changes the meaning of source. Aliasing,
 ownership transfer, and pure-vs-effectful boundaries are all visible in
 the words on screen.
 
-### वाणी (*vāṇī*) — Devanagari notation (planned)
+### वाणी (*vāṇī*) — Devanagari notation (Phase 1 shipped)
 
 Devanagari notation lets the source read in the writer's mother tongue.
 The first three languages are **Sanskrit** (*saṁskṛta* — the canonical
@@ -90,8 +96,18 @@ Devanagari language and grammar root), **Hindi** (*hindī*), and **Marathi**
 the common keywords. The idea is **alias-based**: every English keyword
 gets one or more Devanagari aliases, and the lexer accepts whichever form
 the source file uses. A single program may mix forms freely; the compiler
-treats them as the same token. This is gated behind a future closure —
-see the Roadmap below.
+treats them as the same token. **Phase 1 ships now**: single-word
+Devanagari aliases for `let` / `return` / `fn` / `if` / `else` / `while`
+/ `for` / `prove` (Hindi + Sanskrit) plus multi-word phrases like
+`नहीं तो` (else), `के लिए` (for), `सिद्ध करो` (prove) — fused by a
+post-lex merger. Per-language purity v1 lets users opt into a single
+language (Hindi-only, Sanskrit-only, Marathi-only, English-only) via a
+file header. **Still pending**: SOV (subject-object-verb) word-order
+shape inside for/parallel-for headers — `के लिए i से 0 तक 5` reads
+unnaturally because the lexer/parser still expects English word-order
+even when the surface keywords are Devanagari. The 3-way parity (i.e.
+distinct Sanskrit vs Hindi vs Marathi verb forms reaching grammatical
+accuracy) needs a consultant pass. See the Roadmap and TODO.md.
 
 Romanizations follow **IAST** (International Alphabet of Sanskrit
 Transliteration) for Sanskrit and a Hunterian-style transliteration for
@@ -1356,9 +1372,10 @@ fn main() -> i64 {
 ```
 
 `intentc check`/`emit-c`/`run` accept the entry file and recursively resolve
-`use` declarations relative to each file's directory. Names from imported
-files share a flat namespace — there are no module-qualified call syntaxes
-yet.
+`use` declarations relative to each file's directory. By default,
+names from imported files share a flat namespace — but you can carve
+out scoped sub-namespaces with **inline `module` blocks** at any level
+(see the *Modules and namespaces* section below).
 
 Cycles are detected by canonicalized path: each file is included at most
 once across the dependency tree, so `a.vani` `use`-ing `b.vani` and
@@ -1400,6 +1417,81 @@ suitable for editor integrations and CI:
 The output ends with a single newline. On success, the body is
 `{"diagnostics":[]}`. Without `--json`, the human-readable form goes to
 stderr as before.
+
+## Modules and namespaces
+
+vāṇī has Rust-style inline modules with explicit paths (`::`),
+compile-time visibility checks, and a `use`-declaration form for
+local aliases. Everything happens at parse/check time — the
+backends never see the `module` keyword. Detailed design
+rationale lives in [`docs/namespaces_design.md`](docs/namespaces_design.md).
+
+```vani
+module geo {
+  pub struct Point { x: i64, y: i64 }
+
+  // Private — accessible only inside `geo`.
+  fn shift(p: Point, dx: i64) -> Point {
+    return Point { x: p.x + dx, y: p.y };
+  }
+
+  pub fn origin() -> Point { return Point { x: 0, y: 0 }; }
+  pub fn step_right(p: Point) -> Point { return shift(p, 1); }
+
+  // Nested modules work — bare `Point` inside `bounds` would
+  // need a path (`geo::Point`) or its own `use`.
+  module bounds {
+    pub fn area(p: geo::Point) -> i64 { return p.x * p.y; }
+  }
+}
+
+// Bring items into scope. Five forms:
+use geo::Point;                          // single-item
+use geo::{origin, step_right};           // multi-item brace list
+use geo::*;                              // glob (direct children only)
+use geo::bounds::{area as bounds_area};  // per-entry `as` rename
+// use geo::*;  // would collide with the lines above — caught at compile time
+
+fn main() -> i64 {
+  let p: Point = origin();
+  let r: Point = step_right(p);
+  let z: i64 = bounds_area(r);
+  write "step_right + bounds_area =", z;
+  return 0;
+}
+```
+
+### Key rules
+
+- **Private by default.** Items inside a `module` body need `pub`
+  to be reachable from outside the module.
+- **`pub(kosh)`** is a finer-grained tier — exported within the
+  current kosh but not through the (future) kosh boundary. Today
+  it behaves identically to `pub`; the bit is preserved so
+  enforcement activates once kosh boundaries ship.
+- **Module-local `use`** inside `module body { … }` is scoped to
+  that body. It does not leak outside or into nested submodules.
+- **`pub use foo::bar;`** inside a module body re-exports the item
+  under the current module's namespace (`facade::bar`).
+  Re-exports are resolved transitively, so chained `pub use`
+  collapses to a single hop.
+- **Orphan rule.** `implement Iface for T` must live in the module
+  of either `Iface` or `T`, or at the top level. Out-of-place
+  impls surface a precise error.
+- **Collision diagnostics.** Two `use` paths that bring the same
+  local name into scope produce a precise error with a
+  `use … as …;` hint. Same goes for the brace-list form.
+
+### What's "kosh"?
+
+**Kosh** (कोश, "treasure / repository") is vāṇī's word for what
+Rust calls a *crate* — one compilation unit shipping a public
+API surface. The future package registry is **Vāṇī-Kosh**. The
+syntax `pub(kosh) fn …` records the intent that an item is
+internal to the kosh; today vāṇī compiles a single kosh at a
+time so the bit is preparatory. The full package-manager arc
+(manifest → resolver → registry CLI → stdlib-as-kosh) is on the
+roadmap.
 
 ## Effects, ownership, and parallelism
 
@@ -2120,6 +2212,18 @@ lands.
 
 **Done (most recent first):**
 
+- ✅ Namespaces / modules — `module foo { … }`, `pub` / `pub(kosh)`,
+  `use foo::bar [as baz];` / `use foo::*;` / `use foo::{a, b};`,
+  module-local `use`, `pub use` re-exports, nested modules with deep
+  paths, orphan rules, collision diagnostics — closures #242–#258
+- ✅ "Kosh" (कोश) adopted as vāṇī's word for the future crate concept;
+  `pub(kosh)` accepted as preparatory syntax
+- ✅ Keyword aliases: `assign` (let), `give` / `give_back` /
+  `give back` (return)
+- ✅ SSA Step 3b — multi-block parallel-for body in SSA-C (closure #251);
+  SSA-LLVM gracefully falls back to tree-LLVM for the same shape
+- ✅ Array types in fn return position (#239)
+- ✅ Formatter support for module blocks + `use_paths` round-trip (#250)
 - ✅ `clone_at` on `Vec<Struct>` tree-LLVM lowering
 - ✅ Methods without `self` rejected with clean diagnostic
 - ✅ Bare-block `{ … }` as statement — helpful diagnostic with workaround
@@ -2151,8 +2255,11 @@ deliberately deferred as v1 trade-offs.
   consts with an integer-literal initializer.
 - ✅ Const initializer arithmetic — `const B: i64 = A + 1;` (and `* / - %`)
   folds at parse time across previously-declared integer consts.
-- ⏳ Array types in fn return position — SSA layer lacks by-value-array return;
-  clean diagnostic in place.
+- ✅ Array types in fn return position — `fn make() -> [i64; 3]`
+  compiles + runs on both backends. Tree-C wraps via a per-shape
+  struct (`intent_arr_ret_N_T`); tree-LLVM returns `[N x T]` by
+  value natively. SSA-LLVM falls back to tree-LLVM for the
+  stack-aliasing case. See [examples/array_return.vani](examples/array_return.vani).
 - ⏳ Nested arrays `[[T; N]; M]` and `[Vec<T>; N]` — SSA path doesn't lower
   by-value element loads of these shapes yet.
 - ✅ Empty struct `struct E {}` — useful for marker / zero-sized types.
@@ -2205,35 +2312,36 @@ roadmap surface and unblocks the items below it.
 | 6 | ✅ **T1.4 phase 2: generic call-site monomorphization** | — | high | done 2026-05-21 — pass-through generics specialize per call-site literal type; see [examples/generic_functions.vani](examples/generic_functions.vani). Var-arg inference + interface bounds pending. |
 | 7 | ✅ **T1.5 phase 2 + 3: interface dispatch (static + dynamic) + bounded generics** | T1.4 phase 2 | medium/high | done 2026-05-25 — static `recv.method()` dispatch + bounded generics done 2026-05-21; `dyn Iface` fat-pointer dispatch (owned, `ref dyn`, `Vec<dyn>`, struct fields of dyn) shipped via closures #220-#228, see [examples/dyn_dispatch.vani](examples/dyn_dispatch.vani). |
 | 8 | ✅ **T2.7: user-defined Drop interface (auto-call at scope exit)** | T1.5 phase 2, #3 | low/medium | done 2026-05-25 — `implement Drop for T` runs automatically at scope exit. Two signatures supported: `fn drop(self: T)` (by-value, consumes self — only valid when T has no heap-owning fields) and `fn drop(self: mut ref T)` (runs first then per-field free — works for any T including OwnedStr / Vec / nested-struct fields, closure #229). See [examples/drop_interface.vani](examples/drop_interface.vani). |
-| 9 | ✅ **Devanagari keyword aliases — Sanskrit / Hindi / Marathi (MVP)** | — | medium | done 2026-05-21; see [examples/hindi_keywords.vani](examples/hindi_keywords.vani), [examples/sanskrit_keywords.vani](examples/sanskrit_keywords.vani), [examples/marathi_keywords.vani](examples/marathi_keywords.vani). Multi-word aliases + script-aware diagnostics deferred. |
+| 9 | ✅ **Devanagari keyword aliases — Sanskrit / Hindi / Marathi (Phase 1)** | — | medium | done 2026-05-21; see [examples/hindi_keywords.vani](examples/hindi_keywords.vani), [examples/sanskrit_keywords.vani](examples/sanskrit_keywords.vani), [examples/marathi_keywords.vani](examples/marathi_keywords.vani). Phase 1 ships single-word aliases + multi-word fusion (`नहीं तो`, `के लिए`, `सिद्ध करो`). SOV word-order parsing (Devanagari is verb-final) and the per-language 3-way verb parity still pending — see below. |
+| 10 | ✅ **Namespaces — modules, visibility, use, kosh** | — | high | done 2026-05-26 across closures #242–#258. `module foo { … }` blocks (inline + nested + deep `a::b::c::Item` paths), per-item `pub` / `pub(kosh)` visibility, `use foo::bar [as baz];` / `use foo::{a, b};` / `use foo::*;` import forms (top-level AND inside module bodies), `pub use foo::bar;` re-exports (transitively resolved), orphan rules for `implement Iface for T`, collision diagnostics, formatter round-trip. See [examples/modules.vani](examples/modules.vani) and the *Modules and namespaces* section above. The full kosh package-manager arc (manifest, resolver, registry, stdlib-as-kosh) is still on the deferred queue — see [TODO.md](TODO.md) item #10. |
+| 11 | ⏳ **SSA-LLVM multi-block parallel-for body — atomicrmw emit** | #10 (SSA Step 3b recognizer) | medium/high | recognizer half done 2026-05-26 (closure #241); SSA-C emit done (#251); SSA-LLVM emit needs Phi-traceback to find the actual reduction-update across conditional branches. Tree-LLVM fallback handles correctness today — this is a performance optimization. |
+| 12 | ⏳ **Kosh package manager + Vāṇī-Kosh registry** | #10 | high (multi-session) | `kosh.toml` manifest, resolver + lockfile, `pub(kosh)` enforcement at the boundary, registry CLI (`intentc kosh add`, `kosh publish`), stdlib-as-kosh. Item #10 in [TODO.md](TODO.md). |
 
-**Devanagari aliases (#9) — granular sketch:**
+**Devanagari aliases (#9) — current state + remaining work:**
 
-The work is mostly in the lexer (extend the keyword table) and the
-diagnostic layer (so errors surface the closest matching alias when the
-user mistypes a keyword in any language). No IR / backend change is
-needed — the AST already speaks in English-keyword tags, and the parser
-emits the same AST whichever surface alias was used. Stages:
+Phase 1 (9a / 9b / 9c / 9e) shipped 2026-05-21. The lexer recognizes
+single-word Devanagari aliases (Sanskrit / Hindi / Marathi) for
+`fn` / `let` / `return` / `if` / `else` / `while` / `for` / `prove`
+and friends, plus multi-word phrases via a post-lex merger
+(`नहीं तो` → else, `के लिए` → for, `सिद्ध करो` → prove). Per-language
+**purity v1** (closure #237) lets users opt a file into a single
+language (Hindi / Sanskrit / Marathi / English) via a header marker;
+the checker then rejects out-of-language identifiers. Working
+example files exist in each language.
 
-- **9a.** Finalize the keyword alias tables for संस्कृत / हिन्दी / मराठी
-  with grammar consultants. The README sketch above is the starting
-  point — every English keyword needs at least one alias per language,
-  picked to be idiomatic and unambiguous.
-- **9b.** Extend the lexer's keyword recognition to read UTF-8 source
-  with combining marks and to recognize multi-codepoint keyword tokens
-  (Devanagari letters take several bytes each; the lexer's current
-  single-byte loop needs to switch to a grapheme-cluster walk).
-- **9c.** Add an alias table keyed by `(script_family, keyword)` and
-  route every alias to the existing English-keyword `TokenKind`. Mixed-
-  script files just route each token independently.
-- **9d.** Update diagnostics so the error message surfaces in the script
-  the source file uses most heavily (auto-detected from the keyword
-  histogram), with the English alias quoted alongside for cross-reference.
-- **9e.** Add per-language `examples/` files showing a working program
-  written entirely in each script.
-- **9f.** Document the alias tables in the README in the order they're
-  finalized; deprecate the conceptual sketch above and replace it with
-  the canonical list.
+**Still pending (multi-session):**
+- **SOV word-order parsing.** Devanagari verbs are clause-final
+  (`के लिए i से 0 तक 5` literally reads "for i from 0 to 5" but
+  the verb-final shape doesn't match the parser's English
+  word-order expectation, so the natural surface is awkward).
+  Needs a grammar consultant pass + parser-level word-order
+  variant.
+- **Sanskrit / Hindi / Marathi 3-way verb parity.** Today many
+  aliases are shared across the three (e.g. `माना` is Hindi/Sanskrit
+  both); the proper distinct-verb-per-language tables need a
+  grammar review.
+- **Script-aware diagnostics (9d).** Errors today emit in
+  English; a per-source-script diagnostic mode is queued.
 
 **Long-term beyond v1**
 

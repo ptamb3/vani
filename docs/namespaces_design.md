@@ -1,7 +1,30 @@
 # Namespaces / modules — design doc
 
-**Status:** proposal, awaiting user review before implementation
-**Authored:** 2026-05-26
+**Status:** shipped — closures #242–#258 (see STATUS.md / TODO.md).
+**Authored:** 2026-05-26; revised 2026-05-26 to mark the implemented surface.
+
+## What shipped (closures #242–#258)
+
+The original proposal below was implemented in full, plus several
+follow-ups that were initially queued. Snapshot of the surface as
+of closure #258:
+
+| Form | Closures | Notes |
+|------|----------|-------|
+| `module foo { … }` | #242 | inline blocks; private-by-default |
+| `pub fn` / `pub struct` / etc. | #243 | visibility per item via differentiated `__priv__` mangling |
+| `pub struct/enum/const/type` | #244 | full visibility coverage across all item kinds |
+| `use foo::bar;` | #245 | single-item import |
+| `implement Iface for T` orphan rules | #246 | strict — must live in iface OR for-type's module |
+| `use foo::{a, b};` | #247 | multi-item brace list |
+| Nested `module a { module b { … } }` + deep paths `a::b::c::Item` | #248 | worklist-based flatten; arbitrary nesting |
+| Implicit sibling-module references (`inner::f` from inside `outer`) | #249 | qualify checks nested-module-name set |
+| Formatter support + `examples/modules.vani` | #250 | round-trips |
+| Glob `use foo::*;` | #253 | non-transitive (direct children only) |
+| `use foo::bar as baz;` rename + collision diagnostic | #254 | both single-item and per-entry in brace lists |
+| `use` inside `module { }` bodies | #256 | scoped to module body, no leak |
+| Re-exports `pub use foo::bar;` | #257 | transitively resolved via fixed-point |
+| `pub(kosh)` visibility tier | #258 | preparatory; behaves as `pub` today, enforces at the future kosh boundary |
 
 ## Goal
 
@@ -92,29 +115,41 @@ Using `::` (Rust convention; familiar to C++ users too) avoids
 this. The `::` token is new to the lexer but doesn't collide
 with any existing operator.
 
-### What v1 leaves out (queued for follow-ups)
+### What v1 leaves out (now mostly shipped — see top of doc)
 
-- **Nested modules** (`module a { module b { ... } }`).
-- **Glob imports** (`use foo::*;`) — surprise factor; might never
-  ship.
-- **Multi-item imports** (`use foo::{bar, baz};`) — sugar over
-  one-line-each `use`.
+The original "queued for follow-ups" list is preserved here as
+historical context; each item links to the closure that shipped it.
+
+- **Nested modules** (`module a { module b { ... } }`). ✅ #248.
+- **Glob imports** (`use foo::*;`). ✅ #253 — non-transitive only.
+- **Multi-item imports** (`use foo::{bar, baz};`). ✅ #247.
 - **`pub(kosh)` / `pub(super)`** visibility tiers — `kosh`
   (कोश, "treasure/repository") is vāṇī's name for what Rust
-  calls a crate (renamed 2026-05-26). One kosh = one
-  compilation unit / one package; the future package
-  registry is Vāṇī-Kosh. Rust uses `pub(crate)` for
-  fine-grained control; v1 vāṇī keeps it binary
-  (`pub` / private). The tier work is queued for after
-  the kosh concept itself ships.
-- **Re-exports** (`pub use foo::bar;`).
+  calls a crate. One kosh = one compilation unit / one package;
+  the future package registry is Vāṇī-Kosh. ✅ #258 ships
+  `pub(kosh)` as preparatory syntax (today behaves identically to
+  `pub`; enforcement activates when the kosh boundary ships).
+  `pub(super)` remains unsupported and surfaces a clear
+  diagnostic.
+- **Re-exports** (`pub use foo::bar;`). ✅ #257 — transitively
+  resolved via fixed-point so chained re-exports collapse.
 - **Module-level `const`** is fine but follows the same
-  visibility rules as fns.
+  visibility rules as fns. ✅ #244.
 - **`implement Iface for T` orphan rules** — Rust requires impls to
-  live in the module of either the trait or the type. v1 enforces
-  the same. (The IFACE_IMPL_REGISTRY already keys by
-  `(iface_name, type_name)` so adding a module-of qualifier is a
-  small extension.)
+  live in the module of either the trait or the type. ✅ #246
+  enforces this strictly. The IFACE_IMPL_REGISTRY already keyed
+  by `(iface_name, type_name)`; the module-of qualifier sits
+  alongside.
+
+### Still queued (post-#258)
+
+- **Kosh package manager** (`kosh.toml`, resolver, lockfile,
+  registry CLI, stdlib-as-kosh). See TODO.md item #10 for the
+  full arc. The smallest beachhead — `pub(kosh)` syntax #258 —
+  has shipped.
+- **Devanagari surface for the namespace keywords** (`module` /
+  `pub` / `use`). Blocked on grammar review for the per-language
+  3-way alias parity.
 
 ## Items allowed inside a module
 
@@ -151,32 +186,24 @@ scoping.
 5. **Tests.** Compile a tiny multi-module program; verify
    visibility violations surface as clear diagnostics.
 
-## Open questions for user
+## Open questions — resolved
 
-1. **Keyword name: `module` or `mod`?** Rust uses `mod`. vāṇī tends
-   toward more readable spellings (`interface` over `iface`,
-   `implement` over `impl`). Recommend **`module`** (and reuse the
-   existing `impl` alias by adding `mod` if desired later).
+The four design questions raised before implementation, with the
+answer that shipped:
 
-2. **`pub` keyword: `pub` or `public`?** Per the within-language
-   alias convention (#234), both would work. Recommend `pub` as the
-   canonical spelling (shorter, matches Rust) and `public` as
-   alias.
+1. **Keyword name: `module` or `mod`?** → **Both.** Canonical
+   form is `module`; `mod` is accepted as an alias in the lexer
+   (closure #242).
 
-3. **File-as-module (Rust default) — v2?** Today `use "path.vani"`
-   imports a whole file at the top level. Adding file-as-module
-   would let `use "math.vani"` automatically create a `math` module
-   wrapping the file's contents. Useful for multi-file projects
-   but couples namespaces with multi-file work. Recommend v1 ships
-   without it; v2 adds the convention.
+2. **`pub` keyword: `pub` or `public`?** → **Both.** Canonical
+   form is `pub`; `public` is accepted as an alias (closure #242).
 
-4. **Orphan-rule strictness?** Rust requires `implement Iface for
-   T` to live in the module of either Iface or T. v1 in vāṇī
-   could either enforce that or allow free-standing impls. The
-   strict rule prevents incoherent global impls but is sometimes
-   surprising for newcomers. Recommend **enforce strict** — it's
-   the compile-time-catching choice; users surface a clear error
-   if they try to define an out-of-place impl.
+3. **File-as-module — v2?** → **Deferred.** Current
+   `use "path.vani";` continues to do file-level concatenation;
+   file-as-module is a future enhancement once the kosh
+   package-manager arc has shape.
 
-Once these are confirmed, the implementation can proceed in
-4-5 focused sub-commits (lexer → AST → parser → checker → tests).
+4. **Orphan-rule strictness?** → **Strict** (closure #246).
+   `implement Iface for T` must live in the module of either Iface
+   or T — or be top-level. Out-of-place impls surface a clear
+   diagnostic at the impl site.

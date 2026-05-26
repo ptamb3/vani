@@ -36,11 +36,11 @@ non-proof code changes. Don't set it in CI.
 
 ```bash
 cargo build                         # Quick build
-cargo test                          # Full suite (731 lib + 47 e2e, ~15s)
+cargo test                          # Full suite (960 lib + 47 e2e + 14 other, ~30s)
 cargo test smt_                     # Subset matching a prefix
 cargo test --release                # Faster compile, same coverage
 cargo clippy                        # Lints
-cargo run -- run examples/basics.intent   # Try a sample
+cargo run -- run examples/basics.vani   # Try a sample
 ```
 
 If a test needs `lli` / `llc` / `z3` and the tool isn't installed,
@@ -64,28 +64,45 @@ src/
   backend_llvm.rs     LLVM IR backend (default; primary target)
   main.rs             CLI: check / emit / emit-c / run / build
   lib.rs              Public API + most unit tests
+  ssa.rs              SSA-form IR + lowering pass (the closure-#241/#251
+                      parallel-for region recognition lives here)
+  ssa_backend_c.rs    SSA-C backend (used for parallel-for + tasks paths)
+  ssa_backend_llvm.rs SSA-LLVM backend (used when the SSA path supports
+                      the program shape; falls back to tree-LLVM otherwise)
+  format.rs           Formatter (`intentc fmt`); preserves comments + blank
+                      lines, round-trips to the same AST.
 tests/
-  run_end_to_end.rs   Integration: invoke the binary on real .intent files
-examples/             User-facing .intent sample programs
+  run_end_to_end.rs   Integration: invoke the binary on real .vani files
+examples/             User-facing .vani sample programs
 README.md             Language reference (user-facing)
+docs/namespaces_design.md  Design rationale for the namespaces feature
+                            (modules, use, kosh).
 ```
 
 ## Pipeline overview
 
 ```
-.intent  →  Lexer  →  Parser  →  Checker (+ SMT)  →  TypedIR  →  Backend  →  output
+.vani  →  Lexer  →  Parser  →  Checker (+ SMT)  →  TypedIR  ─┬→  Tree Backend  →  output
+                                                              └→  SSA Lowerer  →  SSA Backend  →  output
 ```
 
 * The **checker** does type checking *and* verification. It calls
   z3 via `src/smt.rs` for `prove`/`ensures`/loop invariants, plus
   the SMT-discharged elision pass that flips `checked: bool` on
   `Index`/`Binary` nodes when proven safe.
-* The **IR** (`TypedIR`) is tree-shaped (not CFG/SSA yet — see the
-  Growth Path in README). The `checked: bool` field on Index/Binary
-  is the main backend-affecting verifier output.
-* **Backends** both consume the same `TypedProgram` and emit text
+* The **IR** (`TypedIR`) is tree-shaped. The `checked: bool` field
+  on Index/Binary is the main backend-affecting verifier output.
+* The **SSA lowerer** (`src/ssa.rs`) optionally lowers the tree IR
+  into a CFG-of-basic-blocks form. The driver wrappers
+  `emit_c_via_ssa` / `emit_llvm_via_ssa` in `main.rs` try the SSA
+  path first; if the SSA backend returns `EmitError` (program shape
+  the SSA path doesn't handle yet) they transparently fall back to
+  the tree backend. Both paths produce semantically identical output;
+  the cross-backend parity test pins this.
+* **Backends** consume either the tree `TypedProgram` (tree-C /
+  tree-LLVM) or the SSA `Module` (ssa-C / ssa-LLVM) and emit text
   (C source / LLVM IR). The `Backend` trait in `src/backend.rs` is
-  the single emit surface.
+  the tree-path emit surface.
 
 ## Where to look for common changes
 
@@ -96,9 +113,13 @@ README.md             Language reference (user-facing)
 | Extend SMT encoding | `smt.rs::encode_expr` |
 | Add a new SMT-discharged proof | `checker.rs::try_smt_prove` / `try_elide_*` |
 | Change C output | `backend_c.rs` |
-| Change LLVM output | `backend_llvm.rs` |
+| Change LLVM output (tree path) | `backend_llvm.rs` |
+| Change LLVM output (SSA path) | `ssa_backend_llvm.rs` |
+| Change C output (SSA path) | `ssa_backend_c.rs` |
+| Lower a new construct into SSA | `ssa.rs::lower_*` |
+| Recognize a region (parallel-for / task) | `ssa_backend_c.rs::recognize_*` (shared with SSA-LLVM) |
 | Add a CLI subcommand or flag | `main.rs` (HELP + `parse_emit_args`) |
-| Add an example program | `examples/<name>.intent` + wire into both `check_examples_all_succeed` and a `run_*` test in `tests/run_end_to_end.rs` |
+| Add an example program | `examples/<name>.vani` + wire into both `check_examples_all_succeed` and a `run_*` test in `tests/run_end_to_end.rs` |
 
 ## Conventions
 
@@ -131,7 +152,7 @@ README.md             Language reference (user-facing)
 
 ## Adding a feature, end-to-end
 
-1. **Sketch in `examples/`** as a `.intent` program that exercises
+1. **Sketch in `examples/`** as a `.vani` program that exercises
    the new shape. If it can't typecheck yet, that's expected; come
    back to it in step 4.
 2. **Wire through the pipeline:** lexer → parser → AST → IR
@@ -147,7 +168,22 @@ README.md             Language reference (user-facing)
 
 ## What's still ahead
 
-See README's "Growth Path" section for the longer roadmap. In
-short: SMT array theory for symbolic indexing, effects /
-ownership-in-verifier, parallelism constructs, a CFG/SSA IR
-refactor, and a fuller `Str` type with concatenation / length.
+See README's "Growth Path" section for the longer roadmap and
+TODO.md for the canonical queue. As of 2026-05-26 the heavy
+lifts that **have** landed (originally listed here as ahead) —
+the CFG/SSA IR refactor, parallelism (`parallel for` /
+reductions / atomics / channels / mutexes / tasks),
+ownership-in-verifier (affine types, Drop, vec/owned-str
+heap tracking), payloaded enums + match, vtables for dynamic
+dispatch, namespaces (modules with visibility / `use` /
+re-exports / `pub(kosh)`), and Str + OwnedStr — are
+representative of what's now in the language.
+
+Currently pending:
+- SSA-LLVM multi-block atomicrmw emit (Phi-traceback; tree-LLVM
+  is the correctness fallback today).
+- The **kosh** (कोश) package-manager arc: manifest (`kosh.toml`),
+  resolver + lockfile, registry + CLI, and stdlib-as-kosh.
+  Currently single-kosh; `pub(kosh)` already records intent.
+- Devanagari SOV word order and 3-way Sanskrit/Hindi/Marathi
+  alias parity (both blocked on grammar review).
