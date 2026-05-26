@@ -2034,7 +2034,7 @@ mod tests {
     }
 
     fn dummy_uri() -> Url {
-        Url::parse("file:///tmp/test.intent").unwrap()
+        Url::parse("file:///tmp/test.vani").unwrap()
     }
 
     fn diag_at(line: u32, character: u32, message: &str) -> lsp_types::Diagnostic {

@@ -4,7 +4,7 @@ use std::process::Command;
 fn run_basics_example_succeeds_and_prints_42() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/basics.intent", manifest_dir);
+    let example = format!("{}/examples/basics.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -31,27 +31,27 @@ fn check_examples_all_succeed() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
 
     for example in [
-        "basics.intent",
-        "integers.intent",
-        "floats_and_shifts.intent",
-        "arrays.intent",
-        "vectors.intent",
-        "borrows.intent",
-        "control_flow.intent",
-        "drop_interface.intent",
-        "dyn_dispatch.intent",
-        "early_exit.intent",
-        "scopes.intent",
-        "mut_refs.intent",
-        "verified.intent",
-        "for_loops.intent",
-        "contracts.intent",
-        "invariants.intent",
-        "iterate.intent",
-        "assert_messages.intent",
-        "inline_call_proofs.intent",
-        "vec_invariants.intent",
-        "bounds_elision.intent",
+        "basics.vani",
+        "integers.vani",
+        "floats_and_shifts.vani",
+        "arrays.vani",
+        "vectors.vani",
+        "borrows.vani",
+        "control_flow.vani",
+        "drop_interface.vani",
+        "dyn_dispatch.vani",
+        "early_exit.vani",
+        "scopes.vani",
+        "mut_refs.vani",
+        "verified.vani",
+        "for_loops.vani",
+        "contracts.vani",
+        "invariants.vani",
+        "iterate.vani",
+        "assert_messages.vani",
+        "inline_call_proofs.vani",
+        "vec_invariants.vani",
+        "bounds_elision.vani",
     ] {
         let path = format!("{}/examples/{}", manifest_dir, example);
         let output = Command::new(binary)
@@ -84,24 +84,24 @@ fn multi_file_diagnostic_points_to_imported_file() {
     fs::create_dir_all(&dir).expect("mkdir");
 
     fs::write(
-        dir.join("lib.intent"),
+        dir.join("lib.vani"),
         "fn broken(x: nonsense) -> i64 { return 0; }\n",
     )
     .expect("write lib");
     fs::write(
-        dir.join("main.intent"),
-        "use \"lib.intent\";\n\nfn main() -> i64 {\n  return 0;\n}\n",
+        dir.join("main.vani"),
+        "use \"lib.vani\";\n\nfn main() -> i64 {\n  return 0;\n}\n",
     )
     .expect("write main");
 
     let output = Command::new(binary)
-        .args(["check", dir.join("main.intent").to_str().unwrap()])
+        .args(["check", dir.join("main.vani").to_str().unwrap()])
         .output()
         .expect("check");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let lib_path = dir
-        .join("lib.intent")
+        .join("lib.vani")
         .canonicalize()
         .expect("canonicalize lib")
         .display()
@@ -141,13 +141,13 @@ fn multi_file_compile_resolves_use() {
     fs::create_dir_all(&dir).expect("mkdir");
 
     fs::write(
-        dir.join("lib.intent"),
+        dir.join("lib.vani"),
         "fn double(x: i64) -> i64 { return x * 2; }\n",
     )
     .expect("write lib");
     fs::write(
-        dir.join("main.intent"),
-        r#"use "lib.intent";
+        dir.join("main.vani"),
+        r#"use "lib.vani";
 
 fn main() -> i64 {
   let x: i64 = double(21);
@@ -160,7 +160,7 @@ fn main() -> i64 {
     .expect("write main");
 
     let output = Command::new(binary)
-        .args(["run", dir.join("main.intent").to_str().unwrap()])
+        .args(["run", dir.join("main.vani").to_str().unwrap()])
         .output()
         .expect("run multi-file");
 
@@ -187,7 +187,7 @@ fn main() -> i64 {
 fn run_assert_messages_example() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/assert_messages.intent", manifest_dir);
+    let example = format!("{}/examples/assert_messages.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -217,7 +217,7 @@ fn intentc_ir_dumps_typed_program() {
             .as_nanos()
     ));
     fs::create_dir_all(&dir).expect("mkdir");
-    let src = dir.join("i.intent");
+    let src = dir.join("i.vani");
     fs::write(&src, "fn main() -> i64 { return 7; }\n").expect("write");
 
     let output = Command::new(binary)
@@ -253,7 +253,7 @@ fn intentc_ast_dumps_parsed_program() {
             .as_nanos()
     ));
     fs::create_dir_all(&dir).expect("mkdir");
-    let src = dir.join("a.intent");
+    let src = dir.join("a.vani");
     fs::write(&src, "fn add(a: i64, b: i64) -> i64 { return a + b; }\n").expect("write");
 
     let output = Command::new(binary)
@@ -284,7 +284,7 @@ fn intentc_tokens_dumps_token_stream() {
             .as_nanos()
     ));
     fs::create_dir_all(&dir).expect("mkdir");
-    let src = dir.join("t.intent");
+    let src = dir.join("t.vani");
     fs::write(&src, "fn main() -> i64 { return 42; }\n").expect("write");
 
     let output = Command::new(binary)
@@ -328,7 +328,7 @@ fn intentc_build_produces_runnable_native_binary() {
             .as_nanos()
     ));
     fs::create_dir_all(&dir).expect("mkdir");
-    let src = dir.join("prog.intent");
+    let src = dir.join("prog.vani");
     fs::write(
         &src,
         "fn main() -> i64 {\n  let x: i64 = 7;\n  let y: i64 = 6;\n  print x * y;\n  return 0;\n}\n",
@@ -388,65 +388,65 @@ fn llvm_backend_run_produces_same_output_as_c() {
     // matrix of feature interactions. Update this list when a new
     // example file lands.
     for name in &[
-        "array_proofs.intent",
-        "arrays.intent",
-        "assert_messages.intent",
-        "atomics.intent",
-        "basics.intent",
-        "block_expressions.intent",
-        "borrows.intent",
-        "bounded_generics.intent",
-        "bounds_elision.intent",
-        "composite_types.intent",
-        "concurrency.intent",
-        "contracts.intent",
-        "control_flow.intent",
-        "drop_interface.intent",
-        "dyn_dispatch.intent",
-        "early_exit.intent",
-        "enum_arr_payload.intent",
-        "enum_eq.intent",
-        "enum_owned_payload.intent",
-        "enum_vec_payload.intent",
-        "floats_and_shifts.intent",
-        "fn_pointers.intent",
-        "for_loops.intent",
-        "generic_functions.intent",
-        "hindi_keywords.intent",
-        "inline_call_proofs.intent",
-        "integers.intent",
-        "interfaces.intent",
-        "invariants.intent",
-        "iterate.intent",
-        "marathi_keywords.intent",
-        "match_bool.intent",
-        "match_str.intent",
-        "methods.intent",
-        "mixed_place_assign.intent",
-        "mut_refs.intent",
-        "nested_struct_drop.intent",
-        "option_error_propagation.intent",
-        "option_types.intent",
-        "parallel.intent",
-        "partial_move.intent",
-        "push_mut.intent",
-        "sanskrit_keywords.intent",
-        "scopes.intent",
-        "strings.intent",
-        "strings_concat.intent",
-        "struct_atomic_field.intent",
-        "struct_eq.intent",
-        "struct_mixed_fields.intent",
-        "struct_owned_field.intent",
-        "tasks.intent",
-        "tracker.intent",
-        "try_keyword.intent",
-        "tuple_eq.intent",
-        "type_associated_fn.intent",
-        "unit_return.intent",
-        "vec_invariants.intent",
-        "vectors.intent",
-        "verified.intent",
+        "array_proofs.vani",
+        "arrays.vani",
+        "assert_messages.vani",
+        "atomics.vani",
+        "basics.vani",
+        "block_expressions.vani",
+        "borrows.vani",
+        "bounded_generics.vani",
+        "bounds_elision.vani",
+        "composite_types.vani",
+        "concurrency.vani",
+        "contracts.vani",
+        "control_flow.vani",
+        "drop_interface.vani",
+        "dyn_dispatch.vani",
+        "early_exit.vani",
+        "enum_arr_payload.vani",
+        "enum_eq.vani",
+        "enum_owned_payload.vani",
+        "enum_vec_payload.vani",
+        "floats_and_shifts.vani",
+        "fn_pointers.vani",
+        "for_loops.vani",
+        "generic_functions.vani",
+        "hindi_keywords.vani",
+        "inline_call_proofs.vani",
+        "integers.vani",
+        "interfaces.vani",
+        "invariants.vani",
+        "iterate.vani",
+        "marathi_keywords.vani",
+        "match_bool.vani",
+        "match_str.vani",
+        "methods.vani",
+        "mixed_place_assign.vani",
+        "mut_refs.vani",
+        "nested_struct_drop.vani",
+        "option_error_propagation.vani",
+        "option_types.vani",
+        "parallel.vani",
+        "partial_move.vani",
+        "push_mut.vani",
+        "sanskrit_keywords.vani",
+        "scopes.vani",
+        "strings.vani",
+        "strings_concat.vani",
+        "struct_atomic_field.vani",
+        "struct_eq.vani",
+        "struct_mixed_fields.vani",
+        "struct_owned_field.vani",
+        "tasks.vani",
+        "tracker.vani",
+        "try_keyword.vani",
+        "tuple_eq.vani",
+        "type_associated_fn.vani",
+        "unit_return.vani",
+        "vec_invariants.vani",
+        "vectors.vani",
+        "verified.vani",
     ] {
         let example = format!("{}/examples/{}", manifest_dir, name);
 
@@ -486,7 +486,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
 fn run_inline_call_proofs_example() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/inline_call_proofs.intent", manifest_dir);
+    let example = format!("{}/examples/inline_call_proofs.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -507,7 +507,7 @@ fn run_inline_call_proofs_example() {
 fn run_bounds_elision_example_and_verify_no_runtime_guard() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/bounds_elision.intent", manifest_dir);
+    let example = format!("{}/examples/bounds_elision.vani", manifest_dir);
 
     // First, prove the program runs and prints the expected outputs.
     let output = Command::new(binary)
@@ -588,7 +588,7 @@ fn run_bounds_elision_example_and_verify_no_runtime_guard() {
 fn run_vec_invariants_example() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/vec_invariants.intent", manifest_dir);
+    let example = format!("{}/examples/vec_invariants.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -612,7 +612,7 @@ fn run_vec_invariants_example() {
 fn json_check_outputs_empty_diagnostics_on_success() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/basics.intent", manifest_dir);
+    let example = format!("{}/examples/basics.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["check", &example, "--json"])
@@ -642,7 +642,7 @@ fn json_check_outputs_structured_diagnostics_on_failure() {
             .as_nanos()
     ));
     fs::create_dir_all(&dir).expect("mkdir");
-    let src = dir.join("bad.intent");
+    let src = dir.join("bad.vani");
     fs::write(
         &src,
         "fn main() -> i64 {\n  return undefined_name;\n}\n",
@@ -681,7 +681,7 @@ fn assert_with_message_emits_custom_runtime_diagnostic() {
             .as_nanos()
     ));
     fs::create_dir_all(&dir).expect("mkdir");
-    let src = dir.join("bad.intent");
+    let src = dir.join("bad.vani");
     fs::write(
         &src,
         "fn main() -> i64 {\n  let x: i64 = 0;\n  assert x == 1, \"x should be exactly one\";\n  return 0;\n}\n",
@@ -712,7 +712,7 @@ fn assert_with_message_emits_custom_runtime_diagnostic() {
 fn run_iterate_example() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/iterate.intent", manifest_dir);
+    let example = format!("{}/examples/iterate.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -735,7 +735,7 @@ fn run_iterate_example() {
 fn run_invariants_example() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/invariants.intent", manifest_dir);
+    let example = format!("{}/examples/invariants.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -757,7 +757,7 @@ fn run_invariants_example() {
 fn run_contracts_example() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/contracts.intent", manifest_dir);
+    let example = format!("{}/examples/contracts.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -779,7 +779,7 @@ fn run_contracts_example() {
 fn run_for_loops_example() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/for_loops.intent", manifest_dir);
+    let example = format!("{}/examples/for_loops.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -801,7 +801,7 @@ fn run_for_loops_example() {
 fn run_verified_example() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/verified.intent", manifest_dir);
+    let example = format!("{}/examples/verified.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -822,7 +822,7 @@ fn run_verified_example() {
 fn run_mut_refs_example() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/mut_refs.intent", manifest_dir);
+    let example = format!("{}/examples/mut_refs.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -844,7 +844,7 @@ fn run_mut_refs_example() {
 fn run_scopes_example() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/scopes.intent", manifest_dir);
+    let example = format!("{}/examples/scopes.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -865,7 +865,7 @@ fn run_scopes_example() {
 fn run_early_exit_example() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/early_exit.intent", manifest_dir);
+    let example = format!("{}/examples/early_exit.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -887,7 +887,7 @@ fn run_early_exit_example() {
 fn run_control_flow_example() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/control_flow.intent", manifest_dir);
+    let example = format!("{}/examples/control_flow.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -908,7 +908,7 @@ fn run_control_flow_example() {
 fn run_borrows_example_prints_sum() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/borrows.intent", manifest_dir);
+    let example = format!("{}/examples/borrows.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -929,7 +929,7 @@ fn run_borrows_example_prints_sum() {
 fn run_vectors_example_prints_first_element() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/vectors.intent", manifest_dir);
+    let example = format!("{}/examples/vectors.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -954,7 +954,7 @@ fn run_vectors_example_prints_first_element() {
 fn run_arrays_example_prints_sum() {
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/arrays.intent", manifest_dir);
+    let example = format!("{}/examples/arrays.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])
@@ -978,7 +978,7 @@ fn run_arrays_example_prints_sum() {
 #[test]
 fn intentc_test_expands_directory_arg_to_intent_files() {
     // `intentc test examples/` should walk the directory and run
-    // every `*.intent` inside. Same result as listing them out
+    // every `*.vani` inside. Same result as listing them out
     // explicitly, but the dir form is the user-friendly path.
     let lli = std::env::var("LLI").unwrap_or_else(|_| "lli".to_string());
     let lli_ok = Command::new(&lli)
@@ -999,7 +999,7 @@ fn intentc_test_expands_directory_arg_to_intent_files() {
     let n_examples = std::fs::read_dir(&examples_dir)
         .expect("examples dir readable")
         .filter_map(Result::ok)
-        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("intent"))
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("vani"))
         .count();
 
     let run = Command::new(binary)
@@ -1040,7 +1040,7 @@ fn intentc_test_trims_lli_backtrace_from_failed_stderr() {
 
     let binary = env!("CARGO_BIN_EXE_intentc");
     let tmp_fail = std::env::temp_dir().join(format!(
-        "intentc_trim_lli_{}.intent",
+        "intentc_trim_lli_{}.vani",
         std::process::id()
     ));
     std::fs::write(
@@ -1096,7 +1096,7 @@ fn intentc_test_passes_for_all_examples_and_fails_on_violated_assertion() {
         .expect("examples dir readable")
         .filter_map(Result::ok)
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("intent"))
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("vani"))
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
     paths.sort();
@@ -1122,7 +1122,7 @@ fn intentc_test_passes_for_all_examples_and_fails_on_violated_assertion() {
     );
 
     let tmp_fail = std::env::temp_dir().join(format!(
-        "intentc_test_fail_{}.intent",
+        "intentc_test_fail_{}.vani",
         std::process::id()
     ));
     std::fs::write(
@@ -1179,10 +1179,10 @@ fn expand_dir_walks_recursively_and_skips_dot_dirs() {
     fs::create_dir_all(root.join(".hidden")).expect("mkdir hidden");
 
     let trivial = "fn main() -> i64 { return 0; }\n";
-    fs::write(root.join("a.intent"), trivial).expect("write a");
-    fs::write(root.join("sub/b.intent"), trivial).expect("write b");
-    fs::write(root.join("sub/deep/c.intent"), trivial).expect("write c");
-    fs::write(root.join(".hidden/skipme.intent"), trivial).expect("write skip");
+    fs::write(root.join("a.vani"), trivial).expect("write a");
+    fs::write(root.join("sub/b.vani"), trivial).expect("write b");
+    fs::write(root.join("sub/deep/c.vani"), trivial).expect("write c");
+    fs::write(root.join(".hidden/skipme.vani"), trivial).expect("write skip");
 
     let run = Command::new(binary)
         .args(["test", root.to_str().unwrap()])
@@ -1199,7 +1199,7 @@ fn expand_dir_walks_recursively_and_skips_dot_dirs() {
         "expected 3 files passed (a, b, c), got:\n{stdout}"
     );
     assert!(
-        !stdout.contains("skipme.intent"),
+        !stdout.contains("skipme.vani"),
         "files under .hidden/ should be skipped, got:\n{stdout}"
     );
 
@@ -1208,7 +1208,7 @@ fn expand_dir_walks_recursively_and_skips_dot_dirs() {
 
 #[test]
 fn intentc_test_json_emits_machine_readable_results() {
-    // `intentc test --json a.intent b.intent` should print one
+    // `intentc test --json a.vani b.vani` should print one
     // object on stdout: `{"results":[…],"summary":{…}}`. Each
     // result has `path`, `ok`, `ms` and (for failures) `exit` +
     // `reason`. Pin the basic shape; substring checks suffice.
@@ -1226,12 +1226,12 @@ fn intentc_test_json_emits_machine_readable_results() {
 
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let a = format!("{}/examples/basics.intent", manifest_dir);
+    let a = format!("{}/examples/basics.vani", manifest_dir);
 
     // Make a small failing fixture so the JSON shows a runtime
     // failure too.
     let fail_path = std::env::temp_dir().join(format!(
-        "intentc_test_json_fail_{}.intent",
+        "intentc_test_json_fail_{}.vani",
         std::process::id()
     ));
     std::fs::write(
@@ -1255,7 +1255,7 @@ fn intentc_test_json_emits_machine_readable_results() {
         "missing top-level keys, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("\"path\":\"") && stdout.contains("basics.intent"),
+        stdout.contains("\"path\":\"") && stdout.contains("basics.vani"),
         "missing path entry, got:\n{stdout}"
     );
     assert!(
@@ -1280,7 +1280,7 @@ fn intentc_check_smt_debug_flag_dumps_smt_query() {
     // a `prove` so we know there's at least one query.
     let binary = env!("CARGO_BIN_EXE_intentc");
     let tmp = std::env::temp_dir().join(format!(
-        "intentc_smt_debug_{}.intent",
+        "intentc_smt_debug_{}.vani",
         std::process::id()
     ));
     // The prove must NOT constant-fold — otherwise the verifier
@@ -1324,7 +1324,7 @@ fn intentc_check_smt_debug_flag_dumps_smt_query() {
 #[test]
 fn intentc_check_accepts_directory_and_summarizes() {
     // `intentc check examples/` should walk the directory and
-    // type-check every `*.intent` inside, printing per-file `ok`
+    // type-check every `*.vani` inside, printing per-file `ok`
     // lines plus a summary, and exit 0.
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -1333,7 +1333,7 @@ fn intentc_check_accepts_directory_and_summarizes() {
     let n_examples = std::fs::read_dir(&examples_dir)
         .expect("examples dir readable")
         .filter_map(Result::ok)
-        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("intent"))
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("vani"))
         .count();
 
     let run = Command::new(binary)
@@ -1356,14 +1356,14 @@ fn intentc_check_accepts_directory_and_summarizes() {
 
 #[test]
 fn intentc_check_json_combines_diagnostics_across_files() {
-    // `intentc check --json a.intent b.intent` now emits a single
+    // `intentc check --json a.vani b.vani` now emits a single
     // `{"diagnostics":[...]}` object covering both files. The
     // `FileMap::extend_with` helper shifts each file's span frame
     // into a global one so each diagnostic still resolves to its
     // own source path/line.
     let binary = env!("CARGO_BIN_EXE_intentc");
-    let tmp_a = std::env::temp_dir().join(format!("check_json_a_{}.intent", std::process::id()));
-    let tmp_b = std::env::temp_dir().join(format!("check_json_b_{}.intent", std::process::id()));
+    let tmp_a = std::env::temp_dir().join(format!("check_json_a_{}.vani", std::process::id()));
+    let tmp_b = std::env::temp_dir().join(format!("check_json_b_{}.vani", std::process::id()));
     std::fs::write(&tmp_a, b"fn main() -> i64 {\n  let x: i64 = nope;\n  return 0;\n}\n").unwrap();
     std::fs::write(&tmp_b, b"fn f() -> i64 {\n  return undefined;\n}\n").unwrap();
 
@@ -1403,8 +1403,8 @@ fn intentc_check_json_empty_for_clean_run_across_files() {
     // emits `{"diagnostics":[]}` once, not per-file.
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let a = format!("{}/examples/basics.intent", manifest_dir);
-    let b = format!("{}/examples/contracts.intent", manifest_dir);
+    let a = format!("{}/examples/basics.vani", manifest_dir);
+    let b = format!("{}/examples/contracts.vani", manifest_dir);
     let run = Command::new(binary)
         .args(["check", "--json", &a, &b])
         .output()
@@ -1422,7 +1422,7 @@ fn intentc_check_json_empty_for_clean_run_across_files() {
 fn fmt_accepts_directory_with_check_and_in_place() {
     // `intentc fmt` should expand a directory arg the same way
     // `intentc test` does — non-recursive, alphabetized — and
-    // apply --check or --in-place to each `*.intent` child. The
+    // apply --check or --in-place to each `*.vani` child. The
     // stdout mode is rejected for multi-file input (would dump
     // many files concatenated).
     use std::fs;
@@ -1437,19 +1437,19 @@ fn fmt_accepts_directory_with_check_and_in_place() {
     // Seed two files: one canonical (just produced by fmt) and one
     // intentionally non-canonical (extra spaces inside braces).
     fs::write(
-        tmp_dir.join("a.intent"),
+        tmp_dir.join("a.vani"),
         "fn main() -> i64 {\n  return 0;\n}\n",
     )
     .expect("write a");
     fs::write(
-        tmp_dir.join("b.intent"),
+        tmp_dir.join("b.vani"),
         "fn main()   -> i64{\n    return 1;\n}\n",
     )
     .expect("write b");
     // Ensure the canonical seed actually matches our formatter.
     fs::copy(
-        format!("{}/examples/basics.intent", manifest_dir),
-        tmp_dir.join("c.intent"),
+        format!("{}/examples/basics.vani", manifest_dir),
+        tmp_dir.join("c.vani"),
     )
     .expect("copy c");
 
@@ -1478,8 +1478,8 @@ fn fmt_accepts_directory_with_check_and_in_place() {
     assert_eq!(run.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(
-        stderr.contains("b.intent: not canonically formatted"),
-        "expected b.intent listed, got:\n{stderr}"
+        stderr.contains("b.vani: not canonically formatted"),
+        "expected b.vani listed, got:\n{stderr}"
     );
 
     // (3) --in-place rewrites, then --check passes silently.
@@ -1513,9 +1513,9 @@ fn fmt_check_and_in_place_modes_match_canonical_form() {
     //  4. --check + --in-place together should be rejected.
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src = format!("{}/examples/basics.intent", manifest_dir);
+    let src = format!("{}/examples/basics.vani", manifest_dir);
     let tmp = std::env::temp_dir().join(format!(
-        "intentc_fmt_check_{}.intent",
+        "intentc_fmt_check_{}.vani",
         std::process::id()
     ));
     std::fs::copy(&src, &tmp).expect("copy fixture");
@@ -1580,13 +1580,13 @@ fn fmt_check_and_in_place_modes_match_canonical_form() {
 
 #[test]
 fn fmt_preserves_comments_from_example_with_leading_block() {
-    // `examples/vec_invariants.intent` opens with a 10-line `//`
+    // `examples/vec_invariants.vani` opens with a 10-line `//`
     // block documenting the loop invariant. Earlier versions of fmt
     // would silently strip it. Now run fmt and assert each of those
     // lines reappears in the output.
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/vec_invariants.intent", manifest_dir);
+    let example = format!("{}/examples/vec_invariants.vani", manifest_dir);
     let source = std::fs::read_to_string(&example).expect("read example");
 
     let out = Command::new(binary)
@@ -1627,7 +1627,7 @@ fn fmt_roundtrips_every_example() {
         .expect("examples dir readable")
         .filter_map(Result::ok)
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("intent"))
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("vani"))
         .collect();
     entries.sort();
     assert!(!entries.is_empty(), "no examples discovered");
@@ -1717,7 +1717,7 @@ fn emit_llvm_parallel_for_lowers_to_gomp_call() {
     // function per parallel-for, and a call site for each.
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/parallel.intent", manifest_dir);
+    let example = format!("{}/examples/parallel.vani", manifest_dir);
 
     let out = Command::new(binary)
         .args(["emit", &example, "--backend=llvm"])
@@ -1801,7 +1801,7 @@ fn emit_c_parallel_for_pragma_appears_in_output() {
     // toolchains.
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/parallel.intent", manifest_dir);
+    let example = format!("{}/examples/parallel.vani", manifest_dir);
 
     let out = Command::new(binary)
         .args(["emit", &example, "--backend=c"])
@@ -1844,7 +1844,7 @@ fn run_parallel_example_proves_race_free_and_runs() {
     // sentinel.
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/parallel.intent", manifest_dir);
+    let example = format!("{}/examples/parallel.vani", manifest_dir);
     let output = Command::new(binary)
         .args(["run", &example])
         .output()
@@ -1879,7 +1879,7 @@ fn emit_llvm_parallel_for_with_captures_extends_ctx_struct() {
     // refactor can't silently drop captures.
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/parallel.intent", manifest_dir);
+    let example = format!("{}/examples/parallel.vani", manifest_dir);
 
     let out = Command::new(binary)
         .args(["emit", &example, "--backend=llvm"])
@@ -1907,7 +1907,7 @@ fn run_strings_concat_example_prints_joined_owned_strings() {
     // first OwnedStr and frees its buffer inside the helper.
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/strings_concat.intent", manifest_dir);
+    let example = format!("{}/examples/strings_concat.vani", manifest_dir);
     let output = Command::new(binary)
         .args(["run", &example])
         .output()
@@ -1936,7 +1936,7 @@ fn run_strings_example_prints_each_greeting() {
     // though the i64 result is dropped.
     let binary = env!("CARGO_BIN_EXE_intentc");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example = format!("{}/examples/strings.intent", manifest_dir);
+    let example = format!("{}/examples/strings.vani", manifest_dir);
 
     let output = Command::new(binary)
         .args(["run", &example])

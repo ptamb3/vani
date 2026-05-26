@@ -180,7 +180,7 @@ Supported today (800 lib + 47 e2e tests passing):
   two forms: `push(xs: Vec<T>, v) -> Vec<T>` (consuming) and
   `push(xs: mut ref Vec<T>, v) -> i64` (in-place, returns the new length —
   useful through a struct field). See
-  [examples/push_mut.intent](examples/push_mut.intent).
+  [examples/push_mut.vani](examples/push_mut.vani).
 - Tuples `(T1, T2, ...)` (n in 2..=4) with `.0` / `.1` access; destructure
   `let (a, b) = expr;`.
 - Structs `struct Point { x: i64, y: i64 }` with up to 64 fields; field access
@@ -190,7 +190,7 @@ Supported today (800 lib + 47 e2e tests passing):
   them out as `{ i32 tag, T payload }`. Match destructure
   `Opt.Some(v) then …` binds the payload into the arm scope. V1 limits
   payloads to single Copy fields per variant + uniform payload type
-  across variants. See [examples/option_types.intent](examples/option_types.intent).
+  across variants. See [examples/option_types.vani](examples/option_types.vani).
 - Type aliases: `type Coord = (i64, i64);`, `type X = i64;`.
 - Constants: `const ANSWER: i64 = 42;` — literal initializers only in v1.
 
@@ -229,7 +229,7 @@ Supported today (800 lib + 47 e2e tests passing):
   function whose return type is a payloaded enum, `let v: T = try opt;`
   extracts the payload or short-circuits the function with the
   payload-less variant. Restricted shape in v1 (let-try as first stmt,
-  intermediate lets, return) — see [examples/try_keyword.intent](examples/try_keyword.intent).
+  intermediate lets, return) — see [examples/try_keyword.vani](examples/try_keyword.vani).
 - Short-circuit `&&` and `||` honor compile-time const folding —
   `false && (provably-bad)` and `true || (provably-bad)` compile cleanly.
 - Lexical scoping: inner `let x` shadowing of an outer same-name binding
@@ -241,7 +241,7 @@ Supported today (800 lib + 47 e2e tests passing):
   T from the first literal argument (v1 restriction), and generates a
   specialized copy per concrete type (`id__i64`, `id__bool`, …). The
   original generic template is dropped before codegen sees it. See
-  [examples/generic_functions.intent](examples/generic_functions.intent).
+  [examples/generic_functions.vani](examples/generic_functions.vani).
   V1 limits: single type parameter, body must be type-correct without
   knowing T (pass-through patterns).
 - **Interfaces** `interface Show { fn show(self: T) -> R; }` + `implement
@@ -250,7 +250,7 @@ Supported today (800 lib + 47 e2e tests passing):
   dispatch path resolves the call at compile-time based on the receiver's
   type. V1 limits: static dispatch only (no vtables); each impl must cover
   every interface method; signatures must match exactly. See
-  [examples/interfaces.intent](examples/interfaces.intent).
+  [examples/interfaces.vani](examples/interfaces.vani).
 - **Drop interface** `implement Drop for T { fn drop(self: T) -> i64 { … } }`
   — auto-called at every scope exit where a non-moved binding of T goes
   out of scope. Users can also call `t.drop()` manually; affine tracking
@@ -258,7 +258,7 @@ Supported today (800 lib + 47 e2e tests passing):
   has heap-shaped fields (OwnedStr / Vec), the per-field free pass runs
   instead (the user's drop is then invoked explicitly when richer
   behavior is needed). See
-  [examples/drop_interface.intent](examples/drop_interface.intent).
+  [examples/drop_interface.vani](examples/drop_interface.vani).
 - **Mixed-place assignment** — `xs[i].field = v;` and the deeper
   `xs[i].a.b = v;` write through an index plus a struct field path in
   one statement. Works on owned `Vec<T>` and `[T; N]`. Intermediate
@@ -266,30 +266,30 @@ Supported today (800 lib + 47 e2e tests passing):
   heap-shaped type (`OwnedStr` / `Vec<T>`) — when the leaf is heap-
   shaped, both backends free the previous slot value before storing
   the new one, so the old allocation does not leak. See
-  [examples/mixed_place_assign.intent](examples/mixed_place_assign.intent).
+  [examples/mixed_place_assign.vani](examples/mixed_place_assign.vani).
 - **Partial-move tracking** — `let taken = bag.contents;` moves a single
   field out of a struct. The aggregate is still readable for its other
   fields; scope-exit Drop skips the moved field (no double-free); a
   second read of the moved field surfaces a use-after-move diagnostic.
-  See [examples/partial_move.intent](examples/partial_move.intent).
+  See [examples/partial_move.vani](examples/partial_move.vani).
 - **User-defined `==` via `implement Eq for T`** — `a == b` and `a != b`
   on struct or enum bindings desugar to the hoisted `<T>_eq(a, b)` /
   `!<T>_eq(a, b)` whenever both sides are the same nominal type.
   Convention is `fn eq(self: T, other: T) -> bool`. See
-  [examples/struct_eq.intent](examples/struct_eq.intent) and
-  [examples/enum_eq.intent](examples/enum_eq.intent).
+  [examples/struct_eq.vani](examples/struct_eq.vani) and
+  [examples/enum_eq.vani](examples/enum_eq.vani).
 - **Tuple auto-equality** — tuples are anonymous, so `==` is
   compiler-derived: `(a, b) == (c, d)` rewrites to `a == c && b == d`.
   Each per-element comparison uses the element type's `==` rule
   (built-in for primitives, `<T>_eq` for nominal element types). See
-  [examples/tuple_eq.intent](examples/tuple_eq.intent).
+  [examples/tuple_eq.vani](examples/tuple_eq.vani).
 - **Field-borrow expressions** — `ref t.f` and `mut ref t.f` take a borrow
   of a struct field. The result type is `&<field_ty>` / `&mut <field_ty>`;
   backends GEP into the struct's storage. Unlocks atomic operations
   through a struct that owns the cell (`atomic_*(ref c.hits)` /
   `atomic_*(mut ref c.hits)`). Single-level only in v1
   (no `ref t.a.b`). See
-  [examples/struct_atomic_field.intent](examples/struct_atomic_field.intent).
+  [examples/struct_atomic_field.vani](examples/struct_atomic_field.vani).
 - **Enums with affine payloads** — Copy types, `OwnedStr`, `Vec<T>`,
   `[T; N]` of Copy elements, `Task`, `Atomic<T>`, `Mutex<T>`, and
   `Channel<T, N>` are all valid as enum payload types in v1; only
@@ -297,9 +297,9 @@ Supported today (800 lib + 47 e2e tests passing):
   free at scope exit; stack-shaped payloads (array, Task, Atomic) need
   no Drop. v1 restriction: destructure-binding patterns (`Some(s)`)
   require Copy payloads. See
-  [examples/enum_owned_payload.intent](examples/enum_owned_payload.intent),
-  [examples/enum_vec_payload.intent](examples/enum_vec_payload.intent),
-  [examples/enum_arr_payload.intent](examples/enum_arr_payload.intent).
+  [examples/enum_owned_payload.vani](examples/enum_owned_payload.vani),
+  [examples/enum_vec_payload.vani](examples/enum_vec_payload.vani),
+  [examples/enum_arr_payload.vani](examples/enum_arr_payload.vani).
 - **Structs with affine fields** — `OwnedStr`, `Vec<T>`, `[T; N]` of Copy
   elements, `Task`, `Atomic<T>`, `Mutex<T>`, `Channel<T, N>`, and **nested
   affine structs** are valid struct field types in v1. Both backends
@@ -307,15 +307,15 @@ Supported today (800 lib + 47 e2e tests passing):
   Outer { inner: Inner, id: i64 }` where `Inner` has `OwnedStr` /
   `Vec<T>` fields gets full RAII chains. Only `Guard<T>` is still
   rejected. See
-  [examples/nested_struct_drop.intent](examples/nested_struct_drop.intent).
+  [examples/nested_struct_drop.vani](examples/nested_struct_drop.vani).
   Heap-shaped fields (OwnedStr, Vec) are freed at scope exit; stack-shaped
   fields (arrays, Task, Atomic) need no runtime drop. Struct-literal init
   from a `Var` moves the source binding so a heap value flows `caller →
   struct field → drop` without a double-free. Field-path indexing
   (`t.data[i]`) works through both backends. Mutex / Guard / Channel still
   need explicit wiring. See
-  [examples/struct_owned_field.intent](examples/struct_owned_field.intent),
-  [examples/struct_mixed_fields.intent](examples/struct_mixed_fields.intent).
+  [examples/struct_owned_field.vani](examples/struct_owned_field.vani),
+  [examples/struct_mixed_fields.vani](examples/struct_mixed_fields.vani).
 
 ### Verification & contracts
 - `requires` / `ensures` clauses (terminated with `;`, before the body).
@@ -358,7 +358,7 @@ Supported today (800 lib + 47 e2e tests passing):
   completion, code actions, semantic tokens (7 token types, 2 modifiers).
 - Parser error recovery — multiple errors per compile, not just the first.
 - Diagnostics with related-span notes.
-- Multi-file projects via `use "path.intent";` (transitive, cycle-detected).
+- Multi-file projects via `use "path.vani";` (transitive, cycle-detected).
 
 ### Backends
 - **LLVM** is the default for `emit`/`run`/`build` (AOT via `llc + cc`).
@@ -1071,7 +1071,7 @@ states together.
 callers: the existing `record_ensures_facts` substitution rewrites
 `_return` to the let-bound result and emits the slot fact. Multiple
 per-slot ensures compose into full post-call array identity. See
-`examples/array_proofs.intent` for the end-to-end pattern.
+`examples/array_proofs.vani` for the end-to-end pattern.
 
 **Dev opt-out: `INTENTC_NO_VERIFY=1`.** Setting this env var skips
 every SMT round-trip — `prove`, `ensures`, `invariant`, contradictory-
@@ -1337,16 +1337,16 @@ ends.
 
 ### Multi-file projects
 
-A file can pull in others with `use "path.intent";`:
+A file can pull in others with `use "path.vani";`:
 
 ```intent
-// math.intent
+// math.vani
 fn double(x: i64) -> i64 { return x * 2; }
 ```
 
 ```intent
-// main.intent
-use "math.intent";
+// main.vani
+use "math.vani";
 
 fn main() -> i64 {
   let v: i64 = double(21);
@@ -1361,7 +1361,7 @@ files share a flat namespace — there are no module-qualified call syntaxes
 yet.
 
 Cycles are detected by canonicalized path: each file is included at most
-once across the dependency tree, so `a.intent` `use`-ing `b.intent` and
+once across the dependency tree, so `a.vani` `use`-ing `b.vani` and
 vice versa works fine.
 
 Diagnostics in multi-file builds now point at the **original** file and
@@ -1378,7 +1378,7 @@ Caveats (v1):
 
 ### JSON diagnostics
 
-`intentc check file.intent --json` produces a JSON object on stdout
+`intentc check file.vani --json` produces a JSON object on stdout
 suitable for editor integrations and CI:
 
 ```json
@@ -1387,10 +1387,10 @@ suitable for editor integrations and CI:
     {
       "level": "error",
       "message": "value 'xs' was moved; cannot use after move",
-      "primary": { "file": "f.intent", "line": 5, "col": 18, "end_line": 5, "end_col": 20 },
+      "primary": { "file": "f.vani", "line": 5, "col": 18, "end_line": 5, "end_col": 20 },
       "related": [
         { "message": "'xs' was moved here",
-          "span": { "file": "f.intent", "line": 4, "col": 21, "end_line": 4, "end_col": 23 } }
+          "span": { "file": "f.vani", "line": 4, "col": 21, "end_line": 4, "end_col": 23 } }
       ]
     }
   ]
@@ -1535,7 +1535,7 @@ reduce total with +;
 print total;  // sum of xs[0..len(xs)]
 ```
 
-See `examples/parallel.intent` for a runnable end-to-end
+See `examples/parallel.vani` for a runnable end-to-end
 demonstration on both backends.
 
 **Task handles.** `task <name> { … }` declares an affine
@@ -1571,7 +1571,7 @@ site calls `pthread_create`, and `join` calls
 to Copy types — affine handles (Vec/Atomic/Mutex/Guard/
 Channel/arrays/OwnedStr) can't ride the ctx by value, so
 the supported pattern is to pre-extract scalar values from
-them before the spawn site. See `examples/tasks.intent` for
+them before the spawn site. See `examples/tasks.vani` for
 the canonical shape.
 
 **Atomic cells.** The affine model rejects shared mutable
@@ -1618,7 +1618,7 @@ fn main() -> i64 {
 }
 ```
 
-See `examples/atomics.intent` for a runnable demonstration.
+See `examples/atomics.vani` for a runnable demonstration.
 
 **Channels.** `Channel<T>` is an affine handle to a 16-slot
 bounded ring buffer with monotonic `head` / `tail` atomic
@@ -1747,7 +1747,7 @@ the caller holds a guard on `m`. Calls are inspected by name
 in v1 — a function-pointer-style indirect dispatch would
 require dataflow on the SSA layer.
 
-See `examples/concurrency.intent` for a runnable demonstration.
+See `examples/concurrency.vani` for a runnable demonstration.
 
 **Function pointers.** `fn(T1, T2, ...) -> R` is a first-class
 type. A top-level function name in expression position yields
@@ -1772,7 +1772,7 @@ indirect callees rather than making false claims. The SSA
 pipeline does not yet lower fn-ptr shapes — the tree-based
 backends handle them directly.
 
-See `examples/fn_pointers.intent` for a runnable demonstration.
+See `examples/fn_pointers.vani` for a runnable demonstration.
 
 ## Commands
 
@@ -1786,19 +1786,19 @@ only — no C source is compiled).
 ### Build & run pipeline
 
 ```bash
-cargo run -- check examples/basics.intent                 # Type-check + verify
-cargo run -- check examples/basics.intent --json          # JSON diagnostics
-cargo run -- check examples/basics.intent --no-verify     # Skip SMT (dev opt-out)
+cargo run -- check examples/basics.vani                 # Type-check + verify
+cargo run -- check examples/basics.vani --json          # JSON diagnostics
+cargo run -- check examples/basics.vani --no-verify     # Skip SMT (dev opt-out)
 
-cargo run -- emit examples/basics.intent                  # LLVM IR (default)
-cargo run -- emit examples/basics.intent --backend=c      # C output
-cargo run -- emit examples/basics.intent -o /tmp/basics.ll
-cargo run -- emit-c examples/basics.intent                # Legacy alias for --backend=c
+cargo run -- emit examples/basics.vani                  # LLVM IR (default)
+cargo run -- emit examples/basics.vani --backend=c      # C output
+cargo run -- emit examples/basics.vani -o /tmp/basics.ll
+cargo run -- emit-c examples/basics.vani                # Legacy alias for --backend=c
 
-cargo run -- run examples/basics.intent                   # LLVM via lli (default)
-cargo run -- run examples/basics.intent --backend=c       # C via cc
+cargo run -- run examples/basics.vani                   # LLVM via lli (default)
+cargo run -- run examples/basics.vani --backend=c       # C via cc
 
-cargo run -- build examples/basics.intent -o /tmp/basics  # AOT native binary
+cargo run -- build examples/basics.vani -o /tmp/basics  # AOT native binary
                                                           # (LLVM → llc → cc linker)
 ```
 
@@ -1808,9 +1808,9 @@ Useful for hacking on the lexer / parser / checker. Each runs the
 pipeline up to a stage and dumps a debug-format representation.
 
 ```bash
-cargo run -- tokens examples/basics.intent   # Token stream from the lexer
-cargo run -- ast    examples/basics.intent   # Parsed AST (skips type checker)
-cargo run -- ir     examples/basics.intent   # Typed IR (what the backends see)
+cargo run -- tokens examples/basics.vani   # Token stream from the lexer
+cargo run -- ast    examples/basics.vani   # Parsed AST (skips type checker)
+cargo run -- ir     examples/basics.vani   # Typed IR (what the backends see)
 ```
 
 ### Running every example
@@ -1909,23 +1909,23 @@ Capabilities today:
   shadowing). Returns the empty token list on lex errors so
   the editor's UI stays responsive during mid-edit states.
 
-Point your editor at `intent-lsp` for `*.intent` files. For
+Point your editor at `intent-lsp` for `*.vani` files. For
 Neovim with `nvim-lspconfig`:
 
 ```lua
 local lspconfig = require('lspconfig')
 local configs = require('lspconfig.configs')
-if not configs.intent then
-  configs.intent = {
+if not configs.vani then
+  configs.vani = {
     default_config = {
       cmd = { 'intent-lsp' },
-      filetypes = { 'intent' },
+      filetypes = { 'vani' },
       root_dir = lspconfig.util.find_git_ancestor,
       settings = {},
     },
   }
 end
-lspconfig.intent.setup({})
+lspconfig.vani.setup({})
 ```
 
 The cross-backend parity test runs every file under `examples/`
@@ -1975,7 +1975,7 @@ fn total_area(shapes: Vec<dyn Drawable>) -> i64 {
 struct fields, and `Vec<dyn Iface>`. No inheritance, no abstract
 base classes — just a per-interface vtable with one fn-ptr per
 method in declaration order. See
-[examples/dyn_dispatch.intent](examples/dyn_dispatch.intent) for the
+[examples/dyn_dispatch.vani](examples/dyn_dispatch.vani) for the
 end-to-end shape. Tagged enums (`enum Shape { Circle(...), … }`) are
 still a fine alternative when the variant set is closed and known
 at the call site.
@@ -2159,11 +2159,11 @@ deliberately deferred as v1 trade-offs.
 - ✅ Unit-return functions — `fn f() { … }` without `-> Type` is sugar
   for `-> i64` with an implicit `return 0;` appended. Callers invoke as
   a bare statement (`f();`) or via `let _ = f();`. See
-  [examples/unit_return.intent](examples/unit_return.intent).
+  [examples/unit_return.vani](examples/unit_return.vani).
 - ✅ Type-associated functions `Type.helper(args)` — declare with
   `methods on T { fn helper(args) -> R { … } }` (no `self`); call as
   `T.helper(args)`. Constructors and other type-namespaced helpers.
-  See [examples/type_associated_fn.intent](examples/type_associated_fn.intent).
+  See [examples/type_associated_fn.vani](examples/type_associated_fn.vani).
 - ⏳ `bool ↔ int` cast — different semantic domains, forces explicit
   `if cond { 1 } else { 0 }` and vice versa. Trade-off, may stay deferred.
 - ✅ SSA bool-print parity — bool prints render as `true`/`false`
@@ -2176,8 +2176,8 @@ deliberately deferred as v1 trade-offs.
 - ⏳ Generic function call sites — parses, gated diagnostic, lands with T1.4.
 - ⏳ Enum payload variants — parses, gated diagnostic, lands with T1.3 phase 2b.
 - ⏳ Match on float scrutinee — `bool` and `Str` ship today (see
-  [examples/match_bool.intent](examples/match_bool.intent) and
-  [examples/match_str.intent](examples/match_str.intent)); float
+  [examples/match_bool.vani](examples/match_bool.vani) and
+  [examples/match_str.vani](examples/match_str.vani)); float
   comparison is the usual gnarly case (NaN, epsilon thresholds).
 (Tuple / struct / enum `==` all ship today — see the
 "Generics & interfaces" section above.)
@@ -2197,15 +2197,15 @@ roadmap surface and unblocks the items below it.
 
 | # | Item | Depends on | Est. effort | Unlocks |
 |---|---|---|---|---|
-| 1 | ✅ **Block expressions** `let r = { stmts; tail-expr };` | — | low/medium | done 2026-05-21; see [examples/block_expressions.intent](examples/block_expressions.intent) |
+| 1 | ✅ **Block expressions** `let r = { stmts; tail-expr };` | — | low/medium | done 2026-05-21; see [examples/block_expressions.vani](examples/block_expressions.vani) |
 | 2 | ✅ **SMT modeling — if-expr, match, struct field access, method calls** | — | medium | done 2026-05-21 (#82 + #84 — full coverage) |
-| 3 | ✅ **T1.2 phase 2b: affine struct fields** | — | medium/high | done 2026-05-21 — `struct { … }` admits `OwnedStr`, `Vec<T>`, `[T;N]` of Copy elements, `Task`, `Atomic<T>` as fields; both backends free heap fields (OwnedStr, Vec) at scope exit; struct-literal init moves the source binding; `t.data[i]` indexing works. See [examples/struct_owned_field.intent](examples/struct_owned_field.intent), [examples/struct_mixed_fields.intent](examples/struct_mixed_fields.intent). Mutex/Guard/Channel still need explicit wiring. |
-| 4 | ✅ **T1.3 phase 2b: tagged-union codegen + pattern bindings** | — | high | done 2026-05-21 — see [examples/option_types.intent](examples/option_types.intent); both backends |
-| 5 | ✅ **T2.6: `try` keyword sugar for Option-like enums** | T1.3 phase 2b | low/medium | done 2026-05-21 — see [examples/try_keyword.intent](examples/try_keyword.intent). Generic Option<T> / Result<T, E> wait on #6 monomorphization. |
-| 6 | ✅ **T1.4 phase 2: generic call-site monomorphization** | — | high | done 2026-05-21 — pass-through generics specialize per call-site literal type; see [examples/generic_functions.intent](examples/generic_functions.intent). Var-arg inference + interface bounds pending. |
-| 7 | ✅ **T1.5 phase 2 + 3: interface dispatch (static + dynamic) + bounded generics** | T1.4 phase 2 | medium/high | done 2026-05-25 — static `recv.method()` dispatch + bounded generics done 2026-05-21; `dyn Iface` fat-pointer dispatch (owned, `ref dyn`, `Vec<dyn>`, struct fields of dyn) shipped via closures #220-#228, see [examples/dyn_dispatch.intent](examples/dyn_dispatch.intent). |
-| 8 | ✅ **T2.7: user-defined Drop interface (auto-call at scope exit)** | T1.5 phase 2, #3 | low/medium | done 2026-05-25 — `implement Drop for T` runs automatically at scope exit. Two signatures supported: `fn drop(self: T)` (by-value, consumes self — only valid when T has no heap-owning fields) and `fn drop(self: mut ref T)` (runs first then per-field free — works for any T including OwnedStr / Vec / nested-struct fields, closure #229). See [examples/drop_interface.intent](examples/drop_interface.intent). |
-| 9 | ✅ **Devanagari keyword aliases — Sanskrit / Hindi / Marathi (MVP)** | — | medium | done 2026-05-21; see [examples/hindi_keywords.intent](examples/hindi_keywords.intent), [examples/sanskrit_keywords.intent](examples/sanskrit_keywords.intent), [examples/marathi_keywords.intent](examples/marathi_keywords.intent). Multi-word aliases + script-aware diagnostics deferred. |
+| 3 | ✅ **T1.2 phase 2b: affine struct fields** | — | medium/high | done 2026-05-21 — `struct { … }` admits `OwnedStr`, `Vec<T>`, `[T;N]` of Copy elements, `Task`, `Atomic<T>` as fields; both backends free heap fields (OwnedStr, Vec) at scope exit; struct-literal init moves the source binding; `t.data[i]` indexing works. See [examples/struct_owned_field.vani](examples/struct_owned_field.vani), [examples/struct_mixed_fields.vani](examples/struct_mixed_fields.vani). Mutex/Guard/Channel still need explicit wiring. |
+| 4 | ✅ **T1.3 phase 2b: tagged-union codegen + pattern bindings** | — | high | done 2026-05-21 — see [examples/option_types.vani](examples/option_types.vani); both backends |
+| 5 | ✅ **T2.6: `try` keyword sugar for Option-like enums** | T1.3 phase 2b | low/medium | done 2026-05-21 — see [examples/try_keyword.vani](examples/try_keyword.vani). Generic Option<T> / Result<T, E> wait on #6 monomorphization. |
+| 6 | ✅ **T1.4 phase 2: generic call-site monomorphization** | — | high | done 2026-05-21 — pass-through generics specialize per call-site literal type; see [examples/generic_functions.vani](examples/generic_functions.vani). Var-arg inference + interface bounds pending. |
+| 7 | ✅ **T1.5 phase 2 + 3: interface dispatch (static + dynamic) + bounded generics** | T1.4 phase 2 | medium/high | done 2026-05-25 — static `recv.method()` dispatch + bounded generics done 2026-05-21; `dyn Iface` fat-pointer dispatch (owned, `ref dyn`, `Vec<dyn>`, struct fields of dyn) shipped via closures #220-#228, see [examples/dyn_dispatch.vani](examples/dyn_dispatch.vani). |
+| 8 | ✅ **T2.7: user-defined Drop interface (auto-call at scope exit)** | T1.5 phase 2, #3 | low/medium | done 2026-05-25 — `implement Drop for T` runs automatically at scope exit. Two signatures supported: `fn drop(self: T)` (by-value, consumes self — only valid when T has no heap-owning fields) and `fn drop(self: mut ref T)` (runs first then per-field free — works for any T including OwnedStr / Vec / nested-struct fields, closure #229). See [examples/drop_interface.vani](examples/drop_interface.vani). |
+| 9 | ✅ **Devanagari keyword aliases — Sanskrit / Hindi / Marathi (MVP)** | — | medium | done 2026-05-21; see [examples/hindi_keywords.vani](examples/hindi_keywords.vani), [examples/sanskrit_keywords.vani](examples/sanskrit_keywords.vani), [examples/marathi_keywords.vani](examples/marathi_keywords.vani). Multi-word aliases + script-aware diagnostics deferred. |
 
 **Devanagari aliases (#9) — granular sketch:**
 

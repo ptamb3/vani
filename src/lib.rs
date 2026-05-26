@@ -3721,7 +3721,7 @@ mod tests {
         compile(source).expect("fresh-OwnedStr cmp should compile");
         // We can't easily assert the SSA Drop instruction
         // from the lib test, but the absence of regressions
-        // plus the ASan check on /tmp/comparison_heap.intent
+        // plus the ASan check on /tmp/comparison_heap.vani
         // covers the runtime guarantee. The cross-backend
         // e2e parity test also exercises the path.
     }
@@ -10116,7 +10116,7 @@ mod tests {
 }
 "#;
         let errors = compile(source).expect_err("shadow with different type");
-        let rendered = format_diagnostics("t.intent", source, &errors);
+        let rendered = format_diagnostics("t.vani", source, &errors);
         assert!(
             rendered.contains("error: shadowing 'let x' must preserve its type"),
             "expected primary diagnostic, got:\n{rendered}"
@@ -10127,7 +10127,7 @@ mod tests {
         );
         // The previous-decl note should pinpoint line 2.
         assert!(
-            rendered.contains("t.intent:2:"),
+            rendered.contains("t.vani:2:"),
             "expected note at line 2, got:\n{rendered}"
         );
     }
@@ -13103,7 +13103,7 @@ fn main() -> i64 {
 }
 "#;
         let errors = compile(source).expect_err("unprovable claim");
-        let rendered = format_diagnostics("t.intent", source, &errors);
+        let rendered = format_diagnostics("t.vani", source, &errors);
         // The "[counterexample: ...]" or "SMT counterexample [...]" form
         // should be present.
         assert!(
@@ -13134,7 +13134,7 @@ fn main() -> i64 {
 }
 "#;
         let errors = compile(source).expect_err("unprovable");
-        let rendered = format_diagnostics("t.intent", source, &errors);
+        let rendered = format_diagnostics("t.vani", source, &errors);
         // Negative values flatten to e.g. "x = -1", not "x = (- 1)".
         assert!(
             !rendered.contains("(- "),
@@ -13226,7 +13226,7 @@ fn main() -> i64 {
 }
 "#;
         let errors = compile(source).expect_err("move-after-move");
-        let json = format_diagnostics_json("f.intent", source, &errors);
+        let json = format_diagnostics_json("f.vani", source, &errors);
         // Single trailing newline.
         assert!(json.ends_with("}\n"), "expected JSON to end with }}\\n, got:\n{json}");
         // Must contain the canonical fields.
@@ -13248,7 +13248,7 @@ fn main() -> i64 {
         // Craft a diagnostic whose message contains characters that require
         // JSON escaping.
         let d = Diagnostic::new(Span::new(0, 1), "broken: \"quoted\" \\path\nnewline");
-        let json = format_diagnostics_json("f.intent", "x", std::slice::from_ref(&d));
+        let json = format_diagnostics_json("f.vani", "x", std::slice::from_ref(&d));
         // Quotes inside the message must be escaped.
         assert!(
             json.contains("\\\"quoted\\\""),
@@ -13263,7 +13263,7 @@ fn main() -> i64 {
     #[test]
     fn json_diagnostic_empty_when_no_errors() {
         use crate::diagnostic::format_diagnostics_json;
-        let json = format_diagnostics_json("f.intent", "", &[]);
+        let json = format_diagnostics_json("f.vani", "", &[]);
         assert_eq!(json, "{\"diagnostics\":[]}\n");
     }
 

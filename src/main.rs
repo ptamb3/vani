@@ -380,7 +380,7 @@ use std::process::{Command, ExitCode};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const HELP: &str = "\
-intentc — Intent language compiler driver
+intentc — vāṇī language compiler driver
 
 USAGE:
     intentc <COMMAND> [ARGS]
@@ -390,7 +390,7 @@ COMMANDS:
                                           Type-check one or more sources.
                                           Paths may be files or directories
                                           (the latter expand recursively to
-                                          *.intent descendants). With --json,
+                                          *.vani descendants). With --json,
                                           a single combined diagnostics
                                           object on stdout collects all
                                           findings across every file. With
@@ -401,35 +401,35 @@ COMMANDS:
                                           With --smt-debug, every SMT query
                                           and z3 response is dumped to
                                           stderr (also via INTENTC_SMT_DEBUG=1).
-    emit <file.intent> [--backend=<c|llvm>] [-o out]
+    emit <file.vani> [--backend=<c|llvm>] [-o out]
                                           Emit lowered source for a program.
                                           --backend defaults to 'llvm'. Pass
                                           --backend=c for the legacy C output.
-    emit-c <file.intent> [-o out.c]       Legacy alias for 'emit --backend=c'.
+    emit-c <file.vani> [-o out.c]       Legacy alias for 'emit --backend=c'.
                                           Kept for back-compat.
-    run <file.intent> [--backend=<c|llvm>]
+    run <file.vani> [--backend=<c|llvm>]
                                           Compile and run a program. Default
                                           backend is 'llvm' (emits LLVM IR
                                           and runs it via $LLI or `lli`).
                                           With --backend=c, invokes $CC or
                                           `cc` on the C output.
-    build <file.intent> [-o out]          AOT-compile to a native binary.
+    build <file.vani> [-o out]          AOT-compile to a native binary.
                                           Lowers via the LLVM backend, calls
                                           $LLC (or `llc`) for object code,
                                           then $CC (or `cc`) to link with
                                           libc. Output defaults to the
                                           source file's stem in the cwd.
-    tokens <file.intent>                  Dump the token stream (debug).
-    ast <file.intent>                     Dump the parsed AST (debug). Skips
+    tokens <file.vani>                  Dump the token stream (debug).
+    ast <file.vani>                     Dump the parsed AST (debug). Skips
                                           type checking.
-    ir <file.intent>                      Dump the typed IR (debug). Runs the
+    ir <file.vani>                      Dump the typed IR (debug). Runs the
                                           checker; what the backends see.
     fmt <path>... [--check|--in-place]
                                           Pretty-print canonical source.
                                           // comments are preserved. Paths
                                           may be files or directories (the
                                           latter expand recursively to
-                                          *.intent descendants; dot-dirs
+                                          *.vani descendants; dot-dirs
                                           skipped).
                                           Default writes to stdout (single-
                                           file only); --check exits 1 if
@@ -440,7 +440,7 @@ COMMANDS:
                                           LLVM backend, treating exit 0 as
                                           pass. Paths may be files or
                                           directories (the latter expand
-                                          recursively to *.intent
+                                          recursively to *.vani
                                           descendants; dot-dirs skipped).
                                           Output per file plus a summary;
                                           exits 1 if any failed.
@@ -484,7 +484,7 @@ fn run() -> Result<ExitCode, String> {
         "check" => {
             // Type-check one or more files. Paths may be files or
             // directories (the latter expand recursively to
-            // `*.intent` descendants via `expand_intent_paths`).
+            // `*.vani` descendants via `expand_intent_paths`).
             // Exit 1 if any file's check fails. For `--json`, all
             // diagnostics across all files are flattened into a
             // single `{"diagnostics": [...]}` object so the schema
@@ -520,7 +520,7 @@ fn run() -> Result<ExitCode, String> {
             }
             let files = expand_intent_paths(&path_args)?;
             if files.is_empty() {
-                return Err("no .intent files to check".into());
+                return Err("no .vani files to check".into());
             }
 
             let mut failed = 0usize;
@@ -714,7 +714,7 @@ fn run() -> Result<ExitCode, String> {
             // fired, no runtime guard tripped, no proof obligation
             // remained unsatisfied at runtime). Output per file plus a
             // summary line; exit 1 if any failed. A directory arg
-            // expands to its `*.intent` children (non-recursive).
+            // expands to its `*.vani` children (non-recursive).
             if args.len() < 3 {
                 return Err("test requires at least one source file\n\n".to_string() + HELP);
             }
@@ -740,7 +740,7 @@ fn run() -> Result<ExitCode, String> {
             }
             let files = expand_intent_paths(&path_args)?;
             if files.is_empty() {
-                return Err("no .intent files to test".into());
+                return Err("no .vani files to test".into());
             }
             let mut passed = 0usize;
             let mut failed = 0usize;
@@ -834,7 +834,7 @@ fn run() -> Result<ExitCode, String> {
             //                source
             //
             // Path args may be files or directories. Directories
-            // expand to their `*.intent` children (non-recursive)
+            // expand to their `*.vani` children (non-recursive)
             // via the same helper used by `intentc test`.
             let mut check = false;
             let mut in_place = false;
@@ -860,7 +860,7 @@ fn run() -> Result<ExitCode, String> {
             }
             let files = expand_intent_paths(&path_args)?;
             if files.is_empty() {
-                return Err("no .intent files to format".into());
+                return Err("no .vani files to format".into());
             }
             if files.len() > 1 && !check && !in_place {
                 return Err(
@@ -1138,10 +1138,10 @@ fn add_libgomp_load_flags(cmd: &mut Command) {
 /// useful to an Intent user — the line that *is* useful (e.g.
 /// `assertion failed: ...`) was printed earlier by the program
 /// itself. Truncate at the first lli-internal marker.
-/// Resolve a list of CLI args into a flat list of `.intent` files,
+/// Resolve a list of CLI args into a flat list of `.vani` files,
 /// shared by `intentc test` and `intentc fmt`. Each arg is treated
 /// as a file or a directory; a directory expands recursively to
-/// every `*.intent` descendant, alphabetized. Dot-prefixed
+/// every `*.vani` descendant, alphabetized. Dot-prefixed
 /// directories (`.git`, `.cargo`, etc.) are skipped.
 fn expand_intent_paths(args: &[String]) -> Result<Vec<PathBuf>, String> {
     let mut files: Vec<PathBuf> = Vec::new();
@@ -1158,7 +1158,7 @@ fn expand_intent_paths(args: &[String]) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
-/// Append every `*.intent` file under `dir` to `out`, recursing
+/// Append every `*.vani` file under `dir` to `out`, recursing
 /// into subdirectories in alphabetical order. Skips entries whose
 /// name starts with `.` so `intentc fmt --check .` doesn't drill
 /// into `.git/`, `.cargo/`, etc.
@@ -1176,7 +1176,7 @@ fn walk_intent_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> 
         }
         if path.is_dir() {
             walk_intent_files(&path, out)?;
-        } else if path.extension().and_then(|s| s.to_str()) == Some("intent") {
+        } else if path.extension().and_then(|s| s.to_str()) == Some("vani") {
             out.push(path);
         }
     }

@@ -1,6 +1,6 @@
 //! Source pretty-printer.
 //!
-//! Walks a parsed `Program` and emits canonical .intent source. Used
+//! Walks a parsed `Program` and emits canonical .vani source. Used
 //! by the `intentc fmt` subcommand. Two entry points:
 //!
 //!  - [`format_program`] for a stripped-of-comments rendering. Used
@@ -498,7 +498,7 @@ fn format_function(f: &Function, ctx: &mut FmtCtx, out: &mut String) {
         out.push_str("{\n");
     } else {
         // No contracts — brace on the same line as the signature,
-        // matching the existing `examples/*.intent` style.
+        // matching the existing `examples/*.vani` style.
         out.push_str(" {\n");
     }
     for s in &f.body {

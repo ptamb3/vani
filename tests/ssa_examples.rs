@@ -1,5 +1,5 @@
 //! Cross-example check that the SSA lowerer accepts every
-//! .intent file in examples/. Catches "feature X used in
+//! .vani file in examples/. Catches "feature X used in
 //! example Y broke the lowerer" regressions early.
 
 use std::fs;
@@ -15,7 +15,7 @@ fn ssa_lowers_every_example() {
     for entry in entries {
         let entry = entry.expect("dir entry");
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("intent") {
+        if path.extension().and_then(|s| s.to_str()) != Some("vani") {
             continue;
         }
         let source = fs::read_to_string(&path).expect("read example");

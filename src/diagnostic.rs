@@ -275,11 +275,11 @@ fn emit_span_json_with_map(out: &mut String, map: &FileMap, span: Span) {
 ///     {
 ///       "level": "error",
 ///       "message": "value 'xs' was moved; cannot use after move",
-///       "primary": { "file": "f.intent", "line": 8, "col": 18,
+///       "primary": { "file": "f.vani", "line": 8, "col": 18,
 ///                    "end_line": 8, "end_col": 20 },
 ///       "related": [
 ///         { "message": "'xs' was moved here",
-///           "span": { "file": "f.intent", "line": 7, "col": 21, ... } }
+///           "span": { "file": "f.vani", "line": 7, "col": 21, ... } }
 ///       ]
 ///     }
 ///   ]

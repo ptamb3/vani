@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #234 — English keyword aliases Phase 1)
+## ⏳ Resume here (paused 2026-05-26, after closure #235 — file extension renamed to .vani)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,21 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#235 File extension renamed `.intent` → `.vani`:
+all 59 example files renamed via `git mv`; 11 source
++ test + doc files updated to reflect the new
+extension. Four `Some("intent")` extension-matcher
+sites in `tests/run_end_to_end.rs` (3) and
+`tests/ssa_examples.rs` (1) updated to `Some("vani")`.
+CLI banner reads "intentc — vāṇī language compiler
+driver". The language keyword `intent "..."` and the
+`program.intents` field stay unchanged (language
+constructs, not file extensions). Decision rationale
+(user-confirmed): single extension for everything —
+vāṇī has no header/impl split; follows the Rust/Go/
+Swift/Python convention. Test totals unchanged: 921
+lib + 47 e2e + 11 vtables-phase3 + 2 user-drop-by-ref
++ 1 ssa-examples.
 #234 English keyword aliases (Phase 1, conservative set):
 the lexer now accepts five high-value alternate spellings
 that don't collide with common identifier shapes:
@@ -1136,13 +1151,14 @@ likely impact / blast radius, not implementation order.
   files producing one binary. Needs: include-path resolution,
   diamond-import dedup, cycle detection. Maybe a manifest file
   (`vani.toml`?) to name the entry point + dependencies.
-- **File extension rename to `.vani`.** Currently `.intent`.
-  Touch points: example file renames (58 files), test
-  expectations that hard-code the suffix, lexer/parser error
-  messages, README examples. Decide whether headers / partial
-  files want a separate suffix (`.vani.h` for declarations
-  only?) or whether the same `.vani` covers both with content-
-  driven distinction.
+- **File extension rename to `.vani`.** *Done 2026-05-26
+  (closure #235).* All 59 example files renamed via
+  `git mv` + 11 source/test files updated. CLI now reads
+  "intentc — vāṇī language compiler driver". The language
+  keyword `intent "..."` and the `program.intents` field
+  stay (those are language constructs, not file extensions).
+  Decision: single extension `.vani` for everything (Rust/
+  Go/Swift/Python pattern).
 - **Language-purity gate.** Today the lexer accepts keywords
   from any registered language (English / Sanskrit / Hindi /
   Marathi) in the same source file. Add a per-file declaration

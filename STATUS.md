@@ -537,6 +537,21 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **File extension renamed `.intent` → `.vani` done 2026-05-26**:
+   59 example files renamed via `git mv`; all tests, source,
+   doc-comments, README references, LSP snippet, and CLI help
+   text updated. Four extension-matcher sites in
+   `tests/run_end_to_end.rs` + `tests/ssa_examples.rs` updated
+   (`Some("intent")` → `Some("vani")`). CLI banner now reads
+   "intentc — vāṇī language compiler driver". Language
+   keyword `intent "..."` and the `program.intents` field
+   stay unchanged — they're language constructs, not file
+   extensions. **Decision rationale (user-confirmed):** single
+   extension `.vani` for everything; vāṇī has no header/impl
+   split, follows the Rust/Go/Swift/Python pattern. Test
+   totals unchanged: 921 lib + 47 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #235.
+
    **English keyword aliases (Phase 1, conservative set) done 2026-05-26**:
    the lexer's keyword table now recognizes five high-value
    English aliases that don't collide with common
