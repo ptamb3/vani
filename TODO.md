@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #247 — namespaces multi-item `use { … }` imports)
+## ⏳ Resume here (paused 2026-05-26, after closure #248 — nested modules + deep paths)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,32 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#248 Namespaces — nested modules + deep paths.
+`module outer { module inner { … } }` now parses and
+flattens. Implementation touches three layers:
+- **AST**: ModuleDecl gains `modules: Vec<ModuleDecl>`
+  (nested children) + ModuleVisibility.modules_pub.
+  Parser recurses into parse_module_decl when seeing
+  `module` inside another module body (previous v1
+  rejection diagnostic removed).
+- **Path parser**: deep-path consumption loops on `::`
+  for both expression position (`a::b::c::name`) and
+  type position (`a::b::Point`) and use-statement
+  paths (`use a::b::name;`). All convert to the
+  backend-safe `a__b__c__name` form.
+- **Checker**: `flatten_modules_in_program` converted
+  from a flat `for module in modules` loop to a
+  worklist `Vec<(String, ModuleDecl)>`. Each iteration
+  builds the full path from prefix + module.name, then
+  pushes nested children onto the worklist with the
+  current path as their prefix.
+
+v1 requires explicit `outer::inner::item` paths
+everywhere — implicit sibling lookup (Rust's
+`inner::f` from inside `outer`) is deferred. New lib
+test exercises a two-level nested module with deep-
+path calls. Test totals: 936 lib + 47 e2e + 11
+vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples.
 #247 Namespaces — multi-item `use foo::{a, b, c};`
 imports. Parser detects `{` after `module::` and reads
 a comma-separated identifier list (trailing comma
@@ -1347,8 +1373,15 @@ likely impact / blast radius, not implementation order.
   reads a comma-separated list, expands to multiple
   UsePath entries. Trailing comma allowed; empty list
   rejected.
-  *Still queued*: nested modules (`module a { module b {} }`);
-  glob `use foo::*;`; `pub(crate)` tiers; re-exports.
+  *Nested modules done 2026-05-26 (closure #248)*:
+  ModuleDecl gains `modules: Vec<ModuleDecl>`, parser
+  recurses, checker flattens via worklist. v1 requires
+  explicit `outer::inner::item` paths from outside the
+  inner module (no implicit sibling-lookup); deep paths
+  work everywhere via loop-based `::` consumption.
+  *Still queued*: implicit sibling-module references
+  (`inner::f` from inside `outer`); glob `use foo::*;`;
+  `pub(crate)` tiers; re-exports.
 - **Multiple source files for one compilation.** `use "path"`
   already exists for single-file imports; extend to a full
   multi-file pipeline so the compiler ingests a set of `.vani`

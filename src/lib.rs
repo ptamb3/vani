@@ -2352,6 +2352,30 @@ mod tests {
     }
 
     #[test]
+    fn nested_modules_flatten_with_deep_path_resolution() {
+        // Closure #248: nested `module outer { module inner
+        // { ... } }` blocks parse + flatten. Items in the
+        // inner module mangle to `outer__inner__name`. Path
+        // expressions and types support arbitrary-depth
+        // `a::b::c::…` chains.
+        let source = r#"
+            module outer {
+              module inner {
+                pub fn deep(x: i64) -> i64 { return x * 10; }
+              }
+              pub fn shallow(x: i64) -> i64 { return x + 1; }
+            }
+
+            fn main() -> i64 {
+              let a: i64 = outer::shallow(5);     // 6
+              let b: i64 = outer::inner::deep(3); // 30
+              return a + b;                       // 36
+            }
+        "#;
+        compile(source).expect("nested module + deep path should compile");
+    }
+
+    #[test]
     fn use_path_multi_item_brace_list_brings_each_into_scope() {
         // Closure #247: `use foo::{a, b, c};` parses as
         // multiple UsePath entries, each bringing the

@@ -288,6 +288,12 @@ pub struct ModuleDecl {
     pub consts: Vec<ConstDecl>,
     pub type_aliases: Vec<TypeAlias>,
     pub methods_blocks: Vec<MethodsBlock>,
+    /// Closure #248: nested module declarations. A module
+    /// can contain other modules, building up the
+    /// `outer::inner::leaf` path hierarchy. The checker
+    /// recursively flattens — items in `outer::inner` get
+    /// mangled to `outer__inner__name`.
+    pub modules: Vec<ModuleDecl>,
     /// Parallel to each field above; `true` if the item is
     /// `pub` (exported). Top-level items have no entry here —
     /// they're globally visible by default. Index ordering
@@ -308,6 +314,8 @@ pub struct ModuleVisibility {
     pub consts_pub: Vec<bool>,
     pub type_aliases_pub: Vec<bool>,
     pub methods_blocks_pub: Vec<bool>,
+    /// Parallel visibility for nested modules.
+    pub modules_pub: Vec<bool>,
 }
 
 /// `methods on Point { fn dist(self: Point) -> i64 { … } }`

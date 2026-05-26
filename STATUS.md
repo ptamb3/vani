@@ -537,6 +537,39 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Namespaces — nested modules done 2026-05-26**:
+   `module outer { module inner { … } }` now parses and
+   flattens. Items in the inner module mangle to
+   `outer__inner__name`. Path expressions and types support
+   arbitrary-depth `a::b::c::…` chains — the parser loops
+   the `::` consumption.
+
+   Implementation:
+   - **AST**: `ModuleDecl` gains
+     `modules: Vec<ModuleDecl>` (nested children) +
+     `ModuleVisibility.modules_pub`. The parser drops its
+     previous v1 "nested module rejection" and recurses into
+     `parse_module_decl` when it sees `module` inside another
+     module.
+   - **Path parser**: deep-path consumption now loops on
+     `::` in both expression and type position, plus in
+     `use` declarations. `outer::inner::deep` → `outer__inner__deep`.
+   - **Checker**: `flatten_modules_in_program` converted from
+     a `for module in modules` loop to a worklist
+     `Vec<(path_prefix, ModuleDecl)>`. Each iteration's
+     full module name is `path_prefix__module.name` (or
+     just `module.name` if prefix is empty). Nested
+     children get pushed onto the worklist with the
+     current path as their prefix.
+
+   v1 requires explicit `outer::inner::item` paths from
+   anywhere. Implicit `inner::item` from inside `outer`
+   (Rust-style sibling-module lookup) is deferred. `use`
+   statements work for any depth via the existing deep-path
+   parser. Test totals: 936 lib + 47 e2e + 11 vtables-phase3
+   + 2 user-drop-by-ref + 1 ssa-examples passing. Closure
+   #248.
+
    **Namespaces Phase 3c (start) — multi-item `use foo::{a, b};` done 2026-05-26**:
    the brace-list form of module imports parses + applies.
    The parser detects `{` after `module::` and reads a

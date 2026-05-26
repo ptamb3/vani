@@ -210,26 +210,31 @@ impl Parser {
         let mut consts = Vec::new();
         let mut type_aliases = Vec::new();
         let mut methods_blocks = Vec::new();
+        let mut nested_modules: Vec<crate::ast::ModuleDecl> = Vec::new();
         let mut vis = crate::ast::ModuleVisibility::default();
 
         while !self.check(|k| matches!(k, TokenKind::RBrace | TokenKind::Eof)) {
-            // Reject nested modules (v1 doesn't support them).
-            if self.check(|k| matches!(k, TokenKind::Module)) {
-                let tok = self.bump();
-                self.errors.push(Diagnostic::new(
-                    tok.span,
-                    "nested `module` declarations are not supported in v1; \
-                     define modules only at the top level",
-                ));
-                self.sync_past_brace();
-                continue;
-            }
             // Optional `pub` modifier. Top-level item parsing
             // doesn't see `pub` today; inside a module it
             // declares visibility.
             let is_pub = self
                 .match_token(|k| matches!(k, TokenKind::Pub))
                 .is_some();
+            // Closure #248: nested `module` blocks are now
+            // supported. Recurse into the same parser.
+            if self.check(|k| matches!(k, TokenKind::Module)) {
+                match self.parse_module_decl() {
+                    Ok(m) => {
+                        nested_modules.push(m);
+                        vis.modules_pub.push(is_pub);
+                    }
+                    Err(e) => {
+                        self.errors.push(e);
+                        self.sync_past_brace();
+                    }
+                }
+                continue;
+            }
 
             if self.check(|k| matches!(k, TokenKind::Struct)) {
                 match self.parse_struct_decl() {
@@ -321,6 +326,7 @@ impl Parser {
             consts,
             type_aliases,
             methods_blocks,
+            modules: nested_modules,
             visibility: vis,
             span: start.span.merge(close_tok.span),
         })
@@ -621,13 +627,43 @@ impl Parser {
                 span: start.span.merge(semi.span),
             }));
         }
-        // Module-path import. The next token must be an
-        // ident (the module name); then `::`; then either a
-        // single ident (single-item import) or `{ a, b, … }`
-        // (multi-item import).
+        // Module-path import. Reads `a::b::…::final_segment`
+        // — closure #248 added support for deep paths
+        // (nested modules). Everything before the final
+        // segment is the module prefix; the final segment is
+        // the item (single-item form) or the `{…}` brace
+        // list (multi-item form).
         let mod_tok = self.expect_ident()?;
-        let module = ident_text(mod_tok);
+        let mut module = ident_text(mod_tok);
         self.expect_keyword("'::' in `use` path", |k| matches!(k, TokenKind::ColonColon))?;
+        // Greedily consume `IDENT ::` segments until we see
+        // either an ident-not-followed-by-`::` (single-item)
+        // or a `{` (multi-item). The final ident before `;`
+        // or `{` is the item; earlier idents are module
+        // segments joined with `__`.
+        loop {
+            if self.check(|k| matches!(k, TokenKind::LBrace)) {
+                break;
+            }
+            // Peek one ahead to decide: if `IDENT ::` we
+            // consume the IDENT as a deeper module segment.
+            // Otherwise the next ident is the leaf.
+            let next_is_pathsep = self
+                .tokens
+                .get(self.pos + 1)
+                .map(|t| matches!(t.kind, TokenKind::ColonColon))
+                .unwrap_or(false);
+            if !next_is_pathsep {
+                break;
+            }
+            let segment_tok = self.expect_ident()?;
+            let segment = ident_text(segment_tok);
+            module = format!("{}__{}", module, segment);
+            self.expect_keyword(
+                "'::' in `use` path",
+                |k| matches!(k, TokenKind::ColonColon),
+            )?;
+        }
         // Multi-item form: `use foo::{a, b};`.
         if self.check(|k| matches!(k, TokenKind::LBrace)) {
             self.bump(); // {
@@ -1193,23 +1229,30 @@ impl Parser {
                 self.bump();
                 return Ok(Type::Param(n));
             }
-            // Closure #242: module-qualified type names. A
-            // lowercase-leading ident followed by `::` and an
-            // uppercase ident parses as a Type::Struct with
-            // the mangled name `<module>__<Type>`. v1 supports
-            // a single `::` segment (no nested modules).
+            // Closure #248: module-qualified type names with
+            // arbitrarily-deep paths `a::b::c::Type`. The
+            // last segment must start uppercase (type
+            // convention); inner segments are module names
+            // joined with `__`.
             if self
                 .tokens
                 .get(self.pos + 1)
                 .map(|t| matches!(t.kind, TokenKind::ColonColon))
                 .unwrap_or(false)
             {
-                let mod_name = name.clone();
+                let mut path = name.clone();
                 self.bump(); // module name
-                self.bump(); // ::
-                let type_tok = self.expect_ident()?;
-                let type_name = ident_text(type_tok);
-                let starts_uppercase = type_name
+                loop {
+                    self.bump(); // ::
+                    let next_tok = self.expect_ident()?;
+                    let next = ident_text(next_tok);
+                    path = format!("{}__{}", path, next);
+                    if !self.check(|k| matches!(k, TokenKind::ColonColon)) {
+                        break;
+                    }
+                }
+                let last_segment = path.rsplit("__").next().unwrap_or(&path);
+                let starts_uppercase = last_segment
                     .chars()
                     .next()
                     .map(|c| c.is_ascii_uppercase())
@@ -1217,11 +1260,11 @@ impl Parser {
                 if !starts_uppercase {
                     return Err(Diagnostic::new(
                         self.current().span,
-                        "expected an uppercase type name after `::` \
-                         (only types can appear in type position)",
+                        "expected an uppercase type name as the last segment \
+                         of the path (only types can appear in type position)",
                     ));
                 }
-                return Ok(Type::Struct(format!("{}__{}", mod_name, type_name)));
+                return Ok(Type::Struct(path));
             }
             if name
                 .chars()
@@ -2609,20 +2652,17 @@ impl Parser {
                 // through module resolution.
                 let mut name = first_name.clone();
                 let mut name_span = token.span;
-                if self.check(|k| matches!(k, TokenKind::ColonColon)) {
+                // Closure #248: support deep paths
+                // `a::b::c::…` by looping the `::` consumption.
+                // Each segment after the first is concatenated
+                // with `__` to produce the backend-safe
+                // identifier. Nested modules use this to
+                // address deeply-nested items.
+                while self.check(|k| matches!(k, TokenKind::ColonColon)) {
                     self.bump(); // consume ::
                     let next_tok = self.expect_ident()?;
                     let next_span = next_tok.span;
                     let next_name = ident_text(next_tok);
-                    // Internal name uses `__` (backend-safe
-                    // identifier) instead of `::`. The lexer's
-                    // ColonColon token marks the module
-                    // boundary at parse time; downstream
-                    // (checker + backends) sees the
-                    // sanitized form. Diagnostics would
-                    // ideally preserve the source spelling
-                    // via spans, but for v1 the `__` form
-                    // appears in error messages.
                     name = format!("{}__{}", name, next_name);
                     name_span = name_span.merge(next_span);
                 }

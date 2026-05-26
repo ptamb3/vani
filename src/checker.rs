@@ -1269,8 +1269,46 @@ fn flatten_modules_in_program(
     // function 'math__double'".
     let mut private_items: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    for module in modules {
-        let mod_name = module.name.clone();
+    // Closure #248: worklist over modules with their full
+    // dotted path prefix. Top-level modules start with an
+    // empty prefix; nested modules get pushed with the
+    // parent's full path so e.g. `module outer { module
+    // inner { fn f() {} } }` flattens `f` to
+    // `outer__inner__f`.
+    let mut work: Vec<(String, crate::ast::ModuleDecl)> = modules
+        .into_iter()
+        .map(|m| (String::new(), m))
+        .collect();
+    while let Some((path_prefix, module)) = work.pop() {
+        let mod_name = if path_prefix.is_empty() {
+            module.name.clone()
+        } else {
+            format!("{}__{}", path_prefix, module.name)
+        };
+        // Queue any nested modules for processing with the
+        // current path as their prefix. They run AFTER the
+        // current module's items are processed (LIFO via Vec
+        // pop), but that's fine — items don't depend on
+        // which module gets processed first.
+        for (idx, nested) in module.modules.iter().enumerate() {
+            let _is_pub = module
+                .visibility
+                .modules_pub
+                .get(idx)
+                .copied()
+                .unwrap_or(false);
+            // V1: nested modules inherit "always visible
+            // via path" semantics — no separate privacy
+            // bit enforcement yet (the inner module's items
+            // still respect their own `pub` flags). A
+            // `pub mod` visibility tier can land later.
+            let _ = nested;
+        }
+        // Drain nested for the worklist; we need owned values.
+        let nested_modules = module.modules.clone();
+        for nested in nested_modules {
+            work.push((mod_name.clone(), nested));
+        }
         // Collect intra-module item names with their
         // visibility so we can rewrite bare references in
         // bodies to the right mangled form.
