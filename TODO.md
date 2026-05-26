@@ -3,6 +3,32 @@
 Snapshot from 2026-05-18 after min/max reductions + parallelism docs
 refresh landed. Order is rough priority (size + payoff), not strict.
 
+## Design rationale (frequently re-asked questions)
+
+These decisions shape what's on the queue and what stays off it.
+Full long-form discussion lives in README.md's "Design Philosophy
+& Limitations" section.
+
+- **Vtables / dynamic dispatch (epic A) is OPTIONAL ergonomics.**
+  Composition + static-dispatch interfaces + tagged enums cover
+  the inheritance use case. Vtables would unlock
+  `Vec<dyn Drawable>`-style heterogeneous collections without
+  enumerating variants. Keep on the queue but don't treat it as
+  "missing core capability".
+- **`try` is the Rust `?` operator, NOT C++-style try/catch.**
+  No exceptions, no unwinding, no catch keyword. Errors are
+  payloaded enum values; `match` is how you "handle" them.
+- **Data structures compose from existing primitives.** Stack →
+  `Vec<T>` + push (need pop). Queue → `Channel<T, N>` already
+  ships. Set/Map → `Vec<(K, V)>` linear scan until N grows.
+  Linked list / tree → index-based, NOT pointer-based (fights
+  affine ownership). Adding a new built-in container needs to
+  clear a high bar: no composition gets close to optimal.
+- **Block-expr stmt vocabulary is intentionally small** (Let +
+  Print only). Extending it to admit Reassign / control flow is
+  pending work but the conservative restriction keeps the
+  desugar's match-arm Block shape sound.
+
 ## ⏳ Resume here (paused 2026-05-25, after closure #218)
 
 Closures landed: #99 bounded generics, #100 affine struct
@@ -767,13 +793,19 @@ totals: 888 lib + 47 e2e passing.
 
 ### Other queued follow-ups (smaller, can interleave)
 
+- **`pop(mut ref xs) -> T` builtin** — `Vec<T>` has `push` but no
+  `pop`. With affine moves the last-element pop returns the value
+  by-move (size–1, no copy). Small builtin, completes the Vec-as-
+  stack story so users don't have to roll their own. ~1-2 hours.
+  See "Design rationale" section above on why we add the builtin
+  rather than a separate `Stack<T>` type.
 - **#8 Phase 2: Drop auto-call at scope exit** — wire `T_drop` into
   the existing `TypedStmt::Drop` lowering so user-declared
   `implement Drop for T` runs automatically. Blocked on B above
   for nested affine fields.
-- **#5 follow-ups**: `try` in nested blocks, non-let statements
-  between `try` and `return`, multiple `try`s in one block. Each
-  is a small AST-level extension of `desugar_try_let_in_program`.
+- **#5 follow-ups remaining**: non-let statements between `try`
+  and `return`. `try` in nested blocks closed by #217; multiple
+  `try`s in one block closed by #218.
 - **Devanagari (parked at user's request)**: script-aware
   diagnostics, multi-word alias expansion, grammar-consultant
   review of the Sanskrit / Hindi / Marathi tables.

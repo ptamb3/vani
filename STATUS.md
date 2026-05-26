@@ -2313,6 +2313,44 @@ fn main() returns i64 {
   user-extensible macro.
 - **Operator overloading on user types** in v1 (might lift later).
 
+## Design Q&A (frequently-asked rationale)
+
+### Why vtables / dynamic dispatch? Don't we prefer composition?
+
+Composition is the default — interfaces dispatch **statically**
+today (monomorphized per call site, no runtime indirection).
+Vtables (epic A) are for the one workflow static dispatch can't
+serve: **heterogeneous collections that don't enumerate variants**
+(e.g. `Vec<dyn Drawable>`). For the variants-known case, a tagged
+enum + `match` is idiomatic vāṇī and ships today. Vtables are an
+ergonomic addition for the open-set case, not a missing core
+capability.
+
+### Does `try` have `catch`?
+
+No. vāṇī has no exceptions, no `catch`, no stack unwinding.
+Errors are **values** carried in payloaded enums (Option-like,
+Result-like). `try` is the Rust `?` operator: sugar for early-
+return on the None / Err arm. To "catch" a possible-None value,
+use `match`. Every control-flow path is statically visible; no
+hidden unwind. `assert` triggers `abort()` (no recovery).
+
+### Are stack / queue / set / map built-in or composed?
+
+Composed from existing primitives — the language stays minimal:
+
+| Structure | How to build it |
+|-----------|-----------------|
+| Stack | `Vec<T>` + `push`. A `pop` builtin is queued (small). |
+| Queue (concurrent) | `Channel<T, N>` — already ships. |
+| Queue (FIFO, single-thread) | `Vec<T>` front-shift, or use `Channel<T, N>` even single-threaded. `VecDeque` is unblocked-by-need. |
+| Set / Map (small N) | `Vec<(K, V)>` with linear scan. |
+| Set / Map (large N) | Reserved for a future stdlib module — needs hash/cmp interface design first. |
+| Linked list / tree | Index-based via `Vec<T>` with `parent: i64` / `next: i64`. Pointer-based linked structures fight the affine ownership model. |
+
+Principle: **add a new built-in only when no composition of
+existing primitives gets within an order of magnitude of optimal**.
+
 ## Caveats / out-of-scope (intentionally not on the TODO list)
 
 These are design decisions or working-as-intended trade-offs — not

@@ -1934,6 +1934,150 @@ through both `--backend=c` and `--backend=llvm` and diffs stdout
 into `check_examples_all_succeed` and a `run_<example>_example`
 test (see `tests/run_end_to_end.rs`).
 
+## Design Philosophy & Limitations
+
+vāṇī aims for a **small, fully-verifiable surface** — the core
+primitives compose into richer patterns rather than the language
+growing a new built-in for every shape. Three design decisions
+that come up frequently:
+
+### Composition over inheritance (and dynamic dispatch is optional)
+
+Interfaces dispatch **statically** today: `fn min<T>(a: T, b: T) -> T
+where T is Cmp` monomorphizes at each call site to the concrete T's
+`cmp` impl. There is no `dyn Trait` / vtable / fat-pointer mechanism
+yet, and that's a deliberate choice — most patterns prefer
+composition (struct fields + interface bounds) over inheritance.
+
+For **heterogeneous collections** (the one workflow where static
+dispatch falls short), use a tagged enum:
+
+```intent
+enum Shape { Circle(...), Square(...), Triangle(...) }
+let shapes: Vec<Shape> = vec(Shape.Circle(...), Shape.Square(...));
+for s in ref shapes {
+  match s {
+    Shape.Circle(c) then …,
+    Shape.Square(sq) then …,
+    Shape.Triangle(t) then …,
+  }
+}
+```
+
+A first-class `dyn Drawable` (vtable-based dispatch on
+heterogeneous collections without enumerating variants) is on the
+roadmap (epic A), but it's ergonomic sugar — not a missing core
+capability.
+
+### `try` is a value-flow shortcut, not an exception system
+
+vāṇī has no exceptions, no `catch`, no stack unwinding. Errors are
+**values** carried in payloaded enums (Option-like, Result-like).
+The `try` keyword is the Rust `?` operator — sugar for early-return
+on the None / Err arm:
+
+```intent
+fn run(opt: Opt) -> Opt {
+  let v: i64 = try opt;          // None? return Opt.None now.
+  return Opt.Some(v + 1);        // happy path.
+}
+```
+
+To "catch" a possible-None value, use `match`:
+
+```intent
+match maybe_value {
+  Opt.Some(v) then use(v),       // happy path
+  Opt.None then handle_missing(), // "catch" the None
+}
+```
+
+Every control-flow path is statically visible — no hidden unwind
+from any call site. `assert` triggers `abort()`; there's no
+mechanism to recover from a failed assertion.
+
+### Basic data structures — `Vec` is the backbone
+
+Stacks, queues, sets, and maps build from existing primitives
+rather than each getting a new built-in type:
+
+| Structure | How to build it |
+|-----------|-----------------|
+| **Stack** | `Vec<T>` with `push(mut ref xs, v)`. A `pop` builtin is a small future addition; last-element pop is O(1). |
+| **Queue (concurrent)** | `Channel<T, N>` — MPSC ring buffer with futex-based blocking. Already in the language. |
+| **Queue (single-threaded FIFO)** | `Vec<T>` with front-shift (O(n) per pop), or just use `Channel<T, N>` even single-threaded. A future `VecDeque` (ring buffer over `Vec`) is reasonable but unblocked-by-need. |
+| **Set / Map (small N)** | `Vec<(K, V)>` with linear scan. Fine until N is large. |
+| **Set / Map (large N)** | Reserved for a future stdlib module. Needs hash/cmp interfaces the language doesn't ship yet. |
+| **Linked list / tree** | Index-based via `Vec<T>` with `parent: i64` / `next: i64` fields. Pointer-based linked structures fight the affine ownership model. |
+
+The principle: **add a new built-in only when no composition of
+existing primitives gets within an order of magnitude of optimal**.
+`Vec` + `Array` + `Channel` + `Mutex` + `Atomic` cover ~95% of real
+use cases; the rest is stdlib work, not language work.
+
+### Current limitations
+
+The honest list, grouped by which work item closes them:
+
+**Type system**
+
+- No dynamic dispatch / vtables — heterogeneous collections need
+  an enum wrapper today (epic A).
+- Tuples are Copy-only — no `OwnedStr` / `Vec<T>` in a tuple element.
+- Generic monomorphization supports first-arg literal inference and
+  one type parameter per fn (`<T>`, not `<T, U>`).
+- No closures — only top-level `fn` pointers via the `fn` keyword.
+- No `bool ↔ int` cast (deliberate — forces explicit branching).
+- `Mutex<T>` restricted to `Mutex<i64>` (other widths waiting on a
+  parametric runtime helper).
+- Match doesn't accept `f64` scrutinees.
+- Type aliases can't be recursive.
+
+**Affine ownership**
+
+- Partial-move tracking is one level deep — `let xs = t.x` works,
+  but `let y = t.x.inner` (nested field move) is rejected (epic B).
+- Multi-field drop order is declaration-order; Rust's reverse-
+  declaration convention is queued.
+- `Drop for T` is suppressed when T has heap-shaped fields (Vec /
+  OwnedStr / nested Struct with owning fields) — the auto-per-field
+  free runs instead (epic C closes the user-Drop interaction).
+
+**`try` desugar**
+
+- `try fn_call()` is rejected — inner must be a Var (the inner
+  expression must already be an enum value, not a fresh call).
+- Non-`let` statements between `try` and `return` aren't allowed —
+  the desugar's Some-arm Block-expr is restricted to Let/Print
+  (closure #129's MVP shape).
+
+**Block expressions**
+
+- `let r = { stmts; tail-expr };` admits only `let` and `print`
+  stmts. No inner control flow (`if`/`while`/`for`), no reassignment.
+  Hoist control flow outside the block.
+
+**Memory & runtime model**
+
+- No GC, no Rc / Arc — affine + scope-exit Drop only.
+- No async / await / coroutines — concurrency is real threads
+  (`task` + `join`) plus shared-state via `Atomic` / `Mutex` /
+  `Channel`.
+- No exceptions (covered above).
+
+**Tooling**
+
+- Devanagari script support parked at user request — keyword
+  aliases land, multi-word aliases + script-aware diagnostics
+  deferred.
+
+What *does* work well (so the limitation list reads in context):
+all 58 examples are leak-clean under `gcc -fsanitize=address,leak`,
+UBSan-clean, LLVM `opt -verify` clean, cross-backend stdout-parity
+tested, and SMT-verified (z3 discharge of `requires` / `ensures` /
+`prove` / `invariant`). The `for` body of a `parallel for` is
+proved race-free before lowering to OpenMP.
+
 ## Why Rust
 
 Rust fits the compiler core because it gives:
