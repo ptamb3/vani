@@ -1,10 +1,9 @@
 ---
 name: project-vani-status-file
 description: vani (formerly future-compiler) keeps a single-page STATUS.md with feature set + TODOs + known issues — update it whenever any of those three change
-metadata: 
+metadata:
   node_type: memory
   type: project
-  originSessionId: 656e7218-5702-41e7-a9dd-1764e5b8ee2c
 ---
 
 > **Project renamed 2026-05-21**: `~/future-compiler/` → `~/vani/`.
