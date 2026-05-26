@@ -110,6 +110,76 @@ fn run_with_lli(ll_source: &str, tag: &str) -> i32 {
 }
 
 #[test]
+fn ref_dyn_iface_dispatches_via_vtable_tree_c() {
+    if !cc_available() {
+        return;
+    }
+    let source = r#"
+        struct Circle { r: i64 }
+
+        interface Drawable {
+          fn area(self: Circle) -> i64;
+        }
+
+        implement Drawable for Circle {
+          fn area(self: Circle) -> i64 { return self.r * self.r; }
+        }
+
+        fn area_of(d: ref dyn Drawable) -> i64 {
+          return d.area();
+        }
+
+        fn main() -> i64 {
+          let c: Circle = Circle { r: 6 };
+          let dyn_c: dyn Drawable = c;
+          return area_of(ref dyn_c);
+        }
+    "#;
+    let c = compile_to_c(source).expect("ref dyn compiles to C");
+    let code = compile_and_run(&c, "ref_dyn_c");
+    assert_eq!(
+        code, 36,
+        "expected area(Circle {{ r: 6 }}) == 36 via ref dyn, got {}",
+        code
+    );
+}
+
+#[test]
+fn ref_dyn_iface_dispatches_via_vtable_llvm() {
+    if !lli_available() {
+        return;
+    }
+    let source = r#"
+        struct Circle { r: i64 }
+
+        interface Drawable {
+          fn area(self: Circle) -> i64;
+        }
+
+        implement Drawable for Circle {
+          fn area(self: Circle) -> i64 { return self.r * self.r; }
+        }
+
+        fn area_of(d: ref dyn Drawable) -> i64 {
+          return d.area();
+        }
+
+        fn main() -> i64 {
+          let c: Circle = Circle { r: 6 };
+          let dyn_c: dyn Drawable = c;
+          return area_of(ref dyn_c);
+        }
+    "#;
+    let ll = compile_to_llvm(source).expect("ref dyn compiles to LLVM");
+    let code = run_with_lli(&ll, "ref_dyn_llvm");
+    assert_eq!(
+        code, 36,
+        "expected area(Circle {{ r: 6 }}) == 36 via ref dyn (LLVM), got {}",
+        code
+    );
+}
+
+#[test]
 fn vec_of_dyn_iface_iterates_with_polymorphic_dispatch_tree_c() {
     if !cc_available() {
         return;

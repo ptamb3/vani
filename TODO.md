@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #226 — vtables Phase 4b Vec<dyn Iface>)
+## ⏳ Resume here (paused 2026-05-25, after closure #227 — vtables Phase 4c ref dyn Iface)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,18 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#227 Vtables Phase 4c (`ref dyn Iface` borrows):
+functions can take `d: ref dyn Iface` and dispatch
+through the borrow. MethodCall checker accepts
+`Type::Ref(Type::Object)` and `Type::RefMut(Object)`
+in addition to owned `Type::Object` — same DynDispatch
+IR, same slot lookup. `format_declarator` extended for
+`Ref(Object)` → `const intent_dyn_<Iface>*` and
+`RefMut(Object)` → `intent_dyn_<Iface>*`. DynDispatch
+emit dereferences borrowed receivers: tree-C wraps in
+`(*recv)`; tree-LLVM emits an explicit `load` before
+the extractvalue ops. e2e tests on both backends.
+Test totals: 920 lib + 47 e2e + 9 vtables-phase3.
 #226 Vtables Phase 4b (`Vec<dyn Iface>` heterogeneous
 collections): `vec(circle, square)` typed as
 `Vec<dyn Drawable>` now compiles + runs on both
@@ -939,7 +951,11 @@ totals: 888 lib + 47 e2e passing.
     its impl's actual `for_type` (not the iface's first-
     declared self); LLVM vec_struct_tag /
     vec_element_byte_size handle Object. **Phase 4c
-    (`ref dyn Iface` borrows) queued.**
+    (`ref dyn Iface` borrows) done 2026-05-25 (closure
+    #227)** — MethodCall accepts borrowed `dyn` receivers;
+    format_declarator handles `Ref(Object)` /
+    `RefMut(Object)`; DynDispatch loads the fat pointer
+    through the borrow before extractvalue.
 
   - **Phase 5 — auto-`==` desugar (separate but related).**
     Lower `a == b` to `a.eq(ref b)` when `implement Eq for

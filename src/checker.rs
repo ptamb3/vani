@@ -6691,7 +6691,21 @@ fn check_expr(
             // self), and emit a `TypedExprKind::DynDispatch`
             // node that Phase 3 codegen lowers into a
             // function-pointer call.
-            if let Type::Object(iface_name) = &recv_ty {
+            // Vtables Phase 4c: also accept `ref dyn Iface` /
+            // `mut ref dyn Iface` receivers — the fat pointer
+            // sits behind a borrow. Dispatch through the
+            // same vtable; the data side is the same data
+            // pointer the fat pointer already carries.
+            let dyn_iface: Option<String> = match &recv_ty {
+                Type::Object(name) => Some(name.clone()),
+                Type::Ref(inner) | Type::RefMut(inner) => match inner.as_ref() {
+                    Type::Object(name) => Some(name.clone()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(iface_name) = dyn_iface {
+                let iface_name = &iface_name;
                 let Some((slot_index, iface_params, iface_ret)) =
                     crate::ast::iface_method_lookup(iface_name, method)
                 else {

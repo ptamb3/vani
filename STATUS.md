@@ -537,6 +537,22 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Vtables Phase 4c (`ref dyn Iface` borrows) done 2026-05-25**:
+   functions can now take `d: ref dyn Iface` and dispatch
+   through the borrow. Three small extensions: (1) the
+   MethodCall checker accepts `Type::Ref(Type::Object)` /
+   `Type::RefMut(Type::Object)` receivers in addition to the
+   owned `Type::Object` form (same DynDispatch IR, same
+   slot lookup). (2) `format_declarator` learned
+   `Type::Ref(Object)` → `const intent_dyn_<Iface>*` and
+   `Type::RefMut(Object)` → `intent_dyn_<Iface>*`. (3) The
+   DynDispatch emit in both backends now detects a borrowed
+   receiver and dereferences first — tree-C wraps in
+   `(*recv)`; tree-LLVM emits an explicit `load` before the
+   extractvalue ops. New e2e tests confirm `area_of(ref
+   dyn_c)` returns 36 on both backends. Test totals: 920
+   lib + 47 e2e + 9 vtables-phase3 passing. Closure #227.
+
    **Vtables Phase 4b (`Vec<dyn Iface>` heterogeneous collections) done 2026-05-25**:
    the canonical vtable use case — `vec(circle, square)` typed
    as `Vec<dyn Drawable>` — now compiles + runs identically on

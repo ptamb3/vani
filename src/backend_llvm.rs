@@ -4501,12 +4501,28 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
         TypedExprKind::DynDispatch {
             receiver, iface_name, slot_index, args, ..
         } => {
-            // Vtables Phase 3b: GEP into the fat pointer's
-            // vtable, load the slot's fn-ptr, call it indirectly
-            // with the data pointer as the implicit first arg.
-            let recv_val = emit_expr(receiver, ctx, out);
+            // Vtables Phase 3b + 4c: GEP into the fat
+            // pointer's vtable, load the slot's fn-ptr, call
+            // it indirectly with the data pointer as the
+            // implicit first arg. For a borrowed receiver
+            // (`ref dyn Iface` / `mut ref dyn Iface`) the
+            // emitted value is a pointer to the fat pointer;
+            // load it first so the extractvalue ops see a
+            // struct value.
+            let raw_recv = emit_expr(receiver, ctx, out);
             let dyn_ty = format!("%intent_dyn_{}", iface_name);
             let vtbl_ty = format!("%intent_vtbl_{}", iface_name);
+            let recv_val = match &receiver.ty {
+                Type::Ref(_) | Type::RefMut(_) => {
+                    let loaded = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = load {}, {}* {}\n",
+                        loaded, dyn_ty, dyn_ty, raw_recv
+                    ));
+                    loaded
+                }
+                _ => raw_recv,
+            };
             let vtbl_ptr = ctx.fresh_tmp();
             out.push_str(&format!(
                 "  {} = extractvalue {} {}, 0\n",

@@ -3624,20 +3624,25 @@ fn emit_expr(expr: &TypedExpr) -> String {
         TypedExprKind::DynDispatch {
             receiver, iface_name: _, method: _, slot_index, args, ..
         } => {
-            // Vtables Phase 3 (tree-C): dispatch through the
-            // fat pointer's vtable slot. The receiver is a
-            // value of type `intent_dyn_<Iface>` carrying
-            // `{ vtable, data }`; the call lowers to
-            // `recv.vtable->m<slot>(recv.data, args...)`.
+            // Vtables Phase 3 (tree-C) + 4c: dispatch through
+            // the fat pointer's vtable slot. For an owned
+            // receiver `(recv).vtable->m<slot>((recv).data)`.
+            // For a borrowed receiver (`ref dyn Iface` /
+            // `mut ref dyn Iface`) the C value is a pointer
+            // to the fat pointer, so deref via `(*recv)` first.
             let recv_c = emit_expr(receiver);
+            let recv_lval = match receiver.ty {
+                Type::Ref(_) | Type::RefMut(_) => format!("(*({}))", recv_c),
+                _ => format!("({})", recv_c),
+            };
             let mut arg_parts: Vec<String> = Vec::with_capacity(args.len() + 1);
-            arg_parts.push(format!("({}).data", recv_c));
+            arg_parts.push(format!("{}.data", recv_lval));
             for a in args {
                 arg_parts.push(emit_expr(a));
             }
             format!(
-                "(({}).vtable->m{}({}))",
-                recv_c, slot_index, arg_parts.join(", ")
+                "({}.vtable->m{}({}))",
+                recv_lval, slot_index, arg_parts.join(", ")
             )
         }
         TypedExprKind::DynCoerce { value, iface_name, from_type_name, from_ty: _ } => {
@@ -4426,6 +4431,9 @@ fn format_declarator(ty: &Type, name: &str) -> String {
             }
             Type::Tuple(elements) => format!("const {}* {}", tuple_c_struct(elements), name),
             Type::Struct(sname) => format!("const {}* {}", struct_c_name(sname), name),
+            // Vtables Phase 4c: `ref dyn Iface` lowers to a
+            // pointer to the per-Iface fat pointer typedef.
+            Type::Object(iface) => format!("const intent_dyn_{}* {}", iface, name),
             other => format!("const {}* {}", c_leaf_type(other), name),
         },
         Type::RefMut(inner) => match &**inner {
@@ -4437,6 +4445,9 @@ fn format_declarator(ty: &Type, name: &str) -> String {
             }
             Type::Tuple(elements) => format!("{}* {}", tuple_c_struct(elements), name),
             Type::Struct(sname) => format!("{}* {}", struct_c_name(sname), name),
+            // Vtables Phase 4c: `mut ref dyn Iface` lowers
+            // to a (mutable) pointer to the fat pointer.
+            Type::Object(iface) => format!("intent_dyn_{}* {}", iface, name),
             other => format!("{}* {}", c_leaf_type(other), name),
         },
         Type::Atomic(element) => format!("{} {}", c_atomic_storage(element), name),
