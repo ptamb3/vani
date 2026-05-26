@@ -4447,13 +4447,14 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     }
                     TypedStmt::Print { .. }
                     | TypedStmt::Drop { .. }
-                    | TypedStmt::Discard { .. } => {
-                        // Closure #200: forward Discard too —
-                        // `let _ = expr;` inside a Block-expr
-                        // must evaluate the RHS for side effects
-                        // and free any heap result. The stmt-
-                        // level Discard handler already covers
-                        // OwnedStr/Vec/Struct/Enum/Array.
+                    | TypedStmt::Discard { .. }
+                    | TypedStmt::Reassign { .. } => {
+                        // Forward Print/Drop/Discard/Reassign
+                        // through the stmt-level emit. Reassign
+                        // hits the alloca address that the
+                        // enclosing scope's Let already set up,
+                        // so the store is identical to the
+                        // fn-body Reassign emit.
                         emit_stmt(s, ctx, out);
                     }
                     _ => {}

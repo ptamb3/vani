@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #230 — `try EXPR(args)` parser precedence)
+## ⏳ Resume here (paused 2026-05-25, after closure #231 — assign stmts between try and return)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,18 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#231 Assign statements between try and return: the try
+desugar now admits `w = w + 1;`-style assignments
+between the try-let and the final return. The Block-expr
+stmt vocabulary gained an Assign arm in the checker —
+it looks up the binding in the surrounding scope,
+type-checks the RHS, and emits TypedStmt::Reassign.
+Tree-C emits the store inline inside the GCC stmt-
+expression; tree-LLVM forwards through the existing
+Reassign emit which targets the binding's alloca. Updated
+the pre-existing rejection test to verify the new accept
+behavior. Test totals: 920 lib + 47 e2e + 11
+vtables-phase3 + 2 user-drop-by-ref.
 #230 `try EXPR(args)` parser precedence: `try maybe(5)`
 (and similar call-shaped operands) now parse correctly.
 Previously `try` only consumed a primary-expr, so the
@@ -1038,14 +1050,14 @@ totals: 888 lib + 47 e2e passing.
   `implement Drop for T` runs automatically. Blocked on B above
   for nested affine fields.
 - **#5 follow-ups remaining**: control-flow statements
-  (If/While/Reassign) between `try` and `return` — currently
-  only Let + Print are admitted. The desugar wraps post-try
-  stmts in a Block-expr; extending it requires both relaxing
-  Block-expr's stmt vocabulary AND widening the try
-  desugar's `intermediate_ok` check.
-  `try EXPR(args)` parser precedence closed by #230.
+  (If/While) between `try` and `return` — currently Let,
+  Print, and Assign are admitted (#231 added Assign). Adding
+  If/While requires extending Block-expr's stmt vocabulary
+  AND threading the new shapes through both backends' Block
+  emit. `try EXPR(args)` parser precedence closed by #230.
   `try` in nested blocks closed by #217; multiple `try`s in
-  one block closed by #218.
+  one block closed by #218. Assign between try and return
+  closed by #231.
 - **Devanagari (parked at user's request)**: script-aware
   diagnostics, multi-word alias expansion, grammar-consultant
   review of the Sanskrit / Hindi / Marathi tables.

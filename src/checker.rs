@@ -2318,11 +2318,16 @@ fn try_rewrite_at_top(
     if !has_try {
         return;
     }
-    // Validate intermediate stmt shapes once up front (Block-
-    // expr only accepts Let/Print).
-    let intermediate_ok = body[0..last_idx]
-        .iter()
-        .all(|s| matches!(s, Stmt::Let { .. } | Stmt::Print { .. }));
+    // Validate intermediate stmt shapes once up front. The
+    // desugar wraps post-try stmts in a Block-expr, so its
+    // stmt vocabulary determines what's admissible here.
+    // V1 accepts Let, Print, and Assign (rebind).
+    let intermediate_ok = body[0..last_idx].iter().all(|s| {
+        matches!(
+            s,
+            Stmt::Let { .. } | Stmt::Print { .. } | Stmt::Assign { .. }
+        )
+    });
     if !intermediate_ok {
         let first_try_span = body[0..last_idx]
             .iter()
@@ -2335,9 +2340,10 @@ fn try_rewrite_at_top(
             .unwrap_or_else(crate::span::Span::default);
         diagnostics.push(Diagnostic::new(
             first_try_span,
-            "`try` desugar in v1 requires only `let` and `print` statements \
-             between the `try`-let and the final `return`; control flow / \
-             assignments between aren't supported yet (T2.6 phase 2 follow-up)",
+            "`try` desugar in v1 requires only `let`, `print`, and \
+             reassignment statements between the `try`-let and the final \
+             `return`; control flow (if/while/for) isn't supported yet \
+             (T2.6 phase 2 follow-up)",
         ));
         return;
     }
@@ -7753,10 +7759,47 @@ fn check_expr(
                         }
                         typed_stmts.push(TypedStmt::Print { items: typed_items });
                     }
+                    Stmt::Assign { name: rname, expr: rhs, .. } => {
+                        // Block-expr Reassign: rebind an existing
+                        // let-bound name to a new value of the
+                        // same type. Unlocks common patterns like
+                        // mutation between `let v = try X;` and
+                        // the final return.
+                        let Some(info) = env.lookup(rname).cloned() else {
+                            diagnostics.push(Diagnostic::new(
+                                s.span(),
+                                format!(
+                                    "reassignment to unknown binding '{}'",
+                                    rname
+                                ),
+                            ));
+                            continue;
+                        };
+                        let raw = check_expr(rhs, env, signatures, diagnostics);
+                        let coerced = coerce_checked(
+                            raw,
+                            &info.ty,
+                            rhs.span,
+                            "block-expr reassignment",
+                            diagnostics,
+                        );
+                        consume_if_moved_var(rhs, &coerced, env);
+                        let mut rhs_expr = coerced.expr;
+                        inject_branch_drops(&mut rhs_expr);
+                        typed_stmts.push(TypedStmt::Reassign {
+                            name: rname.clone(),
+                            ty: info.ty.clone(),
+                            expr: rhs_expr,
+                            // Block-expr Reassign skips drop-old
+                            // in v1; the surrounding scope's
+                            // binding owns the prior value's drop.
+                            drop_old: false,
+                        });
+                    }
                     _ => {
                         diagnostics.push(Diagnostic::new(
                             s.span(),
-                            "block expressions in v1 only allow `let` bindings and `print` statements before the tail expression — hoist control flow or assignments outside the block",
+                            "block expressions in v1 only allow `let` bindings, `print` statements, and reassignments before the tail expression — hoist control flow or other constructs outside the block",
                         ));
                     }
                 }

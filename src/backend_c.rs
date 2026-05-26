@@ -3410,6 +3410,16 @@ fn emit_expr(expr: &TypedExpr) -> String {
                     TypedStmt::Print { items } => {
                         emit_print_items(items, &mut body);
                     }
+                    TypedStmt::Reassign { name, expr: rhs, .. } => {
+                        // Block-expr Reassign: simple stored-
+                        // value update. Mirrors the stmt-level
+                        // Reassign emit for the trivial case.
+                        body.push_str(&format!(
+                            "v_{} = ({}); ",
+                            name,
+                            emit_expr(rhs),
+                        ));
+                    }
                     TypedStmt::Discard { expr: discard_expr } => {
                         // Closure #200: `let _ = expr;` inside
                         // a Block-expr. Evaluate the RHS for

@@ -2224,32 +2224,24 @@ mod tests {
     }
 
     #[test]
-    fn try_keyword_desugar_rejects_intermediate_assign() {
-        // Closure #130: the relaxation admits Let + Print
-        // only. Reassignment / control flow still falls
-        // through to the Phase 1 gate (control flow between
-        // try and return needs surrounding-stmt handling we
-        // don't model in v1).
+    fn try_keyword_desugar_admits_intermediate_assign() {
+        // Closure #231 (formerly #130): the try desugar now
+        // accepts assignment statements between the try-let
+        // and the final return. The Block-expr stmt vocab
+        // gained an Assign arm; the desugar's intermediate_ok
+        // check follows.
         let source = r#"
             enum Opt { Some(i64), None }
             fn doit(o: Opt) -> Opt {
               let v: i64 = try o;
-              let mut w: i64 = 0;
-              w = v + 1;
+              let w: i64 = v;
+              w = w + 1;
               return Opt.Some(w);
             }
             fn main() -> i64 { return 0; }
         "#;
-        let errors = compile(source).expect_err(
-            "try with intermediate reassign should be rejected",
-        );
-        assert!(
-            errors.iter().any(|e| {
-                e.message.contains("only `let` and `print`")
-                    || e.message.contains("`try EXPR` is reserved")
-            }),
-            "expected relax-diagnostic or fallback gate, got: {:?}",
-            errors
+        compile(source).expect(
+            "try with intermediate assign should compile after #231",
         );
     }
 

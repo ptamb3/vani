@@ -537,6 +537,19 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Reassignment between `try` and `return` done 2026-05-25**:
+   the try desugar now admits assignment statements
+   (e.g. `w = w + 1;`) between the try-let and the final
+   return. The Block-expr stmt vocabulary gained an Assign
+   arm — it looks up the binding in the surrounding scope,
+   type-checks the RHS, and emits `TypedStmt::Reassign` into
+   the typed_stmts list. Tree-C emits the store inline
+   inside the GCC statement-expression; tree-LLVM forwards
+   through the existing Reassign stmt emit which targets the
+   binding's alloca address. Test totals: 920 lib + 47 e2e
+   + 11 vtables-phase3 + 2 user-drop-by-ref passing.
+   Closure #231.
+
    **`try EXPR(args)` call-precedence parsing done 2026-05-25**:
    `try maybe(5)` (and `try Type.helper(args)`) now parses
    correctly — previously the parser stopped at primary-expr
