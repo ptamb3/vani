@@ -2307,6 +2307,51 @@ mod tests {
     }
 
     #[test]
+    fn module_private_item_accessible_from_inside() {
+        // Closure #243 visibility v1: a `pub` sibling can
+        // call a private item; the access stays inside the
+        // module so it's allowed.
+        let source = r#"
+            module math {
+              pub fn square(x: i64) -> i64 { return x * x; }
+              fn double(x: i64) -> i64 { return x * 2; }
+              pub fn quad(x: i64) -> i64 { return double(double(x)); }
+            }
+
+            fn main() -> i64 {
+              return math::square(5) + math::quad(3);
+            }
+        "#;
+        compile(source).expect("private item accessible from same module");
+    }
+
+    #[test]
+    fn module_private_item_blocked_from_outside_with_clear_diagnostic() {
+        // Closure #243: outside-module reference to a private
+        // item surfaces "function 'mod::name' is private"
+        // (rather than the cryptic "unknown function
+        // 'mod__priv__name'"). Private-item registry in
+        // ast.rs maps the parser-form name to the source
+        // path for the diagnostic.
+        let source = r#"
+            module math {
+              fn double(x: i64) -> i64 { return x * 2; }
+            }
+
+            fn main() -> i64 {
+              return math::double(5);
+            }
+        "#;
+        let err = compile(source).expect_err("private item should be rejected");
+        assert!(
+            err.iter().any(|d| d.message.contains("private to its module")
+                && d.message.contains("math::double")),
+            "expected `math::double private` diagnostic, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
     fn modules_with_struct_and_call_compile() {
         // Module-scoped struct gets a path-qualified type
         // name (`math::Point` → `math__Point` internally).

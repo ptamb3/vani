@@ -1255,29 +1255,64 @@ fn flatten_modules_in_program(
 ) {
     use crate::ast::Pattern;
     let modules = std::mem::take(&mut program.modules);
+    // Closure #243: visibility enforcement via differentiated
+    // name mangling. Public items mangle to `<module>__<name>`
+    // (which matches what the parser produces for source
+    // `module::name`). Private items mangle to
+    // `<module>__priv__<name>` — a form the parser CAN'T
+    // produce, so outside references can't reach them. Inside
+    // the module, the flattening pass rewrites bare names to
+    // the appropriate mangled form. The PRIVATE_ITEMS
+    // registry records the original public-style name of each
+    // private item so the lookup-fail diagnostic can say
+    // "private item 'math::double'" instead of just "unknown
+    // function 'math__double'".
+    let mut private_items: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for module in modules {
         let mod_name = module.name.clone();
-        // Collect the set of intra-module item names so we
-        // can rewrite bare references inside item bodies.
-        let mut item_names: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        for f in &module.functions { item_names.insert(f.name.clone()); }
-        for s in &module.structs { item_names.insert(s.name.clone()); }
-        for e in &module.enums { item_names.insert(e.name.clone()); }
-        for i in &module.interfaces { item_names.insert(i.name.clone()); }
-        for c in &module.consts { item_names.insert(c.name.clone()); }
-        for a in &module.type_aliases { item_names.insert(a.name.clone()); }
+        // Collect intra-module item names with their
+        // visibility so we can rewrite bare references in
+        // bodies to the right mangled form.
+        let mut visibility: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
+        for (i, f) in module.functions.iter().enumerate() {
+            let is_pub = module.visibility.functions_pub.get(i).copied().unwrap_or(false);
+            visibility.insert(f.name.clone(), is_pub);
+        }
+        for (i, s) in module.structs.iter().enumerate() {
+            let is_pub = module.visibility.structs_pub.get(i).copied().unwrap_or(false);
+            visibility.insert(s.name.clone(), is_pub);
+        }
+        for (i, e) in module.enums.iter().enumerate() {
+            let is_pub = module.visibility.enums_pub.get(i).copied().unwrap_or(false);
+            visibility.insert(e.name.clone(), is_pub);
+        }
+        for (i, ifc) in module.interfaces.iter().enumerate() {
+            let is_pub = module.visibility.interfaces_pub.get(i).copied().unwrap_or(false);
+            visibility.insert(ifc.name.clone(), is_pub);
+        }
+        for (i, c) in module.consts.iter().enumerate() {
+            let is_pub = module.visibility.consts_pub.get(i).copied().unwrap_or(false);
+            visibility.insert(c.name.clone(), is_pub);
+        }
+        for (i, a) in module.type_aliases.iter().enumerate() {
+            let is_pub = module.visibility.type_aliases_pub.get(i).copied().unwrap_or(false);
+            visibility.insert(a.name.clone(), is_pub);
+        }
 
         // Helper: rewrite a name reference. If the bare name
-        // matches an intra-module item, prepend `M::`.
+        // matches an intra-module item, mangle based on
+        // visibility. Public → `<mod>__<name>`; private →
+        // `<mod>__priv__<name>` (form the parser can't
+        // produce, so outside refs can't reach private items).
         let qualify = |name: &str| -> String {
-            if item_names.contains(name) {
-                // Internal separator is `__` so the
-                // backend's identifier emit sees a valid C /
-                // LLVM identifier. Source-form `::` is mapped
-                // by the parser; the AST never carries `::`
-                // in name strings.
-                format!("{}__{}", mod_name, name)
+            if let Some(&is_pub) = visibility.get(name) {
+                if is_pub {
+                    format!("{}__{}", mod_name, name)
+                } else {
+                    format!("{}__priv__{}", mod_name, name)
+                }
             } else {
                 name.to_string()
             }
@@ -1420,9 +1455,22 @@ fn flatten_modules_in_program(
         }
 
         // Now rename items + rewrite bodies, then push onto
-        // the global lists.
-        for mut f in module.functions {
+        // the global lists. For each item also register its
+        // private status (if applicable) so the lookup-fail
+        // diagnostic can surface "private item 'mod::name'"
+        // instead of the cryptic mangled form.
+        for (idx, mut f) in module.functions.into_iter().enumerate() {
+            let is_pub = module.visibility.functions_pub.get(idx).copied().unwrap_or(false);
+            let orig_name = f.name.clone();
             f.name = qualify(&f.name);
+            if !is_pub {
+                // Record the source-form `mod::name` so
+                // diagnostics can name the item naturally.
+                private_items.insert(
+                    f.name.clone(),
+                    format!("{}::{}", mod_name, orig_name),
+                );
+            }
             rewrite_type(&mut f.return_type, &qualify);
             for p in &mut f.params {
                 rewrite_type(&mut p.ty, &qualify);
@@ -1495,6 +1543,11 @@ fn flatten_modules_in_program(
             program.methods_blocks.push(m);
         }
     }
+    // Closure #243: publish the private-item registry so the
+    // checker's unknown-name diagnostic can surface clearer
+    // messages when the user references a private module
+    // item from outside its module.
+    crate::ast::set_private_module_items(private_items);
 }
 
 /// position), so this post-parse fixup keeps the AST honest
@@ -10029,10 +10082,23 @@ fn check_call(
                 );
             }
         }
-        diagnostics.push(Diagnostic::new(
-            span,
-            format!("unknown function '{}'", name),
-        ));
+        // Closure #243: distinguish "no such name" from
+        // "this is a private item in a module you don't have
+        // access to". When the user wrote `mod::name`, the
+        // parser converted it to `mod__name`; if the actual
+        // mangled name is `mod__priv__name` (private), surface
+        // a clear visibility diagnostic instead of the cryptic
+        // "unknown function".
+        let private_msg = crate::ast::lookup_private_item(name);
+        let msg = match private_msg {
+            Some(src_path) => format!(
+                "function '{}' is private to its module — \
+                 mark it `pub` to allow access from outside",
+                src_path
+            ),
+            None => format!("unknown function '{}'", name),
+        };
+        diagnostics.push(Diagnostic::new(span, msg));
         return CheckedExpr::fallback_integer(span);
     };
 

@@ -112,6 +112,47 @@ pub fn iface_method_lookup(iface: &str, method: &str) -> Option<(usize, Vec<Type
     })
 }
 
+thread_local! {
+    /// Closure #243: registry of private module items, keyed
+    /// by mangled name (`<mod>__priv__<item>`) → source-form
+    /// path (`<mod>::<item>`). Populated by
+    /// `flatten_modules_in_program`. Consulted by the
+    /// checker's unknown-name diagnostic to surface a clearer
+    /// "private item 'mod::item'" message when the user tried
+    /// to reach a private item from outside its module.
+    pub(crate) static PRIVATE_MODULE_ITEMS: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+pub fn set_private_module_items<I: IntoIterator<Item = (String, String)>>(entries: I) {
+    PRIVATE_MODULE_ITEMS.with(|cell| {
+        let mut map = cell.borrow_mut();
+        map.clear();
+        for (mangled, source_path) in entries {
+            map.insert(mangled, source_path);
+        }
+    });
+}
+
+/// Given a user-facing path like `math::double` that the parser
+/// converted to `math__double` but doesn't exist in the
+/// signature/type tables, check whether the same name with the
+/// private-item separator (`math__priv__double`) is registered.
+/// Returns the source-form path if so. Used by the
+/// unknown-name diagnostic in the checker.
+pub fn lookup_private_item(parser_form_mangled: &str) -> Option<String> {
+    // The parser-form mangled name has at most one `__` between
+    // module and item (no extra `priv` segment). If the name
+    // contains `__`, split into mod and item and look up the
+    // private form.
+    let parts: Vec<&str> = parser_form_mangled.splitn(2, "__").collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let priv_mangled = format!("{}__priv__{}", parts[0], parts[1]);
+    PRIVATE_MODULE_ITEMS.with(|cell| cell.borrow().get(&priv_mangled).cloned())
+}
+
 pub fn iface_methods_for(iface: &str) -> Option<Vec<(String, Vec<Type>, Type)>> {
     IFACE_METHOD_REGISTRY.with(|cell| cell.borrow().get(iface).cloned())
 }

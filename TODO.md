@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #242 — namespaces Phase 1)
+## ⏳ Resume here (paused 2026-05-26, after closure #243 — namespaces Phase 2 visibility enforcement)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,25 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#243 Namespaces Phase 2 — visibility enforcement (fn-only
+in v1). Non-`pub` items inside a module are now
+unreachable from outside via differentiated name
+mangling: public items mangle to `<mod>__<name>`
+(matches parser output for `mod::name`); private
+items mangle to `<mod>__priv__<name>` (form the
+parser CAN'T produce). Outside references hit a
+lookup miss. New `PRIVATE_MODULE_ITEMS` thread-local
+in ast.rs maps mangled-private names to source-form
+paths; the unknown-function diagnostic consults it
+to surface "function 'mod::name' is private to its
+module — mark it 'pub' to allow access from outside"
+instead of the cryptic mangled form. v1 enforces fn
+visibility; struct / enum / const / type-alias
+visibility (same mechanism, parallel wiring) is a
+follow-up Phase 2.1. Two new lib tests cover
+inside-allowed and outside-blocked cases. Test
+totals: 929 lib + 47 e2e + 11 vtables-phase3 + 2
+user-drop-by-ref + 1 ssa-examples.
 #242 Namespaces — Phase 1 (parser + checker flatten):
 Rust-style `module foo { items… }` blocks now parse +
 type-check. Items inside get renamed to
@@ -1244,20 +1263,23 @@ totals: 888 lib + 47 e2e passing.
 User-requested additions to the language surface. Ordered by
 likely impact / blast radius, not implementation order.
 
-- **Namespaces / modules.** *Phase 1 done 2026-05-26 (closure
-  #242)* — Rust-style explicit `module foo { items… }` blocks
-  parse + type-check. Items inside get renamed to
-  `<module>__<name>`; intra-module references get the same
-  prefix automatically. Path syntax `foo::bar` /
-  `geo::Point` in expression and type position works.
-  Visibility (`pub`) is parsed but not yet enforced. *Phase 2
-  queued*: visibility enforcement (private items unreachable
-  from outside the module); `use foo::bar;` declarations;
-  orphan rules for `implement` blocks (impl must live in
-  the module of either Iface or T); cross-namespace
-  diagnostics. *Phase 3 queued*: nested modules, glob
-  imports, multi-item `use foo::{bar, baz};`, `pub(crate)`
-  tiers, re-exports.
+- **Namespaces / modules.** *Phase 1 done 2026-05-26
+  (closure #242)*: parser + checker flatten module blocks.
+  *Phase 2 (visibility enforcement) done 2026-05-26
+  (closure #243)*: non-`pub` items mangle to
+  `<mod>__priv__<name>` (form the parser can't produce);
+  outside references hit a lookup miss; diagnostic
+  consults a `PRIVATE_MODULE_ITEMS` registry to say
+  "function 'mod::name' is private". v1 enforces
+  visibility for functions; struct / enum / const /
+  type-alias visibility is a Phase 2.1 follow-up (mechanism
+  generalizes; mostly more enumerate-with-index patterns
+  to wire).
+  *Still queued*: Phase 2.1 (struct/enum/const visibility);
+  `use foo::bar;` declarations; orphan rules for `implement`
+  blocks (impl must live in the module of either Iface or T);
+  nested modules, glob imports, multi-item `use foo::{bar,
+  baz};`, `pub(crate)` tiers, re-exports.
 - **Multiple source files for one compilation.** `use "path"`
   already exists for single-file imports; extend to a full
   multi-file pipeline so the compiler ingests a set of `.vani`

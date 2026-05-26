@@ -537,6 +537,39 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Namespaces Phase 2 — visibility enforcement done 2026-05-26**:
+   non-`pub` items inside a module are now unreachable from
+   outside the module. Implementation uses **differentiated
+   name mangling** rather than runtime checks: public items
+   mangle to `<mod>__<name>` (matches what the parser
+   produces for source `mod::name`); private items mangle
+   to `<mod>__priv__<name>` (a form the parser CAN'T
+   produce). Outside references to private items hit a
+   lookup miss; intra-module references are rewritten by
+   the flattening pass to the matching mangled form.
+
+   The unknown-function diagnostic now consults a
+   `PRIVATE_MODULE_ITEMS` registry: when the user wrote
+   `mod::name` (parser-mangled to `mod__name`) and that
+   doesn't exist but `mod__priv__name` does, surface
+   `"function 'mod::name' is private to its module — mark
+   it 'pub' to allow access from outside"`. Clear, names
+   the source path, suggests the fix.
+
+   New lib tests:
+   - `module_private_item_accessible_from_inside` — public
+     sibling calling a private fn inside the same module
+     compiles (resolution stays in-module).
+   - `module_private_item_blocked_from_outside_with_clear_diagnostic`
+     — outside reference surfaces the new diagnostic.
+
+   v1 enforces visibility for functions; struct / enum /
+   const / type-alias visibility lands in a Phase 2.1
+   follow-up (same mechanism, more enumerate-with-index
+   patterns to wire). Test totals: 929 lib + 47 e2e + 11
+   vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples
+   passing. Closure #243.
+
    **Namespaces / modules — Phase 1 (parser + checker flatten) done 2026-05-26**:
    Rust-style `module foo { items… }` blocks now parse and
    type-check. Items inside are renamed to `<module>__<name>`
