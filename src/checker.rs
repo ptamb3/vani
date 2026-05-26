@@ -1944,6 +1944,51 @@ fn flatten_modules_in_program(
 /// Walks a statement tree and replaces bare-name references
 /// (Call / Var / StructLit / Match-pattern / Cast type) with
 /// the aliased mangled form.
+/// Closure #260: build the "consider `ref` / `clone(name)`" hint that
+/// accompanies the "value 'name' was moved" diagnostic. The shape
+/// depends on the binding's type — Vec / OwnedStr / affine structs
+/// support both `ref` and `clone`; handle types (Atomic / Mutex /
+/// Channel / Guard / Task) cannot be cloned and only accept `ref`.
+/// Returns None for primitives (which are Copy and never trigger
+/// this diagnostic anyway) so the caller can skip emitting a hint.
+fn move_recovery_hint(name: &str, ty: &Type) -> Option<String> {
+    match ty {
+        Type::Vec(_) | Type::OwnedStr => Some(format!(
+            "consider borrowing with `ref {}` for read-only access, \
+             or call `clone({})` if you need both bindings to own data",
+            name, name
+        )),
+        Type::Array { .. } => Some(format!(
+            "consider borrowing with `ref {}` for read-only access — \
+             arrays are affine in v1; restructure if you need both \
+             bindings to own data",
+            name
+        )),
+        Type::Atomic(_)
+        | Type::Mutex(_)
+        | Type::Channel(_, _)
+        | Type::Guard(_) => Some(format!(
+            "share via `ref {}` — `{}` is an exclusive single-owner \
+             handle and cannot be cloned (use `Atomic<T>` or `Channel` \
+             through a borrow if multiple threads need access)",
+            name, name
+        )),
+        Type::Task => Some(format!(
+            "task handles cannot be shared — keep one handle per \
+             spawn and `join {}` on exactly one path",
+            name
+        )),
+        Type::Struct(_) | Type::Enum(_) => Some(format!(
+            "consider borrowing with `ref {}` for read-only access, \
+             or call `clone({})` if the type supports it",
+            name, name
+        )),
+        // Primitives + references + Str are Copy and shouldn't be
+        // reaching this diagnostic — fall through with no hint.
+        _ => None,
+    }
+}
+
 fn rewrite_stmt_for_alias(
     stmt: &mut crate::ast::Stmt,
     qualify: &dyn Fn(&str) -> String,
@@ -7597,13 +7642,24 @@ fn check_expr(
         ExprKind::Var(name) => match env.lookup(name) {
             Some(info) => {
                 if let Some(move_span) = info.moved {
-                    diagnostics.push(
-                        Diagnostic::new(
-                            expr.span,
-                            format!("value '{}' was moved; cannot use after move", name),
-                        )
-                        .with_related(move_span, format!("'{}' was moved here", name)),
-                    );
+                    // Closure #260: type-aware fix hint. The previous
+                    // diagnostic told the user *what* was wrong but not
+                    // *how* to recover. For `Vec` / `OwnedStr` / affine
+                    // structs the answer is usually "borrow with `ref`
+                    // if the callee only reads, else call `clone(x)`
+                    // explicitly". For handle types (Atomic, Mutex,
+                    // Guard, Channel, Task) clone is forbidden by
+                    // design, so the hint only mentions `ref`.
+                    let hint = move_recovery_hint(name, &info.ty);
+                    let mut diag = Diagnostic::new(
+                        expr.span,
+                        format!("value '{}' was moved; cannot use after move", name),
+                    )
+                    .with_related(move_span, format!("'{}' was moved here", name));
+                    if let Some(h) = hint {
+                        diag = diag.with_related(expr.span, h);
+                    }
+                    diagnostics.push(diag);
                 }
                 let decl_span = info.decl_span;
                 // T4.15: when the resolved binding came from a

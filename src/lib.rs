@@ -14914,6 +14914,104 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn move_diagnostic_suggests_ref_or_clone_for_vec() {
+        // Closure #260: when a Vec / OwnedStr is consumed by move
+        // and then re-used, the existing "value 'v' was moved"
+        // diagnostic now carries a type-aware fix hint pointing
+        // the user at `ref v` (borrow) or `clone(v)` (deep copy).
+        let source = r#"
+            fn main() -> i64 {
+              let v: Vec<i64> = vec(1, 2, 3);
+              let w: Vec<i64> = v;
+              let z: Vec<i64> = v;
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("double-move must error");
+        let messages: Vec<&str> = errors
+            .iter()
+            .flat_map(|e| {
+                std::iter::once(e.message.as_str())
+                    .chain(e.related.iter().map(|(_, m)| m.as_str()))
+            })
+            .collect();
+        assert!(
+            messages.iter().any(|m|
+                m.contains("consider borrowing with `ref v`")
+                    && m.contains("clone(v)")),
+            "expected vec-clone-or-ref hint; got: {:?}",
+            messages
+        );
+    }
+
+    #[test]
+    fn move_diagnostic_for_handle_type_forbids_clone() {
+        // Atomic / Mutex / Channel / Guard are exclusive single-
+        // owner handles by design. The hint must NOT mention
+        // `clone()` (which doesn't exist for these types) and
+        // instead suggest `ref` only.
+        let source = r#"
+            fn main() -> i64 {
+              let a: Atomic<i64> = atomic_new(0);
+              let b: Atomic<i64> = a;
+              let c: Atomic<i64> = a;
+              return atomic_load(ref c);
+            }
+        "#;
+        let errors = compile(source).expect_err("atomic double-move must error");
+        let messages: Vec<&str> = errors
+            .iter()
+            .flat_map(|e| {
+                std::iter::once(e.message.as_str())
+                    .chain(e.related.iter().map(|(_, m)| m.as_str()))
+            })
+            .collect();
+        assert!(
+            messages.iter().any(|m|
+                m.contains("share via `ref a`")
+                    && m.contains("cannot be cloned")),
+            "expected atomic-no-clone hint; got: {:?}",
+            messages
+        );
+        // Belt-and-suspenders: no message in this case should
+        // suggest clone() — Atomic doesn't support it.
+        assert!(
+            !messages.iter().any(|m| m.contains("clone(a)")),
+            "atomic hint must NOT mention clone(a); got: {:?}",
+            messages
+        );
+    }
+
+    #[test]
+    fn move_diagnostic_for_owned_str_suggests_ref_or_clone() {
+        // OwnedStr (heap string) follows the same Vec-shaped
+        // hint — both `ref` and `clone()` are valid.
+        let source = r#"
+            fn main() -> i64 {
+              let s: OwnedStr = "Hello, " + "world";
+              let t: OwnedStr = s;
+              print s;
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("owned-str double-use must error");
+        let messages: Vec<&str> = errors
+            .iter()
+            .flat_map(|e| {
+                std::iter::once(e.message.as_str())
+                    .chain(e.related.iter().map(|(_, m)| m.as_str()))
+            })
+            .collect();
+        assert!(
+            messages.iter().any(|m|
+                m.contains("consider borrowing with `ref s`")
+                    && m.contains("clone(s)")),
+            "expected owned-str hint; got: {:?}",
+            messages
+        );
+    }
+
+    #[test]
     fn parallel_for_rejects_captured_copy_mutation_without_reduce() {
         // Closure #259: previously, `parallel for { total = total
         // + i; }` over a captured Copy-typed i64 compiled cleanly

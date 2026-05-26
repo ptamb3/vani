@@ -558,12 +558,14 @@ improvements, not correctness fixes.
 
 ### Move/clone polish — small items
 
-- **Move-rejection diagnostic should suggest `.clone()` /
-  `ref` / restructuring.** Today the unknown-use-after-move
-  diagnostic shows the earlier move location but doesn't
-  suggest a fix. A small-effort follow-up: emit a "consider
-  borrowing with `ref x` instead of moving, or call
-  `clone()` explicitly if you need both bindings" hint.
+- ✅ **Move-rejection diagnostic carries a type-aware fix
+  hint** (closure #260). For Vec / OwnedStr / affine
+  structs the hint mentions both `ref` and `clone(name)`;
+  for exclusive handle types (Atomic, Mutex, Channel,
+  Guard) only `ref` (clone is forbidden by design); for
+  arrays only `ref` (clone is v2 work). Helper
+  `move_recovery_hint` keys off `Type`. Three lib tests
+  pin the Vec / OwnedStr / Atomic shapes.
 - **Auto-borrow extension survey.** Today `==` / `<` /
   `+`-on-Str auto-borrow. Other binary op shapes
   (e.g. arithmetic on a `Vec` reference) may still consume
@@ -616,6 +618,40 @@ language semantics, all are pure analyses):
 These all line up behind the SSA-LLVM multi-block work + the
 kosh package-manager arc on the canonical queue.
 
+#260 Move-rejection diagnostic — type-aware fix hint.
+the "value 'v' was moved; cannot use after move"
+diagnostic now carries a secondary note suggesting the
+user's best recovery. Type-keyed phrasing:
+
+  - `Vec<T>` / `OwnedStr` / affine struct / enum:
+    "consider borrowing with `ref v` for read-only
+    access, or call `clone(v)` if you need both
+    bindings to own data"
+  - `Atomic<T>` / `Mutex<T>` / `Channel<T,N>` /
+    `Guard<T>`: "share via `ref v` — exclusive
+    single-owner handle and cannot be cloned"
+  - `[T; N]` arrays: ref-only hint (clone unsupported
+    in v1; v2 work)
+  - Struct / Enum: same as Vec (borrow or clone if
+    the type supports it)
+
+Helper `move_recovery_hint(name, &ty) -> Option<String>`
+in `src/checker.rs` keys off the Type variant and returns
+None for primitives + references + Str (which are Copy
+and don't reach this diagnostic). The hint is attached
+as a `with_related` note pointing at the same span as
+the error, so rendering is consistent with existing
+"... was moved here" notes.
+
+Three new lib tests pin: Vec hint mentions ref + clone,
+OwnedStr hint same shape, Atomic hint mentions ref-only
+and explicitly does NOT suggest clone (regression guard
+— the test would fail if a future refactor accidentally
+collapsed all affine types to the same hint).
+
+Closes the first item in the *Move/clone polish*
+sub-section. Test totals: 966 lib + 47 e2e + 11
+vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples.
 #259 Parallel-for implicit-reduction race — compile-time check.
 the effects checker's pure-body walker already rejected
 impure ops (print, impure calls, indexed writes on

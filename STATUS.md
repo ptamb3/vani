@@ -537,6 +537,27 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Move-rejection diagnostic — type-aware fix hint done 2026-05-26**:
+   the "value 'v' was moved; cannot use after move"
+   diagnostic now carries a type-aware secondary note
+   suggesting the user's best recovery. For `Vec<T>` /
+   `OwnedStr` / affine structs / enums: "consider borrowing
+   with `ref v` for read-only access, or call `clone(v)` if
+   you need both bindings to own data". For exclusive
+   single-owner handles (`Atomic` / `Mutex` / `Channel` /
+   `Guard`): "share via `ref v` — exclusive single-owner
+   handle and cannot be cloned (use Atomic<T> or Channel
+   through a borrow if multiple threads need access)". For
+   `[T;N]` arrays: ref-only hint (clone not supported in
+   v1). Helper `move_recovery_hint(name, ty)` in
+   `src/checker.rs` returns the right phrasing per Type
+   variant. Three new lib tests pin the Vec, OwnedStr, and
+   Atomic shapes; existing move-tracking tests untouched.
+   Closes the first item in the *Move/clone polish* TODO
+   sub-section. Test totals: 966 lib + 47 e2e + 11
+   vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples.
+   Closure #260.
+
    **Move / clone / copy story documented in README 2026-05-26**:
    added a *vāṇī vs Rust — ownership at a glance* subsection
    under the *Memory safety & concurrency model* section.
