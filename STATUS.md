@@ -537,6 +537,32 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Namespaces — `pub(kosh)` visibility tier done 2026-05-26**:
+   modules now accept the qualifier `pub(kosh)` to mark
+   an item as exported within the kosh but NOT through
+   the kosh boundary into external dependents. Today
+   vāṇī compiles a single kosh at a time, so `pub(kosh)`
+   behaves identically to plain `pub` — the bit is
+   preserved so future kosh-boundary enforcement
+   activates on existing source without rewrites. The
+   parser peeks for `(kosh)` after `pub` (using the
+   2-token lookahead pattern from the `pub use` work);
+   any other qualifier (`pub(super)`, `pub(crate)`, …)
+   surfaces a clear "only `pub(kosh)` is supported"
+   diagnostic and skips past the bad form to avoid
+   cascading errors. `ModuleVisibility` grows parallel
+   `*_kosh_only: Vec<bool>` arrays alongside each
+   `*_pub` bitmap; the formatter checks the kosh-only
+   bit and emits `pub(kosh)` when set. Three new lib
+   tests pin: the syntax parses + compiles, the bit
+   lands correctly in the AST, and bad qualifiers are
+   rejected cleanly. Closes the last namespaces follow-
+   up that lives entirely inside the existing compiler
+   — the remaining kosh work (manifest, resolver,
+   registry CLI) is package-manager scope. Test totals:
+   960 lib + 47 e2e + 11 vtables-phase3 + 2 user-drop-
+   by-ref + 1 ssa-examples. Closure #258.
+
    **Namespaces — re-exports `pub use foo::bar;` done 2026-05-26**:
    `pub use` inside a module body re-exports an item
    under the current module's namespace — external

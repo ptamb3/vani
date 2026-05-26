@@ -535,6 +535,31 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#258 Namespaces — `pub(kosh)` visibility tier.
+modules now accept `pub(kosh)` as a finer-grained
+visibility marker. Today behaves identically to plain
+`pub` (single-kosh compile, no boundary to enforce);
+the bit is preserved so future kosh-boundary
+enforcement activates without source rewrites.
+
+`ModuleVisibility` grows parallel `*_kosh_only:
+Vec<bool>` arrays alongside each `*_pub` bitmap. The
+parser peeks for `(kosh)` after `pub` (mirrors the
+2-token lookahead added for `pub use`); other
+qualifiers (`pub(super)`, `pub(crate)`, …) surface a
+clear "only `pub(kosh)` is supported" diagnostic and
+the parser skips past the bad form to avoid
+cascading errors. Formatter emits `pub(kosh)` when
+the bit is set. Three new lib tests pin: syntax
+parses + compiles, kosh_only bit lands in AST, bad
+qualifiers rejected cleanly.
+
+Closes the last namespaces follow-up that fits
+entirely inside the existing compiler. Remaining
+kosh work (manifest `kosh.toml`, resolver, registry
+CLI) is package-manager scope — TODO.md item #10.
+Test totals: 960 lib + 47 e2e + 11 vtables-phase3 +
+2 user-drop-by-ref + 1 ssa-examples.
 #257 Namespaces — re-exports `pub use foo::bar;` inside modules.
 `pub use` inside a module body re-exports an item
 under the current module's namespace — external

@@ -335,7 +335,9 @@ pub fn format_program_with_comments(
                 let m = &p.modules[*i];
                 ctx.drain_to(m.span.start, 0, &mut out);
                 ctx.maybe_preserve_blank(m.span.start, &mut out);
-                format_module_decl(m, false, &mut ctx, &mut out);
+                // Top-level modules are at the root — no outer
+                // visibility tier applies; pass false for both.
+                format_module_decl(m, false, false, &mut ctx, &mut out);
             }
         }
     }
@@ -343,20 +345,27 @@ pub fn format_program_with_comments(
     out
 }
 
-/// Emit `module NAME { … }` with `pub` markers on items per the
-/// module's parallel visibility bitmaps. Recurses for nested
-/// modules. `outer_pub` is the visibility of *this* module from
-/// the standpoint of its parent (only meaningful for nested
-/// modules — top-level modules are always implicitly public, the
-/// keyword is just a syntactic marker).
+/// Emit `module NAME { … }` with `pub` / `pub(kosh)` markers
+/// on items per the module's parallel visibility bitmaps.
+/// Recurses for nested modules. `outer_pub` is the visibility
+/// of *this* module from the standpoint of its parent (only
+/// meaningful for nested modules); `outer_kosh_only` refines
+/// it to `pub(kosh)` when set. Top-level modules pass both
+/// `false` — they're always implicitly public, the keyword
+/// is just a syntactic marker.
 fn format_module_decl(
     m: &crate::ast::ModuleDecl,
     outer_pub: bool,
+    outer_kosh_only: bool,
     ctx: &mut FmtCtx,
     out: &mut String,
 ) {
     if outer_pub {
-        out.push_str("pub ");
+        if outer_kosh_only {
+            out.push_str("pub(kosh) ");
+        } else {
+            out.push_str("pub ");
+        }
     }
     out.push_str("module ");
     out.push_str(&m.name);
@@ -413,67 +422,97 @@ fn format_module_decl(
             out.push('\n');
         }
         let mut sub = String::new();
+        // Helper closure: emit the appropriate visibility
+        // marker — `pub `, `pub(kosh) `, or nothing —  based
+        // on parallel `*_pub` / `*_kosh_only` bits. Closure
+        // #258 added the kosh-only tier.
+        let vis_marker = |is_pub: bool, is_kosh: bool, out: &mut String| {
+            if is_pub {
+                if is_kosh {
+                    out.push_str("pub(kosh) ");
+                } else {
+                    out.push_str("pub ");
+                }
+            }
+        };
         match item {
             ModItem::Struct(i) => {
                 let s = &m.structs[*i];
-                if *m.visibility.structs_pub.get(*i).unwrap_or(&false) {
-                    sub.push_str("pub ");
-                }
+                vis_marker(
+                    *m.visibility.structs_pub.get(*i).unwrap_or(&false),
+                    *m.visibility.structs_kosh_only.get(*i).unwrap_or(&false),
+                    &mut sub,
+                );
                 format_struct_decl(s, &mut sub);
             }
             ModItem::Enum(i) => {
                 let e = &m.enums[*i];
-                if *m.visibility.enums_pub.get(*i).unwrap_or(&false) {
-                    sub.push_str("pub ");
-                }
+                vis_marker(
+                    *m.visibility.enums_pub.get(*i).unwrap_or(&false),
+                    *m.visibility.enums_kosh_only.get(*i).unwrap_or(&false),
+                    &mut sub,
+                );
                 format_enum_decl(e, &mut sub);
             }
             ModItem::Interface(i) => {
                 let ifc = &m.interfaces[*i];
-                if *m.visibility.interfaces_pub.get(*i).unwrap_or(&false) {
-                    sub.push_str("pub ");
-                }
+                vis_marker(
+                    *m.visibility.interfaces_pub.get(*i).unwrap_or(&false),
+                    *m.visibility.interfaces_kosh_only.get(*i).unwrap_or(&false),
+                    &mut sub,
+                );
                 format_interface_decl(ifc, &mut sub);
             }
             ModItem::Impl(i) => {
                 let im = &m.impls[*i];
-                if *m.visibility.impls_pub.get(*i).unwrap_or(&false) {
-                    sub.push_str("pub ");
-                }
+                vis_marker(
+                    *m.visibility.impls_pub.get(*i).unwrap_or(&false),
+                    *m.visibility.impls_kosh_only.get(*i).unwrap_or(&false),
+                    &mut sub,
+                );
                 format_impl_decl(im, ctx, &mut sub);
             }
             ModItem::Const(i) => {
                 let c = &m.consts[*i];
-                if *m.visibility.consts_pub.get(*i).unwrap_or(&false) {
-                    sub.push_str("pub ");
-                }
+                vis_marker(
+                    *m.visibility.consts_pub.get(*i).unwrap_or(&false),
+                    *m.visibility.consts_kosh_only.get(*i).unwrap_or(&false),
+                    &mut sub,
+                );
                 format_const_decl(c, &mut sub);
             }
             ModItem::TypeAlias(i) => {
                 let a = &m.type_aliases[*i];
-                if *m.visibility.type_aliases_pub.get(*i).unwrap_or(&false) {
-                    sub.push_str("pub ");
-                }
+                vis_marker(
+                    *m.visibility.type_aliases_pub.get(*i).unwrap_or(&false),
+                    *m.visibility.type_aliases_kosh_only.get(*i).unwrap_or(&false),
+                    &mut sub,
+                );
                 format_type_alias(a, &mut sub);
             }
             ModItem::Methods(i) => {
                 let mb = &m.methods_blocks[*i];
-                if *m.visibility.methods_blocks_pub.get(*i).unwrap_or(&false) {
-                    sub.push_str("pub ");
-                }
+                vis_marker(
+                    *m.visibility.methods_blocks_pub.get(*i).unwrap_or(&false),
+                    *m.visibility.methods_blocks_kosh_only.get(*i).unwrap_or(&false),
+                    &mut sub,
+                );
                 format_methods_block(mb, ctx, &mut sub);
             }
             ModItem::Function(i) => {
                 let f = &m.functions[*i];
-                if *m.visibility.functions_pub.get(*i).unwrap_or(&false) {
-                    sub.push_str("pub ");
-                }
+                vis_marker(
+                    *m.visibility.functions_pub.get(*i).unwrap_or(&false),
+                    *m.visibility.functions_kosh_only.get(*i).unwrap_or(&false),
+                    &mut sub,
+                );
                 format_function(f, ctx, &mut sub);
             }
             ModItem::Module(i) => {
                 let nested = &m.modules[*i];
                 let is_pub = *m.visibility.modules_pub.get(*i).unwrap_or(&false);
-                format_module_decl(nested, is_pub, ctx, &mut sub);
+                let is_kosh = *m.visibility.modules_kosh_only.get(*i).unwrap_or(&false);
+                format_module_decl(nested, is_pub, is_kosh, ctx, &mut sub);
             }
             ModItem::Use(i) => {
                 // Module-local `use foo::bar [as baz];` —

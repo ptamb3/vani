@@ -263,12 +263,63 @@ impl Parser {
                 }
                 continue;
             }
-            // Optional `pub` modifier. Top-level item parsing
-            // doesn't see `pub` today; inside a module it
-            // declares visibility.
+            // Optional `pub` modifier with an optional `(kosh)`
+            // qualifier — closure #258. `pub(kosh)` records the
+            // intent that an item is exported within the kosh
+            // but NOT through the kosh boundary into external
+            // dependents. Today vāṇī compiles a single kosh,
+            // so the bit is preserved without enforcement;
+            // when the future kosh boundary lands existing
+            // `pub(kosh)` annotations start being enforced
+            // without source rewrites.
             let is_pub = self
                 .match_token(|k| matches!(k, TokenKind::Pub))
                 .is_some();
+            let is_kosh_only = if is_pub
+                && self.check(|k| matches!(k, TokenKind::LParen))
+            {
+                // Peek for `(kosh)` — the only qualifier
+                // we accept in v1.
+                let kosh_ident_next = matches!(
+                    self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                    Some(TokenKind::Ident(n)) if n == "kosh"
+                );
+                let close_paren_next = matches!(
+                    self.tokens.get(self.pos + 2).map(|t| &t.kind),
+                    Some(TokenKind::RParen)
+                );
+                if kosh_ident_next && close_paren_next {
+                    self.bump(); // (
+                    self.bump(); // kosh
+                    self.bump(); // )
+                    true
+                } else {
+                    let span = self.current().span;
+                    self.errors.push(Diagnostic::new(
+                        span,
+                        "only `pub(kosh)` is supported as a `pub(…)` \
+                         qualifier in v1 — write `pub` for kosh-wide \
+                         visibility or `pub(kosh)` to mark an item as \
+                         internal to this kosh",
+                    ));
+                    // Skip past the bad qualifier so the rest of
+                    // the line parses cleanly instead of
+                    // cascading. Consume `( ... )` greedily.
+                    self.bump(); // (
+                    while !self.check(|k| matches!(
+                        k,
+                        TokenKind::RParen | TokenKind::RBrace | TokenKind::Eof
+                    )) {
+                        self.bump();
+                    }
+                    if self.check(|k| matches!(k, TokenKind::RParen)) {
+                        self.bump();
+                    }
+                    false
+                }
+            } else {
+                false
+            };
             // Closure #248: nested `module` blocks are now
             // supported. Recurse into the same parser.
             if self.check(|k| matches!(k, TokenKind::Module)) {
@@ -276,6 +327,7 @@ impl Parser {
                     Ok(m) => {
                         nested_modules.push(m);
                         vis.modules_pub.push(is_pub);
+                        vis.modules_kosh_only.push(is_kosh_only);
                     }
                     Err(e) => {
                         self.errors.push(e);
@@ -290,6 +342,7 @@ impl Parser {
                     Ok(s) => {
                         structs.push(s);
                         vis.structs_pub.push(is_pub);
+                        vis.structs_kosh_only.push(is_kosh_only);
                     }
                     Err(e) => { self.errors.push(e); self.sync_past_brace(); }
                 }
@@ -298,6 +351,7 @@ impl Parser {
                     Ok(e) => {
                         enums.push(e);
                         vis.enums_pub.push(is_pub);
+                        vis.enums_kosh_only.push(is_kosh_only);
                     }
                     Err(e) => { self.errors.push(e); self.sync_past_brace(); }
                 }
@@ -306,6 +360,7 @@ impl Parser {
                     Ok(d) => {
                         interfaces.push(d);
                         vis.interfaces_pub.push(is_pub);
+                        vis.interfaces_kosh_only.push(is_kosh_only);
                     }
                     Err(e) => { self.errors.push(e); self.sync_past_brace(); }
                 }
@@ -314,6 +369,7 @@ impl Parser {
                     Ok(d) => {
                         impls.push(d);
                         vis.impls_pub.push(is_pub);
+                        vis.impls_kosh_only.push(is_kosh_only);
                     }
                     Err(e) => { self.errors.push(e); self.sync_past_brace(); }
                 }
@@ -322,6 +378,7 @@ impl Parser {
                     Ok(c) => {
                         consts.push(c);
                         vis.consts_pub.push(is_pub);
+                        vis.consts_kosh_only.push(is_kosh_only);
                     }
                     Err(e) => { self.errors.push(e); self.sync_past_brace(); }
                 }
@@ -330,6 +387,7 @@ impl Parser {
                     Ok(a) => {
                         type_aliases.push(a);
                         vis.type_aliases_pub.push(is_pub);
+                        vis.type_aliases_kosh_only.push(is_kosh_only);
                     }
                     Err(e) => { self.errors.push(e); self.sync_past_brace(); }
                 }
@@ -338,6 +396,7 @@ impl Parser {
                     Ok(m) => {
                         methods_blocks.push(m);
                         vis.methods_blocks_pub.push(is_pub);
+                        vis.methods_blocks_kosh_only.push(is_kosh_only);
                     }
                     Err(e) => { self.errors.push(e); self.sync_past_brace(); }
                 }
@@ -346,6 +405,7 @@ impl Parser {
                     Ok(f) => {
                         functions.push(f);
                         vis.functions_pub.push(is_pub);
+                        vis.functions_kosh_only.push(is_kosh_only);
                     }
                     Err(e) => { self.errors.push(e); self.sync_past_brace(); }
                 }

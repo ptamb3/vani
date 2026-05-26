@@ -315,18 +315,39 @@ pub struct ModuleDecl {
 
 /// Per-item-list visibility bitmaps for a `ModuleDecl`.
 /// Indices align with the same-named Vec in `ModuleDecl`.
+///
+/// The `_pub` arrays mean "visible outside this module" — true
+/// for both plain `pub` and `pub(kosh)`. The parallel
+/// `_kosh_only` arrays (closure #258) mark items written as
+/// `pub(kosh)` — meaning "exported within this kosh but NOT
+/// through the kosh boundary into external dependents". Today
+/// vāṇī compiles a single kosh at a time, so the
+/// `_kosh_only` bit has no observable effect — both
+/// flavors behave identically. The bit is preserved so that
+/// when the future kosh boundary lands (the package manager
+/// arc — see TODO.md item #10), existing `pub(kosh)`
+/// annotations start being enforced without source rewrites.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModuleVisibility {
     pub functions_pub: Vec<bool>,
+    pub functions_kosh_only: Vec<bool>,
     pub structs_pub: Vec<bool>,
+    pub structs_kosh_only: Vec<bool>,
     pub enums_pub: Vec<bool>,
+    pub enums_kosh_only: Vec<bool>,
     pub interfaces_pub: Vec<bool>,
+    pub interfaces_kosh_only: Vec<bool>,
     pub impls_pub: Vec<bool>,
+    pub impls_kosh_only: Vec<bool>,
     pub consts_pub: Vec<bool>,
+    pub consts_kosh_only: Vec<bool>,
     pub type_aliases_pub: Vec<bool>,
+    pub type_aliases_kosh_only: Vec<bool>,
     pub methods_blocks_pub: Vec<bool>,
+    pub methods_blocks_kosh_only: Vec<bool>,
     /// Parallel visibility for nested modules.
     pub modules_pub: Vec<bool>,
+    pub modules_kosh_only: Vec<bool>,
 }
 
 /// `methods on Point { fn dist(self: Point) -> i64 { … } }`

@@ -14914,6 +14914,88 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn pub_kosh_qualifier_parses_and_compiles() {
+        // Closure #258: `pub(kosh) fn helper()` is accepted as
+        // a preparatory visibility tier — today it behaves
+        // identically to `pub`, but the `kosh_only` bit lands
+        // in `ModuleVisibility` so future kosh boundaries can
+        // enforce it without source rewrites.
+        let source = r#"
+            module m {
+              pub fn outer() -> i64 { return 1; }
+              pub(kosh) fn inner() -> i64 { return 2; }
+            }
+            fn main() -> i64 { return m::outer() + m::inner(); }
+        "#;
+        compile(source).expect("pub(kosh) parses + behaves as pub");
+    }
+
+    #[test]
+    fn pub_kosh_records_visibility_bit_in_module_decl() {
+        // The kosh_only bit must persist in the parser AST so
+        // future enforcement passes can read it. Walk the
+        // pre-flatten Program (via the parser directly, since
+        // the checker flattens modules into top-level arrays)
+        // and confirm the bit is set on the `inner` fn slot.
+        let source = r#"
+            module m {
+              pub fn outer() -> i64 { return 1; }
+              pub(kosh) fn inner() -> i64 { return 2; }
+            }
+        "#;
+        // Use the parser directly so modules survive (the
+        // checker's flatten pass moves items into top-level
+        // arrays and clears `program.modules`).
+        let tokens = crate::lexer::lex(source).expect("lex ok");
+        let (program, errs) = crate::parser::parse(tokens);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let m = program
+            .modules
+            .iter()
+            .find(|m| m.name == "m")
+            .expect("module m parsed");
+        let outer_idx = m
+            .functions
+            .iter()
+            .position(|f| f.name == "outer")
+            .expect("outer fn present");
+        let inner_idx = m
+            .functions
+            .iter()
+            .position(|f| f.name == "inner")
+            .expect("inner fn present");
+        assert!(m.visibility.functions_pub[outer_idx]);
+        assert!(!m.visibility.functions_kosh_only[outer_idx]);
+        assert!(m.visibility.functions_pub[inner_idx]);
+        assert!(
+            m.visibility.functions_kosh_only[inner_idx],
+            "pub(kosh) inner fn must have functions_kosh_only[i] = true"
+        );
+    }
+
+    #[test]
+    fn pub_qualifier_other_than_kosh_rejected() {
+        // Closure #258 only accepts `pub(kosh)` in v1 — `pub(super)`,
+        // `pub(crate)` (or any other qualifier) error with a clear
+        // message pointing the user at the supported form. The
+        // recovery path skips past the bad qualifier so the rest
+        // of the line parses cleanly without cascading errors.
+        let source = r#"
+            module m {
+              pub(super) fn nope() -> i64 { return 1; }
+            }
+            fn main() -> i64 { return 0; }
+        "#;
+        let errors = compile(source).expect_err("pub(super) must error");
+        assert!(
+            errors.iter().any(|e|
+                e.message.contains("only `pub(kosh)` is supported")),
+            "expected pub(kosh)-only diagnostic; got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn pub_use_re_exports_item_under_module_namespace() {
         // Closure #257: `pub use deep::Widget;` inside `module
         // facade { }` lets external callers reach the item as
