@@ -764,13 +764,57 @@ totals: 888 lib + 47 e2e passing.
 - **A. Dynamic dispatch (vtables) — completes #7 Phase 2.**
   Bounded generics shipped. Remaining piece is first-class
   interface objects.
-  Concrete entry points:
-    - Add a `Type::Object(iface_name)` variant for first-class
-      interface objects; backends emit a `{ &vtable, &data }` fat
-      pointer.
-    - Auto-`==` for structs/tuples/enums by lowering `a == b` to
-      `a.eq(ref b)` when an `implement Eq for T` is in scope.
-  Effort: medium/high.
+
+  **Scope decision (per user, 2026-05-25):** vtables are
+  added "with original intent" — dynamic method dispatch on
+  heterogeneous collections — but **no inheritance**. The
+  fat-pointer model carries `{ &vtable, &data }`; the
+  vtable layout is per-interface, frozen, no parent-class
+  walks, no virtual hierarchies. Composition stays the
+  default; `dyn Iface` is the escape hatch for the
+  open-set case static dispatch can't serve.
+
+  **Phased plan:**
+
+  - **Phase 1 — type recognition.** Add a `Type::Object(iface_name)`
+    variant. Parser accepts `dyn IfaceName` (one-word
+    keyword, no `Box<dyn>` wrapping needed since the type
+    IS the fat pointer). Checker registers it; `is_copy()`
+    returns true (fat pointer is two scalar pointers,
+    copyable like `&T`). Effort: ~3-4 hours.
+
+  - **Phase 2 — coercion & methods.** Implicit coercion
+    from `T` (with `implement Iface for T` in scope) to
+    `dyn Iface` at let-bindings, fn args, struct fields,
+    Vec elements. The coercion materializes the fat
+    pointer: `{ &<T>_<Iface>_vtable, &t }`. Method calls
+    (`obj.method(args)` where obj: dyn Iface) dispatch
+    through the vtable's function-pointer slot. Effort:
+    ~6-8 hours.
+
+  - **Phase 3 — codegen.** tree-C emits per-(T, Iface)
+    vtable as a static const struct of fn-ptrs; the fat
+    pointer type spells as `intent_dyn_<Iface>`. tree-LLVM
+    emits per-(T, Iface) global vtables and the dispatch
+    via GEP+load+CallIndirect. SSA backends route through
+    tree (no dyn lowering yet — same gate as Vec<Atomic>).
+    Effort: ~6-8 hours per backend.
+
+  - **Phase 4 — collections & polish.** `Vec<dyn Iface>`,
+    struct field of `dyn Iface`, method calls on borrows
+    (`ref dyn Iface`). Verify cross-backend parity. Add
+    examples. Effort: ~4-6 hours.
+
+  - **Phase 5 — auto-`==` desugar (separate but related).**
+    Lower `a == b` to `a.eq(ref b)` when `implement Eq for
+    T` is in scope. Doesn't depend on vtables (uses static
+    dispatch) but ships in the same "interfaces polish"
+    work. Effort: ~3-4 hours.
+
+  Total: ~25-35 hours across 4-5 sessions. **No
+  inheritance**, no abstract base classes, no virtual
+  destructor walks — just a fixed-shape fat pointer with
+  a per-Iface vtable.
 
 - **B. #3 polish — partial-move tracking + Vec field methods.**
   Field-borrow shipped (#102), so `atomic_*(ref c.hits)` works.
