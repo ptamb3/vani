@@ -537,6 +537,30 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Per-file language purity done 2026-05-26**: the lexer
+   now rejects files that mix English structure keywords
+   with Devanagari aliases in the same file. A new
+   post-lex `enforce_language_purity` pass walks the
+   token stream; the first English-vs-Devanagari mismatch
+   surfaces as a clear "language mismatch" diagnostic
+   naming the prior-keyword's span so the user can pick
+   which script to keep. Type names (`i64`, `bool`, `Vec`,
+   …), identifiers, `true`/`false`, and operators all
+   stay neutral so a Hindi file can still write `फलन
+   add(a: i64, b: i64) -> i64`. V1 enforces script-level
+   purity (English vs Devanagari); finer-grained
+   Sanskrit / Hindi / Marathi distinction within
+   Devanagari is queued — the existing alias table has
+   ambiguous entries (`यदि` is both Sanskrit and Hindi)
+   so it needs grammar-consultant review before
+   tightening. Three previously mixed-language examples
+   (`hindi_keywords.vani`, `marathi_keywords.vani`,
+   `sanskrit_keywords.vani`) updated to use the
+   Devanagari `छाप` alias instead of English `print`.
+   Test totals: 923 lib + 47 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples passing. Closure
+   #236.
+
    **File extension renamed `.intent` → `.vani` done 2026-05-26**:
    59 example files renamed via `git mv`; all tests, source,
    doc-comments, README references, LSP snippet, and CLI help

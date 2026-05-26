@@ -5281,11 +5281,14 @@ mod tests {
     #[test]
     fn devanagari_multi_word_alias_hindi_for() {
         // Hindi `के लिए` (ke liye — "for") is a multi-word
-        // alias spelling of the for-keyword.
+        // alias spelling of the for-keyword. Per-file purity
+        // (#236) requires Hindi `से` / `तक` for the range
+        // bounds — using English `from` / `to` would now be
+        // rejected as a language mismatch.
         let source = r#"
             फलन main() -> i64 {
               मान r: i64 = 0;
-              के लिए i from 0 to 5 {
+              के लिए i से 0 तक 5 {
                 r = r + i;
               }
               परत r;
@@ -5359,10 +5362,14 @@ mod tests {
     }
 
     #[test]
-    fn devanagari_aliases_mix_with_english_freely() {
-        // Mixed-script source — Devanagari `फलन` next to
-        // English `fn`, Devanagari `परत` next to English
-        // `return`. The lexer treats each token in isolation.
+    fn devanagari_and_english_in_same_file_rejected_as_language_mismatch() {
+        // Per-file language purity (closure #236): the lexer
+        // now rejects files that mix English structure
+        // keywords with Devanagari aliases. The diagnostic
+        // names the prior keyword's span so the user can
+        // pick which script to keep. Type names (`i64`),
+        // identifiers, and `true`/`false` stay neutral so
+        // they're allowed in any-language file.
         let source = r#"
             fn double(x: i64) -> i64 {
               परत x * 2;
@@ -5373,7 +5380,49 @@ mod tests {
               return r;
             }
         "#;
-        compile(source).expect("mixed-script program should compile");
+        let err = compile(source).expect_err(
+            "mixed English + Devanagari structure keywords should be rejected",
+        );
+        assert!(
+            err.iter().any(|d| d.message.contains("language mismatch")),
+            "expected language-mismatch diagnostic, got:\n{:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn pure_english_file_compiles() {
+        // Sanity: same program but all English keywords —
+        // compiles fine.
+        let source = r#"
+            fn double(x: i64) -> i64 {
+              return x * 2;
+            }
+            fn main() -> i64 {
+              let r: i64 = double(21);
+              assert r == 42;
+              return r;
+            }
+        "#;
+        compile(source).expect("pure-English file should compile");
+    }
+
+    #[test]
+    fn pure_devanagari_file_compiles() {
+        // Pure-Devanagari source — uses only Devanagari
+        // structure keywords (फलन / परत) plus universal
+        // type names (i64). Should compile.
+        let source = r#"
+            फलन double(x: i64) -> i64 {
+              परत x * 2;
+            }
+            फलन main() -> i64 {
+              मान r: i64 = double(21);
+              खात्री r == 42;
+              परत r;
+            }
+        "#;
+        compile(source).expect("pure-Devanagari file should compile");
     }
 
     #[test]

@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #235 — file extension renamed to .vani)
+## ⏳ Resume here (paused 2026-05-26, after closure #236 — per-file language purity)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,26 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#236 Per-file language purity gate (script-level v1):
+the lexer now rejects files that mix English structure
+keywords with Devanagari aliases in the same file. New
+`enforce_language_purity` post-lex pass walks the token
+stream; the first English-vs-Devanagari mismatch
+surfaces as a "language mismatch" diagnostic naming the
+prior keyword's span. Type names, identifiers, literals,
+and operators stay neutral. Three previously-mixed
+examples (`hindi_keywords.vani`,
+`marathi_keywords.vani`, `sanskrit_keywords.vani`)
+updated to use the Devanagari `छाप` alias for `print`.
+Existing test `devanagari_aliases_mix_with_english_freely`
+inverted to verify rejection; two new tests
+(`pure_english_file_compiles`,
+`pure_devanagari_file_compiles`) cover the happy paths.
+The finer Sanskrit/Hindi/Marathi 3-way distinction
+within Devanagari is deferred — grammar review needed
+because some words map to multiple languages
+ambiguously. Test totals: 923 lib + 47 e2e + 11
+vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples.
 #235 File extension renamed `.intent` → `.vani`:
 all 59 example files renamed via `git mv`; 11 source
 + test + doc files updated to reflect the new
@@ -1159,16 +1179,16 @@ likely impact / blast radius, not implementation order.
   stay (those are language constructs, not file extensions).
   Decision: single extension `.vani` for everything (Rust/
   Go/Swift/Python pattern).
-- **Language-purity gate.** Today the lexer accepts keywords
-  from any registered language (English / Sanskrit / Hindi /
-  Marathi) in the same source file. Add a per-file declaration
-  (e.g. `lang english;` at top of file, or detect from the
-  first non-comment token) that restricts the rest of that
-  file to that language's keyword set. Mixed-language files
-  surface a clear "language X file uses keyword from language
-  Y" diagnostic. Cross-file mixing (one .vani in English,
-  another in Sanskrit, same program) stays allowed — purity
-  is per-file.
+- **Language-purity gate.** *V1 done 2026-05-26 (closure
+  #236).* Per-file script-level purity: the lexer rejects
+  files that mix English structure keywords with
+  Devanagari aliases. Type names, identifiers, and
+  literals stay neutral so any-language file can still
+  use `i64`. *Phase 2 pending:* finer-grained Sanskrit /
+  Hindi / Marathi distinction within Devanagari needs
+  grammar-consultant review because the current alias
+  table has ambiguous entries (`यदि` is both Sanskrit and
+  Hindi). Cross-file mixing stays allowed by design.
 - **Within-language keyword aliases.** *Phase 1 done
   2026-05-26 (closure #234)* — conservative English set
   shipped: `struct`/`record`, `interface`/`trait`,

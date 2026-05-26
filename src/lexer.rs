@@ -263,7 +263,128 @@ fn devanagari_keyword(text: &str) -> Option<TokenKind> {
 pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
     let mut tokens = Lexer::new(source).lex()?;
     merge_multi_word_devanagari_aliases(&mut tokens, source);
+    enforce_language_purity(&tokens, source)?;
     Ok(tokens)
+}
+
+/// Per-file language purity gate (closure #236). vāṇī supports
+/// English structure keywords (`fn`, `let`, `return`, …) and a
+/// Devanagari alias table covering Sanskrit / Hindi / Marathi.
+/// A file should commit to ONE script: mixing the English form
+/// with Devanagari forms in the same file surfaces as a clear
+/// "language mismatch" diagnostic so the reader doesn't have to
+/// mentally parse two structure-keyword systems at once.
+///
+/// V1 enforces script-level purity (English vs Devanagari).
+/// Finer-grained Sanskrit / Hindi / Marathi distinction within
+/// Devanagari is deferred — the existing alias table maps some
+/// words ambiguously (e.g. `यदि` is both Sanskrit and Hindi).
+/// Grammar-consultant review is the gate for that next step.
+///
+/// Type names (`i64`, `bool`, `Vec`, …) and the boolean literals
+/// (`true`/`false`) stay neutral so a Hindi file can still write
+/// `फलन add(a: i64, b: i64) -> i64`. The gate looks only at
+/// structure keywords.
+fn enforce_language_purity(tokens: &[Token], source: &str) -> Result<(), Diagnostic> {
+    let mut english_keyword: Option<Span> = None;
+    let mut devanagari_keyword: Option<Span> = None;
+    for tok in tokens {
+        if !is_structure_keyword_kind(&tok.kind) {
+            continue;
+        }
+        let text = &source[tok.span.start..tok.span.end];
+        let is_devanagari = text.chars().any(|c| {
+            // Devanagari Unicode range plus its extension.
+            ('\u{0900}'..='\u{097F}').contains(&c)
+                || ('\u{A8E0}'..='\u{A8FF}').contains(&c)
+        });
+        if is_devanagari {
+            if devanagari_keyword.is_none() {
+                devanagari_keyword = Some(tok.span);
+            }
+            if let Some(eng_span) = english_keyword {
+                return Err(Diagnostic::new(
+                    tok.span,
+                    format!(
+                        "language mismatch: file already used an English \
+                         structure keyword (see span {}..{}), can't switch \
+                         to a Devanagari alias mid-file. Pick one language \
+                         per file.",
+                        eng_span.start, eng_span.end
+                    ),
+                ));
+            }
+        } else {
+            if english_keyword.is_none() {
+                english_keyword = Some(tok.span);
+            }
+            if let Some(dev_span) = devanagari_keyword {
+                return Err(Diagnostic::new(
+                    tok.span,
+                    format!(
+                        "language mismatch: file already used a Devanagari \
+                         structure keyword (see span {}..{}), can't switch \
+                         to an English keyword mid-file. Pick one language \
+                         per file.",
+                        dev_span.start, dev_span.end
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Returns true when the token is a *structure* keyword — the
+/// kind that should be subject to the language-purity gate.
+/// Type names, literals, identifiers, operators, and the
+/// boolean literals stay neutral so they can appear in any
+/// language file. Add new structure keywords here when extending
+/// the lexer.
+fn is_structure_keyword_kind(kind: &TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Fn
+            | TokenKind::Pure
+            | TokenKind::Parallel
+            | TokenKind::Reduce
+            | TokenKind::With
+            | TokenKind::Task
+            | TokenKind::Join
+            | TokenKind::Let
+            | TokenKind::Return
+            | TokenKind::If
+            | TokenKind::Else
+            | TokenKind::While
+            | TokenKind::Break
+            | TokenKind::Continue
+            | TokenKind::Mut
+            | TokenKind::For
+            | TokenKind::In
+            | TokenKind::Ref
+            | TokenKind::From
+            | TokenKind::To
+            | TokenKind::Struct
+            | TokenKind::Enum
+            | TokenKind::Match
+            | TokenKind::Then
+            | TokenKind::Interface
+            | TokenKind::Implement
+            | TokenKind::Where
+            | TokenKind::Is
+            | TokenKind::Const
+            | TokenKind::Type
+            | TokenKind::Methods
+            | TokenKind::Intent
+            | TokenKind::Use
+            | TokenKind::Requires
+            | TokenKind::Ensures
+            | TokenKind::Invariant
+            | TokenKind::Assert
+            | TokenKind::Prove
+            | TokenKind::Print
+            | TokenKind::Try
+    )
 }
 
 /// Post-lex pass that merges adjacent token pairs whose combined

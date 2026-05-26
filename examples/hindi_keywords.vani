@@ -1,7 +1,8 @@
 // हिन्दी (hindī) — Hindi-keyword example.
-// VANI's Devanagari aliases let you write the structure words in
-// your mother tongue. The English keywords still work; mix and
-// match as you like.
+// Per-file language purity (closure #236) requires a single
+// language per file. This file uses Hindi structure keywords
+// throughout; English `print` is replaced with the Hindi
+// alias `छाप`.
 
 फलन add(a: i64, b: i64) -> i64 {
   परत a + b;
@@ -20,8 +21,6 @@
   खात्री sum == 12;
   खात्री doubled == 24;
 
-  // The print statement is still English-named — Hindi alias
-  // `छाप` is also accepted.
-  print "a=", a, " b=", b, " sum=", sum, " doubled=", doubled;
+  छाप "a=", a, " b=", b, " sum=", sum, " doubled=", doubled;
   परत 0;
 }
