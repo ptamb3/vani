@@ -406,6 +406,13 @@ pub struct ImplDecl {
     pub for_type: Type,
     pub methods: Vec<Function>,
     pub span: Span,
+    /// Closure #246: the module name this impl was declared
+    /// inside, or `None` for a top-level impl. Populated by
+    /// `flatten_modules_in_program`. Consulted by the orphan-
+    /// rule check in `hoist_impls_into_functions`: an impl
+    /// must be in the same module as either its interface or
+    /// its for-type (or all three must be top-level).
+    pub home_module: Option<String>,
 }
 
 /// `where T is Cmp` — interface bound on a generic type

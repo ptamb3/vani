@@ -1539,6 +1539,12 @@ fn flatten_modules_in_program(
                     rewrite_stmt(s, &qualify);
                 }
             }
+            // Closure #246: tag the impl with its home
+            // module so the orphan-rule check in
+            // `hoist_impls_into_functions` can verify
+            // the impl belongs in one of the involved
+            // (iface, type) modules.
+            imp.home_module = Some(mod_name.clone());
             program.impls.push(imp);
         }
         for (idx, mut c) in module.consts.into_iter().enumerate() {
@@ -2474,6 +2480,61 @@ fn hoist_impls_into_functions(
     program: &mut Program,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    // Closure #246: orphan-rule check. Each impl must live
+    // in the module of either its interface or its for-type
+    // (or all three top-level). Extract module from each
+    // mangled name's prefix (everything before the first
+    // `__` for non-`__priv__` names). The check runs once,
+    // up front, so per-impl validation surfaces clear early
+    // diagnostics before any other resolution.
+    fn extract_home_module(name: &str) -> Option<String> {
+        // After flattening, public items mangle to `mod__name`
+        // and private items to `mod__priv__name`. Module is
+        // the first segment in either case.
+        let parts: Vec<&str> = name.splitn(2, "__").collect();
+        if parts.len() == 2 {
+            Some(parts[0].to_string())
+        } else {
+            None
+        }
+    }
+    for imp in &program.impls {
+        let impl_home = imp.home_module.clone();
+        let iface_home = extract_home_module(&imp.interface_name);
+        let type_home = match &imp.for_type {
+            Type::Struct(n) | Type::Enum(n) => extract_home_module(n),
+            _ => None,
+        };
+        let allowed = impl_home == iface_home
+            || impl_home == type_home
+            || (impl_home.is_none() && iface_home.is_none() && type_home.is_none())
+            || (impl_home.is_none()
+                && (iface_home.is_none() || type_home.is_none()));
+        if !allowed {
+            let where_impl = impl_home
+                .as_deref()
+                .map(|s| format!("module `{}`", s))
+                .unwrap_or_else(|| "top-level".to_string());
+            let iface_loc = iface_home
+                .as_deref()
+                .map(|s| format!("module `{}`", s))
+                .unwrap_or_else(|| "top-level".to_string());
+            let type_loc = type_home
+                .as_deref()
+                .map(|s| format!("module `{}`", s))
+                .unwrap_or_else(|| "top-level".to_string());
+            diagnostics.push(Diagnostic::new(
+                imp.span,
+                format!(
+                    "orphan impl: `implement {} for {}` declared in {} but \
+                     the interface lives in {} and the type lives in {}. \
+                     Move the impl into one of those modules.",
+                    imp.interface_name, imp.for_type, where_impl, iface_loc, type_loc
+                ),
+            ));
+        }
+    }
+
     // Build interface lookup.
     let iface_by_name: HashMap<String, &crate::ast::InterfaceDecl> = program
         .interfaces

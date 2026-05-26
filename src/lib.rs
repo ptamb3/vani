@@ -2307,6 +2307,51 @@ mod tests {
     }
 
     #[test]
+    fn orphan_impl_in_unrelated_module_is_rejected() {
+        // Closure #246: orphan rule. `implement Drawable for
+        // geo::Point` in module `rendering` is rejected
+        // because neither Drawable nor Point lives in
+        // `rendering`. The diagnostic names the rule + the
+        // current and target modules.
+        let source = r#"
+            module geo { pub struct Point { x: i64, y: i64 } }
+            interface Drawable { fn area(self: geo::Point) -> i64; }
+            module rendering {
+              implement Drawable for geo::Point {
+                fn area(self: geo::Point) -> i64 { return self.x * self.y; }
+              }
+            }
+            fn main() -> i64 { return 0; }
+        "#;
+        let err = compile(source).expect_err("orphan impl should be rejected");
+        assert!(
+            err.iter().any(|d| d.message.contains("orphan impl")),
+            "expected `orphan impl` diagnostic, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn impl_in_type_module_is_allowed() {
+        // Closure #246: impl + struct + interface all in the
+        // same module is the canonical valid placement.
+        let source = r#"
+            module geo {
+              pub struct Point { x: i64, y: i64 }
+              interface Drawable { fn area(self: Point) -> i64; }
+              implement Drawable for Point {
+                fn area(self: Point) -> i64 { return self.x * self.y; }
+              }
+            }
+            fn main() -> i64 {
+              let p: geo::Point = geo::Point { x: 3, y: 5 };
+              return p.area();
+            }
+        "#;
+        compile(source).expect("impl in same module as interface + type");
+    }
+
+    #[test]
     fn use_path_brings_item_into_scope() {
         // Closure #245: `use math::square;` introduces
         // `square` as a bare alias for `math::square` in

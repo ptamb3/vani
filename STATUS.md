@@ -537,6 +537,31 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Namespaces Phase 3b — orphan rules for `implement` blocks done 2026-05-26**:
+   `implement Iface for T` must now live in the same module
+   as either the interface or the for-type (or all three at
+   top level). Implementation:
+   - `ImplDecl` gains `home_module: Option<String>`, set
+     by the flattening pass when the impl was declared
+     inside a `module { ... }` block.
+   - `hoist_impls_into_functions` extracts the module of
+     iface (`<mod>__name` → `<mod>`) and for-type, compares
+     to the impl's home, and emits an `orphan impl` diagnostic
+     naming the current and target modules when the placement
+     is invalid.
+
+   Diagnostic example:
+   ```
+   error: orphan impl: `implement Drawable for geo__Point`
+   declared in module `rendering` but the interface lives
+   in top-level and the type lives in module `geo`. Move
+   the impl into one of those modules.
+   ```
+
+   Two lib tests cover the rejection + valid placement
+   cases. Test totals: 934 lib + 47 e2e + 11 vtables-phase3
+   + 2 user-drop-by-ref + 1 ssa-examples passing. Closure #246.
+
    **Namespaces Phase 3a — `use foo::bar;` single-item imports done 2026-05-26**:
    the third Rust-style namespace primitive lands.
    `use math::square;` at the top of a file introduces

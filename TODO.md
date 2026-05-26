@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #245 — namespaces Phase 3a `use` imports)
+## ⏳ Resume here (paused 2026-05-26, after closure #246 — namespaces Phase 3b orphan rules)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,19 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#246 Namespaces Phase 3b — orphan rules for `implement`
+blocks. `ImplDecl` gains a `home_module: Option<String>`
+field set by the flattening pass when the impl was
+declared inside a `module { ... }` block (top-level
+impls stay None). `hoist_impls_into_functions` extracts
+the module of the iface (`<mod>__<name>` prefix) and
+the for-type, compares to the impl's home, and emits
+an `orphan impl: declared in module 'X' but the
+interface lives in 'Y' and the type lives in 'Z'`
+diagnostic when the impl doesn't share a module with
+either. Two new lib tests cover the rejection + valid-
+placement cases. Test totals: 934 lib + 47 e2e + 11
+vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples.
 #245 Namespaces Phase 3a — `use foo::bar;` single-item
 imports. New `UsePath { module, item, span }` AST node
 alongside the existing file-import `Use`. Parser peeks
@@ -1308,16 +1321,17 @@ likely impact / blast radius, not implementation order.
   unknown-struct-type diagnostic surfaces the same
   "private to its module" message.
   *Phase 3a done 2026-05-26 (closure #245)*: `use foo::bar;`
-  single-item imports parse + apply. New `UsePath` AST node;
-  parser routes to file vs path import by peeking the next
-  token; checker builds an alias map and walks top-level fn
-  bodies. Module bodies + flattened-out fns aren't
-  re-walked.
-  *Still queued — Phase 3b/c/d*: orphan rules for
-  `implement` blocks (impl must live in the module of
-  either Iface or T); nested modules; glob `use foo::*;`;
-  multi-item `use foo::{bar, baz};`; `pub(crate)` tiers;
-  re-exports.
+  single-item imports parse + apply.
+  *Phase 3b done 2026-05-26 (closure #246)*: orphan rules
+  for `implement` blocks. `ImplDecl` gains
+  `home_module: Option<String>` set by the flattening
+  pass; `hoist_impls_into_functions` checks that an impl
+  lives in the module of either its interface or its
+  for-type (or all three top-level), surfacing an
+  `orphan impl` diagnostic when not.
+  *Still queued — Phase 3c/d*: nested modules; glob
+  `use foo::*;`; multi-item `use foo::{bar, baz};`;
+  `pub(crate)` tiers; re-exports.
 - **Multiple source files for one compilation.** `use "path"`
   already exists for single-file imports; extend to a full
   multi-file pipeline so the compiler ingests a set of `.vani`

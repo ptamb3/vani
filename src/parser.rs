@@ -492,6 +492,10 @@ impl Parser {
             for_type,
             methods,
             span: start.span.merge(close.span),
+            // Default: top-level. The flattening pass sets
+            // this to Some(module_name) when the impl was
+            // declared inside a `module { ... }` block.
+            home_module: None,
         })
     }
 
