@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #229 — epic C user-Drop for heap-field structs)
+## ⏳ Resume here (paused 2026-05-25, after closure #230 — `try EXPR(args)` parser precedence)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,14 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#230 `try EXPR(args)` parser precedence: `try maybe(5)`
+(and similar call-shaped operands) now parse correctly.
+Previously `try` only consumed a primary-expr, so the
+postfix `(args)` got reapplied to the `try maybe`
+expression — surfacing "only named functions can be
+called". `try EXPR` now binds at call-expr precedence
+so the operand includes its `(...)` chain. Binary `+`
+etc. still bind outside try (no surprise captures).
 #229 Epic C: user-Drop for structs with heap fields.
 The Drop impl signature now accepts two shapes:
 the original by-value `fn drop(self: T) -> i64`
@@ -1029,9 +1037,15 @@ totals: 888 lib + 47 e2e passing.
   the existing `TypedStmt::Drop` lowering so user-declared
   `implement Drop for T` runs automatically. Blocked on B above
   for nested affine fields.
-- **#5 follow-ups remaining**: non-let statements between `try`
-  and `return`. `try` in nested blocks closed by #217; multiple
-  `try`s in one block closed by #218.
+- **#5 follow-ups remaining**: control-flow statements
+  (If/While/Reassign) between `try` and `return` — currently
+  only Let + Print are admitted. The desugar wraps post-try
+  stmts in a Block-expr; extending it requires both relaxing
+  Block-expr's stmt vocabulary AND widening the try
+  desugar's `intermediate_ok` check.
+  `try EXPR(args)` parser precedence closed by #230.
+  `try` in nested blocks closed by #217; multiple `try`s in
+  one block closed by #218.
 - **Devanagari (parked at user's request)**: script-aware
   diagnostics, multi-word alias expansion, grammar-consultant
   review of the Sanskrit / Hindi / Marathi tables.

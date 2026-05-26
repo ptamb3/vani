@@ -537,6 +537,16 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **`try EXPR(args)` call-precedence parsing done 2026-05-25**:
+   `try maybe(5)` (and `try Type.helper(args)`) now parses
+   correctly — previously the parser stopped at primary-expr
+   precedence so `(5)` got reapplied to the `try maybe`
+   expression and surfaced "only named functions can be
+   called". `try EXPR` now binds at call-expr precedence, so
+   the operand includes any trailing `(...)` chain.
+   Binary operators (`+`, `*`, etc.) still bind above the
+   try, keeping `try a + b` unambiguous. Closure #230.
+
    **Epic C: user-Drop for structs with heap fields done 2026-05-25**:
    structs that own `OwnedStr` / `Vec` / nested-struct fields
    can now declare a user-Drop without losing the per-field

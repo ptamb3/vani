@@ -2110,13 +2110,17 @@ impl Parser {
                 })
             }
             TokenKind::Try => {
-                // `try EXPR` — parse inner expression at
-                // primary-expr precedence so the `try` binds
-                // tightly to the operand (no surprise
-                // captures of trailing `+ …`). Checker
-                // validates that the inner evaluates to a
-                // suitable payloaded enum type. T2.6.
-                let inner = self.parse_primary_expr()?;
+                // `try EXPR` — parse inner at call-expr
+                // precedence so common forms like
+                // `try maybe(5)` or `try Type.helper(args)`
+                // bind correctly (without this, `try EXPR`
+                // stopped at primary level and the outer
+                // postfix `(...)` parser saw the try as the
+                // callee, surfacing "only named functions
+                // can be called"). Binary `+`/`*` etc. stay
+                // outside the try by binding above
+                // parse_call_expr's precedence.
+                let inner = self.parse_call_expr()?;
                 let inner_span = inner.span;
                 Ok(Expr {
                     kind: ExprKind::Try { inner: Box::new(inner) },
