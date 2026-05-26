@@ -972,7 +972,10 @@ fn collect_signatures(
         if function.return_type.is_array() {
             diagnostics.push(Diagnostic::new(
                 function.span,
-                "array types are not allowed in return position yet",
+                "array types are not allowed in return position yet — \
+                 tree-LLVM accepts `[N x T]` natively but tree-C requires \
+                 a per-shape struct wrapper which isn't wired through \
+                 yet; wrap the result in a tuple or struct, or use Vec<T>",
             ));
         }
         validate_no_ref(
