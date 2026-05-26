@@ -101,22 +101,23 @@ deferred). `Drop for T` is suppressed when T has heap fields
   `add_libgomp_load_flags` (in main.rs) and a test-local
   mirror in backend_llvm.rs. Honor `INTENT_LIBGOMP`.
 
-## Test totals (2026-05-25 post-#224)
+## Test totals (2026-05-25 post-#228)
 
-**920 lib + 47 e2e + 3 vtables-phase3 tests passing.**
+**920 lib + 47 e2e + 11 vtables-phase3 tests passing.**
 Cross-backend parity runner covers all 58 examples. ASan
 / UBSan clean across all examples. LLVM `opt -verify` /
-`opt -O3` clean. The Phase 3 dyn-dispatch test covers
-the same Circle/Drawable program on both tree-C (`cc` +
-binary exec) and tree-LLVM (`opt -verify` + `lli`); both
-return 25.
+`opt -O3` clean. Vtables epic A is end-to-end on both
+backends through all 5 phases: dispatch + codegen + struct
+fields + Vec<dyn> + ref dyn + auto-borrow `==`.
 
 ## Pending epics
 
 | # | Item | Effort | Status |
 |---|---|---|---|
 | A | Vtables — Phase 2 (coercion + method dispatch) | ~6-8h | Phase 2a (#221) + Phase 2b (#222) done |
-| A | Vtables — Phase 3 (codegen) | ~12-16h | Phase 3a tree-C (#223) + Phase 3b tree-LLVM (#224) done; Phase 4 next |
+| A | Vtables — Phase 3 (codegen) | ~12-16h | Phase 3a tree-C (#223) + Phase 3b tree-LLVM (#224) done |
+| A | Vtables — Phase 4 (collections + borrows) | ~6h | 4a (#225) + 4b (#226) + 4c (#227) done |
+| A | Vtables — Phase 5 (auto-`==` polish) | ~3h | Done (#228) |
 | B | Partial-move expansion (per-field `moved`, multi-field reverse-decl drop, Mutex<non-i64>) | medium per item | Queued |
 | C | `Drop for T` with heap fields (`fn drop(mut self: T)` signature design) | medium | Needs design |
 | #5 last | Non-let stmts between `try` and `return` | low | Needs Block-expr stmt vocabulary extension |

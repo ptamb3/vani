@@ -378,6 +378,78 @@ fn dyn_dispatch_returns_value_via_vtable_indirect_call_llvm() {
 }
 
 #[test]
+fn struct_eq_with_ref_param_auto_borrows_tree_c() {
+    if !cc_available() {
+        return;
+    }
+    let source = r#"
+        struct Point { x: i64, y: i64 }
+
+        interface Eq {
+          fn eq(self: Point, other: ref Point) -> bool;
+        }
+
+        implement Eq for Point {
+          fn eq(self: Point, other: ref Point) -> bool {
+            return self.x == other.x;
+          }
+        }
+
+        fn main() -> i64 {
+          let a: Point = Point { x: 7, y: 0 };
+          let b: Point = Point { x: 7, y: 1 };
+          let c: Point = Point { x: 8, y: 0 };
+          let same: bool = a == b;
+          let diff: bool = a == c;
+          if same { if diff { return 0; } else { return 42; } } else { return 0; }
+        }
+    "#;
+    let c = compile_to_c(source).expect("Eq with ref param compiles to C");
+    let code = compile_and_run(&c, "struct_eq_ref_c");
+    assert_eq!(
+        code, 42,
+        "expected same==true and diff==false → exit 42, got {}",
+        code
+    );
+}
+
+#[test]
+fn struct_eq_with_ref_param_auto_borrows_llvm() {
+    if !lli_available() {
+        return;
+    }
+    let source = r#"
+        struct Point { x: i64, y: i64 }
+
+        interface Eq {
+          fn eq(self: Point, other: ref Point) -> bool;
+        }
+
+        implement Eq for Point {
+          fn eq(self: Point, other: ref Point) -> bool {
+            return self.x == other.x;
+          }
+        }
+
+        fn main() -> i64 {
+          let a: Point = Point { x: 7, y: 0 };
+          let b: Point = Point { x: 7, y: 1 };
+          let c: Point = Point { x: 8, y: 0 };
+          let same: bool = a == b;
+          let diff: bool = a == c;
+          if same { if diff { return 0; } else { return 42; } } else { return 0; }
+        }
+    "#;
+    let ll = compile_to_llvm(source).expect("Eq with ref param compiles to LLVM");
+    let code = run_with_lli(&ll, "struct_eq_ref_llvm");
+    assert_eq!(
+        code, 42,
+        "expected same==true and diff==false → exit 42 (LLVM), got {}",
+        code
+    );
+}
+
+#[test]
 fn dyn_dispatch_emits_per_iface_typedefs_and_static_vtable() {
     let source = r#"
         struct Point { x: i64 }

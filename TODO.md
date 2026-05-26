@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #227 — vtables Phase 4c ref dyn Iface)
+## ⏳ Resume here (paused 2026-05-25, after closure #228 — vtables Phase 5 auto-borrow in `==` desugar)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,17 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#228 Vtables Phase 5 (auto-borrow in `==` desugar):
+the existing `a == b` → `<T>_eq(a, b)` lowering didn't
+look at the impl's parameter types and always passed
+both args by value. When `implement Eq for T` declares
+`other: ref T` (or `mut ref T`), the call was a type
+mismatch. The desugar now inspects each param's
+expected type and auto-wraps Var operands in
+`TypedExprKind::Ref` / `RefMut`. Non-Var operands
+surface a "let-bind both operands before comparing"
+diagnostic. Test totals: 920 lib + 47 e2e + 11
+vtables-phase3.
 #227 Vtables Phase 4c (`ref dyn Iface` borrows):
 functions can take `d: ref dyn Iface` and dispatch
 through the borrow. MethodCall checker accepts
@@ -961,7 +972,10 @@ totals: 888 lib + 47 e2e passing.
     Lower `a == b` to `a.eq(ref b)` when `implement Eq for
     T` is in scope. Doesn't depend on vtables (uses static
     dispatch) but ships in the same "interfaces polish"
-    work. Effort: ~3-4 hours.
+    work. Effort: ~3-4 hours. **Phase 5 done 2026-05-25
+    (closure #228)** — the desugar now auto-borrows Var
+    operands when the impl declares `other: ref T` /
+    `mut ref T`. Non-Var operands surface a let-bind hint.
 
   Total: ~25-35 hours across 4-5 sessions. **No
   inheritance**, no abstract base classes, no virtual

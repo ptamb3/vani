@@ -537,6 +537,19 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Vtables Phase 5 (auto-borrow in `==` desugar) done 2026-05-25**:
+   the existing `a == b` → `<T>_eq(a, b)` desugar didn't
+   look at the impl's parameter types and always passed both
+   args by value. When `implement Eq for T` declares
+   `other: ref T` (or `mut ref T`), the call was a type
+   mismatch (cc / lli both rejected). The desugar now
+   inspects each param's expected type and auto-wraps Var
+   operands in `TypedExprKind::Ref` / `RefMut` when the impl
+   wants a borrow. Non-Var operands fall through with a
+   clear "let-bind both operands before comparing"
+   diagnostic. Test totals: 920 lib + 47 e2e + 11 vtables-
+   phase3 passing. Closure #228.
+
    **Vtables Phase 4c (`ref dyn Iface` borrows) done 2026-05-25**:
    functions can now take `d: ref dyn Iface` and dispatch
    through the borrow. Three small extensions: (1) the

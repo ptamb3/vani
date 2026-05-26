@@ -9067,24 +9067,83 @@ fn check_equality(
                 let bool_return = sig.return_type == Type::Bool;
                 let two_args = sig.params.len() == 2;
                 if bool_return && two_args {
-                    let call_kind = TypedExprKind::Call {
-                        name: eq_fn,
-                        name_span: span,
-                        args: vec![lhs.expr, rhs.expr],
-                    };
-                    let call = CheckedExpr::new(call_kind, Type::Bool, None, span);
-                    if op == BinaryOp::Eq {
-                        return call;
+                    // Vtables Phase 5: the impl may declare
+                    // its params as `ref T` / `mut ref T`
+                    // rather than by-value `T`. Auto-borrow
+                    // each operand when needed; for v1 the
+                    // operand must be a Var so `Ref { name }`
+                    // resolves to the binding's stable
+                    // address. Non-Var operands fall through
+                    // to the as-value form (the existing
+                    // type-mismatch diagnostic will surface
+                    // if the call doesn't shape up).
+                    fn auto_borrow(
+                        operand: TypedExpr,
+                        expected: &Type,
+                    ) -> Option<TypedExpr> {
+                        match expected {
+                            Type::Ref(inner) | Type::RefMut(inner)
+                                if **inner == operand.ty =>
+                            {
+                                if let TypedExprKind::Var(n) = &operand.kind {
+                                    let kind = match expected {
+                                        Type::Ref(_) => TypedExprKind::Ref { name: n.clone() },
+                                        Type::RefMut(_) => TypedExprKind::RefMut { name: n.clone() },
+                                        _ => unreachable!(),
+                                    };
+                                    Some(TypedExpr {
+                                        kind,
+                                        ty: expected.clone(),
+                                        constant: None,
+                                        span: operand.span,
+                                        binding_decl_span: None,
+                                    })
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => Some(operand),
+                        }
                     }
-                    return CheckedExpr::new(
-                        TypedExprKind::Unary {
-                            op: crate::ast::UnaryOp::Not,
-                            expr: Box::new(call.expr),
-                        },
-                        Type::Bool,
-                        None,
-                        span,
-                    );
+                    let lhs_arg = auto_borrow(lhs.expr, &sig.params[0]);
+                    let rhs_arg = auto_borrow(rhs.expr, &sig.params[1]);
+                    if let (Some(l), Some(r)) = (lhs_arg, rhs_arg) {
+                        let call_kind = TypedExprKind::Call {
+                            name: eq_fn,
+                            name_span: span,
+                            args: vec![l, r],
+                        };
+                        let call = CheckedExpr::new(call_kind, Type::Bool, None, span);
+                        if op == BinaryOp::Eq {
+                            return call;
+                        }
+                        return CheckedExpr::new(
+                            TypedExprKind::Unary {
+                                op: crate::ast::UnaryOp::Not,
+                                expr: Box::new(call.expr),
+                            },
+                            Type::Bool,
+                            None,
+                            span,
+                        );
+                    } else {
+                        diagnostics.push(Diagnostic::new(
+                            span,
+                            format!(
+                                "implement Eq for '{}' declares a borrowed param \
+                                 (`ref {}` / `mut ref {}`); auto-borrow only works \
+                                 when the operand is a let-bound variable. \
+                                 Let-bind both operands before comparing.",
+                                name, name, name
+                            ),
+                        ));
+                        return CheckedExpr::new(
+                            TypedExprKind::Bool(false),
+                            Type::Bool,
+                            None,
+                            span,
+                        );
+                    }
                 }
             }
         }
