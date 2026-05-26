@@ -10,7 +10,7 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-24
+**Last updated:** 2026-05-25
 **Test totals:** 917 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
@@ -536,6 +536,29 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **Vtables Phase 2b: `obj.method(args)` dispatch on `dyn Iface` done 2026-05-25**:
+   Continued epic A. The checker now recognizes method
+   calls on a `dyn Iface` receiver, looks up the method in
+   the interface declaration, validates arg arity and types
+   against the interface's parameter shape (skipping the
+   `self` slot), and emits a new
+   `TypedExprKind::DynDispatch { receiver, iface_name,
+   method, method_span, slot_index, args }` IR node. The
+   `slot_index` is the declaration-order position of the
+   method in its interface — Phase 3 codegen will use it to
+   index the per-(T, Iface) vtable. A new
+   `IFACE_METHOD_REGISTRY` thread-local in
+   [`src/ast.rs`](src/ast.rs) holds iface method
+   signatures (populated alongside the existing impl
+   registry in `hoist_impls_into_functions`). SSA gate +
+   `expr_ssa_supported` reject DynDispatch so programs
+   that use `dyn Iface` route through the tree backends.
+   tree-C / tree-LLVM panic with a clear "vtables Phase 3
+   pending" message when they hit DynDispatch in
+   `emit_expr`; the checker-only tests in this closure
+   never reach the backend. Test totals: 920 lib + 47
+   e2e passing. Closure #222.
 
    **Vtables Phase 2a: `T → dyn Iface` coercion validation done 2026-05-25**:
    Continued epic A. The checker now accepts implicit

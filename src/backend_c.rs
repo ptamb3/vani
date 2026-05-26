@@ -3594,6 +3594,20 @@ fn emit_expr(expr: &TypedExpr) -> String {
             body.push_str(&format!("({}); }})", emit_expr(tail)));
             body
         }
+        TypedExprKind::DynDispatch { iface_name, method, .. } => {
+            // Vtables Phase 2b emits the typed-IR node but
+            // Phase 3 codegen (per-(T, Iface) vtable + indirect
+            // call lowering) hasn't landed. The checker has
+            // validated the call site; this is the explicit
+            // "code gen not implemented yet" signal so any test
+            // that runs the C backend on a dyn-dispatch program
+            // surfaces a clear failure instead of silently
+            // emitting nonsense.
+            panic!(
+                "tree-C codegen for `dyn {}.{}` is pending vtables Phase 3",
+                iface_name, method
+            );
+        }
     }
 }
 

@@ -13873,6 +13873,121 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn dyn_iface_method_dispatch_typechecks() {
+        // Closure #222 / vtables Phase 2b: `obj.method(args)`
+        // on a `dyn Iface` receiver resolves to the
+        // interface's declared method shape. The checker
+        // emits a `TypedExprKind::DynDispatch` node and
+        // borrows the iface method's return type to the
+        // call site. Codegen (Phase 3) is still pending, so
+        // this test only exercises the checker.
+        let source = r#"
+            struct Circle { r: i64 }
+
+            interface Drawable {
+              fn area(self: Circle) -> i64;
+            }
+
+            implement Drawable for Circle {
+              fn area(self: Circle) -> i64 { return self.r * self.r; }
+            }
+
+            fn area_of_dyn(d: dyn Drawable) -> i64 {
+              return d.area();
+            }
+
+            fn main() -> i64 {
+              let c: Circle = Circle { r: 5 };
+              let _ = area_of_dyn(c);
+              return 0;
+            }
+        "#;
+        crate::compile(source).expect("dyn method dispatch type-checks");
+    }
+
+    #[test]
+    fn dyn_iface_method_dispatch_rejects_unknown_method() {
+        // Phase 2b: calling a method that the interface
+        // doesn't declare produces a clean "no method on
+        // dyn Iface" diagnostic — distinct from the
+        // existing "no method on type T" path used by
+        // concrete-typed receivers.
+        let source = r#"
+            struct Circle { r: i64 }
+
+            interface Drawable {
+              fn area(self: Circle) -> i64;
+            }
+
+            implement Drawable for Circle {
+              fn area(self: Circle) -> i64 { return self.r; }
+            }
+
+            fn use_dyn(d: dyn Drawable) -> i64 {
+              return d.perimeter();
+            }
+
+            fn main() -> i64 {
+              let c: Circle = Circle { r: 5 };
+              let _ = use_dyn(c);
+              return 0;
+            }
+        "#;
+        let res = crate::compile(source);
+        assert!(res.is_err(), "expected unknown method on dyn Iface to be rejected");
+        let diags = res.err().unwrap();
+        let has_msg = diags.iter().any(|d| {
+            d.message.contains("interface 'Drawable' has no method 'perimeter'")
+        });
+        assert!(
+            has_msg,
+            "expected `interface 'Drawable' has no method 'perimeter'`, got:\n{:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn dyn_iface_method_dispatch_rejects_arg_arity_mismatch() {
+        // Phase 2b: calling a dyn method with the wrong
+        // number of arguments produces the dispatch-level
+        // arity diagnostic. The interface declares
+        // `paint(self, opacity: i64) -> i64` but the caller
+        // passes zero args.
+        let source = r#"
+            struct Circle { r: i64 }
+
+            interface Drawable {
+              fn paint(self: Circle, opacity: i64) -> i64;
+            }
+
+            implement Drawable for Circle {
+              fn paint(self: Circle, opacity: i64) -> i64 { return self.r * opacity; }
+            }
+
+            fn use_dyn(d: dyn Drawable) -> i64 {
+              return d.paint();
+            }
+
+            fn main() -> i64 {
+              let c: Circle = Circle { r: 5 };
+              let _ = use_dyn(c);
+              return 0;
+            }
+        "#;
+        let res = crate::compile(source);
+        assert!(res.is_err(), "expected arg-arity mismatch on dyn dispatch");
+        let diags = res.err().unwrap();
+        let has_msg = diags.iter().any(|d| {
+            d.message.contains("dyn Drawable") && d.message.contains("expects 1 arguments, got 0")
+        });
+        assert!(
+            has_msg,
+            "expected `method 'paint' on dyn Drawable expects 1 arguments, got 0`, got:\n{:?}",
+            diags
+        );
+    }
+
+    #[test]
     fn pop_builtin_returns_last_element_and_decrements_len() {
         // Closure #219: new `pop(mut ref xs) -> T` builtin.
         // Completes the Vec-as-stack story (push + pop). For

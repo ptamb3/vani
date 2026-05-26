@@ -77,6 +77,41 @@ pub fn iface_impl_exists(iface: &str, type_name: &str) -> bool {
     })
 }
 
+thread_local! {
+    /// Per-interface method signatures: iface_name →
+    /// Vec<(method_name, param_tys_including_self, return_ty)>.
+    /// Populated by the checker before any `obj.method()`
+    /// dispatch on a `dyn Iface` value fires. Phase 2b
+    /// dispatch consults this to validate the call site and
+    /// resolve its return type; codegen Phase 3 will reuse
+    /// the same registry to lay out vtable slots in
+    /// declaration order.
+    pub(crate) static IFACE_METHOD_REGISTRY: std::cell::RefCell<std::collections::HashMap<String, Vec<(String, Vec<Type>, Type)>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+pub fn set_iface_methods<I: IntoIterator<Item = (String, Vec<(String, Vec<Type>, Type)>)>>(entries: I) {
+    IFACE_METHOD_REGISTRY.with(|cell| {
+        let mut map = cell.borrow_mut();
+        map.clear();
+        for (iface, methods) in entries {
+            map.insert(iface, methods);
+        }
+    });
+}
+
+pub fn iface_method_lookup(iface: &str, method: &str) -> Option<(usize, Vec<Type>, Type)> {
+    IFACE_METHOD_REGISTRY.with(|cell| {
+        let map = cell.borrow();
+        let methods = map.get(iface)?;
+        let (idx, (_, params, ret)) = methods
+            .iter()
+            .enumerate()
+            .find(|(_, (n, _, _))| n == method)?;
+        Some((idx, params.clone(), ret.clone()))
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     pub intents: Vec<Intent>,

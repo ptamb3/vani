@@ -5938,6 +5938,10 @@ fn collect_strings_in_expr<F>(
             for s in stmts { collect_print_strings(s, msgs, idx); }
             collect_strings_in_expr(tail, msgs, idx, intern);
         }
+        TypedExprKind::DynDispatch { receiver, args, .. } => {
+            collect_strings_in_expr(receiver, msgs, idx, intern);
+            for a in args { collect_strings_in_expr(a, msgs, idx, intern); }
+        }
         TypedExprKind::Int(_)
         | TypedExprKind::Float(_)
         | TypedExprKind::Bool(_)
@@ -6399,6 +6403,12 @@ pub(crate) fn walk_expr(
                 }
             }
             walk_expr(tail, &block_declared, order, seen);
+        }
+        TypedExprKind::DynDispatch { receiver, args, .. } => {
+            walk_expr(receiver, declared, order, seen);
+            for a in args {
+                walk_expr(a, declared, order, seen);
+            }
         }
     }
 }

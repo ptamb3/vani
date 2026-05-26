@@ -411,6 +411,24 @@ pub enum TypedExprKind {
         then_value: Box<TypedExpr>,
         else_value: Box<TypedExpr>,
     },
+    /// Vtables Phase 2b: method dispatch on a `dyn Iface`
+    /// receiver. The receiver is a fat-pointer value
+    /// (`{ &vtable, &data }`); `slot_index` is the
+    /// declaration-order position of `method` in `iface_name`,
+    /// matching the layout Phase 3 codegen uses for the
+    /// per-(T, Iface) vtable. The wrapper's `ty` is the
+    /// interface method's declared return type. Backends
+    /// (Phase 3) lower this to an indirect call through
+    /// `(*vtable)[slot_index]` with the data pointer as the
+    /// implicit first argument.
+    DynDispatch {
+        receiver: Box<TypedExpr>,
+        iface_name: String,
+        method: String,
+        method_span: Span,
+        slot_index: usize,
+        args: Vec<TypedExpr>,
+    },
     /// `{ stmt; stmt; tail-expr }` — block expression.
     /// `stmts` execute in order; `tail`'s value becomes the
     /// block's value. The wrapper's `ty` matches `tail.ty`.

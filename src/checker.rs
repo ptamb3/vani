@@ -1958,6 +1958,29 @@ fn hoist_impls_into_functions(
         .collect();
     crate::ast::set_iface_impls(iface_impl_pairs);
 
+    // Vtables Phase 2b: register per-interface method
+    // signatures so `obj.method()` dispatch on a
+    // `dyn Iface` receiver can validate the call and
+    // resolve its return type without re-walking the AST.
+    // Slot order follows declaration order so Phase 3
+    // codegen can lay out vtables identically.
+    let iface_methods: Vec<(String, Vec<(String, Vec<Type>, Type)>)> = program
+        .interfaces
+        .iter()
+        .map(|iface| {
+            let methods = iface
+                .methods
+                .iter()
+                .map(|m| {
+                    let param_tys: Vec<Type> = m.params.iter().map(|p| p.ty.clone()).collect();
+                    (m.name.clone(), param_tys, m.return_type.clone())
+                })
+                .collect();
+            (iface.name.clone(), methods)
+        })
+        .collect();
+    crate::ast::set_iface_methods(iface_methods);
+
     let mut hoisted: Vec<Function> = Vec::new();
     for imp in &program.impls {
         // T2.7 phase 1: `implement Drop for T` is recognized as
@@ -6644,6 +6667,89 @@ fn check_expr(
             // concrete type to dispatch against.
             let recv_checked = check_expr(receiver, env, signatures, diagnostics);
             let recv_ty = recv_checked.ty().clone();
+
+            // Vtables Phase 2b: `obj.method(args)` where
+            // `obj: dyn Iface` dispatches through the
+            // interface's vtable. We validate the method
+            // exists, type-check each argument against the
+            // interface's declared parameter shape (skipping
+            // self), and emit a `TypedExprKind::DynDispatch`
+            // node that Phase 3 codegen lowers into a
+            // function-pointer call.
+            if let Type::Object(iface_name) = &recv_ty {
+                let Some((slot_index, iface_params, iface_ret)) =
+                    crate::ast::iface_method_lookup(iface_name, method)
+                else {
+                    diagnostics.push(Diagnostic::new(
+                        *method_span,
+                        format!(
+                            "interface '{}' has no method '{}'",
+                            iface_name, method
+                        ),
+                    ));
+                    return CheckedExpr::fallback_integer(expr.span);
+                };
+                // Interface methods declare `self` as the
+                // first parameter; the remaining slots are
+                // the call's arguments.
+                if iface_params.is_empty() {
+                    diagnostics.push(Diagnostic::new(
+                        *method_span,
+                        format!(
+                            "interface '{}' method '{}' is missing a `self` \
+                             parameter — interface methods must take a \
+                             receiver in v1",
+                            iface_name, method
+                        ),
+                    ));
+                    return CheckedExpr::fallback_integer(expr.span);
+                }
+                let expected_arg_tys: &[Type] = &iface_params[1..];
+                if args.len() != expected_arg_tys.len() {
+                    diagnostics.push(Diagnostic::new(
+                        *method_span,
+                        format!(
+                            "method '{}' on `dyn {}` expects {} arguments, got {}",
+                            method,
+                            iface_name,
+                            expected_arg_tys.len(),
+                            args.len()
+                        ),
+                    ));
+                    return CheckedExpr::fallback_integer(expr.span);
+                }
+                let mut typed_args: Vec<TypedExpr> = Vec::with_capacity(args.len());
+                for (i, arg) in args.iter().enumerate() {
+                    let checked = check_expr(arg, env, signatures, diagnostics);
+                    let coerced = coerce_checked(
+                        checked,
+                        &expected_arg_tys[i],
+                        arg.span,
+                        &format!("dyn {} {} arg #{}", iface_name, method, i + 1),
+                        diagnostics,
+                    );
+                    diagnose_partial_then_whole_move(arg, &coerced, env, diagnostics);
+                    consume_if_moved_var(arg, &coerced, env);
+                    let mut arg_expr = coerced.expr;
+                    inject_branch_drops(&mut arg_expr);
+                    typed_args.push(arg_expr);
+                }
+                let mut recv_expr = recv_checked.expr;
+                inject_branch_drops(&mut recv_expr);
+                return CheckedExpr::new(
+                    TypedExprKind::DynDispatch {
+                        receiver: Box::new(recv_expr),
+                        iface_name: iface_name.clone(),
+                        method: method.clone(),
+                        method_span: *method_span,
+                        slot_index,
+                        args: typed_args,
+                    },
+                    iface_ret,
+                    None,
+                    expr.span,
+                );
+            }
             let _ = recv_checked; // keep clippy happy; we re-check below
             // Build the mangled name: <TypeName>_<method>.
             // Only nominal types support methods in v1.
@@ -12136,6 +12242,12 @@ fn verify_pure_body(
                 }
                 walk_expr(tail, signatures, context, diagnostics);
             }
+            TypedExprKind::DynDispatch { receiver, args, .. } => {
+                walk_expr(receiver, signatures, context, diagnostics);
+                for a in args {
+                    walk_expr(a, signatures, context, diagnostics);
+                }
+            }
         }
     }
     walk(body, signatures, context, diagnostics);
@@ -13407,6 +13519,14 @@ fn typed_to_expr(t: &TypedExpr) -> Expr {
                 tail: Box::new(typed_to_expr(tail)),
             }
         }
+        TypedExprKind::DynDispatch {
+            receiver, iface_name: _, method, method_span, args, slot_index: _,
+        } => ExprKind::MethodCall {
+            receiver: Box::new(typed_to_expr(receiver)),
+            method: method.clone(),
+            method_span: *method_span,
+            args: args.iter().map(typed_to_expr).collect(),
+        },
     };
     Expr { kind, span: t.span }
 }

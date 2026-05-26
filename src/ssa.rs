@@ -2294,6 +2294,11 @@ fn lower_expr_to_operand(
             message: "SSA lowering of block expressions is not yet supported".to_string(),
             span: expr.span,
         }),
+        TypedExprKind::DynDispatch { .. } => Err(LowerError {
+            message: "SSA lowering of dyn-interface dispatch is not yet supported \
+                      (vtables Phase 3 — route through tree backend)".to_string(),
+            span: expr.span,
+        }),
     }
 }
 
@@ -2327,6 +2332,7 @@ fn expr_kind_name(kind: &TypedExprKind) -> &'static str {
         TypedExprKind::Match { .. } => "Match",
         TypedExprKind::IfExpr { .. } => "IfExpr",
         TypedExprKind::Block { .. } => "Block",
+        TypedExprKind::DynDispatch { .. } => "DynDispatch",
     }
 }
 

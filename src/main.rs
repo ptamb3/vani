@@ -330,6 +330,9 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
         // SSA doesn't model field-paths yet. T1.2 phase 2b
         // follow-up.
         TypedExprKind::RefField { .. } | TypedExprKind::RefMutField { .. } => false,
+        // `dyn Iface` method dispatch routes through tree
+        // backends; SSA vtable lowering lands with Phase 3.
+        TypedExprKind::DynDispatch { .. } => false,
     }
 }
 

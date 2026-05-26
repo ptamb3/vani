@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #221 — vtables Phase 2a)
+## ⏳ Resume here (paused 2026-05-25, after closure #222 — vtables Phase 2b)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,23 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#222 Vtables Phase 2b: `obj.method(args)` dispatch on
+`dyn Iface`. New `IFACE_METHOD_REGISTRY` thread-local
+maps each interface to its declaration-order method
+signatures; populated alongside `IFACE_IMPL_REGISTRY` in
+`hoist_impls_into_functions`. MethodCall handler in the
+checker detects `Type::Object(iface)` receivers, looks
+up the method, validates arg arity + types against the
+iface's parameter shape (skipping self), and emits a
+new `TypedExprKind::DynDispatch { receiver, iface_name,
+method, method_span, slot_index, args }` IR node. The
+`slot_index` is the declaration-order position so
+Phase 3 codegen can index per-(T, Iface) vtables
+identically. SSA gate + `expr_ssa_supported` reject
+DynDispatch (routes through tree backends); tree-C /
+tree-LLVM `emit_expr` panic with a "Phase 3 pending"
+message — checker-only programs (no run) typecheck
+cleanly. Test totals: 920 lib + 47 e2e passing.
 #221 Vtables Phase 2a: `T → dyn Iface` coercion validation.
 New `IFACE_IMPL_REGISTRY` thread-local populated from
 `program.impls` before they drain. `can_assign` accepts
@@ -805,7 +822,14 @@ totals: 888 lib + 47 e2e passing.
     pointer: `{ &<T>_<Iface>_vtable, &t }`. Method calls
     (`obj.method(args)` where obj: dyn Iface) dispatch
     through the vtable's function-pointer slot. Effort:
-    ~6-8 hours.
+    ~6-8 hours. **Phase 2a done 2026-05-25 (closure #221)**
+    — `T → dyn Iface` coercion validation lives in
+    `can_assign` (consults `IFACE_IMPL_REGISTRY`).
+    **Phase 2b done 2026-05-25 (closure #222)** — method
+    dispatch through `TypedExprKind::DynDispatch` with
+    `slot_index` matching the iface's declaration order;
+    `IFACE_METHOD_REGISTRY` carries per-iface method
+    signatures.
 
   - **Phase 3 — codegen.** tree-C emits per-(T, Iface)
     vtable as a static const struct of fn-ptrs; the fat
