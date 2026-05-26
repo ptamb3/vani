@@ -286,10 +286,11 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
         TypedExprKind::Len { array, .. } => expr_ssa_supported(array),
         TypedExprKind::Call { name, args, .. } => {
             // `push_mut` (the in-place `push(mut ref xs, v)`
-            // form) operates through a Vec pointer and has
-            // no SSA-backend lowering yet — route through the
+            // form) and `pop` (in-place `pop(mut ref xs)`)
+            // operate through a Vec pointer and have no
+            // SSA-backend lowering yet — route through the
             // tree backend. T1.2 phase 2b follow-up.
-            if name == "push_mut" {
+            if name == "push_mut" || name == "pop" {
                 return false;
             }
             args.iter().all(expr_ssa_supported)

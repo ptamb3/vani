@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #218)
+## ⏳ Resume here (paused 2026-05-25, after closure #219)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,15 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#219 `pop(mut ref xs) -> T` builtin: completes the Vec-as-
+stack story. Aborts on empty; non-Copy elements return
+by-move so the Vec's scope-exit drop walks the post-pop
+len and doesn't re-free the moved-out slot. Tree-C +
+tree-LLVM helpers emitted; SSA gate rejects (routes
+through tree backends). Array element types defer. The
+design rationale (build stack from Vec) lives in
+README's "Design Philosophy & Limitations". Test
+totals: 913 lib + 47 e2e passing.
 #218 Multiple `try`s in one block (#5 follow-up closed):
 the desugar from #217 only handled the FIRST `Let(try)`;
 subsequent `try` stmts surfaced the "still in progress"
@@ -793,12 +802,6 @@ totals: 888 lib + 47 e2e passing.
 
 ### Other queued follow-ups (smaller, can interleave)
 
-- **`pop(mut ref xs) -> T` builtin** — `Vec<T>` has `push` but no
-  `pop`. With affine moves the last-element pop returns the value
-  by-move (size–1, no copy). Small builtin, completes the Vec-as-
-  stack story so users don't have to roll their own. ~1-2 hours.
-  See "Design rationale" section above on why we add the builtin
-  rather than a separate `Stack<T>` type.
 - **#8 Phase 2: Drop auto-call at scope exit** — wire `T_drop` into
   the existing `TypedStmt::Drop` lowering so user-declared
   `implement Drop for T` runs automatically. Blocked on B above

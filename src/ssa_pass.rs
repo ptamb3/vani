@@ -988,7 +988,7 @@ fn audit_pure_regions_in_function(func: &Function, out: &mut Vec<PureViolation>)
                     InstrKind::Call { name, .. } => {
                         if matches!(
                             name.as_str(),
-                            "vec" | "push" | "set" | "clone"
+                            "vec" | "push" | "pop" | "set" | "clone"
                         ) {
                             out.push(PureViolation {
                                 function: func.name.clone(),

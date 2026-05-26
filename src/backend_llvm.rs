@@ -3685,15 +3685,19 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
                 return dest;
             }
-            if matches!(name.as_str(), "push" | "set" | "clone" | "push_mut") {
+            if matches!(name.as_str(), "push" | "set" | "clone" | "push_mut" | "pop") {
                 let elt = vec_element_of_first_arg(args)
                     .expect("vec builtins take a Vec as the first arg");
                 // Use the composable tag so nested-Vec elements
                 // (`vec_int64`, `vec_vec_int64`) resolve to a
                 // unique helper name — same convention as
                 // `emit_vec_helpers` / `vec_struct_name`.
+                // Closure #219: `pop` in source maps to
+                // `pop_mut` in the helper namespace (matches
+                // tree-C's `vec_helper(&element, "pop_mut")`).
+                let helper_op = if name == "pop" { "pop_mut" } else { name.as_str() };
                 let helper_name =
-                    format!("@intent_vec_{}__{}", vec_struct_tag(&elt), name);
+                    format!("@intent_vec_{}__{}", vec_struct_tag(&elt), helper_op);
                 let arg_strs: Vec<String> = args
                     .iter()
                     .map(|a| {
@@ -4876,6 +4880,7 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
     let tag = vec_struct_tag(element);
     let push_name = format!("@intent_vec_{}__push", tag);
     let push_mut_name = format!("@intent_vec_{}__push_mut", tag);
+    let pop_mut_name = format!("@intent_vec_{}__pop_mut", tag);
     let set_name = format!("@intent_vec_{}__set", tag);
     let clone_name = format!("@intent_vec_{}__clone", tag);
     let free_name = format!("@intent_vec_{}__free", tag);
@@ -5008,6 +5013,58 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
     out.push_str("  store i64 %new_len_m, i64* %len_p_m\n");
     out.push_str("  ret i64 %new_len_m\n");
     out.push_str("}\n");
+
+    // ---- pop_mut(xs_p) -> T: in-place pop through a Vec
+    // struct pointer. Abort on empty, otherwise load the
+    // last element, decrement `len`, and return the loaded
+    // value. For non-Copy element types the returned value
+    // carries ownership of the slot's heap; the Vec's
+    // scope-exit `__free` walks elements via the post-pop
+    // len so the moved-out slot is not re-freed.
+    // Closure #219.
+    //
+    // Array element types ([T;N]) skip this helper — C
+    // can't return a bare array by value and the LLVM
+    // equivalent would need a struct wrapper. Defer that
+    // shape to a follow-up.
+    let element_is_array = matches!(element, Type::Array { .. });
+    if !element_is_array {
+        out.push_str(&format!(
+            "define {} {}({}* %xs_pp) {{\n",
+            elt_ty, pop_mut_name, s_ty
+        ));
+        out.push_str(&format!(
+            "  %len_pp = getelementptr {}, {}* %xs_pp, i32 0, i32 1\n",
+            s_ty, s_ty
+        ));
+        out.push_str("  %len_pv = load i64, i64* %len_pp\n");
+        out.push_str("  %is_empty_pp = icmp eq i64 %len_pv, 0\n");
+        out.push_str("  br i1 %is_empty_pp, label %abort_pp, label %ok_pp\n");
+        out.push_str("abort_pp:\n");
+        out.push_str("  call void @abort()\n");
+        out.push_str("  unreachable\n");
+        out.push_str("ok_pp:\n");
+        out.push_str("  %new_len_pp = sub i64 %len_pv, 1\n");
+        out.push_str(&format!(
+            "  %data_pp = getelementptr {}, {}* %xs_pp, i32 0, i32 0\n",
+            s_ty, s_ty
+        ));
+        out.push_str(&format!(
+            "  %data_v_pp = load {}*, {}** %data_pp\n",
+            elt_ty, elt_ty
+        ));
+        out.push_str(&format!(
+            "  %slot_pp = getelementptr {}, {}* %data_v_pp, i64 %new_len_pp\n",
+            elt_ty, elt_ty
+        ));
+        out.push_str(&format!(
+            "  %popped_pp = load {}, {}* %slot_pp\n",
+            elt_ty, elt_ty
+        ));
+        out.push_str("  store i64 %new_len_pp, i64* %len_pp\n");
+        out.push_str(&format!("  ret {} %popped_pp\n", elt_ty));
+        out.push_str("}\n");
+    }
 
     // ---- set(xs, i, v): write in place, return xs.
     out.push_str(&format!(

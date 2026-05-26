@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-24
-**Test totals:** 911 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 913 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -536,6 +536,24 @@ fn main() returns i64 {
    and `Type::Enum` (extract tag/payload, OR-chain over
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
+
+   **`pop(mut ref xs) -> T` builtin done 2026-05-25**:
+   Completes the Vec-as-stack story (push + pop). New
+   builtin: `pop(mut ref xs)` aborts on empty Vec,
+   otherwise decrements `len` and returns the last
+   element. For non-Copy element types (OwnedStr / Vec /
+   Struct with heap fields), the returned T carries
+   ownership; the Vec's scope-exit `__free` walks
+   elements via the post-pop `len` so the moved-out slot
+   is not re-freed. tree-C + tree-LLVM helpers emitted;
+   SSA gate rejects (routes through tree backends like
+   `push_mut`). Array element types (`Vec<[T;N]>`) skip
+   the helper — C can't return a bare array by value;
+   defer to a follow-up. The design rationale (build
+   stack from Vec rather than adding a separate Stack<T>
+   type) lives in README's "Design Philosophy &
+   Limitations". Test totals: 913 lib + 47 e2e passing.
+   Closure #219.
 
    **Multiple `try`s in one block done 2026-05-25**:
    The desugar from closure #217 still only handled the

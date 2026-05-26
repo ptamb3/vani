@@ -1353,6 +1353,34 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
         store = push_mut_store,
     ));
 
+    // Closure #219: in-place `pop(mut ref xs) -> T` — abort on
+    // empty, otherwise decrement len and return the last
+    // element by-move. For non-Copy element types (OwnedStr,
+    // Vec<U>, Struct with owning fields), the returned value
+    // carries ownership of the slot's heap; the Vec's
+    // scope-exit `__free` walks elements based on the post-
+    // pop len so the moved-out slot won't be re-freed.
+    // For fixed-size array element types (`[T; N]`), C
+    // forbids returning a bare array by value — the helper
+    // returns a struct wrapping the array would complicate
+    // codegen significantly. Defer Vec<[T;N]> pop to a
+    // follow-up; for now reject via the checker if it ever
+    // surfaces. Most callers don't need that shape.
+    if !element_is_array {
+        out.push_str(&format!(
+            "static INTENT_UNUSED {ct} {sn}__pop_mut({sn}* xs) {{\
+\n    if (xs->len == 0) {{\
+\n        fprintf(stderr, \"pop on empty Vec\\n\");\
+\n        abort();\
+\n    }}\
+\n    xs->len--;\
+\n    return xs->data[xs->len];\
+\n}}\n",
+            sn = struct_name,
+            ct = c_element,
+        ));
+    }
+
     // `__set(xs, i, v)`: store the new value at xs.data[i].
     // For non-Copy elements (Vec<T>, Array<T, N>) the old slot
     // value's resources are released first via the element-
@@ -3802,6 +3830,21 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 vec_helper(&element, "push_mut"),
                 emit_expr(&args[0]),
                 emit_expr(&args[1])
+            )
+        }
+        "pop" => {
+            // In-place pop: first arg is `mut ref Vec<T>`.
+            // The helper aborts on empty, otherwise decrements
+            // `len` and returns the element (by-move for
+            // non-Copy elements). Closure #219.
+            let element = match args[0].ty.deref() {
+                Type::Vec(element) => element.clone(),
+                _ => unreachable!("pop() arg 0 must be (mut ref) Vec<_>"),
+            };
+            format!(
+                "{}({})",
+                vec_helper(&element, "pop_mut"),
+                emit_expr(&args[0]),
             )
         }
         "set" => {

@@ -13757,6 +13757,67 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn pop_builtin_returns_last_element_and_decrements_len() {
+        // Closure #219: new `pop(mut ref xs) -> T` builtin.
+        // Completes the Vec-as-stack story (push + pop). For
+        // non-Copy element types the returned T carries
+        // ownership; the Vec's scope-exit `__free` walks
+        // elements via the post-pop len so the moved-out
+        // slot is not re-freed.
+        let copy_source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20, 30);
+              let a: i64 = pop(mut ref xs);
+              let b: i64 = pop(mut ref xs);
+              assert a == 30;
+              assert b == 20;
+              assert len(xs) == 1;
+              return 0;
+            }
+        "#;
+        compile_to_c(copy_source).expect("pop i64 compiles");
+
+        let owned_source = r#"
+            fn main() -> i64 {
+              let xs: Vec<OwnedStr> = vec("alpha" + "", "beta" + "", "gamma" + "");
+              let last: OwnedStr = pop(mut ref xs);
+              assert (len(last) as i64) == 5;
+              assert len(xs) == 2;
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(owned_source).expect("pop OwnedStr compiles");
+        // The pop_mut helper must be emitted in tree-C.
+        assert!(
+            c.contains("__pop_mut"),
+            "expected `__pop_mut` helper emit:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn pop_builtin_rejects_non_ref_arg() {
+        // Closure #219: `pop(xs)` (consuming) is rejected —
+        // returning (Vec<T>, T) would need non-Copy tuple
+        // elements which v1 doesn't support. Force callers
+        // to use the `mut ref` form.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              let v: i64 = pop(xs);
+              return v;
+            }
+        "#;
+        let res = compile(source);
+        assert!(res.is_err(), "expected pop(Vec) to be rejected");
+        let diags = res.err().unwrap();
+        let has_msg = diags.iter().any(|d| {
+            d.message.contains("requires a `mut ref Vec<T>` argument")
+        });
+        assert!(has_msg, "expected `mut ref Vec<T>` diagnostic, got:\n{:?}", diags);
+    }
+
+    #[test]
     fn tree_c_vec_fnptr_typedef_is_identifier_safe() {
         // Closure #214: `Vec<fn(T) -> R>` element-tag fell
         // through to `c_leaf_type(FnPtr).replace(' ', '_')`

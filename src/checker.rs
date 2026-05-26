@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "set", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -9139,6 +9139,7 @@ fn check_call(
     match name {
         "vec" => return check_vec_builtin(args, env, signatures, span, diagnostics),
         "push" => return check_push_builtin(args, env, signatures, span, diagnostics),
+        "pop" => return check_pop_builtin(args, env, signatures, span, diagnostics),
         "set" => return check_set_builtin(args, env, signatures, span, diagnostics),
         "clone" => return check_clone_builtin(args, env, signatures, span, diagnostics),
         "clone_at" => {
@@ -10408,6 +10409,69 @@ fn check_push_builtin(
             args: vec![xs_expr, value_expr],
         },
         result_type,
+        None,
+        span,
+    )
+}
+
+/// `pop(mut ref xs)` — remove and return the last element of
+/// `xs`. The Vec's `len` decrements by one; the returned T
+/// is by-move for non-Copy element types (caller owns the
+/// heap, scope-exit drop on the binding fires). Runtime
+/// check aborts on empty Vec (no Option<T> sugar yet).
+///
+/// Only the mut-ref form is supported in v1 — a consuming
+/// form would have to return `(Vec<T>, T)` which requires
+/// non-Copy tuple elements (currently rejected). The mut-ref
+/// form composes cleanly: `let v = pop(mut ref xs);`.
+/// Closure #219.
+fn check_pop_builtin(
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    if args.len() != 1 {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!("pop(xs) expects 1 argument, got {}", args.len()),
+        ));
+        return CheckedExpr::fallback_integer(span);
+    }
+    let xs = check_expr(&args[0], env, signatures, diagnostics);
+    let element_type = match xs.ty() {
+        Type::RefMut(inner) => match &**inner {
+            Type::Vec(element) => (**element).clone(),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "pop() requires a `mut ref Vec<T>` argument, got {}",
+                        xs.ty()
+                    ),
+                ));
+                return CheckedExpr::fallback_integer(span);
+            }
+        },
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "pop() requires a `mut ref Vec<T>` argument, got {}",
+                    other
+                ),
+            ));
+            return CheckedExpr::fallback_integer(span);
+        }
+    };
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: "pop".to_string(),
+            name_span: span,
+            args: vec![xs.expr],
+        },
+        element_type,
         None,
         span,
     )
