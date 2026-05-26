@@ -439,14 +439,20 @@ pub struct Use {
     pub span: Span,
 }
 
-/// `use foo::bar;` — Closure #245. Brings a module item
-/// into scope as a bare alias. The checker rewrites bare
-/// references to `bar` within the file as the mangled name
-/// `foo__bar` (or the matching private form for intra-module
-/// use, though path-imports typically target public items
-/// from outside). v1 supports single-item imports only;
-/// glob `use foo::*;` and multi-item `use foo::{a, b};`
-/// are deferred to a later phase.
+/// `use foo::bar;` and friends. Closure #245 introduced the
+/// single-item form; #247 added the multi-item brace list
+/// (`use foo::{a, b};`); #253 added the glob (`use foo::*;`)
+/// — `item == "*"` is the sentinel the checker expands to all
+/// direct public children of `foo` at flatten time. #254 added
+/// the optional `as <local>` rename suffix (single-item and
+/// per-entry brace-list both honor it) plus a collision
+/// diagnostic when two imports bind the same local name. The
+/// checker rewrites bare references in top-level fn bodies as
+/// the mangled name `foo__bar` (or the matching private form
+/// `foo__priv__bar` for intra-module references — but
+/// path-imports from OUTSIDE the module can only target public
+/// items by construction, since private items can't form a
+/// valid source-level path).
 #[derive(Clone, Debug, PartialEq)]
 pub struct UsePath {
     pub module: String,

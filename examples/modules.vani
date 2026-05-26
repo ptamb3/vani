@@ -1,8 +1,9 @@
-intent "Namespaces — modules, visibility, paths, `use`, nested";
+intent "Namespaces — modules, visibility, paths, `use`, nested, glob, rename";
 
-// Closures #242-#249. Rust-style modules: explicit paths
-// with `::` separator, private-by-default with `pub`,
-// `use foo::bar;` aliases, nested modules with implicit
+// Closures #242-#249, #253-#254. Rust-style modules: explicit
+// paths with `::` separator, private-by-default with `pub`,
+// `use foo::bar;` aliases (single / brace-list / glob `*`),
+// optional `as <local>` rename, nested modules with implicit
 // sibling lookup, and orphan rules for `implement`.
 
 module geo {
@@ -32,11 +33,16 @@ module geo {
   }
 }
 
-// Single-item import: bring `Point` into scope unprefixed.
-use geo::Point;
+// Glob import: every direct public child of `geo` becomes
+// unprefixed. Non-transitive — `bounds` items still need
+// their own path. `Point`, `origin`, and `step_right` are
+// all in scope through this single line.
+use geo::*;
 
-// Multi-item import from the inner module.
-use geo::bounds::{area};
+// Multi-item import from the inner module, with the entry
+// renamed via `as` to give it a clearer local name than the
+// `area` it'd shadow if a top-level helper grew that name.
+use geo::bounds::{area as bounds_area};
 
 fn main() -> i64 {
   // Constructor via the imported alias.
@@ -51,10 +57,11 @@ fn main() -> i64 {
   let r: Point = geo::step_right(p);
   assert r.x == 5;
 
-  // Imported `area` via the deep path `geo::bounds::area`.
-  let z: i64 = area(r);
+  // Imported via `use geo::bounds::{area as bounds_area};`
+  // — renamed so a future top-level `area` wouldn't collide.
+  let z: i64 = bounds_area(r);
   assert z == 5 * 7;
 
-  write "step_right + area =", z;
+  write "step_right + bounds_area =", z;
   return 0;
 }

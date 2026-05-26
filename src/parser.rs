@@ -603,15 +603,20 @@ impl Parser {
         })
     }
 
-    /// Parse a `use` declaration. Three forms (closures
-    /// #245, #247):
+    /// Parse a `use` declaration. Five forms (closures
+    /// #245, #247, #248, #253, #254):
     /// - File import: `use "path/to/file.vani";` (quoted
     ///   string, used by the multi-file pipeline).
-    /// - Module-path single import: `use foo::bar;`
-    ///   (identifier followed by `::` and another identifier —
-    ///   brings `bar` into scope as an alias for `foo::bar`).
-    /// - Module-path multi-item import: `use foo::{a, b};`
-    ///   (a brace-list expands to one `UsePath` per item).
+    /// - Module-path single import: `use foo::bar;` (deep
+    ///   paths `a::b::c::Item` also supported — closure #248).
+    /// - Brace-list import: `use foo::{a, b};` — expands to
+    ///   one `UsePath` per item.
+    /// - Glob import: `use foo::*;` — closure #253. Brings
+    ///   every direct public child of `foo` into scope. The
+    ///   checker expands at flatten time.
+    /// - Optional `as <local>` rename: `use foo::bar as baz;`
+    ///   and per-entry inside brace lists. Closure #254 —
+    ///   resolves collisions between same-leaf imports.
     fn parse_use(&mut self) -> Result<UseDecl, Diagnostic> {
         let start = self.expect_keyword("'use'", |kind| matches!(kind, TokenKind::Use))?;
         // Peek: string token means file import; identifier

@@ -2101,10 +2101,12 @@ fn emit_instr(
             // Vec drop: call the runtime's free helper.
             // OwnedStr drop: free the heap-allocated `char*`
             // returned by `intent_str_concat`. Guard drop:
-            // unlock the underlying mutex. Atomic/Mutex are
-            // by-value stack types — alloca scope-out is
-            // enough, no extra emit. Channel drop is still
-            // TODO. Scalar types are no-op.
+            // unlock the underlying mutex. Atomic/Mutex/Channel
+            // are by-value stack-allocated structs with no heap-
+            // owned buffers (Channel embeds an inline
+            // `buf[CAP]` array — see `emit_channel_bundle` in
+            // `backend_c.rs`) — alloca scope-out frees them, no
+            // extra emit. Scalar types are no-op.
             match ty {
                 Type::Vec(element) => {
                     let helper = crate::backend_c::vec_helper(element, "free");
