@@ -3,6 +3,14 @@ use crate::ast::{
     InterfaceDecl, InterfaceMethod, MatchArm, MethodsBlock, Param, Pattern, Program, Reduction,
     ReductionOp, Stmt, StructDecl, StructField, Type, TypeAlias, UnaryOp, Use, WhereClause,
 };
+
+/// Parser-internal sum of the two `use`-statement shapes
+/// (closure #245). The top-level parse loop dispatches each
+/// variant to the matching list on `Program`.
+enum UseDecl {
+    File(Use),
+    Path(crate::ast::UsePath),
+}
 use crate::diagnostic::Diagnostic;
 use crate::lexer::{Token, TokenKind};
 
@@ -48,6 +56,7 @@ impl Parser {
         let mut intents = Vec::new();
         let mut functions = Vec::new();
         let mut uses = Vec::new();
+        let mut use_paths: Vec<crate::ast::UsePath> = Vec::new();
         let mut structs = Vec::new();
         let mut enums = Vec::new();
         let mut interfaces = Vec::new();
@@ -83,7 +92,8 @@ impl Parser {
                 }
             } else if self.check(|kind| matches!(kind, TokenKind::Use)) {
                 match self.parse_use() {
-                    Ok(u) => uses.push(u),
+                    Ok(UseDecl::File(u)) => uses.push(u),
+                    Ok(UseDecl::Path(p)) => use_paths.push(p),
                     Err(e) => {
                         self.errors.push(e);
                         self.sync_to_top_level();
@@ -175,6 +185,7 @@ impl Parser {
             type_aliases,
             methods_blocks,
             modules,
+            use_paths,
         }
     }
 
@@ -580,17 +591,40 @@ impl Parser {
         })
     }
 
-    fn parse_use(&mut self) -> Result<Use, Diagnostic> {
+    /// Parse a `use` declaration. Two forms (closure #245):
+    /// - File import: `use "path/to/file.vani";` (quoted
+    ///   string, used by the multi-file pipeline).
+    /// - Module-path import: `use foo::bar;` (identifier
+    ///   followed by `::` and another identifier — brings
+    ///   `bar` into scope as an alias for `foo::bar`).
+    /// The caller distinguishes by the variant returned.
+    fn parse_use(&mut self) -> Result<UseDecl, Diagnostic> {
         let start = self.expect_keyword("'use'", |kind| matches!(kind, TokenKind::Use))?;
-        let path_token = self.expect_string()?;
+        // Peek: string token means file import; identifier
+        // means module-path import.
+        if matches!(self.current().kind, TokenKind::Str(_)) {
+            let path_token = self.expect_string()?;
+            let semi = self.expect_keyword("';'", |kind| matches!(kind, TokenKind::Semicolon))?;
+            let TokenKind::Str(path) = path_token.kind else {
+                unreachable!("expect_string only returns string tokens")
+            };
+            return Ok(UseDecl::File(Use {
+                path,
+                span: start.span.merge(semi.span),
+            }));
+        }
+        // Module-path import: `use foo::bar;`.
+        let mod_tok = self.expect_ident()?;
+        let module = ident_text(mod_tok);
+        self.expect_keyword("'::' in `use` path", |k| matches!(k, TokenKind::ColonColon))?;
+        let item_tok = self.expect_ident()?;
+        let item = ident_text(item_tok);
         let semi = self.expect_keyword("';'", |kind| matches!(kind, TokenKind::Semicolon))?;
-        let TokenKind::Str(path) = path_token.kind else {
-            unreachable!("expect_string only returns string tokens")
-        };
-        Ok(Use {
-            path,
+        Ok(UseDecl::Path(crate::ast::UsePath {
+            module,
+            item,
             span: start.span.merge(semi.span),
-        })
+        }))
     }
 
     /// Skip tokens until we reach a known top-level start (`fn` / `intent`)

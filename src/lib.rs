@@ -2307,6 +2307,30 @@ mod tests {
     }
 
     #[test]
+    fn use_path_brings_item_into_scope() {
+        // Closure #245: `use math::square;` introduces
+        // `square` as a bare alias for `math::square` in
+        // the surrounding file. After the alias, top-level
+        // calls can use `square(x)` without the prefix.
+        // The explicit `math::double(x)` form still works.
+        let source = r#"
+            module math {
+              pub fn square(x: i64) -> i64 { return x * x; }
+              pub fn double(x: i64) -> i64 { return x * 2; }
+            }
+
+            use math::square;
+
+            fn main() -> i64 {
+              let a: i64 = square(5);
+              let b: i64 = math::double(7);
+              return a + b;
+            }
+        "#;
+        compile(source).expect("use math::square should bring it into scope");
+    }
+
+    #[test]
     fn module_private_item_accessible_from_inside() {
         // Closure #243 visibility v1: a `pub` sibling can
         // call a private item; the access stays inside the

@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #244 — namespaces Phase 2.1 full visibility)
+## ⏳ Resume here (paused 2026-05-26, after closure #245 — namespaces Phase 3a `use` imports)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,21 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#245 Namespaces Phase 3a — `use foo::bar;` single-item
+imports. New `UsePath { module, item, span }` AST node
+alongside the existing file-import `Use`. Parser peeks
+the token after `use`: string literal → `Use { path }`;
+identifier → `UsePath { module, item }`. `Program`
+gains `use_paths: Vec<UsePath>`. At the end of
+`flatten_modules_in_program`, build a `bar → foo__bar`
+alias map and walk top-level fn bodies rewriting bare
+references (Call / Var / StructLit / Match-pattern /
+Cast type). Module bodies + flattened-out fns aren't
+re-walked. v1 supports single-item imports only; glob /
+multi-item / re-export / orphan rules deferred. New lib
+test `use_path_brings_item_into_scope`. Test totals:
+932 lib + 47 e2e + 11 vtables-phase3 + 2
+user-drop-by-ref + 1 ssa-examples.
 #244 Namespaces Phase 2.1 — full visibility (struct /
 enum / interface / const / type-alias). Extends #243's
 fn-only enforcement to every item kind. Each
@@ -1292,11 +1307,17 @@ likely impact / blast radius, not implementation order.
   visibility bitmap and registers private items. The
   unknown-struct-type diagnostic surfaces the same
   "private to its module" message.
-  *Still queued*: Phase 3 — `use foo::bar;` declarations;
-  orphan rules for `implement` blocks (impl must live in
-  the module of either Iface or T); nested modules; glob
-  imports; multi-item `use foo::{bar, baz};`;
-  `pub(crate)` tiers; re-exports.
+  *Phase 3a done 2026-05-26 (closure #245)*: `use foo::bar;`
+  single-item imports parse + apply. New `UsePath` AST node;
+  parser routes to file vs path import by peeking the next
+  token; checker builds an alias map and walks top-level fn
+  bodies. Module bodies + flattened-out fns aren't
+  re-walked.
+  *Still queued — Phase 3b/c/d*: orphan rules for
+  `implement` blocks (impl must live in the module of
+  either Iface or T); nested modules; glob `use foo::*;`;
+  multi-item `use foo::{bar, baz};`; `pub(crate)` tiers;
+  re-exports.
 - **Multiple source files for one compilation.** `use "path"`
   already exists for single-file imports; extend to a full
   multi-file pipeline so the compiler ingests a set of `.vani`

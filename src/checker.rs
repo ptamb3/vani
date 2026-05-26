@@ -1588,6 +1588,179 @@ fn flatten_modules_in_program(
     // messages when the user references a private module
     // item from outside its module.
     crate::ast::set_private_module_items(private_items);
+
+    // Closure #245: apply `use foo::bar;` aliases. For each
+    // import, build the alias `bar → foo__bar`, then walk
+    // top-level item bodies (functions + impls + methods
+    // blocks) rewriting bare references. Module bodies were
+    // already flattened above, so they don't need the
+    // alias pass — references inside a module that match a
+    // sibling get the intra-module prefix; references that
+    // don't match a sibling stay bare; we don't apply
+    // top-level `use` aliases inside module bodies in v1
+    // (the explicit `module::item` path always works from
+    // anywhere).
+    let mut use_aliases: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let use_paths = std::mem::take(&mut program.use_paths);
+    for up in use_paths {
+        let mangled = format!("{}__{}", up.module, up.item);
+        use_aliases.insert(up.item.clone(), mangled);
+    }
+    if !use_aliases.is_empty() {
+        let qualify_alias = |name: &str| -> String {
+            use_aliases.get(name).cloned().unwrap_or_else(|| name.to_string())
+        };
+        for f in &mut program.functions {
+            // Don't rewrite top-level fns whose names came from
+            // a flattened module (they have `__` in their
+            // names) — those bodies already use module-qualified
+            // names where appropriate. Apply to fns without
+            // `__` (i.e. truly top-level fns) so user code in
+            // `fn main()` benefits from the `use` aliases.
+            if f.name.contains("__") {
+                continue;
+            }
+            for s in &mut f.body {
+                rewrite_stmt_for_alias(s, &qualify_alias);
+            }
+        }
+    }
+}
+
+/// Helper for `use foo::bar;` alias rewriting (closure #245).
+/// Walks a statement tree and replaces bare-name references
+/// (Call / Var / StructLit / Match-pattern / Cast type) with
+/// the aliased mangled form.
+fn rewrite_stmt_for_alias(
+    stmt: &mut crate::ast::Stmt,
+    qualify: &dyn Fn(&str) -> String,
+) {
+    match stmt {
+        Stmt::Let { expr, annotation, .. } | Stmt::LetTuple { expr, annotation, .. } => {
+            if let Some(ann) = annotation {
+                rewrite_type_for_alias(ann, qualify);
+            }
+            rewrite_expr_for_alias(expr, qualify);
+        }
+        Stmt::Return { expr, .. } | Stmt::Assert { expr, .. }
+        | Stmt::Prove { expr, .. } | Stmt::Assign { expr, .. } => {
+            rewrite_expr_for_alias(expr, qualify);
+        }
+        Stmt::Print { items, .. } => {
+            for item in items {
+                if let crate::ast::PrintItem::Expr(e) = item {
+                    rewrite_expr_for_alias(e, qualify);
+                }
+            }
+        }
+        Stmt::If { cond, then_body, else_body, .. } => {
+            rewrite_expr_for_alias(cond, qualify);
+            for s in then_body { rewrite_stmt_for_alias(s, qualify); }
+            for s in else_body { rewrite_stmt_for_alias(s, qualify); }
+        }
+        Stmt::While { cond, body, .. } => {
+            rewrite_expr_for_alias(cond, qualify);
+            for s in body { rewrite_stmt_for_alias(s, qualify); }
+        }
+        Stmt::For { body, start, end, .. } => {
+            rewrite_expr_for_alias(start, qualify);
+            rewrite_expr_for_alias(end, qualify);
+            for s in body { rewrite_stmt_for_alias(s, qualify); }
+        }
+        Stmt::ForIter { body, .. } => {
+            for s in body { rewrite_stmt_for_alias(s, qualify); }
+        }
+        Stmt::TaskSpawn { body, .. } => {
+            for s in body { rewrite_stmt_for_alias(s, qualify); }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_expr_for_alias(
+    expr: &mut crate::ast::Expr,
+    qualify: &dyn Fn(&str) -> String,
+) {
+    match &mut expr.kind {
+        ExprKind::Var(n) => { *n = qualify(n); }
+        ExprKind::Call { name, args, .. } => {
+            *name = qualify(name);
+            for a in args { rewrite_expr_for_alias(a, qualify); }
+        }
+        ExprKind::MethodCall { receiver, args, .. } => {
+            rewrite_expr_for_alias(receiver, qualify);
+            for a in args { rewrite_expr_for_alias(a, qualify); }
+        }
+        ExprKind::StructLit { type_name, fields, .. } => {
+            *type_name = qualify(type_name);
+            for (_, v) in fields { rewrite_expr_for_alias(v, qualify); }
+        }
+        ExprKind::Unary { expr, .. } => rewrite_expr_for_alias(expr, qualify),
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_expr_for_alias(left, qualify);
+            rewrite_expr_for_alias(right, qualify);
+        }
+        ExprKind::Cast { expr, ty } => {
+            rewrite_expr_for_alias(expr, qualify);
+            rewrite_type_for_alias(ty, qualify);
+        }
+        ExprKind::ArrayLit { elements } => {
+            for e in elements { rewrite_expr_for_alias(e, qualify); }
+        }
+        ExprKind::Index { array, index } => {
+            rewrite_expr_for_alias(array, qualify);
+            rewrite_expr_for_alias(index, qualify);
+        }
+        ExprKind::Len { array } => rewrite_expr_for_alias(array, qualify),
+        ExprKind::Ref { inner } | ExprKind::RefMut { inner } => {
+            rewrite_expr_for_alias(inner, qualify);
+        }
+        ExprKind::Tuple(es) => for e in es { rewrite_expr_for_alias(e, qualify); }
+        ExprKind::TupleAccess { tuple, .. } => rewrite_expr_for_alias(tuple, qualify),
+        ExprKind::FieldAccess { object, .. } => rewrite_expr_for_alias(object, qualify),
+        ExprKind::Match { scrutinee, arms } => {
+            rewrite_expr_for_alias(scrutinee, qualify);
+            for a in arms {
+                if let crate::ast::Pattern::Variant { enum_name, .. }
+                | crate::ast::Pattern::VariantWithBinding { enum_name, .. } = &mut a.pattern {
+                    *enum_name = qualify(enum_name);
+                }
+                rewrite_expr_for_alias(&mut a.body, qualify);
+            }
+        }
+        ExprKind::IfExpr { cond, then_value, else_value } => {
+            rewrite_expr_for_alias(cond, qualify);
+            rewrite_expr_for_alias(then_value, qualify);
+            rewrite_expr_for_alias(else_value, qualify);
+        }
+        ExprKind::Block { stmts, tail } => {
+            for s in stmts { rewrite_stmt_for_alias(s, qualify); }
+            rewrite_expr_for_alias(tail, qualify);
+        }
+        ExprKind::Try { inner } => rewrite_expr_for_alias(inner, qualify),
+        _ => {}
+    }
+}
+
+fn rewrite_type_for_alias(
+    ty: &mut crate::ast::Type,
+    qualify: &dyn Fn(&str) -> String,
+) {
+    match ty {
+        Type::Struct(name) | Type::Enum(name) => *name = qualify(name),
+        Type::Ref(inner) | Type::RefMut(inner)
+        | Type::Vec(inner) | Type::Atomic(inner)
+        | Type::Mutex(inner) | Type::Guard(inner) => rewrite_type_for_alias(inner, qualify),
+        Type::Channel(inner, _) => rewrite_type_for_alias(inner, qualify),
+        Type::Array { element, .. } => rewrite_type_for_alias(element, qualify),
+        Type::Tuple(elts) => for t in elts { rewrite_type_for_alias(t, qualify); }
+        Type::FnPtr(params, ret) => {
+            for p in params { rewrite_type_for_alias(p, qualify); }
+            rewrite_type_for_alias(ret, qualify);
+        }
+        _ => {}
+    }
 }
 
 /// position), so this post-parse fixup keeps the AST honest

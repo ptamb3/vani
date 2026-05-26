@@ -261,6 +261,13 @@ pub struct Program {
     /// resolution layer. Top-level items (not inside any
     /// `module`) stay globally visible — no back-compat break.
     pub modules: Vec<ModuleDecl>,
+    /// `use foo::bar;` import declarations (closure #245).
+    /// Each entry introduces `bar` as an alias for the
+    /// mangled `foo__bar` in the surrounding file. The
+    /// checker resolves these during the module-flattening
+    /// pre-pass: build a `bar → foo__bar` map, then walk
+    /// top-level item bodies rewriting bare references.
+    pub use_paths: Vec<UsePath>,
 }
 
 /// `module foo { fn bar() -> i64 { … } pub struct Point {…} }`
@@ -414,6 +421,21 @@ pub struct WhereClause {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Use {
     pub path: String,
+    pub span: Span,
+}
+
+/// `use foo::bar;` — Closure #245. Brings a module item
+/// into scope as a bare alias. The checker rewrites bare
+/// references to `bar` within the file as the mangled name
+/// `foo__bar` (or the matching private form for intra-module
+/// use, though path-imports typically target public items
+/// from outside). v1 supports single-item imports only;
+/// glob `use foo::*;` and multi-item `use foo::{a, b};`
+/// are deferred to a later phase.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UsePath {
+    pub module: String,
+    pub item: String,
     pub span: Span,
 }
 

@@ -537,6 +537,38 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Namespaces Phase 3a — `use foo::bar;` single-item imports done 2026-05-26**:
+   the third Rust-style namespace primitive lands.
+   `use math::square;` at the top of a file introduces
+   `square` as a bare alias for `math::square` in the
+   surrounding file, so the user can call `square(x)`
+   without the module prefix. Explicit `math::double(x)`
+   continues to work.
+
+   Implementation:
+   - New `UsePath { module, item, span }` AST node alongside
+     the existing `Use { path, span }` (file import). The
+     parser detects which form by peeking at the token
+     after `use`: a string literal stays as `Use`, an
+     identifier becomes `UsePath`.
+   - `Program` gains a `use_paths: Vec<UsePath>` field.
+   - At the end of `flatten_modules_in_program`, build a
+     `bar → foo__bar` alias map and walk top-level fn
+     bodies rewriting bare references (Call / Var /
+     StructLit / Match-pattern / Cast type). Module
+     bodies aren't re-walked — they already received
+     intra-module prefix handling. Top-level fns with `__`
+     in their names (i.e. fns hoisted out of modules) are
+     also skipped — they retain their explicit paths.
+
+   v1 supports single-item imports only. Glob
+   `use foo::*;` and multi-item `use foo::{a, b};` are
+   deferred. Orphan rules for `implement` blocks +
+   nested modules also queued.
+
+   Test totals: 932 lib + 47 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples passing. Closure #245.
+
    **Namespaces Phase 2.1 — struct / enum / const / type-alias visibility done 2026-05-26**:
    visibility enforcement now extends to every item kind
    inside a module, not just functions. The flattening

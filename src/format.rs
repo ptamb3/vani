@@ -1047,6 +1047,7 @@ mod tests {
             type_aliases: p.type_aliases.clone(),
             methods_blocks: p.methods_blocks.clone(),
             modules: p.modules.clone(),
+            use_paths: p.use_paths.clone(),
         };
         for u in &mut out.uses {
             u.span = z();
