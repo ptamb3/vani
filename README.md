@@ -1941,33 +1941,44 @@ primitives compose into richer patterns rather than the language
 growing a new built-in for every shape. Three design decisions
 that come up frequently:
 
-### Composition over inheritance (and dynamic dispatch is optional)
+### Composition over inheritance — `dyn Iface` is the escape hatch
 
-Interfaces dispatch **statically** today: `fn min<T>(a: T, b: T) -> T
-where T is Cmp` monomorphizes at each call site to the concrete T's
-`cmp` impl. There is no `dyn Trait` / vtable / fat-pointer mechanism
-yet, and that's a deliberate choice — most patterns prefer
-composition (struct fields + interface bounds) over inheritance.
+Interfaces dispatch **statically** by default: `fn min<T>(a: T, b: T)
+-> T where T is Cmp` monomorphizes at each call site to the concrete
+T's `cmp` impl. Composition (struct fields + interface bounds) covers
+most patterns; static dispatch is faster and lets the verifier see
+through every call site.
 
-For **heterogeneous collections** (the one workflow where static
-dispatch falls short), use a tagged enum:
+For **heterogeneous collections** (the workflow where static dispatch
+falls short), use `dyn Iface` — a fat pointer carrying `{ &vtable,
+&data }` (16 bytes) that holds any T implementing the interface:
 
 ```intent
-enum Shape { Circle(...), Square(...), Triangle(...) }
-let shapes: Vec<Shape> = vec(Shape.Circle(...), Shape.Square(...));
-for s in ref shapes {
-  match s {
-    Shape.Circle(c) then …,
-    Shape.Square(sq) then …,
-    Shape.Triangle(t) then …,
-  }
+struct Circle { r: i64 }
+struct Square { side: i64 }
+
+interface Drawable {
+  fn area(self: Circle) -> i64;
+}
+
+implement Drawable for Circle { fn area(self: Circle) -> i64 { … } }
+implement Drawable for Square { fn area(self: Square) -> i64 { … } }
+
+fn total_area(shapes: Vec<dyn Drawable>) -> i64 {
+  let total: i64 = 0;
+  for s in shapes { total = total + s.area(); }
+  return total;
 }
 ```
 
-A first-class `dyn Drawable` (vtable-based dispatch on
-heterogeneous collections without enumerating variants) is on the
-roadmap (epic A), but it's ergonomic sugar — not a missing core
-capability.
+`dyn` works at let bindings, fn params (owned + `ref dyn` borrow),
+struct fields, and `Vec<dyn Iface>`. No inheritance, no abstract
+base classes — just a per-interface vtable with one fn-ptr per
+method in declaration order. See
+[examples/dyn_dispatch.intent](examples/dyn_dispatch.intent) for the
+end-to-end shape. Tagged enums (`enum Shape { Circle(...), … }`) are
+still a fine alternative when the variant set is closed and known
+at the call site.
 
 ### `try` is a value-flow shortcut, not an exception system
 
@@ -2021,8 +2032,6 @@ The honest list, grouped by which work item closes them:
 
 **Type system**
 
-- No dynamic dispatch / vtables — heterogeneous collections need
-  an enum wrapper today (epic A).
 - Tuples are Copy-only — no `OwnedStr` / `Vec<T>` in a tuple element.
 - Generic monomorphization supports first-arg literal inference and
   one type parameter per fn (`<T>`, not `<T, U>`).
@@ -2037,24 +2046,22 @@ The honest list, grouped by which work item closes them:
 
 - Partial-move tracking is one level deep — `let xs = t.x` works,
   but `let y = t.x.inner` (nested field move) is rejected (epic B).
-- Multi-field drop order is declaration-order; Rust's reverse-
-  declaration convention is queued.
-- `Drop for T` is suppressed when T has heap-shaped fields (Vec /
-  OwnedStr / nested Struct with owning fields) — the auto-per-field
-  free runs instead (epic C closes the user-Drop interaction).
+- `Drop for T` accepts both `fn drop(self: T)` (by-value — only
+  valid when T has no heap-owning fields; consumes self) and
+  `fn drop(self: mut ref T)` (runs first, then the auto-per-field
+  free runs — works for any T including heap-owning fields).
 
 **`try` desugar**
 
-- `try fn_call()` is rejected — inner must be a Var (the inner
-  expression must already be an enum value, not a fresh call).
-- Non-`let` statements between `try` and `return` aren't allowed —
-  the desugar's Some-arm Block-expr is restricted to Let/Print
-  (closure #129's MVP shape).
+- `while` loops between `try` and `return` aren't supported —
+  while doesn't have a single tail-expression for the Some-arm
+  to absorb. `if cond { return X; }` guards work via the
+  AST-level guard-if rewriter (closure #232).
 
 **Block expressions**
 
-- `let r = { stmts; tail-expr };` admits only `let` and `print`
-  stmts. No inner control flow (`if`/`while`/`for`), no reassignment.
+- `let r = { stmts; tail-expr };` admits `let`, `print`, and
+  assignment statements. No inner control flow (`if`/`while`/`for`).
   Hoist control flow outside the block.
 
 **Memory & runtime model**
@@ -2196,8 +2203,8 @@ roadmap surface and unblocks the items below it.
 | 4 | ✅ **T1.3 phase 2b: tagged-union codegen + pattern bindings** | — | high | done 2026-05-21 — see [examples/option_types.intent](examples/option_types.intent); both backends |
 | 5 | ✅ **T2.6: `try` keyword sugar for Option-like enums** | T1.3 phase 2b | low/medium | done 2026-05-21 — see [examples/try_keyword.intent](examples/try_keyword.intent). Generic Option<T> / Result<T, E> wait on #6 monomorphization. |
 | 6 | ✅ **T1.4 phase 2: generic call-site monomorphization** | — | high | done 2026-05-21 — pass-through generics specialize per call-site literal type; see [examples/generic_functions.intent](examples/generic_functions.intent). Var-arg inference + interface bounds pending. |
-| 7 | ✅ **T1.5 phase 2: interface dispatch (static) + bounded generics** | T1.4 phase 2 | medium/high | done 2026-05-21 — `interface` + `implement` + `recv.method()` dispatch; `fn min<T>(...) where T is Cmp` monomorphizes with bound-existence check; see [examples/interfaces.intent](examples/interfaces.intent), [examples/bounded_generics.intent](examples/bounded_generics.intent). Dynamic dispatch (vtables) still pending. |
-| 8 | ✅ **T2.7: user-defined Drop interface (auto-call at scope exit)** | T1.5 phase 2, #3 | low/medium | done 2026-05-21 — `implement Drop for T` runs automatically at scope exit; `t.drop()` still works manually; auto-call suppressed for T with heap fields (those route through per-field free). See [examples/drop_interface.intent](examples/drop_interface.intent). |
+| 7 | ✅ **T1.5 phase 2 + 3: interface dispatch (static + dynamic) + bounded generics** | T1.4 phase 2 | medium/high | done 2026-05-25 — static `recv.method()` dispatch + bounded generics done 2026-05-21; `dyn Iface` fat-pointer dispatch (owned, `ref dyn`, `Vec<dyn>`, struct fields of dyn) shipped via closures #220-#228, see [examples/dyn_dispatch.intent](examples/dyn_dispatch.intent). |
+| 8 | ✅ **T2.7: user-defined Drop interface (auto-call at scope exit)** | T1.5 phase 2, #3 | low/medium | done 2026-05-25 — `implement Drop for T` runs automatically at scope exit. Two signatures supported: `fn drop(self: T)` (by-value, consumes self — only valid when T has no heap-owning fields) and `fn drop(self: mut ref T)` (runs first then per-field free — works for any T including OwnedStr / Vec / nested-struct fields, closure #229). See [examples/drop_interface.intent](examples/drop_interface.intent). |
 | 9 | ✅ **Devanagari keyword aliases — Sanskrit / Hindi / Marathi (MVP)** | — | medium | done 2026-05-21; see [examples/hindi_keywords.intent](examples/hindi_keywords.intent), [examples/sanskrit_keywords.intent](examples/sanskrit_keywords.intent), [examples/marathi_keywords.intent](examples/marathi_keywords.intent). Multi-word aliases + script-aware diagnostics deferred. |
 
 **Devanagari aliases (#9) — granular sketch:**
