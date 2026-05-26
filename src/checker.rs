@@ -2233,6 +2233,19 @@ fn desugar_try_let_in_program(
             .collect();
     let mut counter: usize = 0;
     for function in program.functions.iter_mut() {
+        // Closure #232: rewrite `if cond { return X; }`
+        // guards into tail match expressions BEFORE the
+        // try desugar fires — but ONLY for functions that
+        // contain a `try` somewhere. Non-try functions
+        // benefit from the existing direct if/else
+        // lowering (backends emit explicit `then`/`else`
+        // basic blocks), which is what the LLVM-side
+        // tests check for. The guard rewriter is purely
+        // about unblocking the try desugar's intermediate-
+        // stmt vocabulary.
+        if body_contains_try(&function.body) {
+            rewrite_guard_ifs_in_stmt_list(&mut function.body);
+        }
         let return_type = function.return_type.clone();
         // Recursively walk the function body, rewriting any
         // stmt-list that matches the try-let-block shape.
@@ -2248,6 +2261,194 @@ fn desugar_try_let_in_program(
             diagnostics,
         );
     }
+}
+
+/// Closure #232: check whether any stmt in `body` (recursively
+/// through nested control-flow bodies) carries a `Let { expr:
+/// Try { ... } }`. Used to gate the guard-if rewriter so non-
+/// try functions retain their direct if/else lowering.
+fn body_contains_try(body: &[Stmt]) -> bool {
+    body.iter().any(stmt_contains_try)
+}
+
+fn stmt_contains_try(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Let { expr, .. } | Stmt::LetTuple { expr, .. }
+        | Stmt::Return { expr, .. } | Stmt::Assert { expr, .. }
+        | Stmt::Prove { expr, .. } | Stmt::Assign { expr, .. } => {
+            expr_contains_try(expr)
+        }
+        Stmt::If { cond, then_body, else_body, .. } => {
+            expr_contains_try(cond)
+                || body_contains_try(then_body)
+                || body_contains_try(else_body)
+        }
+        Stmt::While { cond, body: inner, .. } => {
+            expr_contains_try(cond) || body_contains_try(inner)
+        }
+        Stmt::For { body: inner, .. }
+        | Stmt::ForIter { body: inner, .. }
+        | Stmt::TaskSpawn { body: inner, .. } => body_contains_try(inner),
+        _ => false,
+    }
+}
+
+fn expr_contains_try(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Try { .. } => true,
+        ExprKind::Block { stmts, tail } => {
+            body_contains_try(stmts) || expr_contains_try(tail)
+        }
+        ExprKind::IfExpr { cond, then_value, else_value } => {
+            expr_contains_try(cond)
+                || expr_contains_try(then_value)
+                || expr_contains_try(else_value)
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            expr_contains_try(scrutinee)
+                || arms.iter().any(|a| expr_contains_try(&a.body))
+        }
+        ExprKind::Call { args, .. } | ExprKind::ArrayLit { elements: args } => {
+            args.iter().any(expr_contains_try)
+        }
+        ExprKind::Binary { left, right, .. } => {
+            expr_contains_try(left) || expr_contains_try(right)
+        }
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            expr_contains_try(expr)
+        }
+        ExprKind::MethodCall { receiver, args, .. } => {
+            expr_contains_try(receiver)
+                || args.iter().any(expr_contains_try)
+        }
+        _ => false,
+    }
+}
+
+/// Closure #232: walk a stmt-list and rewrite
+/// `if cond { return X; }` guards (no else, then-body is
+/// exactly one Return) into tail match expressions when
+/// followed by remaining stmts terminating in Return.
+/// Operates iteratively from the FIRST guard so nested guards
+/// + remaining stmts get folded into successive match arms.
+///
+/// Pattern:
+///   ...prefix...
+///   if cond { return X; }
+///   ...rest...
+///   return Y;
+///
+/// Rewrite:
+///   ...prefix...
+///   return match cond {
+///     true then X,
+///     false then { ...rest-without-final-return...; Y }
+///   };
+fn rewrite_guard_ifs_in_stmt_list(body: &mut Vec<Stmt>) {
+    use crate::ast::{MatchArm, Pattern};
+    if body.is_empty() {
+        return;
+    }
+    // Recurse into nested control-flow bodies first so inner
+    // guards get rewritten before the outer pass sees them.
+    for s in body.iter_mut() {
+        match s {
+            Stmt::If { then_body, else_body, .. } => {
+                rewrite_guard_ifs_in_stmt_list(then_body);
+                rewrite_guard_ifs_in_stmt_list(else_body);
+            }
+            Stmt::While { body: inner, .. }
+            | Stmt::For { body: inner, .. }
+            | Stmt::ForIter { body: inner, .. }
+            | Stmt::TaskSpawn { body: inner, .. } => {
+                rewrite_guard_ifs_in_stmt_list(inner);
+            }
+            _ => {}
+        }
+    }
+    // The outer pattern only fires when the body ends in a
+    // Return (so we have a `Y` to push into the false-arm).
+    let last_idx = body.len() - 1;
+    if !matches!(&body[last_idx], Stmt::Return { .. }) {
+        return;
+    }
+    // Find the FIRST guard-if in body[0..last_idx]. The shape:
+    //   if cond { return X; }   (no else, single Return in then)
+    let pos = body[0..last_idx].iter().position(|s| match s {
+        Stmt::If { then_body, else_body, .. } => {
+            else_body.is_empty()
+                && then_body.len() == 1
+                && matches!(then_body[0], Stmt::Return { .. })
+        }
+        _ => false,
+    });
+    let Some(i) = pos else {
+        return;
+    };
+    // Extract the guard's cond and inner return expr.
+    let (cond, x_expr, guard_span) = match &body[i] {
+        Stmt::If { cond, then_body, span, .. } => {
+            let x = match &then_body[0] {
+                Stmt::Return { expr, .. } => expr.clone(),
+                _ => unreachable!(),
+            };
+            (cond.clone(), x, *span)
+        }
+        _ => unreachable!(),
+    };
+    // Capture remaining stmts (between guard and final return)
+    // and the final return's expr.
+    let return_idx = body.len() - 1;
+    let return_span = body[return_idx].span();
+    let y_expr = match &body[return_idx] {
+        Stmt::Return { expr, .. } => expr.clone(),
+        _ => unreachable!(),
+    };
+    let between: Vec<Stmt> = body[i + 1..return_idx].to_vec();
+    // Build the false-arm body: a Block-expr of the between
+    // stmts with `y_expr` as the tail. If `between` is empty,
+    // just use `y_expr` directly (Block-expr with empty
+    // stmts works too but skipping the wrap is tidier).
+    let false_body = if between.is_empty() {
+        y_expr
+    } else {
+        Expr {
+            kind: ExprKind::Block {
+                stmts: between,
+                tail: Box::new(y_expr),
+            },
+            span: return_span,
+        }
+    };
+    let match_expr = Expr {
+        kind: ExprKind::Match {
+            scrutinee: Box::new(cond),
+            arms: vec![
+                MatchArm {
+                    pattern: Pattern::Bool(true),
+                    pattern_span: guard_span,
+                    body: x_expr,
+                },
+                MatchArm {
+                    pattern: Pattern::Bool(false),
+                    pattern_span: guard_span,
+                    body: false_body,
+                },
+            ],
+        },
+        span: guard_span.merge(return_span),
+    };
+    // Replace body[i..=return_idx] with a single Return of
+    // the synthesized match expression.
+    body.truncate(i);
+    body.push(Stmt::Return {
+        expr: match_expr,
+        span: return_span,
+    });
+    // Recurse on the now-shortened body to fold any earlier
+    // guard-ifs (after our rewrite, the new tail is a Return,
+    // which the outer condition needs).
+    rewrite_guard_ifs_in_stmt_list(body);
 }
 
 /// Apply the try-let-rewrite to a stmt-list. Walks nested

@@ -537,6 +537,24 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Guard-if between `try` and `return` done 2026-05-25**:
+   `if cond { return X; }` early-return guards now compose
+   with `try`. New AST-level pre-pass
+   `rewrite_guard_ifs_in_stmt_list` runs BEFORE the try
+   desugar — it finds the first guard-if of shape
+   `if cond { return X; }` (no else, single Return in
+   then) followed by remaining stmts ending in `return Y`,
+   and rewrites the whole tail into
+   `return match cond { true then X, false then { rest...; Y } };`.
+   The result feeds the existing try desugar, which only
+   sees a try-let and a final Return — no Block-expr stmt
+   vocab extension needed. The pre-pass is gated on
+   `body_contains_try` so non-try functions keep their
+   direct if/else lowering (visible to LLVM test
+   assertions on `then0:`/`else1:` block labels). Test
+   totals: 920 lib + 47 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref. Closure #232.
+
    **Reassignment between `try` and `return` done 2026-05-25**:
    the try desugar now admits assignment statements
    (e.g. `w = w + 1;`) between the try-let and the final

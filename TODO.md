@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #231 — assign stmts between try and return)
+## ⏳ Resume here (paused 2026-05-25, after closure #232 — guard-if between try and return)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,22 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#232 Guard-if between try and return:
+`if cond { return X; } ... return Y;` now composes
+with `try` on both backends. New AST pre-pass
+`rewrite_guard_ifs_in_stmt_list` (in
+desugar_try_let_in_program, before try_rewrite_stmt_list)
+finds the FIRST guard of shape `if cond { return X; }`
+(no else, single Return in then) followed by a Return,
+and rewrites it into `return match cond { true then X,
+false then { rest; Y } };`. The result feeds the
+existing try desugar unchanged. Gated on
+`body_contains_try` so non-try fns keep direct
+if/else lowering. New helpers
+`body_contains_try`/`stmt_contains_try`/`expr_contains_try`
+walk the AST to detect Try anywhere.
+Test totals: 920 lib + 47 e2e + 11 vtables-phase3 + 2
+user-drop-by-ref.
 #231 Assign statements between try and return: the try
 desugar now admits `w = w + 1;`-style assignments
 between the try-let and the final return. The Block-expr
@@ -1049,15 +1065,15 @@ totals: 888 lib + 47 e2e passing.
   the existing `TypedStmt::Drop` lowering so user-declared
   `implement Drop for T` runs automatically. Blocked on B above
   for nested affine fields.
-- **#5 follow-ups remaining**: control-flow statements
-  (If/While) between `try` and `return` — currently Let,
-  Print, and Assign are admitted (#231 added Assign). Adding
-  If/While requires extending Block-expr's stmt vocabulary
-  AND threading the new shapes through both backends' Block
-  emit. `try EXPR(args)` parser precedence closed by #230.
-  `try` in nested blocks closed by #217; multiple `try`s in
-  one block closed by #218. Assign between try and return
-  closed by #231.
+- **#5 follow-ups remaining**: `while` loops between `try`
+  and `return` (still rejected — would need a deeper rewrite
+  since while-loops don't have a single point of "tail
+  expression"). `try EXPR(args)` parser precedence closed by
+  #230. `try` in nested blocks closed by #217; multiple
+  `try`s in one block closed by #218. Assign between try
+  and return closed by #231. Guard-if (`if cond { return X; }`)
+  between try and return closed by #232 via AST pre-pass
+  that rewrites the guard into a tail match.
 - **Devanagari (parked at user's request)**: script-aware
   diagnostics, multi-word alias expansion, grammar-consultant
   review of the Sanskrit / Hindi / Marathi tables.
