@@ -1480,20 +1480,44 @@ fn flatten_modules_in_program(
             }
             program.functions.push(f);
         }
-        for mut s in module.structs {
+        for (idx, mut s) in module.structs.into_iter().enumerate() {
+            let is_pub = module.visibility.structs_pub.get(idx).copied().unwrap_or(false);
+            let orig_name = s.name.clone();
             s.name = qualify(&s.name);
+            if !is_pub {
+                private_items.insert(
+                    s.name.clone(),
+                    format!("{}::{}", mod_name, orig_name),
+                );
+            }
             for fld in &mut s.fields { rewrite_type(&mut fld.ty, &qualify); }
             program.structs.push(s);
         }
-        for mut e in module.enums {
+        for (idx, mut e) in module.enums.into_iter().enumerate() {
+            let is_pub = module.visibility.enums_pub.get(idx).copied().unwrap_or(false);
+            let orig_name = e.name.clone();
             e.name = qualify(&e.name);
+            if !is_pub {
+                private_items.insert(
+                    e.name.clone(),
+                    format!("{}::{}", mod_name, orig_name),
+                );
+            }
             for v in &mut e.variants {
                 for p in &mut v.payload { rewrite_type(p, &qualify); }
             }
             program.enums.push(e);
         }
-        for mut i in module.interfaces {
+        for (idx, mut i) in module.interfaces.into_iter().enumerate() {
+            let is_pub = module.visibility.interfaces_pub.get(idx).copied().unwrap_or(false);
+            let orig_name = i.name.clone();
             i.name = qualify(&i.name);
+            if !is_pub {
+                private_items.insert(
+                    i.name.clone(),
+                    format!("{}::{}", mod_name, orig_name),
+                );
+            }
             for m in &mut i.methods {
                 rewrite_type(&mut m.return_type, &qualify);
                 for p in &mut m.params {
@@ -1517,14 +1541,30 @@ fn flatten_modules_in_program(
             }
             program.impls.push(imp);
         }
-        for mut c in module.consts {
+        for (idx, mut c) in module.consts.into_iter().enumerate() {
+            let is_pub = module.visibility.consts_pub.get(idx).copied().unwrap_or(false);
+            let orig_name = c.name.clone();
             c.name = qualify(&c.name);
+            if !is_pub {
+                private_items.insert(
+                    c.name.clone(),
+                    format!("{}::{}", mod_name, orig_name),
+                );
+            }
             rewrite_type(&mut c.ty, &qualify);
             rewrite_expr(&mut c.value, &qualify);
             program.consts.push(c);
         }
-        for mut a in module.type_aliases {
+        for (idx, mut a) in module.type_aliases.into_iter().enumerate() {
+            let is_pub = module.visibility.type_aliases_pub.get(idx).copied().unwrap_or(false);
+            let orig_name = a.name.clone();
             a.name = qualify(&a.name);
+            if !is_pub {
+                private_items.insert(
+                    a.name.clone(),
+                    format!("{}::{}", mod_name, orig_name),
+                );
+            }
             rewrite_type(&mut a.target, &qualify);
             program.type_aliases.push(a);
         }
@@ -7555,10 +7595,19 @@ fn check_expr(
             // registry stored on env, then verify every
             // required field is present with a matching type.
             let Some(decl) = env.lookup_struct(type_name) else {
-                diagnostics.push(Diagnostic::new(
-                    *type_name_span,
-                    format!("unknown struct type '{}'", type_name),
-                ));
+                // Closure #244: surface "private item" if the
+                // lookup-missing name has a corresponding
+                // private mangling.
+                let private_msg = crate::ast::lookup_private_item(type_name);
+                let msg = match private_msg {
+                    Some(src_path) => format!(
+                        "struct '{}' is private to its module — \
+                         mark it `pub` to allow access from outside",
+                        src_path
+                    ),
+                    None => format!("unknown struct type '{}'", type_name),
+                };
+                diagnostics.push(Diagnostic::new(*type_name_span, msg));
                 return CheckedExpr::fallback_integer(expr.span);
             };
             // Build name → declared type map for lookup.

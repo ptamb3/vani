@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #243 — namespaces Phase 2 visibility enforcement)
+## ⏳ Resume here (paused 2026-05-26, after closure #244 — namespaces Phase 2.1 full visibility)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,20 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#244 Namespaces Phase 2.1 — full visibility (struct /
+enum / interface / const / type-alias). Extends #243's
+fn-only enforcement to every item kind. Each
+item-list loop in `flatten_modules_in_program` now uses
+`.into_iter().enumerate()`, looks up
+`module.visibility.<kind>_pub.get(idx)`, and registers
+private items in `PRIVATE_MODULE_ITEMS`. The
+unknown-struct-type diagnostic at the struct-lit site
+also consults the registry to surface the
+"private to its module" message. Two new lib tests
+(`module_private_struct_blocked_from_outside` +
+`module_pub_struct_accessible`) cover the new
+coverage. Test totals: 931 lib + 47 e2e + 11
+vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples.
 #243 Namespaces Phase 2 — visibility enforcement (fn-only
 in v1). Non-`pub` items inside a module are now
 unreachable from outside via differentiated name
@@ -1270,16 +1284,19 @@ likely impact / blast radius, not implementation order.
   `<mod>__priv__<name>` (form the parser can't produce);
   outside references hit a lookup miss; diagnostic
   consults a `PRIVATE_MODULE_ITEMS` registry to say
-  "function 'mod::name' is private". v1 enforces
-  visibility for functions; struct / enum / const /
-  type-alias visibility is a Phase 2.1 follow-up (mechanism
-  generalizes; mostly more enumerate-with-index patterns
-  to wire).
-  *Still queued*: Phase 2.1 (struct/enum/const visibility);
-  `use foo::bar;` declarations; orphan rules for `implement`
-  blocks (impl must live in the module of either Iface or T);
-  nested modules, glob imports, multi-item `use foo::{bar,
-  baz};`, `pub(crate)` tiers, re-exports.
+  "function 'mod::name' is private".
+  *Phase 2.1 done 2026-05-26 (closure #244)*: visibility
+  enforcement extends to struct / enum / interface /
+  const / type-alias kinds — every item-list loop in
+  `flatten_modules_in_program` now consults the
+  visibility bitmap and registers private items. The
+  unknown-struct-type diagnostic surfaces the same
+  "private to its module" message.
+  *Still queued*: Phase 3 — `use foo::bar;` declarations;
+  orphan rules for `implement` blocks (impl must live in
+  the module of either Iface or T); nested modules; glob
+  imports; multi-item `use foo::{bar, baz};`;
+  `pub(crate)` tiers; re-exports.
 - **Multiple source files for one compilation.** `use "path"`
   already exists for single-file imports; extend to a full
   multi-file pipeline so the compiler ingests a set of `.vani`

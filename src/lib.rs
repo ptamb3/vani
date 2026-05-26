@@ -2352,6 +2352,54 @@ mod tests {
     }
 
     #[test]
+    fn module_private_struct_blocked_from_outside() {
+        // Phase 2.1: struct visibility uses the same
+        // differentiated-mangling mechanism. The
+        // unknown-struct-type diagnostic surfaces the
+        // private-item message when the user references a
+        // private struct from outside its module.
+        let source = r#"
+            module geo {
+              struct Point { x: i64, y: i64 }
+              pub fn x_of(p: Point) -> i64 { return p.x; }
+            }
+
+            fn main() -> i64 {
+              let p: geo::Point = geo::Point { x: 7, y: 9 };
+              return geo::x_of(p);
+            }
+        "#;
+        let err = compile(source).expect_err("private struct should be rejected");
+        assert!(
+            err.iter().any(|d| d.message.contains("private to its module")
+                && d.message.contains("geo::Point")),
+            "expected `geo::Point private` diagnostic, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn module_pub_struct_accessible() {
+        // Public struct + intra-module bare-name usage. The
+        // flattening rewrites `Point` inside `geo` to
+        // `geo__Point`; the `pub` mangling matches what the
+        // parser produces for `geo::Point` from outside, so
+        // outside refs work too.
+        let source = r#"
+            module geo {
+              pub struct Point { x: i64, y: i64 }
+              pub fn x_of(p: Point) -> i64 { return p.x; }
+            }
+
+            fn main() -> i64 {
+              let p: geo::Point = geo::Point { x: 7, y: 9 };
+              return geo::x_of(p);
+            }
+        "#;
+        compile(source).expect("public struct + bare-name in-module + outside ref");
+    }
+
+    #[test]
     fn modules_with_struct_and_call_compile() {
         // Module-scoped struct gets a path-qualified type
         // name (`math::Point` → `math__Point` internally).

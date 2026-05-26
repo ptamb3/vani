@@ -537,6 +537,21 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Namespaces Phase 2.1 — struct / enum / const / type-alias visibility done 2026-05-26**:
+   visibility enforcement now extends to every item kind
+   inside a module, not just functions. The flattening
+   pass's per-item-list loop converts to
+   `.into_iter().enumerate()` for each kind, looking up
+   `module.visibility.<kind>_pub.get(idx)` and registering
+   private items in `PRIVATE_MODULE_ITEMS`. The
+   unknown-struct-type diagnostic also consults the
+   registry to surface the same "private to its module"
+   message for struct references. Two new lib tests cover
+   private struct rejection + public struct round-trip
+   with intra-module bare-name use. Test totals: 931 lib +
+   47 e2e + 11 vtables-phase3 + 2 user-drop-by-ref + 1
+   ssa-examples passing. Closure #244.
+
    **Namespaces Phase 2 — visibility enforcement done 2026-05-26**:
    non-`pub` items inside a module are now unreachable from
    outside the module. Implementation uses **differentiated
