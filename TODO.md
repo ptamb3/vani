@@ -1101,10 +1101,108 @@ totals: 888 lib + 47 e2e passing.
 - Struct/tuple/enum `==` (lands with #7 Phase 2 → option A)
 - Match on `bool` / `Str` / `f64` scrutinees
 
-### Deferred (multi-week)
+### Language-design items (queued 2026-05-26)
 
-- Cranelift backend
-- Direct-asm targets (x86_64-linux first)
+User-requested additions to the language surface. Ordered by
+likely impact / blast radius, not implementation order.
+
+- **Namespaces / modules.** Today every fn / struct / enum /
+  interface lives in one flat global scope. Large programs
+  (and standard-library work) need a way to partition names.
+  Rust uses `mod foo { ... }` + `pub`; C++ uses
+  `namespace foo { ... }`. Open questions: do `use` paths
+  carry namespaces (`use "lib.vani"::foo`)? Are namespaces
+  file-scoped by default (mirror Rust) or do they declare
+  explicitly (mirror C++)? How do interface/impl resolution
+  cross namespaces?
+- **Multiple source files for one compilation.** `use "path"`
+  already exists for single-file imports; extend to a full
+  multi-file pipeline so the compiler ingests a set of `.vani`
+  files producing one binary. Needs: include-path resolution,
+  diamond-import dedup, cycle detection. Maybe a manifest file
+  (`vani.toml`?) to name the entry point + dependencies.
+- **File extension rename to `.vani`.** Currently `.intent`.
+  Touch points: example file renames (58 files), test
+  expectations that hard-code the suffix, lexer/parser error
+  messages, README examples. Decide whether headers / partial
+  files want a separate suffix (`.vani.h` for declarations
+  only?) or whether the same `.vani` covers both with content-
+  driven distinction.
+- **Language-purity gate.** Today the lexer accepts keywords
+  from any registered language (English / Sanskrit / Hindi /
+  Marathi) in the same source file. Add a per-file declaration
+  (e.g. `lang english;` at top of file, or detect from the
+  first non-comment token) that restricts the rest of that
+  file to that language's keyword set. Mixed-language files
+  surface a clear "language X file uses keyword from language
+  Y" diagnostic. Cross-file mixing (one .vani in English,
+  another in Sanskrit, same program) stays allowed — purity
+  is per-file.
+- **Within-language keyword aliases.** Extend the keyword
+  table so each language can declare multiple spellings for
+  the same concept. Concrete English aliases to consider:
+  - `struct` / `record` (data shape)
+  - `return` / `give` (function exit)
+  - `->` / `returns` / `yields` (return-type marker — `fn f()
+    yields i64 { ... }`)
+  - `fn` / `function` / `def`
+  - `let` / `bind`
+  - `if` / `when` (Rust borrowed `when` for guards; vāṇī
+    could too)
+  - `else` / `otherwise`
+  - `match` / `select` / `dispatch`
+  - `mut` / `mutable`
+  - `ref` / `borrow`
+  - `interface` / `trait` / `contract`
+  - `implement` / `impl` / `is-a` (last form reads as
+    `implement Drawable is-a Circle`? — needs care)
+  - `const` / `constant`
+  - `enum` / `variant` / `oneof`
+  - `assert` / `must` / `expect`
+  - `print` / `say` / `output`
+  Sanskrit / Hindi / Marathi tables grow proportionally. Each
+  alias group emits the same token kind; the formatter picks a
+  canonical spelling per file based on the keyword the user
+  first chose (consistency without forcing a global default).
+- **Patterns from Rust / C++ worth considering** (deferred
+  until specific use cases surface — adding any of these
+  needs design):
+  - Multi-param generics (`<T, U>`), with-clause bounds on
+    each.
+  - Pattern guards in match arms (`Some(v) if v > 0 then ...`)
+    — Rust's `if` guard, distinct from the if-as-arm-body.
+  - `if let` / `while let` for single-arm destructure.
+  - Tuple structs (`struct Point(i64, i64)`) as a lighter
+    shape than named-field structs.
+  - Iterator combinators (`xs.map(f).filter(g).fold(0, h)`)
+    — would compose well with the existing
+    `for x in xs { ... }` machinery.
+  - `const fn` — compile-time-evaluable functions.
+  - Operator overloading via interfaces (`implement Add for
+    T { fn add(self, other) -> T }`).
+  - Const generics (`fn first<T, const N: usize>([T; N]) -> T`).
+  - `ref pat` / `mut pat` bindings in match arms (borrow vs
+    consume per-arm).
+  - Anonymous unions / variants without enum naming.
+  - String slice (`&str`-style borrow into an OwnedStr).
+  - Coroutines / generators (lighter than full async/await).
+
+### Deferred indefinitely (may never ship)
+
+These are tracked so the rationale doesn't get lost, but the
+user has indicated they're far-future / "may not happen":
+
+- **Cranelift backend.** A fast JIT path independent of the
+  LLVM toolchain. Would benefit dev-loop turnaround. Pending
+  user buy-in.
+- **Direct x86_64-asm target.** Teaching-path / tiny-target
+  option that skips both LLVM and C. Educational value but
+  no production use case.
+
+### Previously deferred (multi-week — kept for context)
+
+- Cranelift backend (see above)
+- Direct-asm targets (x86_64-linux first; see above)
 
 ## Foundational items — dependency-ordered queue (2026-05-21)
 
