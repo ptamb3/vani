@@ -1,0 +1,164 @@
+intent "Memory safety patterns — affine ownership, move, borrow, deterministic drop";
+
+// vāṇī's memory-safety guarantees, demonstrated positively. Every
+// operation here is checked at compile time; nothing leaks, nothing
+// double-frees, nothing races. See the README's "Memory safety &
+// concurrency model" section for the full rules and what gets
+// rejected.
+
+// ---------------------------------------------------------------
+// 1. Affine `Vec<T>` — moves on assignment, no implicit clone.
+// ---------------------------------------------------------------
+
+fn consume_vec(xs: Vec<i64>) -> u64 {
+  return len(xs);
+}
+
+fn double_vec_via_borrow(xs: ref Vec<i64>) -> i64 {
+  return xs[0] + xs[0];
+}
+
+fn ownership_basics() -> i64 {
+  // `vec(...)` produces a fresh Vec; `let v` takes ownership.
+  let v: Vec<i64> = vec(10, 20, 30);
+  let n: u64 = consume_vec(v);   // v is moved into consume_vec
+  // Trying to read v here would error: "value 'v' was moved".
+  // The fix the diagnostic suggests: `ref v` or `clone(v)`.
+
+  // Borrow-first pattern: the callee only reads, so the caller
+  // keeps ownership and the Vec lives until end of fn.
+  let w: Vec<i64> = vec(7, 14, 21);
+  let doubled: i64 = double_vec_via_borrow(ref w);
+  let len_w: u64 = len(ref w);
+
+  return doubled + (n as i64) + (len_w as i64);
+}
+
+// ---------------------------------------------------------------
+// 2. Explicit `clone` when both bindings need to own data.
+// ---------------------------------------------------------------
+
+fn explicit_clone() -> i64 {
+  let xs: Vec<i64> = vec(1, 2, 3);
+  let ys: Vec<i64> = clone(xs);   // explicit deep copy
+  // Both xs and ys are owners now — neither moves into the
+  // other. Each drops independently at scope exit.
+  return xs[0] + ys[0];
+}
+
+// ---------------------------------------------------------------
+// 3. Stack pattern — push + pop through a `mut ref`.
+// ---------------------------------------------------------------
+
+fn stack_pattern() -> i64 {
+  let stack: Vec<i64> = vec();   // empty
+  let _ = push(mut ref stack, 1);
+  let _ = push(mut ref stack, 2);
+  let _ = push(mut ref stack, 3);
+  // pop returns by value; the slot in the Vec is forgotten.
+  let top: i64 = pop(mut ref stack);
+  let next: i64 = pop(mut ref stack);
+  // stack still owns its remaining element; drops at scope exit.
+  return top + next;   // 3 + 2
+}
+
+// ---------------------------------------------------------------
+// 4. Heap strings — `OwnedStr` from `+`, drops automatically.
+// ---------------------------------------------------------------
+
+fn owned_str_drops() -> i64 {
+  let greeting: OwnedStr = "Hello, " + "world";
+  // greeting is heap-allocated. No `free` call needed —
+  // the codegen emits one at scope exit. We bind a Copy
+  // value (length is i64) to demonstrate without
+  // touching the binding via a ref.
+  print greeting;
+  return 0;
+}
+
+// ---------------------------------------------------------------
+// 5. User-defined `Drop` — runs deterministically on scope exit.
+// `Drop` is a user-declared interface (closure #229); the checker
+// recognizes any `interface Drop` with a single `drop` method
+// and auto-calls it at scope exit for non-moved bindings.
+// ---------------------------------------------------------------
+
+struct ScopedCounter {
+  value: i64,
+}
+
+interface Drop {
+  fn drop(self: ScopedCounter) -> i64;
+}
+
+implement Drop for ScopedCounter {
+  fn drop(self: ScopedCounter) -> i64 {
+    // In a real program this would close a file handle or
+    // release a resource. The compiler guarantees it fires
+    // exactly once per binding.
+    return self.value;
+  }
+}
+
+fn user_drop() -> i64 {
+  let c: ScopedCounter = ScopedCounter { value: 42 };
+  let v: i64 = c.value;
+  return v;
+  // c.drop() runs here automatically.
+}
+
+// ---------------------------------------------------------------
+// 6. Parallel-for with explicit reduction — no race, no atomic.
+// ---------------------------------------------------------------
+
+fn parallel_sum() -> i64 {
+  let total: i64 = 0;
+  parallel for i from 1 to 11
+  reduce total with +;
+  {
+    // The `reduce` clause tells the compiler this captured
+    // mutation is intentional. C backend lowers to OpenMP
+    // `reduction(+: total)`; LLVM emits atomicrmw add.
+    total = total + i;
+  }
+  return total;   // 1+2+…+10 = 55
+}
+
+// ---------------------------------------------------------------
+// 7. `task` + `join` — affine thread handle, must be joined.
+// ---------------------------------------------------------------
+
+fn task_and_join() -> i64 {
+  let scratch: i64 = 99;   // Copy capture
+  task worker {
+    let r: i64 = scratch + 1;
+    let _ = r;
+  }
+  // Forgetting `join worker;` would error:
+  // "task 'worker' was never consumed by `join`".
+  join worker;
+  return 0;
+}
+
+// ---------------------------------------------------------------
+// Top-level — exercise every pattern.
+// ---------------------------------------------------------------
+
+fn main() -> i64 {
+  let a: i64 = ownership_basics();
+  let b: i64 = explicit_clone();
+  let c: i64 = stack_pattern();
+  let d: i64 = owned_str_drops();
+  let e: i64 = user_drop();
+  let f: i64 = parallel_sum();
+  let g: i64 = task_and_join();
+
+  write "ownership_basics =", a;
+  write "explicit_clone   =", b;
+  write "stack_pattern    =", c;
+  write "owned_str_drops  =", d;
+  write "user_drop        =", e;
+  write "parallel_sum     =", f;
+  write "task_and_join    =", g;
+  return 0;
+}

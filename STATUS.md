@@ -537,6 +537,26 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **examples/memory_safety.vani — canonical patterns demo done 2026-05-26**:
+   added a single example that exercises the seven core
+   memory-safety patterns end-to-end and is now wired into
+   the cross-backend parity runner: (1) affine Vec ownership
+   + move-into-callee, (2) explicit `clone(xs)` for the
+   both-bindings-own-data case, (3) push/pop Stack pattern
+   through `mut ref`, (4) `OwnedStr` automatic drop on scope
+   exit, (5) user-defined `Drop` interface, (6) `parallel for`
+   with `reduce total with +;`, (7) `task name { … }` +
+   `join name;`. All seven compile + run on both backends
+   and produce identical stdout. Surfaced one codegen gap
+   along the way: `len(ref OwnedStr)` produces invalid LLVM
+   IR (passes `i8**` where `strlen` wants `i8*`) — recorded
+   in TODO.md under "Known codegen bugs" with workaround. The
+   example complements the README's *Memory safety &
+   concurrency model* section as the canonical entry point
+   for newcomers. Test totals unchanged: 966 lib + 47 e2e +
+   11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples.
+   Closure #261.
+
    **Move-rejection diagnostic — type-aware fix hint done 2026-05-26**:
    the "value 'v' was moved; cannot use after move"
    diagnostic now carries a type-aware secondary note

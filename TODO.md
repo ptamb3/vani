@@ -556,6 +556,15 @@ The move-by-default story is **already shipping**; no semantic
 gap remains in v1. Small polish items below are quality-of-life
 improvements, not correctness fixes.
 
+### Known codegen bugs (small lifts each)
+
+- ⚠️ **`len(ref OwnedStr)` produces invalid LLVM IR.** Surfaced
+  while wiring `examples/memory_safety.vani` (closure #261). The
+  ref-conversion passes the OwnedStr binding's address (`i8**`)
+  where `strlen` expects the inner pointer (`i8*`). Workaround:
+  call `len(s)` without `ref`. Fix: the ref-of-OwnedStr lowering
+  needs a load before passing to `strlen`. Small.
+
 ### Move/clone polish — small items
 
 - ✅ **Move-rejection diagnostic carries a type-aware fix
@@ -572,10 +581,10 @@ improvements, not correctness fixes.
   unnecessarily — needs a sweep of the binary-op checker to
   list cases that could be auto-borrow rather than auto-move.
   Small / medium.
-- **`pop(mut ref xs)` builtin.** `push(mut ref xs, v)` exists;
-  the symmetric `pop` that moves the last element out would
-  complete the affine Stack pattern. Today the workaround is
-  `clone_at + truncate` which is awkward. Small.
+- ✅ **`pop(mut ref xs) -> T` builtin** — shipped under
+  closure #219 (Copy element types only; the affine-element
+  Option<T> variant is a v2 follow-up). The symmetric
+  `push_mut` + `pop` pair completes the affine Stack pattern.
 - **`Atomic<T>` clone is forbidden by design** — re-document
   in the README that there's no `Arc`-equivalent (shared
   ownership across threads goes through `Atomic<T>` /

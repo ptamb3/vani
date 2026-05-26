@@ -370,8 +370,11 @@ fn main() -> i64 {
 }
 ```
 
-See [examples/](examples/) for the full set of working programs,
-and `src/lib.rs::tests` for the negative-test coverage (search for
+See [examples/memory_safety.vani](examples/memory_safety.vani) for
+the seven canonical patterns exercised end-to-end (affine Vec
+ownership, explicit clone, push/pop stack, OwnedStr drop, user
+Drop, parallel-for reduction, task + join), and
+`src/lib.rs::tests` for the negative-test coverage (search for
 `expect_err`, `use_after_move`, `double_free`, `unjoined_task`, etc).
 
 ### Known gaps (will become checks later)
