@@ -4647,7 +4647,7 @@ fn escape_comment(text: &str) -> String {
 /// `interface` + `implement` but never coerced to dyn don't
 /// need vtable scaffolding (and would surface trampoline
 /// compile errors against unused signatures).
-fn collect_used_dyn_ifaces(program: &TypedProgram) -> std::collections::HashSet<String> {
+pub(crate) fn collect_used_dyn_ifaces(program: &TypedProgram) -> std::collections::HashSet<String> {
     fn walk_type(ty: &Type, set: &mut std::collections::HashSet<String>) {
         match ty {
             Type::Object(name) => {

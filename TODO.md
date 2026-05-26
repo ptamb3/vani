@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-25, after closure #223 — vtables Phase 3a tree-C codegen)
+## ⏳ Resume here (paused 2026-05-25, after closure #224 — vtables Phase 3b tree-LLVM codegen)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -535,6 +535,29 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#224 Vtables Phase 3b (tree-LLVM codegen): lli now
+runs dyn-dispatching programs identically to tree-C.
+Preamble emits `%intent_vtbl_<Iface>` (struct of
+fn-ptrs taking `i8*` as the first arg) and
+`%intent_dyn_<Iface>` (`{ %intent_vtbl_<Iface>*, i8* }`)
+named struct types, gated on actual dyn use.
+Per-(T, Iface) trampolines defined as `internal`
+functions that bitcast `i8* self` to the declared self
+shape (load for by-value, raw cast for ref/mut-ref)
+and tail-call `@fn_<T>_<method>`. Per-(T, Iface)
+global vtable constants
+`@intent_vtbl_<Iface>_<T>` initialize the slot fn-ptrs
+in declaration order. DynCoerce emits `bitcast` of the
+binding's alloca to `i8*` + `insertvalue` chain.
+DynDispatch emits `extractvalue` for both vtable and
+data pointers, `getelementptr` into the slot, `load`
+the fn-ptr, `call` indirect. `llvm_type_string` extended
+for `Type::Object`; `is_scalar` accepts Object so the
+by-value param alloca-store path covers `dyn Iface`
+parameters. New `compile_to_llvm` public API symmetric
+to `compile_to_c`. New e2e test exercises
+emit_llvm + opt -verify + lli + run. Test totals: 920
+lib + 47 e2e + 3 vtables-phase3.
 #223 Vtables Phase 3a (tree-C codegen): dyn-using
 programs now compile + run via the C backend. New
 `TypedExprKind::DynCoerce { value, iface_name,
@@ -860,11 +883,14 @@ totals: 888 lib + 47 e2e passing.
     done 2026-05-25 (closure #223)** — vtable typedef +
     per-(T, Iface) trampolines + DynCoerce/DynDispatch
     emit; v1 restricts coercion source to Var. **Phase 3b
-    (tree-LLVM) still queued** — backend currently panics
-    with "use --backend=c" when it encounters a
-    DynDispatch/DynCoerce node. v1 also pending: non-Var
-    coercion sources (need IR rewrite to hoist into
-    synthetic let).
+    (tree-LLVM) done 2026-05-25 (closure #224)** — named
+    struct types `%intent_vtbl_<Iface>` /
+    `%intent_dyn_<Iface>`, per-(T, Iface) trampolines +
+    global vtable constants, insertvalue/extractvalue +
+    GEP-load-call lowering. lli verifies + runs the same
+    dyn programs identically to tree-C. v1 still pending:
+    non-Var coercion sources (need IR rewrite to hoist
+    into synthetic let).
 
   - **Phase 4 — collections & polish.** `Vec<dyn Iface>`,
     struct field of `dyn Iface`, method calls on borrows

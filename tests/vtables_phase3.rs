@@ -2,6 +2,7 @@ use std::io::Write;
 use std::process::Command;
 
 use vani::compile_to_c;
+use vani::compile_to_llvm;
 
 fn cc_available() -> bool {
     Command::new("cc")
@@ -75,6 +76,82 @@ fn dyn_dispatch_returns_value_via_vtable_indirect_call() {
         code, 25,
         "expected area_of_dyn(Circle {{ r: 5 }}) == 25, got exit {} — generated C:\n{}",
         code, c
+    );
+}
+
+fn lli_available() -> bool {
+    Command::new("lli")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn run_with_lli(ll_source: &str, tag: &str) -> i32 {
+    let dir = std::env::temp_dir();
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ll_path = dir.join(format!("intent-vtbl-{}-{}-{}.ll", tag, pid, nanos));
+    {
+        let mut f = std::fs::File::create(&ll_path).expect("write ll");
+        f.write_all(ll_source.as_bytes()).expect("write");
+    }
+    let run = Command::new("lli")
+        .arg(&ll_path)
+        .status()
+        .expect("lli runs");
+    let _ = std::fs::remove_file(&ll_path);
+    run.code().unwrap_or(-1)
+}
+
+#[test]
+fn dyn_dispatch_returns_value_via_vtable_indirect_call_llvm() {
+    if !lli_available() {
+        return;
+    }
+    let source = r#"
+        struct Circle { r: i64 }
+
+        interface Drawable {
+          fn area(self: Circle) -> i64;
+        }
+
+        implement Drawable for Circle {
+          fn area(self: Circle) -> i64 { return self.r * self.r; }
+        }
+
+        fn area_of_dyn(d: dyn Drawable) -> i64 {
+          return d.area();
+        }
+
+        fn main() -> i64 {
+          let c: Circle = Circle { r: 5 };
+          return area_of_dyn(c);
+        }
+    "#;
+    let ll = compile_to_llvm(source).expect("dyn dispatch compiles to LLVM IR");
+    assert!(
+        ll.contains("%intent_vtbl_Drawable = type"),
+        "expected vtable typedef in LLVM IR:\n{ll}"
+    );
+    assert!(
+        ll.contains("@intent_vtbl_Drawable_Circle = constant"),
+        "expected global vtable constant:\n{ll}"
+    );
+    assert!(
+        ll.contains("@intent_trampoline_Circle_Drawable_0_area"),
+        "expected trampoline definition:\n{ll}"
+    );
+    let code = run_with_lli(&ll, "dyn_area_llvm");
+    assert_eq!(
+        code, 25,
+        "expected area_of_dyn(Circle {{ r: 5 }}) == 25 via lli, got exit {} — LLVM IR:\n{}",
+        code, ll
     );
 }
 

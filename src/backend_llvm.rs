@@ -516,6 +516,17 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     if any_enum_emitted {
         out.push('\n');
     }
+    // Vtables Phase 3b: per-Iface vtable + fat-pointer
+    // named types, gated on actual `dyn Iface` use in the
+    // program (mirrors tree-C's same gate). Trampoline
+    // bodies + global vtable constants come AFTER function
+    // bodies because they reference the hoisted impl fns
+    // by name.
+    let used_dyn_ifaces_llvm = collect_used_dyn_ifaces_llvm(program);
+    emit_dyn_iface_llvm_typedefs(&mut out, &used_dyn_ifaces_llvm);
+    if !used_dyn_ifaces_llvm.is_empty() {
+        out.push('\n');
+    }
     for elt in &vec_elements {
         // In-buffer slot spelling (arrays as bare `[N x T]`).
         // Phase 2c.
@@ -534,6 +545,15 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
 
     for function in &program.functions {
         emit_function(function, &assert_idx, &print_idx, &mut out);
+        out.push('\n');
+    }
+
+    // Vtables Phase 3b: emit per-(T, Iface) trampolines +
+    // global vtable constants. Trampolines call the hoisted
+    // `@fn_<T>_<method>` functions defined above; global
+    // constants reference the trampolines by their `@`-name.
+    emit_dyn_iface_llvm_vtables(&mut out, &used_dyn_ifaces_llvm);
+    if !used_dyn_ifaces_llvm.is_empty() {
         out.push('\n');
     }
 
@@ -4440,13 +4460,100 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             }
             tail_val
         }
-        TypedExprKind::DynDispatch { iface_name, .. }
-        | TypedExprKind::DynCoerce { iface_name, .. } => {
-            panic!(
-                "tree-LLVM codegen for `dyn {}` is pending vtables Phase 3b — \
-                 use `--backend=c` for programs that use dyn interface dispatch",
-                iface_name
-            );
+        TypedExprKind::DynCoerce { value, iface_name, from_type_name, from_ty: _ } => {
+            // Vtables Phase 3b: materialize the fat pointer.
+            // v1 restricts the source to a Var so the data
+            // slot can point at the binding's existing alloca
+            // (stable address). Non-Var sources need an IR
+            // hoist (Phase 4 follow-up).
+            let TypedExprKind::Var(var_name) = &value.kind else {
+                panic!(
+                    "vtables Phase 3b: coercion to `dyn {}` from non-Var source is \
+                     pending — let-bind the value before passing it",
+                    iface_name
+                );
+            };
+            let (_var_ty, var_addr) = ctx
+                .locals
+                .get(var_name)
+                .cloned()
+                .expect("dyn coerce: var must be in scope");
+            let dyn_ty = format!("%intent_dyn_{}", iface_name);
+            let vtbl_ty = format!("%intent_vtbl_{}", iface_name);
+            let vtbl_global = format!("@intent_vtbl_{}_{}", iface_name, from_type_name);
+            let data_i8 = ctx.fresh_tmp();
+            out.push_str(&format!(
+                "  {} = bitcast {}* {} to i8*\n",
+                data_i8, llvm_type_string(&value.ty), var_addr
+            ));
+            let stage0 = ctx.fresh_tmp();
+            out.push_str(&format!(
+                "  {} = insertvalue {} undef, {}* {}, 0\n",
+                stage0, dyn_ty, vtbl_ty, vtbl_global
+            ));
+            let stage1 = ctx.fresh_tmp();
+            out.push_str(&format!(
+                "  {} = insertvalue {} {}, i8* {}, 1\n",
+                stage1, dyn_ty, stage0, data_i8
+            ));
+            stage1
+        }
+        TypedExprKind::DynDispatch {
+            receiver, iface_name, slot_index, args, ..
+        } => {
+            // Vtables Phase 3b: GEP into the fat pointer's
+            // vtable, load the slot's fn-ptr, call it indirectly
+            // with the data pointer as the implicit first arg.
+            let recv_val = emit_expr(receiver, ctx, out);
+            let dyn_ty = format!("%intent_dyn_{}", iface_name);
+            let vtbl_ty = format!("%intent_vtbl_{}", iface_name);
+            let vtbl_ptr = ctx.fresh_tmp();
+            out.push_str(&format!(
+                "  {} = extractvalue {} {}, 0\n",
+                vtbl_ptr, dyn_ty, recv_val
+            ));
+            let data_ptr = ctx.fresh_tmp();
+            out.push_str(&format!(
+                "  {} = extractvalue {} {}, 1\n",
+                data_ptr, dyn_ty, recv_val
+            ));
+            let slot_ptr_ptr = ctx.fresh_tmp();
+            out.push_str(&format!(
+                "  {} = getelementptr {}, {}* {}, i32 0, i32 {}\n",
+                slot_ptr_ptr, vtbl_ty, vtbl_ty, vtbl_ptr, slot_index
+            ));
+            // Build the slot's fn-ptr type from the iface
+            // signature so the load + call have matching types.
+            let methods = crate::ast::iface_methods_for(iface_name)
+                .expect("dyn dispatch: iface registry must hold the method list");
+            let (_, iface_params, iface_ret) = methods
+                .get(*slot_index)
+                .cloned()
+                .expect("dyn dispatch: slot index in range");
+            let ret_ty = llvm_type_string(&iface_ret);
+            let arg_tys: Vec<String> = std::iter::once("i8*".to_string())
+                .chain(iface_params.iter().skip(1).map(llvm_type_string))
+                .collect();
+            let fn_ptr_ty = format!("{} ({})*", ret_ty, arg_tys.join(", "));
+            let slot_ptr = ctx.fresh_tmp();
+            out.push_str(&format!(
+                "  {} = load {}, {}* {}\n",
+                slot_ptr, fn_ptr_ty, fn_ptr_ty, slot_ptr_ptr
+            ));
+            let mut arg_vals: Vec<String> = vec![format!("i8* {}", data_ptr)];
+            for (i, arg) in args.iter().enumerate() {
+                let v = emit_expr(arg, ctx, out);
+                arg_vals.push(format!("{} {}", arg_tys[i + 1], v));
+            }
+            let result = ctx.fresh_tmp();
+            out.push_str(&format!(
+                "  {} = call {} {}({})\n",
+                result,
+                ret_ty,
+                slot_ptr,
+                arg_vals.join(", "),
+            ));
+            result
         }
         kind => unreachable!(
             "backend: TypedExprKind not lowered as standalone expression: {:?}",
@@ -7406,6 +7513,10 @@ fn is_scalar(ty: &Type) -> bool {
         || matches!(ty, Type::Struct(_))
         // Enums are tag-sized i32 scalars. T1.3.
         || matches!(ty, Type::Enum(_))
+        // `dyn Iface` lowers to the named struct
+        // `%intent_dyn_<Iface>` (a fat pointer).
+        // Vtables Phase 3b.
+        || matches!(ty, Type::Object(_))
 }
 
 /// Map our types to LLVM IR sort spellings. Signedness is the
@@ -7563,7 +7674,164 @@ fn llvm_type_string(ty: &Type) -> String {
         // Declared as `%intent_task_handle` in the module
         // preamble. T1.0 / closure #122.
         Type::Task => "%intent_task_handle".to_string(),
+        // Vtables Phase 3b: `dyn Iface` lowers to a per-Iface
+        // named struct type `%intent_dyn_<Iface>` (declared in
+        // the module preamble alongside per-Iface vtable
+        // types). Only emitted when the interface is actually
+        // used as `dyn Iface` somewhere.
+        Type::Object(name) => format!("%intent_dyn_{}", name),
         _ => llvm_type(ty).to_string(),
+    }
+}
+
+/// Vtables Phase 3b: thin wrapper over the C backend's
+/// `collect_used_dyn_ifaces` so LLVM and C share the same
+/// "which interfaces actually need vtable scaffolding" pass.
+fn collect_used_dyn_ifaces_llvm(program: &TypedProgram) -> std::collections::HashSet<String> {
+    crate::backend_c::collect_used_dyn_ifaces(program)
+}
+
+/// Vtables Phase 3b: emit per-Iface vtable + fat-pointer
+/// named struct types in LLVM IR. Mirrors tree-C's
+/// `emit_dyn_iface_typedefs`. The vtable struct holds an
+/// in-declaration-order fn-ptr per interface method, each
+/// taking `i8*` (the data pointer) as the first arg.
+fn emit_dyn_iface_llvm_typedefs(out: &mut String, used: &std::collections::HashSet<String>) {
+    for iface in crate::ast::all_iface_names() {
+        if !used.contains(&iface) { continue; }
+        let Some(methods) = crate::ast::iface_methods_for(&iface) else {
+            continue;
+        };
+        // Vtable struct: each slot is `<ret> (i8*, <args>)*`.
+        let slots: Vec<String> = methods
+            .iter()
+            .map(|(_, params, ret)| {
+                let ret_ty = llvm_type_string(ret);
+                let arg_tys: Vec<String> = std::iter::once("i8*".to_string())
+                    .chain(params.iter().skip(1).map(llvm_type_string))
+                    .collect();
+                format!("{} ({})*", ret_ty, arg_tys.join(", "))
+            })
+            .collect();
+        out.push_str(&format!(
+            "%intent_vtbl_{} = type {{ {} }}\n",
+            iface,
+            slots.join(", ")
+        ));
+        // Fat pointer: `{ %intent_vtbl_<Iface>*, i8* }`.
+        out.push_str(&format!(
+            "%intent_dyn_{iface} = type {{ %intent_vtbl_{iface}*, i8* }}\n",
+            iface = iface
+        ));
+    }
+}
+
+/// Vtables Phase 3b: emit per-(T, Iface) trampolines and the
+/// global vtable constants. Mirrors tree-C's
+/// `emit_dyn_iface_vtables`. Each trampoline bitcasts `i8*
+/// self` to the declared self shape, loads it if by-value,
+/// and tail-calls the hoisted `@fn_<T>_<method>`.
+fn emit_dyn_iface_llvm_vtables(out: &mut String, used: &std::collections::HashSet<String>) {
+    for iface in crate::ast::all_iface_names() {
+        if !used.contains(&iface) { continue; }
+        let Some(methods) = crate::ast::iface_methods_for(&iface) else {
+            continue;
+        };
+        for type_name in crate::ast::impls_for_iface(&iface) {
+            // One trampoline per slot.
+            for (idx, (method_name, params, ret)) in methods.iter().enumerate() {
+                let ret_ty = llvm_type_string(ret);
+                let self_ty = &params[0];
+                let mut sig_args: Vec<String> = vec!["i8* %__intent_self".to_string()];
+                let mut forwarded: Vec<String> = Vec::new();
+                let mut body = String::new();
+                let self_forward = match self_ty {
+                    Type::Struct(_) | Type::Enum(_) => {
+                        let storage = llvm_type_string(self_ty);
+                        body.push_str(&format!(
+                            "  %__intent_self_ptr = bitcast i8* %__intent_self to {}*\n",
+                            storage
+                        ));
+                        body.push_str(&format!(
+                            "  %__intent_self_val = load {}, {}* %__intent_self_ptr\n",
+                            storage, storage
+                        ));
+                        format!("{} %__intent_self_val", storage)
+                    }
+                    Type::Ref(inner) | Type::RefMut(inner) => {
+                        let inner_storage = llvm_type_string(inner);
+                        body.push_str(&format!(
+                            "  %__intent_self_ptr = bitcast i8* %__intent_self to {}*\n",
+                            inner_storage
+                        ));
+                        format!("{}* %__intent_self_ptr", inner_storage)
+                    }
+                    other => {
+                        panic!(
+                            "vtables Phase 3b: unsupported self shape `{}` for \
+                             interface '{}' method '{}` — v1 supports value, ref, \
+                             and mut-ref receivers only",
+                            other, iface, method_name
+                        );
+                    }
+                };
+                forwarded.push(self_forward);
+                for (i, pt) in params.iter().enumerate().skip(1) {
+                    let pty = llvm_type_string(pt);
+                    let pname = format!("%__intent_arg{}", i);
+                    sig_args.push(format!("{} {}", pty, pname));
+                    forwarded.push(format!("{} {}", pty, pname));
+                }
+                let fn_arg_tys: Vec<String> = params.iter().map(llvm_type_string).collect();
+                let trampoline_name = format!(
+                    "intent_trampoline_{}_{}_{}_{}",
+                    type_name, iface, idx, method_name
+                );
+                out.push_str(&format!(
+                    "define internal {ret} @{trampoline}({sig}) {{\n",
+                    ret = ret_ty,
+                    trampoline = trampoline_name,
+                    sig = sig_args.join(", ")
+                ));
+                out.push_str(&body);
+                out.push_str(&format!(
+                    "  %__intent_ret = call {ret} @fn_{type_name}_{method}({fwd})\n",
+                    ret = ret_ty,
+                    type_name = type_name,
+                    method = method_name,
+                    fwd = forwarded.join(", ")
+                ));
+                out.push_str(&format!("  ret {} %__intent_ret\n", ret_ty));
+                out.push_str("}\n");
+                let _ = fn_arg_tys;
+            }
+            // Global vtable constant.
+            let init_parts: Vec<String> = methods
+                .iter()
+                .enumerate()
+                .map(|(idx, (method_name, params, ret))| {
+                    let ret_ty = llvm_type_string(ret);
+                    let arg_tys: Vec<String> = std::iter::once("i8*".to_string())
+                        .chain(params.iter().skip(1).map(llvm_type_string))
+                        .collect();
+                    let ptr_ty = format!("{} ({})*", ret_ty, arg_tys.join(", "));
+                    format!(
+                        "{ptr_ty} @intent_trampoline_{type_name}_{iface}_{slot}_{method}",
+                        ptr_ty = ptr_ty,
+                        type_name = type_name,
+                        iface = iface,
+                        slot = idx,
+                        method = method_name,
+                    )
+                })
+                .collect();
+            out.push_str(&format!(
+                "@intent_vtbl_{iface}_{type_name} = constant %intent_vtbl_{iface} {{ {} }}\n",
+                init_parts.join(", "),
+                iface = iface,
+                type_name = type_name,
+            ));
+        }
     }
 }
 

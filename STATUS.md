@@ -537,6 +537,27 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Vtables Phase 3b (tree-LLVM codegen) done 2026-05-25**: lli now
+   runs dyn-dispatching programs identically to tree-C. New
+   `%intent_vtbl_<Iface>` and `%intent_dyn_<Iface>` named struct
+   types in the preamble; per-(T, Iface) trampolines defined as
+   `internal` functions that bitcast `i8* self` to the declared
+   self shape (load for by-value, raw cast for ref/mut-ref) and
+   tail-call `@fn_<T>_<method>`; per-(T, Iface) global vtable
+   constants `@intent_vtbl_<Iface>_<T>` initialized with the
+   trampoline `@`-names. DynCoerce emits `bitcast %struct_addr to
+   i8*` + `insertvalue` chain to build the fat pointer (v1
+   restricts source to Var). DynDispatch emits `extractvalue` for
+   both vtable and data pointers, `getelementptr` to the slot,
+   `load` the fn-ptr, `call` indirect. Type-routing extended:
+   `llvm_type_string(Type::Object)` returns `%intent_dyn_<Iface>`
+   and `is_scalar` accepts Object so the by-value param path
+   alloca-stores it. New e2e test exercises emit_llvm + opt
+   -verify + lli + run; lli returns 25 for the same Circle
+   program tree-C runs. `compile_to_llvm` added as a public
+   API symmetric to `compile_to_c`. Test totals: 920 lib + 47
+   e2e + 3 vtables-phase3 passing. Closure #224.
+
    **Vtables Phase 3a (tree-C codegen) done 2026-05-25**: dyn-using
    programs now produce running C. New `TypedExprKind::DynCoerce
    { value, iface_name, from_type_name, from_ty }` IR node inserted

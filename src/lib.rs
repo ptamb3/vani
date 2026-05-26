@@ -113,6 +113,11 @@ pub fn compile_to_c(source: &str) -> Result<String, Vec<Diagnostic>> {
     Ok(backend_c::CBackend.emit(&checked.ir))
 }
 
+pub fn compile_to_llvm(source: &str) -> Result<String, Vec<Diagnostic>> {
+    let checked = compile(source)?;
+    Ok(backend_llvm::LlvmBackend.emit(&checked.ir))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{compile, compile_to_c};
