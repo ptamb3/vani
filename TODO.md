@@ -1157,9 +1157,17 @@ likely impact / blast radius, not implementation order.
   2026-05-26 (closure #234)* — conservative English set
   shipped: `struct`/`record`, `interface`/`trait`,
   `implement`/`impl`, `return`/`give`, `->`/`returns`/
-  `yields`. Sanskrit / Hindi / Marathi tables to mirror.
-  Phase 2 — riskier aliases that need the language-purity
-  gate first to avoid identifier collisions:
+  `yields`. Sanskrit / Hindi / Marathi tables don't yet
+  carry `Interface` / `Implement` / `Arrow` aliases at
+  all — adding them needs grammar-consultant review for
+  authentic term selection. Sanskrit options include
+  `संविदा` (saṁvidā = "contract" for interface) and
+  `कार्यान्वयन` (kāryānvayan = "implementation"). Hindi /
+  Marathi need separate evaluation. Don't ship without
+  language-expert confirmation.
+  Phase 2 (English) — riskier aliases that need the
+  language-purity gate first to avoid identifier
+  collisions:
   - `struct` / `record` (data shape)
   - `return` / `give` (function exit)
   - `->` / `returns` / `yields` (return-type marker — `fn f()
