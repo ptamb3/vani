@@ -294,6 +294,17 @@ pub struct ModuleDecl {
     /// recursively flattens — items in `outer::inner` get
     /// mangled to `outer__inner__name`.
     pub modules: Vec<ModuleDecl>,
+    /// Module-local `use foo::bar;` imports — closure #256.
+    /// Scoped to this module's body (NOT inherited by nested
+    /// child modules, NOT visible from outside). The checker
+    /// folds these into the per-module `qualify` map so bare
+    /// references inside the module body resolve to the
+    /// aliased mangled name. Top-level `use` paths live on
+    /// `Program::use_paths` and are applied independently.
+    /// v1 admits single-item, brace-list, and `as`-renamed
+    /// forms here; glob `use foo::*;` inside a module is
+    /// deferred (it needs the full post-flatten name set).
+    pub use_paths: Vec<UsePath>,
     /// Parallel to each field above; `true` if the item is
     /// `pub` (exported). Top-level items have no entry here —
     /// they're globally visible by default. Index ordering

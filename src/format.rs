@@ -374,6 +374,7 @@ fn format_module_decl(
         Methods(usize),
         Function(usize),
         Module(usize),
+        Use(usize),
     }
     let mut order: Vec<(usize, ModItem)> = Vec::new();
     for (i, s) in m.structs.iter().enumerate() {
@@ -399,6 +400,9 @@ fn format_module_decl(
     }
     for (i, f) in m.functions.iter().enumerate() {
         order.push((f.span.start, ModItem::Function(i)));
+    }
+    for (i, up) in m.use_paths.iter().enumerate() {
+        order.push((up.span.start, ModItem::Use(i)));
     }
     for (i, sub) in m.modules.iter().enumerate() {
         order.push((sub.span.start, ModItem::Module(i)));
@@ -470,6 +474,20 @@ fn format_module_decl(
                 let nested = &m.modules[*i];
                 let is_pub = *m.visibility.modules_pub.get(*i).unwrap_or(&false);
                 format_module_decl(nested, is_pub, ctx, &mut sub);
+            }
+            ModItem::Use(i) => {
+                // Module-local `use foo::bar [as baz];` —
+                // mirrors the top-level emit shape.
+                let up = &m.use_paths[*i];
+                sub.push_str("use ");
+                sub.push_str(&up.module.replace("__", "::"));
+                sub.push_str("::");
+                sub.push_str(&up.item);
+                if let Some(alias) = &up.alias {
+                    sub.push_str(" as ");
+                    sub.push_str(alias);
+                }
+                sub.push_str(";\n");
             }
         }
         for line in sub.lines() {

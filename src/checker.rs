@@ -1351,16 +1351,52 @@ fn flatten_modules_in_program(
             .map(|m| m.name.clone())
             .collect();
 
-        // Helper: rewrite a name reference. Three cases:
+        // Closure #256: build a per-module alias map from the
+        // module's local `use foo::bar;` declarations. Each
+        // entry binds a local name to the fully-mangled
+        // top-level form (`other__bar`). v1 admits only
+        // explicit single-item and brace-list forms inside
+        // modules — globs are rejected at parse time because
+        // the post-flatten name set isn't available during
+        // per-module processing.
+        let mut module_use_aliases: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for up in &module.use_paths {
+            if up.item == "*" {
+                continue; // parser already errored
+            }
+            let local = up.alias.clone().unwrap_or_else(|| up.item.clone());
+            let mangled = format!("{}__{}", up.module, up.item);
+            // Module-local uses are scoped to this module body;
+            // collisions WITHIN the module are caught here.
+            // Module-local aliases don't conflict with top-level
+            // `use` paths because the two name-spaces are
+            // independent.
+            if module_use_aliases.contains_key(&local) {
+                diagnostics.push(Diagnostic::new(
+                    up.span,
+                    format!(
+                        "name `{}` is already imported in module `{}`; \
+                         give one a different local name with `use … as …;`",
+                        local, mod_name
+                    ),
+                ));
+                continue;
+            }
+            module_use_aliases.insert(local, mangled);
+        }
+
+        // Helper: rewrite a name reference. Four cases (in order):
         // 1. Bare intra-module item → `<mod>__<name>` (public)
         //    or `<mod>__priv__<name>` (private).
-        // 2. Path starting with `<nested>__…` where `<nested>`
+        // 2. Module-local `use` alias → the imported mangled
+        //    form. Closure #256.
+        // 3. Path starting with `<nested>__…` where `<nested>`
         //    is a child-module name → prepend `<mod>__` so the
         //    reference resolves to the fully-qualified
         //    flattened name. Lets users write `inner::f`
-        //    from inside `outer` instead of
-        //    `outer::inner::f`.
-        // 3. Anything else stays bare.
+        //    from inside `outer` instead of `outer::inner::f`.
+        // 4. Anything else stays bare.
         let qualify = |name: &str| -> String {
             if let Some(&is_pub) = visibility.get(name) {
                 return if is_pub {
@@ -1368,6 +1404,9 @@ fn flatten_modules_in_program(
                 } else {
                     format!("{}__priv__{}", mod_name, name)
                 };
+            }
+            if let Some(mangled) = module_use_aliases.get(name) {
+                return mangled.clone();
             }
             // Implicit sibling-module path: bare `inner::f`
             // from inside `outer` becomes `outer__inner__f`.

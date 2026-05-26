@@ -211,9 +211,36 @@ impl Parser {
         let mut type_aliases = Vec::new();
         let mut methods_blocks = Vec::new();
         let mut nested_modules: Vec<crate::ast::ModuleDecl> = Vec::new();
+        let mut local_use_paths: Vec<crate::ast::UsePath> = Vec::new();
         let mut vis = crate::ast::ModuleVisibility::default();
 
         while !self.check(|k| matches!(k, TokenKind::RBrace | TokenKind::Eof)) {
+            // Closure #256: `use foo::bar;` inside a module body
+            // is admitted alongside item declarations. The use
+            // path is scoped to this module — the checker's
+            // per-module `qualify` adds it to the local alias
+            // map so bare references inside the body resolve
+            // through it. Cannot be marked `pub` in v1
+            // (re-exports are a follow-up).
+            if self.check(|k| matches!(k, TokenKind::Use)) {
+                match self.parse_use() {
+                    Ok(UseDecl::Path(p)) => local_use_paths.push(p),
+                    Ok(UseDecl::PathMulti(ps)) => local_use_paths.extend(ps),
+                    Ok(UseDecl::File(u)) => {
+                        let span = u.span;
+                        self.errors.push(Diagnostic::new(
+                            span,
+                            "`use \"path\";` (file imports) are only \
+                             valid at the top level, not inside `module`",
+                        ));
+                    }
+                    Err(e) => {
+                        self.errors.push(e);
+                        self.sync_past_brace();
+                    }
+                }
+                continue;
+            }
             // Optional `pub` modifier. Top-level item parsing
             // doesn't see `pub` today; inside a module it
             // declares visibility.
@@ -315,6 +342,21 @@ impl Parser {
             "'}' to close module",
             |k| matches!(k, TokenKind::RBrace),
         )?;
+        // Reject glob `use foo::*;` inside modules — v1 doesn't
+        // resolve nested-module glob expansion until ALL flatten
+        // passes finish, which the per-module qualify map can't
+        // see. Surface a clear diagnostic at parse time so the
+        // user gets the message at the conflict site.
+        for up in &local_use_paths {
+            if up.item == "*" {
+                self.errors.push(Diagnostic::new(
+                    up.span,
+                    "glob `use foo::*;` inside a module is not yet \
+                     supported — list the items explicitly or hoist \
+                     the import to the top level",
+                ));
+            }
+        }
         Ok(crate::ast::ModuleDecl {
             name,
             name_span,
@@ -327,6 +369,7 @@ impl Parser {
             type_aliases,
             methods_blocks,
             modules: nested_modules,
+            use_paths: local_use_paths,
             visibility: vis,
             span: start.span.merge(close_tok.span),
         })

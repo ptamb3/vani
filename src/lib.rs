@@ -14914,6 +14914,98 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn use_inside_module_aliases_resolve_inside_body() {
+        // Closure #256: `use foo::bar;` inside a module body
+        // is scoped to that module — references inside the
+        // body resolve through the local alias map.
+        let source = r#"
+            module a {
+              pub fn util() -> i64 { return 10; }
+            }
+
+            module b {
+              use a::util;
+              pub fn caller() -> i64 { return util() + util(); }
+            }
+
+            fn main() -> i64 {
+              return b::caller();
+            }
+        "#;
+        compile(source).expect("module-local use resolves inside module body");
+    }
+
+    #[test]
+    fn use_inside_module_does_not_leak_outside() {
+        // The alias is scoped to the module's body — top-level
+        // code does NOT see it. Without an explicit top-level
+        // `use a::util;` (or `use geo::*;`), bare `util()` in
+        // `main` must fail to resolve.
+        let source = r#"
+            module a {
+              pub fn util() -> i64 { return 1; }
+            }
+            module b {
+              use a::util;
+              pub fn ok() -> i64 { return util(); }
+            }
+
+            fn main() -> i64 {
+              return util();
+            }
+        "#;
+        let errors = compile(source).expect_err("module-local use must not leak");
+        assert!(
+            errors.iter().any(|e| e.message.contains("util")),
+            "expected unknown-name diagnostic for `util`; got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn use_inside_module_supports_brace_and_as() {
+        // Brace-list + per-entry `as` rename also works inside
+        // a module body. Builds the local alias map with both
+        // names mapped to their respective imported targets.
+        let source = r#"
+            module geo {
+              pub fn area() -> i64 { return 7; }
+              pub fn perim() -> i64 { return 11; }
+            }
+            module facade {
+              use geo::{area as a, perim as p};
+              pub fn sum() -> i64 { return a() + p(); }
+            }
+            fn main() -> i64 { return facade::sum(); }
+        "#;
+        compile(source).expect("brace-list + as inside module body compiles");
+    }
+
+    #[test]
+    fn use_inside_module_rejects_glob_form() {
+        // Glob `use foo::*;` inside a module is rejected in
+        // v1 — the post-flatten name set isn't available during
+        // per-module processing, so explicit lists are
+        // required.
+        let source = r#"
+            module a { pub fn x() -> i64 { return 1; } }
+            module b {
+              use a::*;
+              pub fn caller() -> i64 { return x(); }
+            }
+            fn main() -> i64 { return b::caller(); }
+        "#;
+        let errors = compile(source).expect_err("module-local glob must error");
+        assert!(
+            errors.iter().any(|e|
+                e.message.contains("glob")
+                    && e.message.contains("inside a module")),
+            "expected glob-inside-module diagnostic; got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn assign_keyword_aliases_let() {
         // Closure #255: `assign` reads as a more newcomer-
         // friendly form for `let`. Same AST, same scoping rules.

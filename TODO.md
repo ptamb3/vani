@@ -535,6 +535,32 @@ the drops list is empty and no spill is emitted.
 Tree-C and tree-LLVM both benefit — Block emit was
 already wired for Drop stmts (#160, #192, #193).
 Test totals: 887 lib + 47 e2e passing.
+#256 Namespaces — `use foo::bar [as baz];` inside `module { }` blocks.
+modules now admit local `use` declarations alongside
+item definitions; the alias is scoped to the module
+body only. `ModuleDecl` gains a `use_paths:
+Vec<UsePath>` field; the parser accepts the same
+single-item / brace-list / `as`-rename forms it does
+at top level; glob `use foo::*;` inside a module is
+explicitly rejected with a clear diagnostic ("list
+the items explicitly or hoist the import to the top
+level") because the post-flatten name set isn't
+available during per-module processing. The
+checker's per-module `qualify` map gains a fourth
+resolution case (after intra-module visibility,
+before nested-sibling lookup) that pulls in the
+local aliases. Module-local aliases do NOT leak
+outside the module or into nested submodules.
+Formatter round-trips automatically — `format_module_decl`
+gained a `ModItem::Use` arm.
+
+This is the **prerequisite for re-exports**
+(`pub use foo::bar;`); the next slice can layer the
+re-export visibility on top of the use_paths field
+landed here. Four new lib tests cover the four
+forms + the leak guard. Test totals: 952 lib + 47
+e2e + 11 vtables-phase3 + 2 user-drop-by-ref + 1
+ssa-examples.
 #255 English keyword aliases — `assign` (let), `give_back` / `give back` (return).
 follow-up to the earlier alias work that added `give`
 as `return`. The lexer's single-token keyword match

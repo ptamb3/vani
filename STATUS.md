@@ -537,6 +537,34 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Namespaces — `use` inside `module { }` blocks done 2026-05-26**:
+   modules now admit local `use foo::bar;` declarations
+   alongside item definitions. The alias is scoped to
+   that module's body — references inside the body
+   resolve through the local map, but the alias does
+   NOT leak outside the module nor into nested
+   submodules (a child module needs its own `use`).
+   `ModuleDecl` gains a `use_paths: Vec<UsePath>` field;
+   the parser admits the same three forms it does at
+   top level (single-item, brace-list, `as`-rename)
+   alongside an explicit reject for glob `use foo::*;`
+   inside modules — the post-flatten name set isn't
+   available during per-module processing. The
+   checker's per-module `qualify` map gains a fourth
+   resolution case (after intra-module visibility,
+   before nested-sibling lookup) that pulls in the
+   local aliases. The formatter rounds-trips
+   automatically — `format_module_decl` gained a
+   `ModItem::Use` arm that mirrors the top-level emit
+   shape. Four new lib tests pin: aliases resolve
+   inside body, alias doesn't leak outside, brace-list
+   + per-entry `as` rename works, and glob is rejected
+   with a clear diagnostic. This is the prerequisite
+   for re-exports (`pub use foo::bar;` builds on top
+   of module-local `use`). Test totals: 952 lib + 47
+   e2e + 11 vtables-phase3 + 2 user-drop-by-ref + 1
+   ssa-examples. Closure #256.
+
    **Vāṇī terminology — "kosh" (कोश) adopted as the name for what Rust calls a crate 2026-05-26**:
    per user preference, vāṇī's compilation-unit /
    package concept is named **kosh** ("treasure /
