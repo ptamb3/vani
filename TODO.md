@@ -1521,13 +1521,40 @@ highest-leverage first.
        - **Step 3b: multi-block parallel-for body** — not
          started. `recognize_parallel_region` rejects bodies
          with internal control flow (if/else inside the
-         loop). Extending requires: capture analysis across
-         all body blocks; reduction-update detection across
-         the multi-block CFG; emit_outlined_parallel_for to
-         lower a sequence of blocks rather than one. The
-         existing scalar SSA-LLVM emit covers most of the
-         instruction-level emit, so the lift is mostly in
-         the recognizer + capture walker. ≈ 1 session.
+         loop). Tree-LLVM fallback handles these correctly
+         today — Step 3b is an optimization, not a
+         correctness gap.
+
+         Sketch of the work:
+         1. **Recognizer.** Allow body_block to terminate
+            with `CondBranch` (or `Jump` to a non-step
+            target). Walk the body sub-CFG to collect the
+            set of blocks reachable from body_block that
+            eventually reach step_block. Validate the
+            region: no external jumps, no nested parallel-
+            for, no exits to step from outside the region.
+         2. **Reduction-update detection.** The update
+            value flows from some block in the region into
+            the step jump. For the if-guard shape, the
+            update happens conditionally inside a then-
+            branch; the merge block forwards the merged
+            carry. Trace the SSA chain: which Binary /
+            Call instruction produces the value that the
+            back-edge carries? That's where the atomicrmw
+            goes in the outlined fn.
+         3. **Outlined fn emit.** Lower every block in
+            the region. Each block's terminator gets
+            rewritten: jumps to step_block become
+            `br label %body_end`; everything else stays.
+            The atomicrmw replaces the local reduction-
+            update computation at its source block.
+         4. **Capture analysis.** Walk all blocks in the
+            region collecting free variables; the existing
+            single-block walker extends naturally to a
+            BFS over the region.
+
+         Estimated ≈ 3-4 hours focused work. Best done in
+         its own session.
        - **Step 4: Tasks SSA-C/SSA-LLVM** — not started.
          Extend `Hint::TaskBegin` with a `TaskShape` struct
          (handle name, captures with types, body blocks);
