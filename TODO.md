@@ -1532,8 +1532,13 @@ likely impact / blast radius, not implementation order.
   `<nested_module>__<rest>` patterns and prepends the
   parent path, so `inner::f` from inside `outer` resolves
   to `outer__inner__f`. Mirrors Rust's sibling lookup.
-  *Still queued*: glob `use foo::*;`; `pub(crate)` tiers;
-  re-exports.
+  *Glob `use foo::*;` done 2026-05-26 (closure #253)*.
+  *`use foo::bar as baz;` rename + collision diagnostic
+  done 2026-05-26 (closure #254)*.
+  *Still queued*: `pub(kosh)` visibility tiers (kosh =
+  कोश, "treasure/repository" — vāṇī's name for what
+  Rust calls a crate; renamed 2026-05-26 per user
+  request); re-exports `pub use foo::bar;`.
 - **Multiple source files for one compilation.** `use "path"`
   already exists for single-file imports; extend to a full
   multi-file pipeline so the compiler ingests a set of `.vani`
@@ -7144,3 +7149,43 @@ its target shape.
 9. **Direct-asm targets** — teaching path and tiny-target option
    (x86_64-linux first). Smaller surface than LLVM/Cranelift but
    tedious; not on the critical path. Easier after #6.
+
+10. **Kosh (कोश) — package / compilation-unit concept + Vāṇī-Kosh
+    registry workflow.** *Future, design pass first.* Kosh
+    ("treasure / repository") is vāṇī's word for what Rust calls
+    a crate — one kosh = one compilation unit shipping a public
+    API surface; the future package registry is Vāṇī-Kosh. The
+    rename was set 2026-05-26; the design + implementation are
+    deferred. When picked up, the work spans (in rough order):
+
+    a. **Kosh manifest** — `kosh.toml` (analog of `Cargo.toml`)
+       naming the package, version, entry module, dependencies.
+       Decide on dependency format (path / git / registry).
+    b. **Resolver + lockfile** — graph of kosh dependencies,
+       cycle detection, deterministic version pinning
+       (`kosh.lock`). Multi-file compile (already shipped via
+       `use "path";`) is the substrate; extend to multi-kosh.
+    c. **`pub(kosh)` visibility** — items visible inside the
+       same kosh but not exported through the kosh boundary.
+       Mirrors `pub(crate)` in Rust. Builds on the existing
+       per-module `pub` / private split.
+    d. **Re-exports** — `pub use foo::bar;` so a kosh can shape
+       its public API independently of its internal module
+       layout. Needs `use` inside `module { }` blocks (parser
+       doesn't admit them today) + re-export visibility
+       tracking through the flatten pass.
+    e. **Registry + CLI** — `intentc kosh add <name>`,
+       `kosh publish`, etc. Hosting model TBD (probably static
+       index + tarballs to keep ops cheap).
+    f. **Stdlib as a kosh** — once the kosh boundary exists,
+       move built-in helpers (channel / vec / atomic runtime)
+       behind a `std` kosh that user code implicitly depends
+       on. Cleans up the current "preamble emits all helpers"
+       shape into "preamble emits only the helpers this kosh
+       uses".
+
+    Steps (c) and (d) are the smallest beachhead — they live
+    entirely within the existing compiler and don't need a
+    registry. Doing them first would already cleanly close the
+    namespaces follow-ups queue, leaving (a/b/e/f) as the
+    full-package-manager arc.

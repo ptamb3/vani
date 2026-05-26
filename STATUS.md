@@ -537,6 +537,26 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Vāṇī terminology — "kosh" (कोश) adopted as the name for what Rust calls a crate 2026-05-26**:
+   per user preference, vāṇī's compilation-unit /
+   package concept is named **kosh** ("treasure /
+   repository"). One kosh = one compilation unit
+   shipping a public API; the future package registry
+   is **Vāṇī-Kosh**. The rename is purely terminological
+   today — the kosh concept itself hasn't been
+   implemented yet (multi-file compile via
+   `use "path";` works file-by-file; kosh adds a
+   manifest + boundary on top). The naming is now
+   reflected in `docs/namespaces_design.md`,
+   TODO.md (the `pub(crate)` follow-up is renamed
+   `pub(kosh)`), and a new section under
+   "Deferred" outlines the full package-manager arc
+   (manifest → resolver → `pub(kosh)` → re-exports
+   → registry CLI → stdlib-as-kosh). The smallest
+   beachhead is `pub(kosh)` + re-exports — both live
+   entirely in the existing compiler, no registry
+   needed.
+
    **English keyword aliases — `assign` for `let`, `give_back`/`give back` for `return` done 2026-05-26**:
    the lexer now recognizes `assign` as a single-token
    alias for `let`, and adds two more aliases for

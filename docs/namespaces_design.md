@@ -99,8 +99,14 @@ with any existing operator.
   ship.
 - **Multi-item imports** (`use foo::{bar, baz};`) — sugar over
   one-line-each `use`.
-- **`pub(crate)` / `pub(super)`** visibility tiers — Rust has
-  these for fine-grained control; v1 keeps it binary.
+- **`pub(kosh)` / `pub(super)`** visibility tiers — `kosh`
+  (कोश, "treasure/repository") is vāṇī's name for what Rust
+  calls a crate (renamed 2026-05-26). One kosh = one
+  compilation unit / one package; the future package
+  registry is Vāṇī-Kosh. Rust uses `pub(crate)` for
+  fine-grained control; v1 vāṇī keeps it binary
+  (`pub` / private). The tier work is queued for after
+  the kosh concept itself ships.
 - **Re-exports** (`pub use foo::bar;`).
 - **Module-level `const`** is fine but follows the same
   visibility rules as fns.
