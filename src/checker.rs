@@ -817,7 +817,18 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
         }
         // Mixed-payload-type check: all variants with payloads
         // must share the same payload type (single-field
-        // simplification — multi-type would need a union).
+        // V1 restriction: all payload-bearing variants must
+        // share the same payload type. Lifting this needs:
+        //   - ENUM_PAYLOAD_REGISTRY → per-variant Vec
+        //   - C enum typedef → `{ tag; union { v_<var>; … } u; }`
+        //   - Variant construction emit → `e.u.v_<var> = …`
+        //   - Match-extract emit → `e.u.v_<var>` per arm
+        //   - Drop dispatch → switch on tag, free correct
+        //     union member
+        //   - Same lift in LLVM backend (max-size payload
+        //     buffer + per-variant bitcast)
+        // L-tier work — gates Result<T, E> with T != E and
+        // #6 try_vec which requires Result<Vec<i64>, AllocError>.
         let payload_types: Vec<(&str, &Type)> = decl
             .variants
             .iter()

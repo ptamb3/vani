@@ -31,19 +31,53 @@ Full long-form discussion lives in README.md's "Design Philosophy
 
 ## ⏳ Resume here (paused 2026-05-27, after closure #282 — prelude auto-imports Option/Result/AllocError)
 
-**Next pickup: #6 try_vec(n) -> Result<Vec<i64>, AllocError>** — now
-fully unblocked (Result + AllocError are in the prelude). v1 scope:
+**Next pickup chain (each closure unblocks the next):**
 
-  - i64 element type only (mirrors vāṇी's Vec<T> v1 scope where the
-    element type travels via separate codegen paths).
-  - New builtin `try_vec` recognized by the checker; signature is
+### Closure A: Lift mixed-payload-type enum restriction (L)
+
+The dependency that surfaced while attempting #6 try_vec: v1
+rejects `enum X { A(i64), B(OwnedStr) }` because all
+payload-bearing variants must share the payload type
+(checker.rs ~line 820). This blocks `Result<T, E>` with
+T != E, which blocks `Result<Vec<i64>, AllocError>`, which
+blocks #6 try_vec.
+
+Required work:
+  - `ENUM_PAYLOAD_REGISTRY: HashMap<String, Type>` →
+    `HashMap<String, Vec<Option<Type>>>` (per-variant).
+  - Both backends' enum typedef → `{ tag; union { v_<var> } u; }`.
+  - All variant construction sites (~15 in C, similar in LLVM)
+    → use `e.u.v_<variant>` field.
+  - Match-extract sites → switch by tag to correct union member.
+  - Drop dispatch → per-tag switch over which payload to free.
+  - Test updates for any enum tests assuming old layout.
+
+Effort: L (4-6 hours focused). Touches both backends, both
+tree + SSA paths. Worth the time — unblocks idiomatic
+error-handling.
+
+### Closure B: #6 try_vec (M, deps: Closure A)
+
+Once mixed-payload enums work, try_vec becomes:
+  - New builtin `try_vec` recognized in checker, signature
     `fn try_vec(n: u64) -> Result<Vec<i64>, AllocError>`.
-  - Codegen emits a runtime malloc-with-null-check that builds
-    `Result.Ok(vec)` or `Result.Err(AllocError.OutOfMemory)`.
-  - Both backends: tree-C + SSA-C + tree-LLVM + SSA-LLVM need the
-    Result-literal construction path.
+  - Codegen emits malloc-with-null-check producing either
+    Result.Ok(vec) or Result.Err(AllocError.OutOfMemory).
 
-Effort: M, mostly codegen plumbing.
+Effort: M (mostly straightforward once A lands).
+
+### Other open items (independent of A/B chain):
+
+- **#13 FFI ABI lowering** — per-platform classifier (System V
+  x86-64, Windows x64, ARM64) + per-backend struct decomposition.
+  L-tier.
+- **#7 Recursion bound `#[bounded(N)]`** — first attribute
+  syntax in vāṇी (new `#` token + parser + codegen). L-tier.
+- **vani.toml v2 [deps] table** — Kosh-registry coordinates
+  + diamond-import dedup. L-tier (needs Kosh registry plan).
+- **#8 Nested arrays** — lift array-element-must-be-Copy
+  restriction + per-slot array-drop codegen + clone_at for
+  arrays + ref xs[i] borrow support. M+/L.
 
 **Remaining queue items are all L-tier multi-session arcs.** All
 require introducing significant new compiler machinery:
