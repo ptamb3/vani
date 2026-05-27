@@ -419,11 +419,14 @@ COMMANDS:
     emit-c <file.vani> [-o out.c]       Legacy alias for 'emit --backend=c'.
                                           Kept for back-compat.
     run <file.vani> [--backend=<c|llvm>]
-                                          Compile and run a program. Default
-                                          backend is 'llvm' (emits LLVM IR
+        [--link-with PATH ...]            Compile and run a program. Default
+        [-l<name> ...]                    backend is 'llvm' (emits LLVM IR
                                           and runs it via $LLI or `lli`).
                                           With --backend=c, invokes $CC or
                                           `cc` on the C output.
+                                          --link-with / -l<name> require
+                                          --backend=c (LLVM-JIT auto-resolves
+                                          host symbols).
     build <file.vani> [-o out]          AOT-compile to a native binary.
           [--link-with PATH ...]          Lowers via the LLVM backend, calls
           [-l<name> ...]                  $LLC (or `llc`) for object code,
@@ -648,13 +651,21 @@ fn run() -> Result<ExitCode, String> {
         }
         "run" => {
             let file = required_file(&args, 2, "run")?;
-            // Reuse the emit-args parser since `run` accepts the same
-            // backend flag. `-o` is meaningless for run but harmless
-            // to allow.
-            let (backend_kind, _out) = parse_emit_args(&args, 3, "run")?;
+            let (backend_kind, link_args) = parse_run_args(&args, 3)?;
             match backend_kind {
-                BackendKind::C => run_program(&file),
-                BackendKind::Llvm => run_program_llvm(&file),
+                BackendKind::C => run_program(&file, &link_args),
+                BackendKind::Llvm => {
+                    if !link_args.is_empty() {
+                        return Err(
+                            "--link-with / -l<name> require --backend=c \
+                             (LLVM-JIT via lli auto-resolves libc/libm symbols \
+                             from the host process; use `intentc build … \
+                             --link-with …` for AOT linking with custom code)"
+                                .to_string(),
+                        );
+                    }
+                    run_program_llvm(&file)
+                }
             }
         }
         "build" => {
@@ -967,6 +978,54 @@ enum BackendKind {
 //                      Repeatable. Forwarded verbatim to cc.
 // Both are appended after the vāṇी object file in the link line so
 // usual link-order rules apply.
+// Closure #274: `intentc run` accepts the same link flags as
+// `intentc build` (only the C-backend path actually consumes
+// them — LLVM-JIT runs through lli's host-symbol resolver and
+// can't link extra translation units). Returning the same
+// (backend, link_args) shape so the dispatch can validate the
+// combination.
+fn parse_run_args(
+    args: &[String],
+    from: usize,
+) -> Result<(BackendKind, Vec<String>), String> {
+    let mut backend = BackendKind::Llvm;
+    let mut link_args: Vec<String> = Vec::new();
+    let mut idx = from;
+    while let Some(arg) = args.get(idx) {
+        if let Some(value) = arg.strip_prefix("--backend=") {
+            backend = match value {
+                "c" => BackendKind::C,
+                "llvm" => BackendKind::Llvm,
+                other => return Err(format!("unknown backend '{}': expected c|llvm", other)),
+            };
+            idx += 1;
+        } else if arg == "--link-with" {
+            let path = args
+                .get(idx + 1)
+                .ok_or_else(|| "expected a path after '--link-with'".to_string())?;
+            link_args.push(path.clone());
+            idx += 2;
+        } else if let Some(value) = arg.strip_prefix("--link-with=") {
+            link_args.push(value.to_string());
+            idx += 1;
+        } else if arg.starts_with("-l") && arg.len() > 2 {
+            link_args.push(arg.clone());
+            idx += 1;
+        } else if arg == "-o" || arg == "--out" {
+            // `-o` is meaningless for run but the legacy parser
+            // accepted it; preserve back-compat by consuming the
+            // path arg without using it.
+            let _ = args
+                .get(idx + 1)
+                .ok_or_else(|| format!("expected a path after '{}'", arg))?;
+            idx += 2;
+        } else {
+            return Err(format!("unexpected argument '{}'", arg));
+        }
+    }
+    Ok((backend, link_args))
+}
+
 fn parse_build_args(
     args: &[String],
     from: usize,
@@ -1052,7 +1111,7 @@ fn compile_path_or_report(
         })
 }
 
-fn run_program(path: &Path) -> Result<ExitCode, String> {
+fn run_program(path: &Path, link_args: &[String]) -> Result<ExitCode, String> {
     let checked = compile_path_or_report(path)?;
     let c = emit_c_via_ssa(&checked.ir);
     let (c_path, bin_path) = temp_paths(path);
@@ -1094,6 +1153,13 @@ fn run_program(path: &Path) -> Result<ExitCode, String> {
     }
     if openmp_ok {
         cmd.arg("-fopenmp");
+    }
+    // Closure #274: user-supplied link inputs (`--link-with PATH`
+    // / `-l<name>`) trail the vāṇी source so symbol resolution
+    // sees vāṇी's `call abs(...)` first and then the providing
+    // object / library.
+    for extra in link_args {
+        cmd.arg(extra);
     }
     let compile_out = cmd
         .arg("-o")

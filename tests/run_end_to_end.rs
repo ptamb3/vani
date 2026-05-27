@@ -186,6 +186,99 @@ fn main() -> i64 {
     );
 }
 
+// FFI v4 follow-up: `intentc run --backend=c --link-with foo.c`
+// threads the same linker flags as `build` so rapid iteration
+// can call user-provided extern bodies without a separate
+// build step. LLVM-JIT remains host-symbol-only because lli
+// can't link static translation units.
+#[test]
+fn run_link_with_resolves_extern_c_symbol_in_run_mode() {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let binary = env!("CARGO_BIN_EXE_intentc");
+    let dir: PathBuf = std::env::temp_dir().join(format!(
+        "intentc-runlinkwith-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).expect("mkdir");
+
+    let helper_c = dir.join("helper.c");
+    fs::write(
+        &helper_c,
+        "#include <stdint.h>\nint32_t triple(int32_t x) { return x * 3; }\n",
+    )
+    .expect("write helper.c");
+
+    let vani_src = dir.join("prog.vani");
+    fs::write(
+        &vani_src,
+        "extern \"C\" fn triple(x: i32) -> i32;\n\
+         \n\
+         fn main() -> i64 {\n  \
+           let r: i32 = triple(7 as i32);\n  \
+           write \"triple(7) =\", r;\n  \
+           return 0;\n}\n",
+    )
+    .expect("write prog.vani");
+
+    let run = Command::new(binary)
+        .args([
+            "run",
+            vani_src.to_str().unwrap(),
+            "--backend=c",
+            "--link-with",
+            helper_c.to_str().unwrap(),
+        ])
+        .output()
+        .expect("intentc run --link-with runs");
+
+    let stdout = String::from_utf8_lossy(&run.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&run.stderr).to_string();
+    let status = run.status;
+
+    let _ = fs::remove_dir_all(&dir);
+
+    assert!(
+        status.success(),
+        "intentc run --backend=c --link-with failed: {} (stdout: {}, stderr: {})",
+        status,
+        stdout,
+        stderr,
+    );
+    assert!(
+        stdout.contains("triple(7) = 21"),
+        "expected `triple(7) = 21` in stdout, got: {stdout}"
+    );
+}
+
+#[test]
+fn run_link_with_requires_backend_c() {
+    let binary = env!("CARGO_BIN_EXE_intentc");
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let example = format!("{}/examples/basics.vani", manifest_dir);
+
+    // Default backend is LLVM; --link-with should be rejected.
+    let out = Command::new(binary)
+        .args(["run", &example, "--link-with", "/tmp/whatever.c"])
+        .output()
+        .expect("intentc run executes");
+
+    assert!(
+        !out.status.success(),
+        "expected failure when --link-with is paired with LLVM-JIT"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("require --backend=c"),
+        "expected backend=c hint in stderr, got: {stderr}"
+    );
+}
+
 // FFI v2: `intentc build --link-with foo.c` threads an extra
 // translation unit into the link line so an `extern "C" fn`
 // declaration in vāṇī source resolves at link time. End-to-end

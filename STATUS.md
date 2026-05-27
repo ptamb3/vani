@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 987 lib + 48 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 987 lib + 50 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -750,6 +750,28 @@ fn main() returns i64 {
 
    Test totals: 987 lib + 48 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #273.
+
+   **FFI v5 — `intentc run --link-with` ergonomic parity done 2026-05-27**:
+   `intentc run --backend=c` now accepts the same
+   `--link-with PATH` / `-l<name>` flags as `intentc build`, so
+   FFI iteration doesn't require switching to a separate build
+   step. LLVM-JIT path keeps host-symbol resolution as-is and
+   surfaces a clear "require --backend=c" diagnostic if a user
+   tries `--link-with` on the LLVM path (lli can't link static
+   translation units; the LLVM-JIT runtime auto-resolves
+   libc/libm from the host process).
+
+   New `parse_run_args` helper mirrors `parse_build_args`'s
+   shape; `run_program` (C backend) takes the link_args slice
+   and appends each flag after the vāṇी source on the cc
+   command line.
+
+   2 new e2e tests pin the shape: positive
+   (`run_link_with_resolves_extern_c_symbol_in_run_mode`) and
+   negative (`run_link_with_requires_backend_c`).
+
+   Test totals: 987 lib + 50 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #274.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table
