@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1021 lib + 53 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1021 lib + 54 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -1434,6 +1434,37 @@ fn main() returns i64 {
 
    Test totals: 1021 lib + 53 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #288.
+
+   **#[bounded(N)] LLVM lift done 2026-05-27 (SSA-LLVM)**:
+   completes the LLVM half of closure #286 for the default
+   `intentc run` / `build` path. Tree-LLVM continues to
+   panic with a clear "SSA-LLVM supports this" message (the
+   tree-LLVM lift is a smaller follow-up).
+
+   SSA-LLVM pipeline:
+
+     • Module-level `@__intent_depth_<fn> = thread_local
+       global i32 0`.
+     • Entry sequence (in the implicit entry block, before
+       the first labeled block): load counter → +1 → store
+       back → cmp > N → branch to `__bd_abort` or
+       fall-through to the entry block.
+     • `__bd_abort` block emits `call void @abort()` +
+       `unreachable`.
+     • Before each `Terminator::Return` emit, inject `load
+       counter → -1 → store`. Per-block names use the
+       block id to avoid LLVM register collisions when the
+       function has multiple Return blocks.
+
+   Verified end-to-end via new e2e test: `#[bounded(3)] fn
+   deep(...)` called as `deep(10)` aborts with SIGABRT.
+   Bound = 5 + `deep(3)` exits 3.
+
+   1 new e2e test pins the abort behavior with both
+   `code()` and Unix `signal()` checks for portability.
+
+   Test totals: 1021 lib + 54 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #289.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

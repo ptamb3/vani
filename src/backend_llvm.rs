@@ -798,16 +798,19 @@ fn emit_function(
     out: &mut String,
 ) {
     let ret_ty = llvm_type_string(&function.return_type);
-    // Closure #286: the LLVM backend doesn't yet implement
-    // `#[bounded(N)]` instrumentation. The C backend uses
-    // GCC's __attribute__((cleanup)) for the decrement; LLVM
-    // would need ret-instruction interception. Panic with a
-    // clear message until the LLVM lift lands.
+    // Closure #289: `#[bounded(N)]` LLVM lift. SSA-LLVM is
+    // the default LLVM path and already implements the
+    // depth-counter instrumentation. Tree-LLVM still uses
+    // the legacy emit; route through SSA-LLVM by panicking
+    // here so the SSA fallback machinery doesn't fall back
+    // to tree-LLVM for bounded fns. (Tree-LLVM lift is a
+    // smaller follow-up — same pattern, just open-coded in
+    // the Return statement emit.)
     if function.recursion_bound.is_some() {
         panic!(
-            "LLVM backend doesn't yet support `#[bounded(N)]` recursion \
-             guards (fn '{}'). Use `--backend=c` for now; LLVM lift is \
-             queued as a follow-up to closure #286.",
+            "Tree-LLVM backend doesn't yet support `#[bounded(N)]` recursion \
+             guards (fn '{}'). The SSA-LLVM path (default for `intentc \
+             run` / `build`) supports them as of closure #289.",
             function.name
         );
     }

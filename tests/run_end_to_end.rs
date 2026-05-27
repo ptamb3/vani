@@ -192,6 +192,78 @@ fn main() -> i64 {
 // `vani.toml`, parses `[package].entry`, and uses that as
 // the entry point. Tests the parent-walk + flag-interleaving
 // behavior end-to-end.
+// Closure #289: `#[bounded(N)]` on the SSA-LLVM path
+// (default for `intentc run`). The fn under the bound runs
+// normally when depth ≤ N; aborts (SIGABRT, exit 134) when
+// depth exceeds N. Verifies the depth-counter
+// instrumentation lands correctly in LLVM IR.
+#[test]
+fn bounded_attribute_aborts_when_depth_exceeded_on_llvm() {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let binary = env!("CARGO_BIN_EXE_intentc");
+    let dir: PathBuf = std::env::temp_dir().join(format!(
+        "intentc-bounded-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).expect("mkdir");
+    let src = dir.join("bounded.vani");
+    fs::write(
+        &src,
+        "#[bounded(3)]\n\
+         fn deep(n: i64) -> i64 {\n  \
+           if n <= 0 { return 0; }\n  \
+           return deep(n - 1) + 1;\n\
+         }\n\
+         fn main() -> i64 { return deep(10); }\n",
+    )
+    .expect("write src");
+
+    let bin_path = dir.join("bounded.bin");
+    let build = std::process::Command::new(binary)
+        .args([
+            "build",
+            src.to_str().unwrap(),
+            "-o",
+            bin_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("intentc build executes");
+    if !build.status.success() {
+        let _ = fs::remove_dir_all(&dir);
+        panic!(
+            "intentc build (bounded LLVM) failed:\nstderr: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+    }
+    let run = std::process::Command::new(&bin_path)
+        .output()
+        .expect("binary runs");
+    let _ = fs::remove_dir_all(&dir);
+    // Aborted process: code() returns None on Unix; check
+    // via `signal()` (SIGABRT == 6). On platforms where
+    // `code()` returns 134 (shell-style), also accept that.
+    let code = run.status.code();
+    #[cfg(unix)]
+    let signal = {
+        use std::os::unix::process::ExitStatusExt;
+        run.status.signal()
+    };
+    #[cfg(not(unix))]
+    let signal: Option<i32> = None;
+    assert!(
+        code == Some(134) || signal == Some(6),
+        "expected SIGABRT from #[bounded(3)] deep(10), got code={:?} signal={:?}",
+        code,
+        signal
+    );
+}
+
 // Closure #287: vani.toml v2 `[deps]` with local-path
 // entries pulls the dep's entry source into the main
 // program's build. Validates the local-path resolution end-

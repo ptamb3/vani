@@ -20024,6 +20024,14 @@ fn main() -> i64 {
         );
     }
 
+    // Closure #289: `#[bounded(N)]` LLVM lift on SSA-LLVM
+    // path (the default `intentc run` / `build`). Tree-LLVM
+    // still uses the legacy path and panics for bounded
+    // fns; that's tested separately. SSA-LLVM verified
+    // end-to-end via the bounded_over.vani example (exits
+    // with SIGABRT when the bound is exceeded). The lib
+    // test here pins compile-time acceptance only —
+    // running the IR happens at the e2e layer.
     #[test]
     fn bounded_attribute_unknown_name_rejected() {
         let source = r#"

@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #288 — LLVM small-struct ABI lowering)
+## ⏳ Resume here (paused 2026-05-27, after closure #289 — #[bounded(N)] LLVM lift)
 
 **Next pickup chain (each closure unblocks the next):**
 

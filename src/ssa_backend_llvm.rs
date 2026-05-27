@@ -327,19 +327,17 @@ fn emit_function(
     fn_sigs: &BTreeMap<String, (Vec<Type>, Type)>,
     out: &mut String,
 ) -> Result<(), EmitError> {
-    // Closure #286: SSA-LLVM doesn't yet implement
-    // `#[bounded(N)]`. Surface a clear EmitError so the
-    // SSA-LLVM fallback machinery routes the program to
-    // tree-LLVM (which has the same gap — both panic with a
-    // clear message).
-    if f.recursion_bound.is_some() {
-        return Err(EmitError {
-            message: format!(
-                "SSA-LLVM doesn't yet support #[bounded(N)] on fn '{}'; \
-                 use --backend=c for now",
-                f.name
-            ),
-        });
+    // Closure #289: `#[bounded(N)]` on SSA-LLVM. Emit a
+    // module-level thread-local depth counter, a fn-entry
+    // increment+bound check, and a decrement immediately
+    // before each `ret` terminator (matches the C-side
+    // GCC-cleanup pattern, just open-coded).
+    if let Some(bound) = f.recursion_bound {
+        out.push_str(&format!(
+            "@__intent_depth_{} = thread_local global i32 0\n",
+            f.name
+        ));
+        let _ = bound; // increment + check are emitted below
     }
     // Closure #269: `extern "C"` FFI declarations — emit a
     // `declare RET @<name>(PARAMS)` with bare C-ABI name and
@@ -373,6 +371,27 @@ fn emit_function(
         let _ = name;
     }
     out.push_str(") {\n");
+
+    // Closure #289: `#[bounded(N)]` entry sequence — load
+    // the thread-local depth counter, increment, store back,
+    // compare against the bound. On overflow branch to an
+    // abort block; otherwise fall through to the function's
+    // actual entry block. Decrements before each `ret` are
+    // injected at terminator emit time.
+    if let Some(bound) = f.recursion_bound {
+        let counter = format!("@__intent_depth_{}", f.name);
+        let entry_id = f.entry.0;
+        out.push_str(&format!("  %__bd_cur = load i32, i32* {}\n", counter));
+        out.push_str("  %__bd_new = add i32 %__bd_cur, 1\n");
+        out.push_str(&format!("  store i32 %__bd_new, i32* {}\n", counter));
+        out.push_str(&format!("  %__bd_over = icmp sgt i32 %__bd_new, {}\n", bound));
+        out.push_str(&format!(
+            "  br i1 %__bd_over, label %__bd_abort, label %bb{}\n\
+             __bd_abort:\n\
+             ; recursion bound exceeded — abort\n  call void @abort()\n  unreachable\n",
+            entry_id
+        ));
+    }
 
     // Map each ValueId to its source-language Type so
     // instruction emit can dispatch on shape (e.g., Vec vs
@@ -565,6 +584,26 @@ fn emit_function(
             out,
         )?;
         if !terminator_skipped {
+            // Closure #289: before any `ret` terminator,
+            // decrement the thread-local depth counter so
+            // exit paths balance the entry increment. Names
+            // include the block id to keep multiple Return
+            // sites from colliding.
+            if let Some(_bound) = f.recursion_bound {
+                if matches!(block.terminator, Terminator::Return(_)) {
+                    let counter = format!("@__intent_depth_{}", f.name);
+                    let bid = block.id.0;
+                    out.push_str(&format!(
+                        "  %__bd_pre_{} = load i32, i32* {}\n", bid, counter
+                    ));
+                    out.push_str(&format!(
+                        "  %__bd_dec_{} = sub i32 %__bd_pre_{}, 1\n", bid, bid
+                    ));
+                    out.push_str(&format!(
+                        "  store i32 %__bd_dec_{}, i32* {}\n", bid, counter
+                    ));
+                }
+            }
             emit_terminator(&block.terminator, &f.return_type, &value_types, out)?;
         }
     }
