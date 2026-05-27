@@ -673,6 +673,31 @@ impl Parser {
         let name_tok = self.expect_ident()?;
         let name_span = name_tok.span;
         let name = ident_text(name_tok);
+        // Closure #281: optional generic type parameters
+        // `enum Option<T> { … }` / `enum Result<T, E> { … }`.
+        // Mirrors the fn-generic parser at parse_function.
+        let mut type_params: Vec<String> = Vec::new();
+        if self.match_token(|k| matches!(k, TokenKind::Less)).is_some() {
+            loop {
+                let tp_tok = self.expect_ident()?;
+                let tp_name = ident_text(tp_tok);
+                type_params.push(tp_name);
+                if self.match_token(|k| matches!(k, TokenKind::Comma)).is_none() {
+                    break;
+                }
+                if self.check(|k| matches!(k, TokenKind::Greater | TokenKind::GreaterGreater)) {
+                    break;
+                }
+            }
+            self.expect_close_angle()?;
+        }
+        // Register type params so `parse_type` resolves them
+        // as `Type::Param` inside variant payloads. Restored
+        // at end.
+        let saved_tp = self.current_type_params.clone();
+        for tp in &type_params {
+            self.current_type_params.insert(tp.clone());
+        }
         self.expect_keyword("'{'", |k| matches!(k, TokenKind::LBrace))?;
         let mut variants = Vec::new();
         while !self.check(|k| matches!(k, TokenKind::RBrace | TokenKind::Eof)) {
@@ -717,9 +742,11 @@ impl Parser {
             }
         }
         let close = self.expect_keyword("'}'", |k| matches!(k, TokenKind::RBrace))?;
+        self.current_type_params = saved_tp;
         Ok(EnumDecl {
             name,
             name_span,
+            type_params,
             variants,
             span: start.span.merge(close.span),
         })
@@ -730,6 +757,27 @@ impl Parser {
         let name_tok = self.expect_ident()?;
         let name_span = name_tok.span;
         let name = ident_text(name_tok);
+        // Closure #281: optional generic type parameters
+        // `struct Pair<A, B> { first: A, second: B }`.
+        let mut type_params: Vec<String> = Vec::new();
+        if self.match_token(|k| matches!(k, TokenKind::Less)).is_some() {
+            loop {
+                let tp_tok = self.expect_ident()?;
+                let tp_name = ident_text(tp_tok);
+                type_params.push(tp_name);
+                if self.match_token(|k| matches!(k, TokenKind::Comma)).is_none() {
+                    break;
+                }
+                if self.check(|k| matches!(k, TokenKind::Greater | TokenKind::GreaterGreater)) {
+                    break;
+                }
+            }
+            self.expect_close_angle()?;
+        }
+        let saved_tp = self.current_type_params.clone();
+        for tp in &type_params {
+            self.current_type_params.insert(tp.clone());
+        }
         self.expect_keyword("'{'", |k| matches!(k, TokenKind::LBrace))?;
         let mut fields = Vec::new();
         while !self.check(|k| matches!(k, TokenKind::RBrace | TokenKind::Eof)) {
@@ -756,9 +804,11 @@ impl Parser {
             }
         }
         let close = self.expect_keyword("'}'", |k| matches!(k, TokenKind::RBrace))?;
+        self.current_type_params = saved_tp;
         Ok(StructDecl {
             name,
             name_span,
+            type_params,
             fields,
             span: start.span.merge(close.span),
         })
@@ -1570,6 +1620,30 @@ impl Parser {
             {
                 let n = name.clone();
                 self.bump();
+                // Closure #281: optional generic args
+                // `Name<T1, T2>`. If present, build a
+                // `Type::Apply` for the monomorphization
+                // pass to resolve. Otherwise return the bare
+                // `Type::Struct(n)` (or `Type::Enum(n)` —
+                // disambiguated in the checker).
+                if self.match_token(|k| matches!(k, TokenKind::Less)).is_some() {
+                    let mut args: Vec<Type> = Vec::new();
+                    loop {
+                        let arg_ty = self.parse_type()?;
+                        args.push(arg_ty);
+                        if self
+                            .match_token(|k| matches!(k, TokenKind::Comma))
+                            .is_none()
+                        {
+                            break;
+                        }
+                        if self.check(|k| matches!(k, TokenKind::Greater | TokenKind::GreaterGreater)) {
+                            break;
+                        }
+                    }
+                    self.expect_close_angle()?;
+                    return Ok(Type::Apply { name: n, args });
+                }
                 return Ok(Type::Struct(n));
             }
         }

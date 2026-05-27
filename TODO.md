@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #280 — vani.toml manifest)
+## ⏳ Resume here (paused 2026-05-27, after closure #281 — generic struct/enum decls)
 
 **Remaining queue items are all L-tier multi-session arcs.** All
 require introducing significant new compiler machinery:

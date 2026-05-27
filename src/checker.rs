@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOp, Expr, ExprKind, Function, Program, Stmt, Type, UnaryOp};
+use crate::ast::{BinaryOp, EnumDecl, Expr, ExprKind, Function, Program, Stmt, StructDecl, Type, UnaryOp};
 use crate::diagnostic::Diagnostic;
 use crate::ir::{
     TypedConst, TypedExpr, TypedExprKind, TypedFunction, TypedParam, TypedProgram, TypedStmt,
@@ -63,7 +63,35 @@ impl Env {
     }
 
     fn lookup_enum(&self, name: &str) -> Option<&EnumInfo> {
-        self.enums.get(name)
+        if let Some(e) = self.enums.get(name) {
+            return Some(e);
+        }
+        self.resolve_enum_name(name).and_then(|n| self.enums.get(&n))
+    }
+
+    // Closure #281: allow the user to reference a generic
+    // enum by its unmangled base name when there is exactly
+    // ONE monomorphic instantiation in the program. So
+    // `Result.Ok(42)` resolves to `Result__i64__i64.Ok(42)`
+    // automatically when the program contains only one
+    // `Result<…>` use-site. Multiple instantiations require
+    // the user to spell out the mangled name (or the future
+    // expected-type threading; see TODO).
+    fn resolve_enum_name(&self, name: &str) -> Option<String> {
+        if self.enums.contains_key(name) {
+            return Some(name.to_string());
+        }
+        let prefix = format!("{}__", name);
+        let candidates: Vec<String> = self
+            .enums
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        if candidates.len() == 1 {
+            return Some(candidates.into_iter().next().unwrap());
+        }
+        None
     }
 
     fn depth(&self) -> usize {
@@ -347,6 +375,17 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // then { let v: T = __t; ...; X }, Opt.None then Opt.None };`.
     // Runs after methods hoisting so signatures are settled.
     desugar_try_let_in_program(&mut program, &mut diagnostics);
+
+    // Closure #281: monomorphize generic struct/enum decls.
+    // Must run BEFORE the fn-generic monomorphizer because
+    // fn signatures can reference `Option<T>` / `Result<T,E>`
+    // which need to be resolved into concrete decls so the
+    // checker can look them up. Walks every Type::Apply in
+    // the program, materializes a monomorphic StructDecl /
+    // EnumDecl per (template, type-args) tuple, and rewrites
+    // each Type::Apply into the corresponding mangled
+    // Struct(name) / Enum(name).
+    monomorphize_type_decls_in_program(&mut program, &mut diagnostics);
 
     // T1.4 phase 2: monomorphize generic functions. Walks the
     // program for calls to `fn name<T>(…)` generic functions,
@@ -4062,6 +4101,449 @@ fn rewrite_generic_calls_in_expr(
     }
 }
 
+// Closure #281: monomorphize generic struct/enum decls. Walks
+// the program's types for `Type::Apply { name, args }`,
+// resolves each against the generic struct/enum decls,
+// generates a monomorphic copy per (decl, args) tuple with a
+// mangled name, and rewrites every `Apply` in the program
+// into the concrete `Struct(mangled)` / `Enum(mangled)`.
+// The original generic decls are removed (specializations
+// replace them). Mirrors `monomorphize_generics_in_program`
+// for functions.
+fn monomorphize_type_decls_in_program(
+    program: &mut Program,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Collect generic struct/enum templates and drop them
+    // from the program (specializations replace them).
+    let struct_templates: HashMap<String, StructDecl> = program
+        .structs
+        .iter()
+        .filter(|s| !s.type_params.is_empty())
+        .cloned()
+        .map(|s| (s.name.clone(), s))
+        .collect();
+    let enum_templates: HashMap<String, EnumDecl> = program
+        .enums
+        .iter()
+        .filter(|e| !e.type_params.is_empty())
+        .cloned()
+        .map(|e| (e.name.clone(), e))
+        .collect();
+    if struct_templates.is_empty() && enum_templates.is_empty() {
+        return;
+    }
+    // Worklist: collect Type::Apply use-sites by walking
+    // every type the program holds.
+    let mut needed_structs: Vec<(String, Vec<Type>)> = Vec::new();
+    let mut needed_enums: Vec<(String, Vec<Type>)> = Vec::new();
+    // Collector helper: classify by registry membership.
+    fn add_if_needed(
+        name: &str,
+        args: &[Type],
+        struct_templates: &HashMap<String, StructDecl>,
+        enum_templates: &HashMap<String, EnumDecl>,
+        needed_structs: &mut Vec<(String, Vec<Type>)>,
+        needed_enums: &mut Vec<(String, Vec<Type>)>,
+    ) {
+        if struct_templates.contains_key(name) {
+            if !needed_structs.iter().any(|(n, a)| n == name && a == args) {
+                needed_structs.push((name.to_string(), args.to_vec()));
+            }
+        } else if enum_templates.contains_key(name) {
+            if !needed_enums.iter().any(|(n, a)| n == name && a == args) {
+                needed_enums.push((name.to_string(), args.to_vec()));
+            }
+        }
+    }
+    fn collect_apply_in_ty(
+        ty: &Type,
+        struct_templates: &HashMap<String, StructDecl>,
+        enum_templates: &HashMap<String, EnumDecl>,
+        needed_structs: &mut Vec<(String, Vec<Type>)>,
+        needed_enums: &mut Vec<(String, Vec<Type>)>,
+    ) {
+        match ty {
+            Type::Apply { name, args } => {
+                for a in args {
+                    collect_apply_in_ty(
+                        a, struct_templates, enum_templates, needed_structs,
+                        needed_enums,
+                    );
+                }
+                add_if_needed(
+                    name, args, struct_templates, enum_templates,
+                    needed_structs, needed_enums,
+                );
+            }
+            Type::Vec(inner) | Type::Ref(inner) | Type::RefMut(inner)
+            | Type::Atomic(inner) | Type::Mutex(inner) | Type::Guard(inner) => {
+                collect_apply_in_ty(
+                    inner, struct_templates, enum_templates,
+                    needed_structs, needed_enums,
+                );
+            }
+            Type::Array { element, .. } => collect_apply_in_ty(
+                element, struct_templates, enum_templates,
+                needed_structs, needed_enums,
+            ),
+            Type::Channel(element, _) => collect_apply_in_ty(
+                element, struct_templates, enum_templates,
+                needed_structs, needed_enums,
+            ),
+            Type::Tuple(elements) => {
+                for e in elements {
+                    collect_apply_in_ty(
+                        e, struct_templates, enum_templates,
+                        needed_structs, needed_enums,
+                    );
+                }
+            }
+            Type::FnPtr(params, ret) => {
+                for p in params {
+                    collect_apply_in_ty(
+                        p, struct_templates, enum_templates,
+                        needed_structs, needed_enums,
+                    );
+                }
+                collect_apply_in_ty(
+                    ret, struct_templates, enum_templates,
+                    needed_structs, needed_enums,
+                );
+            }
+            _ => {}
+        }
+    }
+    // Walk every fn signature + body, every monomorphic
+    // struct/enum, every const decl, every impl block.
+    for f in &program.functions {
+        for p in &f.params {
+            collect_apply_in_ty(
+                &p.ty, &struct_templates, &enum_templates,
+                &mut needed_structs, &mut needed_enums,
+            );
+        }
+        collect_apply_in_ty(
+            &f.return_type, &struct_templates, &enum_templates,
+            &mut needed_structs, &mut needed_enums,
+        );
+        for stmt in &f.body {
+            collect_apply_in_stmt(
+                stmt, &struct_templates, &enum_templates,
+                &mut needed_structs, &mut needed_enums,
+            );
+        }
+    }
+    for s in &program.structs {
+        if !s.type_params.is_empty() {
+            continue;
+        }
+        for fld in &s.fields {
+            collect_apply_in_ty(
+                &fld.ty, &struct_templates, &enum_templates,
+                &mut needed_structs, &mut needed_enums,
+            );
+        }
+    }
+    for e in &program.enums {
+        if !e.type_params.is_empty() {
+            continue;
+        }
+        for v in &e.variants {
+            for p_ty in &v.payload {
+                collect_apply_in_ty(
+                    p_ty, &struct_templates, &enum_templates,
+                    &mut needed_structs, &mut needed_enums,
+                );
+            }
+        }
+    }
+    // Generate monomorphic decls per (template, args).
+    // Templates' variant payloads / field types reference
+    // Type::Param(name); substitute each occurrence with
+    // the matching concrete arg.
+    let mut new_structs: Vec<StructDecl> = Vec::new();
+    for (name, args) in &needed_structs {
+        let template = &struct_templates[name];
+        if template.type_params.len() != args.len() {
+            diagnostics.push(Diagnostic::new(
+                template.span,
+                format!(
+                    "generic struct '{}' expects {} type arguments, got {}",
+                    name, template.type_params.len(), args.len()
+                ),
+            ));
+            continue;
+        }
+        let mangled = mangle_generic_decl(name, args);
+        let mut mono = template.clone();
+        mono.name = mangled;
+        mono.type_params = Vec::new();
+        for (tp, concrete) in template.type_params.iter().zip(args.iter()) {
+            for fld in mono.fields.iter_mut() {
+                substitute_type_param(&mut fld.ty, tp, concrete);
+            }
+        }
+        // Replace any Type::Apply we just substituted into
+        // the fields (e.g. `Pair<i64, T>` inside a generic
+        // struct's field becomes `Pair<i64, concrete>`
+        // after substitution — collect it for the worklist).
+        for fld in &mono.fields {
+            collect_apply_in_ty(
+                &fld.ty, &struct_templates, &enum_templates,
+                &mut needed_structs.clone(), // ignored copy
+                &mut needed_enums.clone(),   // ignored copy
+            );
+        }
+        new_structs.push(mono);
+    }
+    let mut new_enums: Vec<EnumDecl> = Vec::new();
+    for (name, args) in &needed_enums {
+        let template = &enum_templates[name];
+        if template.type_params.len() != args.len() {
+            diagnostics.push(Diagnostic::new(
+                template.span,
+                format!(
+                    "generic enum '{}' expects {} type arguments, got {}",
+                    name, template.type_params.len(), args.len()
+                ),
+            ));
+            continue;
+        }
+        let mangled = mangle_generic_decl(name, args);
+        let mut mono = template.clone();
+        mono.name = mangled;
+        mono.type_params = Vec::new();
+        for (tp, concrete) in template.type_params.iter().zip(args.iter()) {
+            for variant in mono.variants.iter_mut() {
+                for p_ty in variant.payload.iter_mut() {
+                    substitute_type_param(p_ty, tp, concrete);
+                }
+            }
+        }
+        new_enums.push(mono);
+    }
+    // Drop the generic templates from the program; append
+    // the new monomorphic copies.
+    program.structs.retain(|s| s.type_params.is_empty());
+    program.enums.retain(|e| e.type_params.is_empty());
+    program.structs.extend(new_structs);
+    program.enums.extend(new_enums);
+    // Rewrite every Type::Apply across the program with
+    // the matching mangled Struct/Enum name.
+    let struct_names: std::collections::HashSet<String> = struct_templates.keys().cloned().collect();
+    let enum_names: std::collections::HashSet<String> = enum_templates.keys().cloned().collect();
+    for f in program.functions.iter_mut() {
+        for p in f.params.iter_mut() {
+            rewrite_apply_in_ty(&mut p.ty, &struct_names, &enum_names);
+        }
+        rewrite_apply_in_ty(&mut f.return_type, &struct_names, &enum_names);
+        for stmt in f.body.iter_mut() {
+            rewrite_apply_in_stmt(stmt, &struct_names, &enum_names);
+        }
+    }
+    for s in program.structs.iter_mut() {
+        for fld in s.fields.iter_mut() {
+            rewrite_apply_in_ty(&mut fld.ty, &struct_names, &enum_names);
+        }
+    }
+    for e in program.enums.iter_mut() {
+        for v in e.variants.iter_mut() {
+            for p_ty in v.payload.iter_mut() {
+                rewrite_apply_in_ty(p_ty, &struct_names, &enum_names);
+            }
+        }
+    }
+}
+
+fn mangle_generic_decl(name: &str, args: &[Type]) -> String {
+    let mut s = name.to_string();
+    for a in args {
+        s.push_str("__");
+        s.push_str(&type_mangle(a));
+    }
+    s
+}
+
+fn rewrite_apply_in_ty(
+    ty: &mut Type,
+    struct_names: &std::collections::HashSet<String>,
+    enum_names: &std::collections::HashSet<String>,
+) {
+    // Bottom-up rewrite so nested Apply nodes (e.g.
+    // `Pair<i64, Result<i64, OwnedStr>>`) get rewritten
+    // inside-out.
+    match ty {
+        Type::Apply { name, args } => {
+            for a in args.iter_mut() {
+                rewrite_apply_in_ty(a, struct_names, enum_names);
+            }
+            let mangled = mangle_generic_decl(name, args);
+            *ty = if struct_names.contains(name) {
+                Type::Struct(mangled)
+            } else if enum_names.contains(name) {
+                Type::Enum(mangled)
+            } else {
+                // Unknown generic — leave as-is; the
+                // checker will surface a "not declared"
+                // diagnostic.
+                return;
+            };
+        }
+        Type::Vec(inner) | Type::Ref(inner) | Type::RefMut(inner)
+        | Type::Atomic(inner) | Type::Mutex(inner) | Type::Guard(inner) => {
+            rewrite_apply_in_ty(inner, struct_names, enum_names);
+        }
+        Type::Array { element, .. } => rewrite_apply_in_ty(element, struct_names, enum_names),
+        Type::Channel(element, _) => rewrite_apply_in_ty(element, struct_names, enum_names),
+        Type::Tuple(elements) => {
+            for e in elements.iter_mut() {
+                rewrite_apply_in_ty(e, struct_names, enum_names);
+            }
+        }
+        Type::FnPtr(params, ret) => {
+            for p in params.iter_mut() {
+                rewrite_apply_in_ty(p, struct_names, enum_names);
+            }
+            rewrite_apply_in_ty(ret, struct_names, enum_names);
+        }
+        _ => {}
+    }
+}
+
+fn collect_apply_in_stmt(
+    stmt: &Stmt,
+    struct_templates: &HashMap<String, StructDecl>,
+    enum_templates: &HashMap<String, EnumDecl>,
+    needed_structs: &mut Vec<(String, Vec<Type>)>,
+    needed_enums: &mut Vec<(String, Vec<Type>)>,
+) {
+    // Helper closure for type-only walking.
+    let walk_ty = |ty: &Type,
+                       ns: &mut Vec<(String, Vec<Type>)>,
+                       ne: &mut Vec<(String, Vec<Type>)>| {
+        fn rec(
+            ty: &Type,
+            st: &HashMap<String, StructDecl>,
+            en: &HashMap<String, EnumDecl>,
+            ns: &mut Vec<(String, Vec<Type>)>,
+            ne: &mut Vec<(String, Vec<Type>)>,
+        ) {
+            match ty {
+                Type::Apply { name, args } => {
+                    for a in args {
+                        rec(a, st, en, ns, ne);
+                    }
+                    if st.contains_key(name) {
+                        if !ns.iter().any(|(n, a)| n == name && a == args) {
+                            ns.push((name.clone(), args.clone()));
+                        }
+                    } else if en.contains_key(name) {
+                        if !ne.iter().any(|(n, a)| n == name && a == args) {
+                            ne.push((name.clone(), args.clone()));
+                        }
+                    }
+                }
+                Type::Vec(i) | Type::Ref(i) | Type::RefMut(i)
+                | Type::Atomic(i) | Type::Mutex(i) | Type::Guard(i) => {
+                    rec(i, st, en, ns, ne)
+                }
+                Type::Array { element, .. } => rec(element, st, en, ns, ne),
+                Type::Channel(element, _) => rec(element, st, en, ns, ne),
+                Type::Tuple(elements) => {
+                    for e in elements {
+                        rec(e, st, en, ns, ne);
+                    }
+                }
+                Type::FnPtr(params, ret) => {
+                    for p in params {
+                        rec(p, st, en, ns, ne);
+                    }
+                    rec(ret, st, en, ns, ne);
+                }
+                _ => {}
+            }
+        }
+        rec(ty, struct_templates, enum_templates, ns, ne);
+    };
+    match stmt {
+        Stmt::Let { annotation, expr: _, .. } => {
+            if let Some(ty) = annotation {
+                walk_ty(ty, needed_structs, needed_enums);
+            }
+        }
+        Stmt::LetTuple { annotation, .. } => {
+            if let Some(ty) = annotation {
+                walk_ty(ty, needed_structs, needed_enums);
+            }
+        }
+        Stmt::If { then_body, else_body, .. } => {
+            for s in then_body {
+                collect_apply_in_stmt(
+                    s, struct_templates, enum_templates,
+                    needed_structs, needed_enums,
+                );
+            }
+            for s in else_body {
+                collect_apply_in_stmt(
+                    s, struct_templates, enum_templates,
+                    needed_structs, needed_enums,
+                );
+            }
+        }
+        Stmt::While { body, .. } => {
+            for s in body {
+                collect_apply_in_stmt(
+                    s, struct_templates, enum_templates,
+                    needed_structs, needed_enums,
+                );
+            }
+        }
+        Stmt::For { body, .. } | Stmt::ForIter { body, .. } => {
+            for s in body {
+                collect_apply_in_stmt(
+                    s, struct_templates, enum_templates,
+                    needed_structs, needed_enums,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_apply_in_stmt(
+    stmt: &mut Stmt,
+    struct_names: &std::collections::HashSet<String>,
+    enum_names: &std::collections::HashSet<String>,
+) {
+    match stmt {
+        Stmt::Let { annotation, .. } | Stmt::LetTuple { annotation, .. } => {
+            if let Some(ty) = annotation {
+                rewrite_apply_in_ty(ty, struct_names, enum_names);
+            }
+        }
+        Stmt::If { then_body, else_body, .. } => {
+            for s in then_body.iter_mut() {
+                rewrite_apply_in_stmt(s, struct_names, enum_names);
+            }
+            for s in else_body.iter_mut() {
+                rewrite_apply_in_stmt(s, struct_names, enum_names);
+            }
+        }
+        Stmt::While { body, .. } => {
+            for s in body.iter_mut() {
+                rewrite_apply_in_stmt(s, struct_names, enum_names);
+            }
+        }
+        Stmt::For { body, .. } | Stmt::ForIter { body, .. } => {
+            for s in body.iter_mut() {
+                rewrite_apply_in_stmt(s, struct_names, enum_names);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Mangle a concrete type to a name fragment for the
 /// specialized function. e.g. `Type::I64` → "i64".
 fn type_mangle(ty: &Type) -> String {
@@ -4108,6 +4590,11 @@ fn substitute_type_param(ty: &mut Type, t_name: &str, concrete: &Type) {
                 substitute_type_param(p, t_name, concrete);
             }
             substitute_type_param(ret, t_name, concrete);
+        }
+        Type::Apply { args, .. } => {
+            for a in args.iter_mut() {
+                substitute_type_param(a, t_name, concrete);
+            }
         }
         _ => {}
     }
@@ -8164,8 +8651,14 @@ fn check_expr(
             // a bare Var naming a declared enum AND the "method"
             // matches one of its variants. v1 supports
             // single-field payload only.
-            if let ExprKind::Var(enum_name) = &receiver.kind {
-                if let Some(enum_decl) = env.lookup_enum(enum_name) {
+            if let ExprKind::Var(enum_name_raw) = &receiver.kind {
+                if let Some(enum_decl) = env.lookup_enum(enum_name_raw) {
+                    // Closure #281: resolve base name to
+                    // mangled name when the user wrote the
+                    // unmangled generic-decl name.
+                    let enum_name = &env
+                        .resolve_enum_name(enum_name_raw)
+                        .unwrap_or_else(|| enum_name_raw.clone());
                     if let Some((tag, _)) = enum_decl
                         .variants
                         .iter()
@@ -8184,7 +8677,7 @@ fn check_expr(
                         // enum declaration we know the checker
                         // already processed.
                         let payload_ty = lookup_enum_variant_payload(
-                            env, enum_name, method,
+                            env, enum_name.as_str(), method,
                         );
                         if let Some(payload_ty) = payload_ty {
                             // Exactly one payload arg for v1.
@@ -8713,8 +9206,14 @@ fn check_expr(
             // field access but resolves to an enum-variant
             // reference. Recognize by checking if the LHS is
             // a bare `Var` naming a declared enum. T1.3.
+            // Closure #281: also resolve the unmangled base
+            // name of a generic instantiation when exactly
+            // one monomorphic decl exists in the program.
             if let ExprKind::Var(name) = &object.kind {
                 if let Some(enum_decl) = env.lookup_enum(name) {
+                    let resolved_name = env
+                        .resolve_enum_name(name)
+                        .unwrap_or_else(|| name.clone());
                     if let Some((tag, _)) = enum_decl
                         .variants
                         .iter()
@@ -8723,11 +9222,11 @@ fn check_expr(
                     {
                         return CheckedExpr::new(
                             TypedExprKind::EnumVariant {
-                                enum_name: name.clone(),
+                                enum_name: resolved_name.clone(),
                                 variant: field.clone(),
                                 tag: tag as u32,
                             },
-                            Type::Enum(name.clone()),
+                            Type::Enum(resolved_name),
                             None,
                             expr.span,
                         );
@@ -9017,7 +9516,14 @@ fn check_expr(
                         let enum_decl = enum_decl_opt
                             .as_ref()
                             .expect("enum dispatch has enum_decl");
-                        if *pat_enum != enum_name {
+                        // Closure #281: accept the unmangled
+                        // base name of a monomorphic generic
+                        // instantiation. `Result__i64__i64`
+                        // matches a pattern that writes
+                        // `Result.Ok(v)` since the mangled
+                        // name starts with `Result__`.
+                        let base_matches = enum_name.starts_with(&format!("{}__", pat_enum));
+                        if *pat_enum != enum_name && !base_matches {
                             diagnostics.push(Diagnostic::new(
                                 arm.pattern_span,
                                 format!(
@@ -9078,7 +9584,10 @@ fn check_expr(
                             continue;
                         }
                         let enum_name = enum_name_opt.as_deref().unwrap_or("");
-                        if *pat_enum != enum_name {
+                        // Closure #281: accept unmangled base
+                        // name (see the Pattern::Variant arm).
+                        let base_matches = enum_name.starts_with(&format!("{}__", pat_enum));
+                        if *pat_enum != enum_name && !base_matches {
                             diagnostics.push(Diagnostic::new(
                                 arm.pattern_span,
                                 format!(

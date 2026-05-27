@@ -386,6 +386,15 @@ pub struct ConstDecl {
 pub struct StructDecl {
     pub name: String,
     pub name_span: Span,
+    /// Optional generic type parameters, e.g. `struct Pair<A, B>
+    /// { first: A, second: B }`. Empty for monomorphic
+    /// declarations. Closure #281 — mirrors fn-generics from
+    /// closure #99 / #100. The monomorphization pre-pass walks
+    /// every use-site, collects the concrete type arguments,
+    /// emits a fully-typed monomorphized `StructDecl` per
+    /// instantiation. Generic structs themselves are never
+    /// emitted to the backends.
+    pub type_params: Vec<String>,
     pub fields: Vec<StructField>,
     pub span: Span,
 }
@@ -401,6 +410,12 @@ pub struct StructField {
 pub struct EnumDecl {
     pub name: String,
     pub name_span: Span,
+    /// Optional generic type parameters, e.g. `enum
+    /// Option<T> { Some(T), None }` or `enum Result<T, E> {
+    /// Ok(T), Err(E) }`. Empty for monomorphic enums.
+    /// Closure #281 — mirrors fn-generics from closure #99.
+    /// Use-sites trigger monomorphization in the pre-pass.
+    pub type_params: Vec<String>,
     pub variants: Vec<EnumVariant>,
     pub span: Span,
 }
@@ -612,6 +627,17 @@ pub enum Type {
     /// phase 2. The enum's variants live in the program-level
     /// `EnumDecl` registry keyed by name. Refines T1.3.
     Enum(String),
+    /// Closure #281: parse-time generic instantiation of a
+    /// user-declared struct or enum. `Apply { name: "Result",
+    /// args: [I64, OwnedStr] }` represents the type
+    /// `Result<i64, OwnedStr>` before monomorphization. The
+    /// pre-checker monomorphization pass walks every type in
+    /// the program, finds each `Apply`, generates a
+    /// monomorphic `StructDecl` / `EnumDecl` with a mangled
+    /// name (`Result__i64__OwnedStr`), and replaces `Apply`
+    /// with `Struct(mangled)` / `Enum(mangled)`. The
+    /// backends never see `Type::Apply`.
+    Apply { name: String, args: Vec<Type> },
     /// Type parameter — placeholder filled in at
     /// monomorphization. Only ever appears inside a generic
     /// function's signature / body during checking; by the
@@ -768,7 +794,7 @@ impl Type {
             Type::I16 | Type::U16 => Some(16),
             Type::I32 | Type::U32 => Some(32),
             Type::I64 | Type::U64 => Some(64),
-            Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Param(_) | Type::Object(_) => None,
+            Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => None,
         }
     }
 
@@ -779,7 +805,7 @@ impl Type {
             Type::I32 => Some(i32::MIN as i128),
             Type::I64 => Some(i64::MIN as i128),
             Type::U8 | Type::U16 | Type::U32 | Type::U64 => Some(0),
-            Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Param(_) | Type::Object(_) => None,
+            Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => None,
         }
     }
 
@@ -793,7 +819,7 @@ impl Type {
             Type::U16 => Some(u16::MAX as i128),
             Type::U32 => Some(u32::MAX as i128),
             Type::U64 => Some(u64::MAX as i128),
-            Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Param(_) | Type::Object(_) => None,
+            Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => None,
         }
     }
 
@@ -859,6 +885,16 @@ impl fmt::Display for Type {
             }
             Type::Struct(name) => write!(formatter, "{}", name),
             Type::Enum(name) => write!(formatter, "{}", name),
+            Type::Apply { name, args } => {
+                write!(formatter, "{}<", name)?;
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(formatter, ", ")?;
+                    }
+                    write!(formatter, "{}", a)?;
+                }
+                write!(formatter, ">")
+            }
             Type::Param(name) => write!(formatter, "{}", name),
             Type::Object(iface) => write!(formatter, "dyn {}", iface),
         }

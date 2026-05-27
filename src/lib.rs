@@ -19862,6 +19862,77 @@ fn main() -> i64 {
     // params. Function pointers are pointer-sized in both
     // C ABI and LLVM, so they cross the FFI boundary
     // cleanly without any ABI gymnastics.
+    // Closure #281: generic struct / enum declarations.
+    // `enum Option<T> { Some(T), None }` + `enum Result<T,
+    // E> { Ok(T), Err(E) }` work end-to-end via a
+    // monomorphization pre-pass that walks every
+    // `Type::Apply { name, args }` use-site and emits a
+    // concrete mangled `EnumDecl` per (template, args)
+    // tuple. The checker resolves base names like
+    // `Option.Some(42)` to the mangled monomorphic
+    // (`Option__i64.Some(42)`) when exactly one
+    // instantiation exists in the program.
+    #[test]
+    fn generic_option_with_i64_payload_compiles_both_backends() {
+        let source = r#"
+            enum Option<T> { Some(T), None }
+
+            fn main() -> i64 {
+              let a: Option<i64> = Option.Some(42);
+              let b: Option<i64> = Option.None;
+              let x: i64 = match a {
+                Option.Some(v) then v,
+                Option.None then 0,
+              };
+              let y: i64 = match b {
+                Option.Some(v) then v,
+                Option.None then -1,
+              };
+              return x + y;
+            }
+        "#;
+        compile_to_c(source).expect("generic Option<i64> compiles to C");
+        compile_to_llvm(source).expect("generic Option<i64> compiles to LLVM");
+    }
+
+    #[test]
+    fn generic_result_two_type_params_compiles() {
+        let source = r#"
+            enum Result<T, E> { Ok(T), Err(E) }
+
+            fn main() -> i64 {
+              let x: Result<i64, i64> = Result.Ok(42);
+              return match x {
+                Result.Ok(v) then v,
+                Result.Err(e) then -e,
+              };
+            }
+        "#;
+        compile_to_c(source).expect("generic Result<i64, i64> compiles");
+        compile_to_llvm(source).expect("generic Result<i64, i64> compiles");
+    }
+
+    #[test]
+    fn generic_enum_with_mismatched_arg_count_rejected() {
+        let source = r#"
+            enum Result<T, E> { Ok(T), Err(E) }
+
+            fn main() -> i64 {
+              let x: Result<i64> = Result.Ok(1);
+              return 0;
+            }
+        "#;
+        let errs = compile(source).expect_err("arity mismatch must reject");
+        assert!(
+            errs.iter().any(|d| {
+                let m = &d.message;
+                m.contains("expects 2 type arguments, got 1")
+            }),
+            "expected arity-mismatch diagnostic, got: {:?}",
+            errs
+        );
+    }
+
     #[test]
     fn extern_fn_with_fn_pointer_param_accepted() {
         let source = r#"

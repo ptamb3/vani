@@ -480,8 +480,8 @@ MANIFEST (vani.toml):
     key supplies the source file. Minimal format:
 
         [package]
-        name = "my_project"
-        entry = "src/main.vani"
+        name = \"my_project\"
+        entry = \"src/main.vani\"
 
 GLOBAL OPTIONS:
     -h, --help        Show this message

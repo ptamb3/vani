@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1005 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1008 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -995,6 +995,77 @@ fn main() returns i64 {
 
    Test totals: 1005 lib + 52 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #280.
+
+   **Generic struct/enum declarations done 2026-05-27**:
+   `enum Option<T> { Some(T), None }` and `enum Result<T, E>
+   { Ok(T), Err(E) }` now compile end-to-end on both
+   backends. Mirrors closure #99's fn-generic
+   monomorphization but for type declarations.
+
+   Surface:
+
+       enum Option<T> { Some(T), None }
+       enum Result<T, E> { Ok(T), Err(E) }
+       struct Pair<A, B> { first: A, second: B }
+
+       fn main() -> i64 {
+         let a: Option<i64> = Option.Some(42);
+         return match a {
+           Option.Some(v) then v,
+           Option.None then 0,
+         };
+       }
+
+   Pipeline:
+
+     • AST — `StructDecl` and `EnumDecl` gain `type_params:
+       Vec<String>` (empty for monomorphic decls). New
+       `Type::Apply { name, args }` variant represents
+       parse-time generic instantiations.
+     • Parser — accepts `<T, E>` after struct/enum name;
+       registers the params in `current_type_params` so
+       field/variant payload types resolve as `Type::Param`.
+       At type-position use-sites, `Name<T1, T2>` parses
+       to `Type::Apply`.
+     • Monomorphization pre-pass
+       (`monomorphize_type_decls_in_program`) — runs BEFORE
+       the fn-generic pass. Walks every type in the
+       program, collects `Type::Apply` use-sites, generates
+       one monomorphic `EnumDecl` / `StructDecl` per unique
+       (template, args) tuple with a mangled name
+       (`Result__i64__OwnedStr`), and rewrites every
+       `Type::Apply` into the corresponding
+       `Type::Struct(mangled)` / `Type::Enum(mangled)`.
+     • Checker — `lookup_enum` and `resolve_enum_name`
+       accept the unmangled base name (`Option`) when
+       exactly ONE monomorphic instantiation exists in the
+       program. So `Option.Some(42)` resolves to
+       `Option__i64.Some(42)` without the user spelling out
+       the mangled name. Multiple instantiations require
+       the user to disambiguate (or future expected-type
+       threading).
+     • Match patterns — accept the unmangled base name
+       similarly: `Result.Ok(v)` matches a scrutinee of
+       type `Result__i64__OwnedStr` (prefix-match).
+     • Codegen — backends never see `Type::Apply` (rewritten
+       to mangled `Type::Struct` / `Type::Enum` by the
+       pre-pass).
+
+   v1 limitations documented:
+     • Multiple monomorphic instantiations of the same
+       generic in one program force the user to spell the
+       mangled name explicitly (e.g. `Option__i64.Some(0)`
+       vs `Option__OwnedStr.Some("x" + "")`). Future:
+       expected-type threading through expression
+       checking.
+
+   3 new lib tests pin the shape:
+     - `generic_option_with_i64_payload_compiles_both_backends`
+     - `generic_result_two_type_params_compiles`
+     - `generic_enum_with_mismatched_arg_count_rejected`
+
+   Test totals: 1008 lib + 52 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #281.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table
