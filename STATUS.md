@@ -686,6 +686,26 @@ fn main() returns i64 {
    Test totals: 983 lib + 48 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #271.
 
+   **Auto-borrow audit closed 2026-05-27 (no code, closure #272)**:
+   sweep of `check_binary_op` / `check_equality` /
+   `auto_borrow` to identify gaps where binary ops still
+   consume unnecessarily. Findings:
+
+     • Str/OwnedStr comparisons + concat already covered.
+     • Eq impl with `ref T` self auto-borrows Var operands
+       (closure #228); non-Var operands surface a clear
+       let-bind hint. Workaround is one line — not worth a
+       feature ship.
+     • Eq impl with `T` by-value self consumes by design.
+     • Numeric / boolean / bitwise ops are Copy-only; no
+       move surface.
+     • No "Vec arithmetic" gap exists; the original TODO
+       entry was speculative.
+
+   Conclusion: the binary-op auto-borrow surface is tight.
+   No code changes shipped under this closure; see TODO.md
+   for the full audit notes. Test totals unchanged.
+
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table
    to give pure-Hindi / pure-Sanskrit / pure-Marathi

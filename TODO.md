@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #271 — FFI v3 `pure extern "C" fn` opt-in)
+## ⏳ Resume here (paused 2026-05-27, after closure #272 — auto-borrow audit closed without code changes)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -653,12 +653,41 @@ can extend.
   arrays only `ref` (clone is v2 work). Helper
   `move_recovery_hint` keys off `Type`. Three lib tests
   pin the Vec / OwnedStr / Atomic shapes.
-- **Auto-borrow extension survey.** Today `==` / `<` /
-  `+`-on-Str auto-borrow. Other binary op shapes
-  (e.g. arithmetic on a `Vec` reference) may still consume
-  unnecessarily — needs a sweep of the binary-op checker to
-  list cases that could be auto-borrow rather than auto-move.
-  Small / medium.
+- ✅ **Auto-borrow extension survey** — closure #272 (audit
+  only, no code changes). Sweep of `check_binary_op`,
+  `check_equality`, and the `auto_borrow` helper inside the
+  Eq desugar:
+
+    • **Str / OwnedStr** `==` / `!=` / `<` / `<=` / `>` /
+      `>=` — already auto-borrowed (strcmp lowering reads
+      only; no consume). Works for Var, field-access, and
+      arbitrary expression operands.
+    • **Eq impl with `ref T` / `mut ref T` self params** —
+      auto-borrowed for Var operands (closure #228).
+      Non-Var operands like `make(1, 2) == make(1, 2)`
+      surface a let-bind hint. **Gap is real but narrow**:
+      the user can let-bind in one line; the diagnostic
+      spells out the fix.
+    • **Eq impl with `T` (by-value) self params** — consumes
+      both operands by design. Existing examples
+      (`struct_eq.vani`, `enum_eq.vani`, `tuple_eq.vani`)
+      all use this shape and work for both Var and non-Var
+      operands.
+    • **Numeric ops** (`+`/`-`/`*`/`/`/`%`/`<<`/`>>`/`&`/
+      `|`/`^`) — only valid on Copy scalars. No moves
+      possible.
+    • **Boolean ops** (`&&`, `||`) — bool only. Copy.
+    • **`+` on Str/OwnedStr** — heap-allocating concat,
+      consumes operands by design (the result is a fresh
+      OwnedStr).
+    • **No "Vec reference arithmetic" gap exists** — Vec has
+      no built-in `+`/`==`/etc., so the original TODO entry's
+      example was speculative.
+
+  Conclusion: only real opportunity is "non-Var operand on
+  ref-self Eq", and its workaround is one line. Closed
+  without code changes; revisit if the let-bind hint turns
+  out to be friction in real use.
 - ✅ **`pop(mut ref xs) -> T` builtin** — shipped under
   closure #219 (Copy element types only; the affine-element
   Option<T> variant is a v2 follow-up). The symmetric
