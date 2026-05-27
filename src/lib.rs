@@ -19677,6 +19677,79 @@ fn main() -> i64 {
         );
     }
 
+    // FFI v4 — guard against silent ABI corruption for
+    // unsupported parameter / return shapes. v1 FFI ABI is
+    // scoped to scalars, `Str`, and references; aggregates by
+    // value would silently corrupt under System V x86-64.
+    #[test]
+    fn extern_struct_by_value_param_rejected_with_ref_hint() {
+        let source = r#"
+            struct Point { x: i32, y: i32 }
+
+            extern "C" fn point_sum(p: Point) -> i32;
+
+            fn main() -> i64 { return 0; }
+        "#;
+        let errs = compile(source).expect_err("struct by value must be rejected");
+        assert!(
+            errs.iter().any(|d| {
+                let m = &d.message;
+                m.contains("unsupported FFI type Point")
+                    && m.contains("ref Point")
+            }),
+            "expected `ref Point` migration hint, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn extern_vec_param_rejected() {
+        let source = r#"
+            extern "C" fn takes_vec(xs: Vec<i32>) -> i32;
+
+            fn main() -> i64 { return 0; }
+        "#;
+        let errs = compile(source).expect_err("Vec FFI param must be rejected");
+        assert!(
+            errs.iter().any(|d| d.message.contains("owned heap handles cannot cross")),
+            "expected heap-handle rejection, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn extern_struct_by_ref_param_accepted() {
+        let source = r#"
+            struct Point { x: i32, y: i32 }
+
+            extern "C" fn point_sum(p: ref Point) -> i32;
+
+            fn main() -> i64 { return 0; }
+        "#;
+        compile(source).expect("ref-passed struct is FFI-safe and must check");
+    }
+
+    #[test]
+    fn extern_struct_return_rejected_with_ref_hint() {
+        let source = r#"
+            struct Point { x: i32, y: i32 }
+
+            extern "C" fn make_point() -> Point;
+
+            fn main() -> i64 { return 0; }
+        "#;
+        let errs = compile(source).expect_err("struct return must be rejected");
+        assert!(
+            errs.iter().any(|d| {
+                let m = &d.message;
+                m.contains("return type Point is unsupported")
+                    && m.contains("ref Point")
+            }),
+            "expected `ref Point` return migration hint, got: {:?}",
+            errs
+        );
+    }
+
     #[test]
     fn extern_c_fn_emits_llvm_declare() {
         let source = r#"

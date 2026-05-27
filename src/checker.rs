@@ -4213,6 +4213,106 @@ fn literal_const_value(
     }
 }
 
+// Closure #273: classify whether a type is FFI-safe for an
+// `extern "C" fn` parameter under the v1 ABI. Returns `None`
+// for safe types and a migration hint string for unsafe ones.
+//
+// Safe: scalars (Copy primitives), `Str` (`i8*` pointer), and
+// any reference (`ref T` / `mut ref T`) — pointers cross the
+// FFI boundary cleanly.
+//
+// Unsafe: aggregates (Struct / Tuple / Array / Enum), heap
+// handles (`Vec<T>`, `OwnedStr`), and exclusive handles
+// (Atomic / Mutex / Channel / Guard / Task / Fn / Object).
+// Aggregates by value silently corrupt under System V
+// x86-64 ABI; handles have semantics that don't survive a
+// cross-language boundary.
+fn extern_param_rejection_hint(ty: &Type) -> Option<String> {
+    match ty {
+        Type::I8 | Type::I16 | Type::I32 | Type::I64
+        | Type::U8 | Type::U16 | Type::U32 | Type::U64
+        | Type::F32 | Type::F64 | Type::Bool | Type::Str => None,
+        Type::Ref(_) | Type::RefMut(_) => None,
+        Type::Struct(name) => Some(format!(
+            "pass struct '{}' by reference instead — write `ref {}` \
+             (small aggregates have ABI-dependent packing that vāṇी's \
+             v1 FFI doesn't model, leading to silent corruption)",
+            name, name
+        )),
+        Type::Tuple(_) => Some(
+            "pass the tuple by reference instead — write `ref (…)` \
+             (tuples have ABI-dependent packing that v1 FFI doesn't model)"
+                .to_string(),
+        ),
+        Type::Array { element, length } => Some(format!(
+            "pass arrays by reference instead — write `ref [{}; {}]` \
+             (array-by-value has platform-specific calling conventions)",
+            element, length
+        )),
+        Type::Enum(name) => Some(format!(
+            "pass enum '{}' by reference instead — write `ref {}` \
+             (enum-by-value layout is not yet wired through FFI)",
+            name, name
+        )),
+        Type::Vec(_) | Type::OwnedStr => Some(
+            "owned heap handles cannot cross the FFI boundary — \
+             expose a scalar / pointer entry point in your foreign \
+             code, or pass `Str` (for read-only NUL-terminated \
+             buffers) / `ref` (for borrows) instead"
+                .to_string(),
+        ),
+        Type::Param(_) => Some(
+            "generic type parameters are not allowed on extern fns — \
+             concretize the type at the declaration site"
+                .to_string(),
+        ),
+        _ => Some(
+            "this type is not yet wired through the v1 FFI ABI; \
+             use scalars, `Str`, or `ref T` instead"
+                .to_string(),
+        ),
+    }
+}
+
+// Closure #273: classify the return type. Slightly stricter
+// than parameters: extern returns can't yield owned heap
+// handles back into vāṇी (no way to enforce the handle is
+// freed correctly on the foreign side). Pointer returns are
+// allowed but discouraged — the caller must reason about
+// lifetime independently.
+fn extern_return_rejection_hint(ty: &Type) -> Option<String> {
+    match ty {
+        Type::I8 | Type::I16 | Type::I32 | Type::I64
+        | Type::U8 | Type::U16 | Type::U32 | Type::U64
+        | Type::F32 | Type::F64 | Type::Bool | Type::Str => None,
+        Type::Ref(_) | Type::RefMut(_) => None,
+        Type::Struct(name) | Type::Enum(name) => Some(format!(
+            "return a pointer instead — declare the return type as \
+             `ref {}` (struct/enum return-by-value has ABI-dependent \
+             packing that v1 FFI doesn't model)",
+            name
+        )),
+        Type::Tuple(_) | Type::Array { .. } => Some(
+            "return a pointer / reference instead — aggregate-by-value \
+             returns have platform-specific calling conventions"
+                .to_string(),
+        ),
+        Type::Vec(_) | Type::OwnedStr => Some(
+            "owned heap handles cannot be returned from extern fns — \
+             vāṇी can't reason about the foreign code's allocator"
+                .to_string(),
+        ),
+        Type::Param(_) => Some(
+            "generic return types are not allowed on extern fns"
+                .to_string(),
+        ),
+        _ => Some(
+            "this type is not yet wired through the v1 FFI ABI"
+                .to_string(),
+        ),
+    }
+}
+
 fn check_function(
     function: &Function,
     signatures: &HashMap<String, Signature>,
@@ -4255,6 +4355,33 @@ fn check_function(
     // definition. Calls bypass the `fn_` prefix to match the
     // bare C-ABI symbol the linker provides.
     if function.is_extern {
+        // Closure #273: v1 FFI ABI scope — scalars, `Str`, and
+        // reference types only. Struct / Tuple / Vec / OwnedStr
+        // by value silently corrupt under System V x86-64 ABI
+        // (vāṇी's `declare i32 @f(%Struct_T)` doesn't match cc's
+        // packed-register lowering for small aggregates). Reject
+        // with a `ref T` migration hint so users don't fall into
+        // the trap.
+        for p in &function.params {
+            if let Some(hint) = extern_param_rejection_hint(&p.ty) {
+                diagnostics.push(Diagnostic::new(
+                    p.span,
+                    format!(
+                        "extern fn '{}' parameter '{}' has unsupported FFI type {}; {}",
+                        function.name, p.name, p.ty, hint
+                    ),
+                ));
+            }
+        }
+        if let Some(hint) = extern_return_rejection_hint(&function.return_type) {
+            diagnostics.push(Diagnostic::new(
+                function.span,
+                format!(
+                    "extern fn '{}' return type {} is unsupported; {}",
+                    function.name, function.return_type, hint
+                ),
+            ));
+        }
         let mut typed_params: Vec<crate::ir::TypedParam> = Vec::new();
         for p in &function.params {
             typed_params.push(crate::ir::TypedParam {
@@ -4269,7 +4396,7 @@ fn check_function(
             return_type: function.return_type.clone(),
             requires: Vec::new(),
             body: Vec::new(),
-            is_pure: false,
+            is_pure: function.is_pure,
             is_extern: true,
             span: function.span,
         };

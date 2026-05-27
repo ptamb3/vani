@@ -1971,9 +1971,30 @@ pure extern "C" fn sqrt(x: f64) -> f64;   // libm — known pure
 extern "C" fn rand() -> i32;              // impure — no annotation
 ```
 
-**ABI scope**: scalars, pointers (`ref T`), and `Str` work. Structs
-by value, packed layout, varargs, and callbacks are not yet wired —
-queued.
+**ABI scope (v1)**: scalars (`i8..i64`, `u8..u64`, `f32/f64`,
+`bool`), `Str` (NUL-terminated `i8*`), and any reference
+(`ref T` / `mut ref T`) — pointers cross the FFI boundary
+cleanly. The checker rejects unsupported shapes at the extern
+declaration site with a `ref T` migration hint:
+
+```vani
+// rejected — silent ABI corruption (packed-register passing
+// in System V x86-64 wouldn't match vāṇī's emit)
+extern "C" fn point_sum(p: Point) -> i32;
+
+// accepted — pass by reference instead
+extern "C" fn point_sum(p: ref Point) -> i32;
+```
+
+Owned heap handles (`Vec<T>`, `OwnedStr`) are rejected
+unconditionally: their drop semantics don't survive crossing the
+foreign-code boundary. Exclusive handles (`Atomic<T>`, `Mutex<T>`,
+`Channel<T, N>`, `Task`, `Guard<T>`) likewise. Pass scalars / `Str`
+/ `ref T` instead and let vāṇी own the allocations.
+
+Still queued: correct ABI lowering for small aggregates by value
+(packed-register passing), varargs, function-pointer callbacks,
+and packed/repr(C) layout attributes.
 
 See `examples/ffi.vani` for the canonical demo.
 

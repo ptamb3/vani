@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 983 lib + 48 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 987 lib + 48 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -705,6 +705,51 @@ fn main() returns i64 {
    Conclusion: the binary-op auto-borrow surface is tight.
    No code changes shipped under this closure; see TODO.md
    for the full audit notes. Test totals unchanged.
+
+   **FFI v4 — reject non-FFI-safe types in extern signatures done 2026-05-27**:
+   silent ABI corruption guard. While probing
+   `extern "C" fn point_sum(p: Point) -> i32;` against a C
+   helper, the resulting binary returned `3` instead of `7`
+   for `Point { x: 3, y: 4 }`: vāṇी's LLVM emit produces
+   `declare i32 @point_sum(%Struct_Point)` which doesn't
+   match cc's System V x86-64 ABI lowering for small
+   aggregates (packed-register layout). Same risk applies to
+   tuples, arrays, enums by value.
+
+   Solution: checker rejects unsupported FFI shapes at the
+   extern declaration site with a `ref T` migration hint.
+
+     • `extern_param_rejection_hint(ty)` and
+       `extern_return_rejection_hint(ty)` classify safe
+       vs unsafe FFI shapes:
+         - **Safe**: scalars (i8..i64, u8..u64, f32/f64,
+           bool), `Str` (`i8*`), and any `ref T` / `mut ref T`.
+         - **Unsafe (by value)**: Struct, Tuple, Array, Enum
+           — migration hint "write `ref T`".
+         - **Forbidden**: `Vec<T>`, `OwnedStr`, exclusive
+           handles (Atomic / Mutex / Channel / Guard /
+           Task / Fn / Object). Cross-language heap
+           semantics don't survive.
+         - **Forbidden**: `Type::Param` (generic parameters
+           on extern fns).
+     • Return type validation slightly stricter: refuses
+       struct/enum/tuple/array by value with the same
+       `ref T` migration hint.
+     • Also fixed: `is_pure` flag on the extern's
+       TypedFunction was being hard-coded to false; now
+       preserves `function.is_pure` (closure #271's value)
+       for consistency.
+
+   Verified: `extern "C" fn ... (p: ref Point)` still type-
+   checks, and the AOT-linked binary returns the correct
+   `sum = 7`. Direct by-value declaration now surfaces a
+   clear diagnostic.
+
+   New tests: 4 lib tests (struct-by-value rejected, Vec
+   rejected, struct-by-ref accepted, struct return rejected).
+
+   Test totals: 987 lib + 48 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #273.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

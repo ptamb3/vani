@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #272 — auto-borrow audit closed without code changes)
+## ⏳ Resume here (paused 2026-05-27, after closure #273 — FFI v4 extern ABI validation)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -580,8 +580,15 @@ Verified end-to-end via `examples/ffi.vani` (calls libm's `abs`).
   `build_link_with_resolves_extern_c_symbol` pins the
   shape end-to-end with a tiny `helper.c` providing
   `triple(x: i32) -> i32`.
-- ABI nuances — structs by value, packed layout, varargs,
-  callbacks. Scope decisions per feature.
+- **Partial: ABI nuances** — closure #273 *rejected* the
+  unsafe shapes (struct/tuple/array/enum by value, owned
+  heap handles) at the extern declaration site with a
+  `ref T` migration hint, preventing silent ABI corruption.
+  Still queued: actually wire correct ABI lowering for
+  small aggregates (System V x86-64 packed-register
+  passing), varargs, callbacks (function-pointer params),
+  and packed/repr(C) layout attributes. Each is per-platform
+  specialized work.
 - ✅ **`pure extern` opt-in marker** — closure #271.
   `pure extern "C" fn name(...) -> R;` lets `pure fn` bodies
   call the foreign symbol. Caller's responsibility to ensure
@@ -591,8 +598,11 @@ Verified end-to-end via `examples/ffi.vani` (calls libm's `abs`).
   admits `pure extern` callees from pure-fn contexts but the
   parallel-for body has its own walker that may need a
   parallel update.
-- Documenting the symbol-naming convention (vāṇī defines emit
-  `fn_<name>`; vāṇī externs call bare `<name>`).
+- ✅ **Symbol-naming convention documented** — README already
+  covers it: vāṇी function definitions emit `fn_<vani_name>`
+  (lines 1893, 1942); `extern "C" fn` declarations call the
+  bare C-ABI name. Closure #268's docs sweep + #269's README
+  rewrite together cover this fully.
 
 ### FFI history — original plan (closed by #269)
 
@@ -692,11 +702,13 @@ can extend.
   closure #219 (Copy element types only; the affine-element
   Option<T> variant is a v2 follow-up). The symmetric
   `push_mut` + `pop` pair completes the affine Stack pattern.
-- **`Atomic<T>` clone is forbidden by design** — re-document
-  in the README that there's no `Arc`-equivalent (shared
-  ownership across threads goes through `Atomic<T>` /
-  `Mutex<T>` / `Channel<T>` references, not by cloning the
-  cell).
+- ✅ **`Atomic<T>` clone is forbidden by design** — already
+  documented in README via the smart-pointer comparison
+  table (closure #268). Lines 185, 224, 226, 284, 2275, 2745
+  all state that `Atomic<T>` / `Mutex<T>` / `Channel<T, N>`
+  are single-owner affine with no `Arc`-equivalent; shared
+  ownership across threads goes through references, not
+  clones. No further docs work needed.
 
 ### Memory-safety checks — current vs future
 
