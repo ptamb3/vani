@@ -29,7 +29,36 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #279 — FFI callbacks via fn-pointer extern params)
+## ⏳ Resume here (paused 2026-05-27, after closure #279 — FFI callbacks)
+
+**Remaining queue items are all L-tier multi-session arcs.** All
+require introducing significant new compiler machinery:
+
+  - **Generic Result<T, E> + Generic struct/enum declarations** —
+    today vāṇी has fn-only generics (closure #99 bounded generics).
+    `EnumDecl` and `StructDecl` have no `type_params` field; the
+    monomorphization pass only walks fn signatures. Adding generic
+    type declarations is comparable in scope to closure #99
+    (multi-day). Blocks #6 (fallible try_vec).
+  - **#7 Recursion depth bound `#[bounded(N)]`** — needs new
+    attribute syntax. vāṇी has no `#` token, no attribute parser,
+    no attribute-aware codegen. First attribute introduction is
+    its own M+ arc.
+  - **#13 FFI ABI lowering for small aggregates by value** —
+    needs per-platform classifier (System V x86-64, Windows x64,
+    ARM64) + per-backend struct decomposition. The safety bug
+    is already closed (#273 rejects with `ref T` hint); this is
+    ergonomic polish. L-tier.
+  - **#14 Multi-file pipeline + vani.toml manifest** — beyond
+    `use "path"`, needs include-path resolution, diamond-import
+    dedup, manifest format, dependency graph. Foundational for
+    Kosh package manager. L-tier.
+
+The remaining S/M items are all either shipped, deferred to the
+M+ tier (#8 nested arrays needs lift-Copy-restriction + array-drop
+codegen + clone_at for arrays + ref xs[i] borrow support), or
+absorbed into the larger arcs above (#10 FFI varargs depends on
+variadic call-site syntax).
 
 **Queue audit findings (during work-queue probe pass):** several
 TODO items listed under "Other queued follow-ups" or the
