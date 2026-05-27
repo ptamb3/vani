@@ -31,6 +31,42 @@ Full long-form discussion lives in README.md's "Design Philosophy
 
 ## ⏳ Resume here (paused 2026-05-27, after closure #277 — user-Drop fires on discard)
 
+**Queue audit findings (during work-queue probe pass):** several
+TODO items listed under "Other queued follow-ups" or the
+remaining-work section turned out to already be shipped:
+
+  - **#5 partial-move tracking on struct fields** — shipped via
+    closures #102 (field-borrow), #103 (reverse-decl drop order),
+    #105 (partial-move). `let y = t.field;` moves only the field;
+    `push(mut ref t.xs, …)` works; Mutex/Guard/Channel as struct
+    fields work.
+  - **#11 Drop auto-call at scope exit** — shipped via #229. Both
+    by-value and by-ref user-Drop forms fire automatically.
+    Subsequent #277 closes the only remaining gap (discard of
+    fresh struct value).
+
+The non-trivial remaining items in the queue are scoped larger
+than estimated:
+
+  - **#4 Match on f64** — needs new `Pattern::Float` AST variant
+    + parser support, not just a checker desugar like Str. M tier
+    (not S).
+  - **#6 Fallible allocation `try_vec`** — needs first-class
+    `Result<T, E>` generic plumbing (vāṇी today supports
+    user-declared payloaded enums but not generic Result). M+
+    tier.
+  - **#8 Nested arrays `[[T;N]; M]`** — requires lifting the
+    "array element must be Copy" restriction, plus codegen for
+    nested array layout. M+ tier.
+  - **#9 Array-return SSA-LLVM** — already works through SSA in
+    practice (verified by emit); the documented "gate" no longer
+    applies. Effectively closed; queue entry stale.
+
+The genuinely-remaining queue items are mostly L-tier multi-day
+work: SSA-C multi-block parallel-for emit (#12), FFI small-
+aggregate ABI lowering (#13), and the `vani.toml` manifest /
+multi-file pipeline (#14).
+
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
 expressions, #103 reverse-declaration field drop order, #104
