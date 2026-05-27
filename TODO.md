@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #269 — FFI v1 `extern "C" fn`)
+## ⏳ Resume here (paused 2026-05-27, after closure #270 — FFI v2 `--link-with` / `-l<name>`)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -571,13 +571,20 @@ Verified end-to-end via `examples/ffi.vani` (calls libm's `abs`).
 3 new lib tests pin parser + checker + emit behavior. See
 [STATUS.md](STATUS.md) closure #269 for the per-file change list.
 
-**Follow-ups (not blocking)**:
+**Follow-ups**:
+- ✅ **`intentc build --link-with PATH` / `-l<name>`** —
+  closure #270. `--link-with foo.c` (or `foo.o`,
+  repeatable) and `-l<name>` (repeatable, e.g. `-lm`)
+  forward to the system linker after the vāṇी object.
+  CLI integration test
+  `build_link_with_resolves_extern_c_symbol` pins the
+  shape end-to-end with a tiny `helper.c` providing
+  `triple(x: i32) -> i32`.
 - ABI nuances — structs by value, packed layout, varargs,
   callbacks. Scope decisions per feature.
 - `pure extern` opt-in marker so parallel-for / pure-fn bodies
   can call known-pure extern fns (today they reject all extern
   calls conservatively).
-- `intentc build --link-with foo.o` / `-lfoo` flag threading.
 - Documenting the symbol-naming convention (vāṇī defines emit
   `fn_<name>`; vāṇī externs call bare `<name>`).
 

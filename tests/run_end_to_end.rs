@@ -186,6 +186,87 @@ fn main() -> i64 {
     );
 }
 
+// FFI v2: `intentc build --link-with foo.c` threads an extra
+// translation unit into the link line so an `extern "C" fn`
+// declaration in vāṇī source resolves at link time. End-to-end
+// shape: a tiny C helper `triple(x: i32) -> i32`, a vāṇी source
+// that declares + calls it, build with --link-with, run, expect
+// `triple(7) = 21` on stdout.
+#[test]
+fn build_link_with_resolves_extern_c_symbol() {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let binary = env!("CARGO_BIN_EXE_intentc");
+    let dir: PathBuf = std::env::temp_dir().join(format!(
+        "intentc-linkwith-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).expect("mkdir");
+
+    let helper_c = dir.join("helper.c");
+    fs::write(
+        &helper_c,
+        "#include <stdint.h>\nint32_t triple(int32_t x) { return x * 3; }\n",
+    )
+    .expect("write helper.c");
+
+    let vani_src = dir.join("prog.vani");
+    fs::write(
+        &vani_src,
+        "extern \"C\" fn triple(x: i32) -> i32;\n\
+         \n\
+         fn main() -> i64 {\n  \
+           let r: i32 = triple(7 as i32);\n  \
+           write \"triple(7) =\", r;\n  \
+           return 0;\n}\n",
+    )
+    .expect("write prog.vani");
+
+    let bin_path = dir.join("prog");
+    let build = Command::new(binary)
+        .args([
+            "build",
+            vani_src.to_str().unwrap(),
+            "--link-with",
+            helper_c.to_str().unwrap(),
+            "-o",
+            bin_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("intentc build runs");
+
+    if !build.status.success() {
+        let _ = fs::remove_dir_all(&dir);
+        panic!(
+            "intentc build --link-with failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr),
+        );
+    }
+
+    let run = Command::new(&bin_path).output().expect("binary runs");
+    let stdout = String::from_utf8_lossy(&run.stdout).to_string();
+    let status = run.status;
+
+    let _ = fs::remove_dir_all(&dir);
+
+    assert!(
+        status.success(),
+        "linked binary exited non-zero: {} (stdout: {})",
+        status,
+        stdout
+    );
+    assert!(
+        stdout.contains("triple(7) = 21"),
+        "expected `triple(7) = 21` in stdout, got: {stdout}"
+    );
+}
+
 #[test]
 fn run_assert_messages_example() {
     let binary = env!("CARGO_BIN_EXE_intentc");

@@ -1919,17 +1919,52 @@ let vāṇी own the allocations internally.
 
 #### Calling FROM vāṇी into external code
 
-**Not supported in v1.** There is no `extern fn` declaration syntax
-for naming functions the linker provides from outside the vāṇी
-build. Workaround: wrap the external API in a C shim file, compile
-the shim separately, and link the two `.o`s manually — but vāṇी
-has no way to declare the foreign signature yet.
+vāṇी declares foreign functions with the `extern "C" fn` form:
 
-Adding proper FFI (an `extern "C" fn foo(...) -> ...;` decl + ABI
-marshalling) is on the **TODO queue** for a future closure (see
-TODO.md). Until that lands, treat vāṇी as "linker-output-only" —
-it produces objects that other languages can link, but it doesn't
-consume external symbol declarations.
+```vani
+extern "C" fn abs(x: i32) -> i32;
+extern "C" fn sqrt(x: f64) -> f64;
+extern "C" fn triple(x: i32) -> i32;   // from your own helper.c
+
+fn main() -> i64 {
+  let a: i32 = abs(-7 as i32);    // libc — links by default
+  let r: f64 = sqrt(81.0 as f64); // libm — needs -lm
+  let t: i32 = triple(7 as i32);  // your code — needs --link-with
+  write "abs(-7) =", a;
+  write "sqrt(81) =", r;
+  write "triple(7) =", t;
+  return 0;
+}
+```
+
+The body is empty; the linker provides the symbol. Codegen emits a
+prototype against the bare C-ABI name (LLVM `declare`, C `extern`),
+not a `fn_<vani_name>` definition.
+
+`intentc build` accepts two flag groups for the link step:
+
+```bash
+intentc build prog.vani --link-with helper.c -o prog   # your .c / .o
+intentc build prog.vani -lm -o prog                    # system library
+intentc build prog.vani --link-with helper.o -lcurl -o prog   # both
+```
+
+`--link-with PATH` (repeatable) hands an extra object or source file
+to `cc`. `-l<name>` (repeatable) forwards a library-link flag
+verbatim. Both flag groups appear after the vāṇี object so symbol
+resolution follows usual link order.
+
+**Effects**: extern fns are conservatively treated as impure. The
+SMT engine can't reason across the FFI boundary, so any
+`prove`/`assume` involving an extern call must rest on caller-side
+invariants. Parallel-for / pure-fn bodies reject extern calls today
+(future `pure extern` opt-in queued).
+
+**ABI scope**: scalars, pointers (`ref T`), and `Str` work. Structs
+by value, packed layout, varargs, and callbacks are not yet wired —
+queued.
+
+See `examples/ffi.vani` for the canonical demo.
 
 ### JSON diagnostics
 

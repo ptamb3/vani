@@ -425,11 +425,18 @@ COMMANDS:
                                           With --backend=c, invokes $CC or
                                           `cc` on the C output.
     build <file.vani> [-o out]          AOT-compile to a native binary.
-                                          Lowers via the LLVM backend, calls
-                                          $LLC (or `llc`) for object code,
+          [--link-with PATH ...]          Lowers via the LLVM backend, calls
+          [-l<name> ...]                  $LLC (or `llc`) for object code,
                                           then $CC (or `cc`) to link with
                                           libc. Output defaults to the
                                           source file's stem in the cwd.
+                                          --link-with adds an extra object
+                                          or source file to the link line
+                                          (e.g. foo.o, foo.c) for `extern
+                                          \"C\" fn` whose body lives in a
+                                          separately-compiled translation
+                                          unit. -l<name> forwards a system
+                                          library flag (e.g. -lm) to cc.
     tokens <file.vani>                  Dump the token stream (debug).
     ast <file.vani>                     Dump the parsed AST (debug). Skips
                                           type checking.
@@ -652,8 +659,8 @@ fn run() -> Result<ExitCode, String> {
         }
         "build" => {
             let file = required_file(&args, 2, "build")?;
-            let (_backend_kind, out) = parse_emit_args(&args, 3, "build")?;
-            build_program_llvm(&file, out.as_deref())
+            let (out, link_args) = parse_build_args(&args, 3)?;
+            build_program_llvm(&file, out.as_deref(), &link_args)
         }
         "tokens" => {
             // Debug subcommand: dump the token stream to stdout.
@@ -950,6 +957,49 @@ enum BackendKind {
 /// Parse `[--backend=<c|llvm>] [-o path | --out path]` for the
 /// `emit` subcommand. The legacy `emit-c` alias forces backend=c
 /// and rejects --backend to keep its semantics unambiguous.
+// FFI follow-up: `intentc build` accepts extra inputs that flow
+// straight to the system linker (`cc`). Two shapes:
+//   --link-with PATH   add an object/source file (e.g. foo.o, foo.c).
+//                      Repeatable. Useful for `extern "C" fn` whose
+//                      implementation lives in a separately-compiled
+//                      C/C++/Rust translation unit.
+//   -l<name>           add a system library (e.g. -lm, -lcurl).
+//                      Repeatable. Forwarded verbatim to cc.
+// Both are appended after the vāṇी object file in the link line so
+// usual link-order rules apply.
+fn parse_build_args(
+    args: &[String],
+    from: usize,
+) -> Result<(Option<PathBuf>, Vec<String>), String> {
+    let mut out: Option<PathBuf> = None;
+    let mut link_args: Vec<String> = Vec::new();
+    let mut idx = from;
+    while let Some(arg) = args.get(idx) {
+        if arg == "-o" || arg == "--out" {
+            let path = args
+                .get(idx + 1)
+                .ok_or_else(|| format!("expected a path after '{}'", arg))?;
+            out = Some(PathBuf::from(path));
+            idx += 2;
+        } else if arg == "--link-with" {
+            let path = args
+                .get(idx + 1)
+                .ok_or_else(|| "expected a path after '--link-with'".to_string())?;
+            link_args.push(path.clone());
+            idx += 2;
+        } else if let Some(value) = arg.strip_prefix("--link-with=") {
+            link_args.push(value.to_string());
+            idx += 1;
+        } else if arg.starts_with("-l") && arg.len() > 2 {
+            link_args.push(arg.clone());
+            idx += 1;
+        } else {
+            return Err(format!("unexpected argument '{}'", arg));
+        }
+    }
+    Ok((out, link_args))
+}
+
 fn parse_emit_args(
     args: &[String],
     from: usize,
@@ -1273,7 +1323,11 @@ fn run_program_llvm_capture(path: &Path) -> Result<(i32, String, String), String
 /// AOT-compile to a native binary via the LLVM backend.
 /// Pipeline: emit `.ll` → `llc -filetype=obj` → `.o` → `cc -o` → binary.
 /// `out_path` overrides the default (source-stem in the cwd).
-fn build_program_llvm(path: &Path, out_path: Option<&Path>) -> Result<ExitCode, String> {
+fn build_program_llvm(
+    path: &Path,
+    out_path: Option<&Path>,
+    link_args: &[String],
+) -> Result<ExitCode, String> {
     let checked = compile_path_or_report(path)?;
     let ll = emit_llvm_via_ssa(&checked.ir);
     let stem = path
@@ -1368,6 +1422,12 @@ fn build_program_llvm(path: &Path, out_path: Option<&Path>) -> Result<ExitCode, 
         link_cmd.arg("-lsynchronization");
     } else {
         link_cmd.arg("-fopenmp");
+    }
+    // FFI follow-up: user-supplied link inputs follow the vāṇī
+    // object so symbol resolution sees vāṇī's `extern "C" fn` call
+    // sites first and then the providing object/library.
+    for extra in link_args {
+        link_cmd.arg(extra);
     }
     let link_out = link_cmd
         .arg("-o")

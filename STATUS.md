@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 981 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 981 lib + 48 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -621,6 +621,33 @@ fn main() returns i64 {
 
    Test totals: 981 lib + 47 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #269.
+
+   **FFI v2 — `intentc build --link-with PATH` / `-l<name>` done 2026-05-27**:
+   the linker side of the FFI story. `intentc build` learns
+   two flag shapes that are forwarded to the system linker
+   (`cc`):
+
+     • `--link-with PATH` (repeatable) — pass an extra
+       object or source file to cc. The common shape: a
+       `helper.c` (or `.o`) carrying the body of an `extern
+       "C" fn` declared in vāṇी. Both `--link-with PATH`
+       and `--link-with=PATH` accepted.
+     • `-l<name>` (repeatable) — pass a system library
+       link flag to cc (e.g. `-lm` for libm, `-lcurl`).
+       Forwarded verbatim.
+
+   Both flag groups appear after the vāṇी object in the
+   link command so usual link-order rules apply (vāṇी's
+   `call @triple` discovers the providing symbol from
+   the helper that follows it).
+
+   Verified end-to-end via new
+   `build_link_with_resolves_extern_c_symbol` test:
+   spawns `intentc build … --link-with helper.c`, runs
+   the binary, asserts stdout contains `triple(7) = 21`.
+
+   Test totals: 981 lib + 48 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #270.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table
