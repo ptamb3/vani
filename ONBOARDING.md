@@ -36,7 +36,7 @@ non-proof code changes. Don't set it in CI.
 
 ```bash
 cargo build                         # Quick build
-cargo test                          # Full suite (960 lib + 47 e2e + 14 other, ~30s)
+cargo test                          # Full suite (978 lib + 47 e2e + 14 other, ~60s)
 cargo test smt_                     # Subset matching a prefix
 cargo test --release                # Faster compile, same coverage
 cargo clippy                        # Lints

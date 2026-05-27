@@ -3920,7 +3920,23 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             // through a Ref param's pointer).
             // Str/OwnedStr: lower to a `strlen` call.
             if matches!(array.ty.deref(), Type::Str | Type::OwnedStr) {
-                let s = emit_expr(array, ctx, out);
+                let mut s = emit_expr(array, ctx, out);
+                // Closure #262: when the operand is a borrow
+                // (`ref` / `mut ref`) the emitter returns the
+                // ALLOCA address (`i8**`), not the inner
+                // pointer. `strlen` wants `i8*` — load through
+                // the borrow once. Without this, programs
+                // that call `len(ref s)` for `s: OwnedStr`
+                // produced LLVM IR that `lli` rejected with
+                // "defined with type 'i8**' but expected 'i8*'".
+                if matches!(array.ty, Type::Ref(_) | Type::RefMut(_)) {
+                    let inner = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = load i8*, i8** {}\n",
+                        inner, s
+                    ));
+                    s = inner;
+                }
                 let v = ctx.fresh_tmp();
                 out.push_str(&format!("  {} = call i64 @strlen(i8* {})\n", v, s));
                 // Free fresh-OwnedStr operand after `strlen`

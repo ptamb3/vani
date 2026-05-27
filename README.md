@@ -465,7 +465,7 @@ Two source files that differ only in alias choice produce
 canonical form). The same program in English vs Hindi vs Sanskrit
 runs the same instructions on the same target.
 
-### वाणी (*vāṇī*) — Devanagari notation (Phase 1 shipped)
+### वाणी (*vāṇī*) — Devanagari notation (Phase 2 shipped)
 
 Devanagari notation lets the source read in the writer's mother tongue.
 The first three languages are **Sanskrit** (*saṁskṛta* — the canonical
@@ -474,18 +474,42 @@ Devanagari language and grammar root), **Hindi** (*hindī*), and **Marathi**
 the common keywords. The idea is **alias-based**: every English keyword
 gets one or more Devanagari aliases, and the lexer accepts whichever form
 the source file uses. A single program may mix forms freely; the compiler
-treats them as the same token. **Phase 1 ships now**: single-word
-Devanagari aliases for `let` / `return` / `fn` / `if` / `else` / `while`
-/ `for` / `prove` (Hindi + Sanskrit) plus multi-word phrases like
-`नहीं तो` (else), `के लिए` (for), `सिद्ध करो` (prove) — fused by a
-post-lex merger. Per-language purity v1 lets users opt into a single
-language (Hindi-only, Sanskrit-only, Marathi-only, English-only) via a
-file header. **Still pending**: SOV (subject-object-verb) word-order
-shape inside for/parallel-for headers — `के लिए i से 0 तक 5` reads
-unnaturally because the lexer/parser still expects English word-order
-even when the surface keywords are Devanagari. The 3-way parity (i.e.
-distinct Sanskrit vs Hindi vs Marathi verb forms reaching grammatical
-accuracy) needs a consultant pass. See the Roadmap and TODO.md.
+treats them as the same token.
+
+**Phase 1** (closures #235–#237) shipped single-word Devanagari
+aliases for the core control / declaration keywords plus multi-word
+phrases like `नहीं तो` (else), `के लिए` (for), `सिद्ध करो` (prove) —
+fused by a post-lex merger. Per-file language purity lets users opt
+into a single language (Hindi-only, Sanskrit-only, Marathi-only,
+English-only) via a file header.
+
+**Phase 2** (closures #265–#267) closes the two biggest ergonomic
+gaps:
+
+1. **SOV word order.** Indo-Aryan grammar is verb-final
+   (postpositions follow the noun). The parser now accepts the
+   natural shape `i के लिए 0 से 5 तक { … }` (range for) and
+   `X पुनरागम;` / `"x =", x लिखो;` / `cond सुनिश्चित;` /
+   `expr प्रमाण;` (return / print / assert / prove with the
+   verb at the end). The English keyword-first order still works
+   — the SOV detector only fires when the leading token isn't
+   a verb-keyword.
+2. **3-way alias parity.** Sanskrit / Hindi / Marathi now each
+   have a viable form for every previously English-only
+   keyword (else `वरना`, mut `परिवर्तनीय`, continue `अग्रे`,
+   pub `सार्वजनिक`, module `खण्ड` / `मॉड्यूल`, use `उपयोग`,
+   as `यथा`, where `यत्र` / `जहाँ` / `जिथे`, is `अस्ति` /
+   `है` / `आहे`, plus interface / implement / methods / try /
+   task / join / parallel single-word). Sanskrit-root words
+   that work as tatsama (loanwords) in Hindi + Marathi are
+   documented as shared across the three.
+
+A pure-Hindi or pure-Sanskrit or pure-Marathi program now reads
+top-to-bottom in natural grammar with no English fall-back.
+
+**Still queued**: grammar-consultant refinement pass — the
+Phase-2 picks are best-effort and welcome dialect-specific
+revision. See TODO.md for the closure-by-closure log.
 
 Romanizations follow **IAST** (International Alphabet of Sanskrit
 Transliteration) for Sanskrit and a Hunterian-style transliteration for
@@ -2590,6 +2614,29 @@ lands.
 
 **Done (most recent first):**
 
+- ✅ Devanagari Sanskrit / Hindi / Marathi 3-way alias parity —
+  `वरना` (else, Hindi), `परिवर्तनीय` (mut), `अग्रे` (continue,
+  Sanskrit), `सार्वजनिक` (pub), `खण्ड` (module), `उपयोग` (use),
+  `यथा` (as), `यत्र`/`जहाँ`/`जिथे` (where), `अस्ति`/`है`/`आहे`
+  (is), `संकेत` (interface), `कार्यान्वित` (implement), `विधि`
+  (methods), `प्रयास` (try), `नियोग` (task), `संयोजन` (join),
+  `समानांतर` (parallel single-word) — closure #267
+- ✅ Devanagari SOV verb-at-end statements — `X पुनरागम;` /
+  `… लिखो;` / `cond सुनिश्चित;` / `expr प्रमाण;` — closure #266
+- ✅ Devanagari SOV word order for range `for` — `i के लिए 0 से
+  5 तक { … }` — closure #265
+- ✅ SSA-LLVM multi-block parallel-for atomicrmw emit via
+  Phi-traceback (closure #264) — multi-block bodies no longer
+  fall back to tree-LLVM
+- ✅ Codegen fixes: SSA-LLVM identity-cast `bitcast` for pointer
+  types (#263); `len(ref OwnedStr)` 4-layer dereference fix (#262)
+- ✅ `examples/memory_safety.vani` — 7 canonical safety patterns
+  end-to-end (#261)
+- ✅ Move-rejection diagnostic carries a type-aware fix hint —
+  `ref x` for borrowing, `clone(x)` for deep copy, exclusive
+  handles say "cannot be cloned" (#260)
+- ✅ Parallel-for implicit-reduction race check — captured Copy
+  mutation without `reduce` clause errors at compile time (#259)
 - ✅ Namespaces / modules — `module foo { … }`, `pub` / `pub(kosh)`,
   `use foo::bar [as baz];` / `use foo::*;` / `use foo::{a, b};`,
   module-local `use`, `pub use` re-exports, nested modules with deep
@@ -2598,8 +2645,7 @@ lands.
   `pub(kosh)` accepted as preparatory syntax
 - ✅ Keyword aliases: `assign` (let), `give` / `give_back` /
   `give back` (return)
-- ✅ SSA Step 3b — multi-block parallel-for body in SSA-C (closure #251);
-  SSA-LLVM gracefully falls back to tree-LLVM for the same shape
+- ✅ SSA Step 3b — multi-block parallel-for body in SSA-C (closure #251)
 - ✅ Array types in fn return position (#239)
 - ✅ Formatter support for module blocks + `use_paths` round-trip (#250)
 - ✅ `clone_at` on `Vec<Struct>` tree-LLVM lowering
@@ -2690,34 +2736,48 @@ roadmap surface and unblocks the items below it.
 | 6 | ✅ **T1.4 phase 2: generic call-site monomorphization** | — | high | done 2026-05-21 — pass-through generics specialize per call-site literal type; see [examples/generic_functions.vani](examples/generic_functions.vani). Var-arg inference + interface bounds pending. |
 | 7 | ✅ **T1.5 phase 2 + 3: interface dispatch (static + dynamic) + bounded generics** | T1.4 phase 2 | medium/high | done 2026-05-25 — static `recv.method()` dispatch + bounded generics done 2026-05-21; `dyn Iface` fat-pointer dispatch (owned, `ref dyn`, `Vec<dyn>`, struct fields of dyn) shipped via closures #220-#228, see [examples/dyn_dispatch.vani](examples/dyn_dispatch.vani). |
 | 8 | ✅ **T2.7: user-defined Drop interface (auto-call at scope exit)** | T1.5 phase 2, #3 | low/medium | done 2026-05-25 — `implement Drop for T` runs automatically at scope exit. Two signatures supported: `fn drop(self: T)` (by-value, consumes self — only valid when T has no heap-owning fields) and `fn drop(self: mut ref T)` (runs first then per-field free — works for any T including OwnedStr / Vec / nested-struct fields, closure #229). See [examples/drop_interface.vani](examples/drop_interface.vani). |
-| 9 | ✅ **Devanagari keyword aliases — Sanskrit / Hindi / Marathi (Phase 1)** | — | medium | done 2026-05-21; see [examples/hindi_keywords.vani](examples/hindi_keywords.vani), [examples/sanskrit_keywords.vani](examples/sanskrit_keywords.vani), [examples/marathi_keywords.vani](examples/marathi_keywords.vani). Phase 1 ships single-word aliases + multi-word fusion (`नहीं तो`, `के लिए`, `सिद्ध करो`). SOV word-order parsing (Devanagari is verb-final) and the per-language 3-way verb parity still pending — see below. |
+| 9 | ✅ **Devanagari keyword aliases — Sanskrit / Hindi / Marathi (Phase 1 + 2)** | — | medium/high | Phase 1 done 2026-05-21 (single-word aliases + multi-word fusion `नहीं तो` / `के लिए` / `सिद्ध करो`). Phase 2 done 2026-05-26/27 (closures #265–#267): SOV word order for range `for` (`i के लिए 0 से 5 तक { … }`) and verb-at-end statements (`X पुनरागम;` / `… लिखो;` / `cond सुनिश्चित;` / `expr प्रमाण;`), plus 3-way alias parity for the previously English-only keywords. Grammar-consultant refinement pass still welcome. See [examples/hindi_keywords.vani](examples/hindi_keywords.vani), [examples/sanskrit_keywords.vani](examples/sanskrit_keywords.vani), [examples/marathi_keywords.vani](examples/marathi_keywords.vani). |
 | 10 | ✅ **Namespaces — modules, visibility, use, kosh** | — | high | done 2026-05-26 across closures #242–#258. `module foo { … }` blocks (inline + nested + deep `a::b::c::Item` paths), per-item `pub` / `pub(kosh)` visibility, `use foo::bar [as baz];` / `use foo::{a, b};` / `use foo::*;` import forms (top-level AND inside module bodies), `pub use foo::bar;` re-exports (transitively resolved), orphan rules for `implement Iface for T`, collision diagnostics, formatter round-trip. See [examples/modules.vani](examples/modules.vani) and the *Modules and namespaces* section above. The full kosh package-manager arc (manifest, resolver, registry, stdlib-as-kosh) is still on the deferred queue — see [TODO.md](TODO.md) item #10. |
-| 11 | ⏳ **SSA-LLVM multi-block parallel-for body — atomicrmw emit** | #10 (SSA Step 3b recognizer) | medium/high | recognizer half done 2026-05-26 (closure #241); SSA-C emit done (#251); SSA-LLVM emit needs Phi-traceback to find the actual reduction-update across conditional branches. Tree-LLVM fallback handles correctness today — this is a performance optimization. |
+| 11 | ✅ **SSA-LLVM multi-block parallel-for body — atomicrmw emit** | #10 (SSA Step 3b recognizer) | medium/high | done 2026-05-26 (closure #264). The recognizer (#241) accepts multi-block bodies; SSA-C emit landed (#251); SSA-LLVM Phi-traceback now locates the actual reduction-update across conditional branches and replaces it with atomicrmw at its production site. Multi-block bodies (e.g. `parallel for { if cond { acc = acc + i; } }`) no longer fall back to tree-LLVM — they lower directly to atomicrmw in the outlined fn. |
 | 12 | ⏳ **Kosh package manager + Vāṇī-Kosh registry** | #10 | high (multi-session) | `kosh.toml` manifest, resolver + lockfile, `pub(kosh)` enforcement at the boundary, registry CLI (`intentc kosh add`, `kosh publish`), stdlib-as-kosh. Item #10 in [TODO.md](TODO.md). |
 
 **Devanagari aliases (#9) — current state + remaining work:**
 
-Phase 1 (9a / 9b / 9c / 9e) shipped 2026-05-21. The lexer recognizes
+**Phase 1** (closures #235–#237; 2026-05-21). The lexer recognizes
 single-word Devanagari aliases (Sanskrit / Hindi / Marathi) for
 `fn` / `let` / `return` / `if` / `else` / `while` / `for` / `prove`
 and friends, plus multi-word phrases via a post-lex merger
 (`नहीं तो` → else, `के लिए` → for, `सिद्ध करो` → prove). Per-language
-**purity v1** (closure #237) lets users opt a file into a single
-language (Hindi / Sanskrit / Marathi / English) via a header marker;
-the checker then rejects out-of-language identifiers. Working
-example files exist in each language.
+**purity v1** lets users opt a file into a single language (Hindi /
+Sanskrit / Marathi / English) via a header marker; the checker then
+rejects out-of-language identifiers.
 
-**Still pending (multi-session):**
-- **SOV word-order parsing.** Devanagari verbs are clause-final
-  (`के लिए i से 0 तक 5` literally reads "for i from 0 to 5" but
-  the verb-final shape doesn't match the parser's English
-  word-order expectation, so the natural surface is awkward).
-  Needs a grammar consultant pass + parser-level word-order
-  variant.
-- **Sanskrit / Hindi / Marathi 3-way verb parity.** Today many
-  aliases are shared across the three (e.g. `माना` is Hindi/Sanskrit
-  both); the proper distinct-verb-per-language tables need a
-  grammar review.
+**Phase 2** (closures #265–#267; 2026-05-26/27) — closes the two
+biggest ergonomic gaps:
+- **SOV word-order parsing** (#265 + #266). Range `for` now
+  accepts the natural Indo-Aryan shape `i के लिए 0 से 5 तक { … }`
+  (variable + `के लिए`; operands + `से` / `तक` postpositions),
+  and the four verb-like statements accept the verb-at-end form
+  (`X पुनरागम;` = return; `… लिखो;` = print; `cond सुनिश्चित;`
+  = assert; `expr प्रमाण;` = prove). The detector keys off
+  Ident-followed-by-verb or scan-to-`;`-ending-in-verb so the
+  English keyword-first forms still parse.
+- **3-way alias parity** (#267). Every previously English-only
+  keyword now has a Sanskrit / Hindi / Marathi alias —
+  `वरना` (else, Hindi), `परिवर्तनीय` (mut, Sanskrit/Hindi),
+  `अग्रे` (continue, Sanskrit), `सार्वजनिक` (pub, all three),
+  `खण्ड` (module, all three), `उपयोग` (use, all three),
+  `यथा` (as, all three), `यत्र`/`जहाँ`/`जिथे` (where, per
+  language), `अस्ति`/`है`/`आहे` (is, per language), plus
+  interface / implement / methods / try / task / join /
+  parallel single-word. Sanskrit-root tatsama forms (e.g.
+  `संरचना` = struct) are documented as shared rather than
+  duplicated. A pure-Hindi or pure-Sanskrit or pure-Marathi
+  program now reads top-to-bottom with no English fall-back.
+
+**Still queued:**
+- **Grammar-consultant refinement.** Phase-2 verb picks are
+  best-effort; idiomatic dialect-specific revision is welcome.
 - **Script-aware diagnostics (9d).** Errors today emit in
   English; a per-source-script diagnostic mode is queued.
 
