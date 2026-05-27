@@ -19847,6 +19847,76 @@ fn main() -> i64 {
         );
     }
 
+    // Closure #277: `let _ = make_struct();` for a struct with
+    // user-declared `Drop` impl now fires user-Drop on the
+    // discarded value (both backends). Previously, per-field
+    // drops ran but the user's drop method was silently
+    // skipped. End-of-scope drop already fired user-Drop —
+    // the discard path was the gap.
+    #[test]
+    fn discard_of_fresh_struct_fires_user_drop_in_c() {
+        let source = r#"
+            struct Resource { id: i64, payload: OwnedStr }
+
+            interface Drop { fn drop(self: mut ref Resource) -> i64; }
+
+            implement Drop for Resource {
+              fn drop(self: mut ref Resource) -> i64 {
+                write "udrop", self.id;
+                return 0;
+              }
+            }
+
+            fn make() -> Resource { return Resource { id: 7, payload: "data" + "" }; }
+
+            fn main() -> i64 {
+              let _ = make();
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("compiles to C");
+        // The discard arm must include a call to the user's
+        // drop function (by-ref form for owning-fields structs).
+        assert!(
+            c.contains("fn_Resource_drop(&_intent_discard)"),
+            "expected `fn_Resource_drop(&_intent_discard)` in the discard arm, got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn discard_of_fresh_struct_fires_user_drop_in_llvm() {
+        let source = r#"
+            struct Resource { id: i64, payload: OwnedStr }
+
+            interface Drop { fn drop(self: mut ref Resource) -> i64; }
+
+            implement Drop for Resource {
+              fn drop(self: mut ref Resource) -> i64 {
+                write "udrop", self.id;
+                return 0;
+              }
+            }
+
+            fn make() -> Resource { return Resource { id: 7, payload: "data" + "" }; }
+
+            fn main() -> i64 {
+              let _ = make();
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("compiles to LLVM");
+        // Both arms emit `call i64 @fn_Resource_drop(...)`; the
+        // discard arm uses the by-ref form, so the call passes
+        // a pointer (`%Struct_Resource*`).
+        let call_count = ll.matches("call i64 @fn_Resource_drop(%Struct_Resource* ").count();
+        assert!(
+            call_count >= 1,
+            "expected at least one by-ref Resource_drop call in LLVM IR, got 0:\n{}",
+            ll
+        );
+    }
+
     #[test]
     fn extern_struct_return_rejected_with_ref_hint() {
         let source = r#"

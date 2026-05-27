@@ -2371,18 +2371,47 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 // and emit the same per-field free chain the
                 // scope-exit Drop pass uses. Struct without
                 // owning fields → just `(void)(...)`.
+                //
+                // Closure #277: also fire the user's `Drop`
+                // impl when present. Mirrors the `TypedStmt::
+                // Drop` arm for `Type::Struct`. Without this,
+                // `let _ = make();` silently skipped user-
+                // declared cleanup even though end-of-scope
+                // drop ran it correctly.
                 let fields = STRUCT_FIELDS_REGISTRY
                     .with(|r| r.borrow().get(struct_name).cloned())
                     .unwrap_or_default();
                 let has_owning = fields.iter().any(|(_, ty)| {
                     !ty.is_copy()
                 });
-                if has_owning {
+                let has_user_drop = USER_DROP_REGISTRY
+                    .with(|r| r.borrow().contains(struct_name));
+                let user_drop_by_ref = crate::ast::user_drop_is_by_ref(struct_name);
+                // By-value user-Drop with no owning fields:
+                // user-drop consumes the binding; no per-field
+                // pass needed.
+                if has_user_drop && !user_drop_by_ref && !has_owning {
+                    out.push_str("  (void)");
+                    out.push_str(&function_name(&format!("{}_drop", struct_name)));
+                    out.push_str("(");
+                    out.push_str(&emit_expr(expr));
+                    out.push_str(");\n");
+                    return;
+                }
+                if has_owning || has_user_drop {
                     out.push_str("  {\n    ");
                     out.push_str(&struct_c_name(struct_name));
                     out.push_str(" _intent_discard = ");
                     out.push_str(&emit_expr(expr));
                     out.push_str(";\n");
+                    if has_user_drop && user_drop_by_ref {
+                        out.push_str("    (void)");
+                        out.push_str(&function_name(&format!(
+                            "{}_drop",
+                            struct_name
+                        )));
+                        out.push_str("(&_intent_discard);\n");
+                    }
                     let empty: std::collections::HashSet<&String> =
                         std::collections::HashSet::new();
                     emit_struct_field_drops(

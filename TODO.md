@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #276 — non-Var DynCoerce in let-RHS lands)
+## ⏳ Resume here (paused 2026-05-27, after closure #277 — user-Drop fires on discard)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -2097,21 +2097,18 @@ totals: 888 lib + 47 e2e passing.
   destructor walks — just a fixed-shape fat pointer with
   a per-Iface vtable.
 
-- **B. #3 polish — partial-move tracking + Vec field methods.**
-  Field-borrow shipped (#102), so `atomic_*(ref c.hits)` works.
-  Remaining gaps:
-    - **Partial-move tracking**: `let y = t.xs;` moves the whole
-      struct; we want it to move only the field and leave the
-      rest valid. Per-field `moved` map on `BindingInfo`.
-      Unlocks `push(mut ref t.xs)` (currently rejected because
-      Vec push takes Vec by value, and field-borrow gives
-      `mut ref Vec<T>` which doesn't match).
-    - **Multi-field drop order**: reverse-declaration order
-      (Rust convention) — today the field list is walked in
-      declaration order.
-    - **Mutex / Guard / Channel struct fields**: bespoke RAII
-      shape; need per-backend Drop dispatch.
-  Effort: medium per item; can interleave.
+- ✅ **B. #3 polish — partial-move tracking + field RAII** (all
+  three sub-bullets shipped):
+    - ✅ Partial-move tracking — closure #105.
+      `let y = t.xs;` moves only the field; the rest of the
+      struct stays valid. `push(mut ref t.xs, …)` works.
+    - ✅ Multi-field drop order — closure #103 emits per-field
+      drops in reverse-declaration order.
+    - ✅ Mutex / Guard / Channel struct fields — verified
+      working (the per-backend Drop dispatch handles them).
+    - ✅ User-Drop on `let _ = make_struct()` discard —
+      closure #277 (subsequently surfaced; both backends
+      previously skipped user-Drop on discard).
 
 - **C. Drop for structs with heap fields.** *Done 2026-05-25
   (closure #229).* Drop impls now accept both
@@ -2125,10 +2122,14 @@ totals: 888 lib + 47 e2e passing.
 
 ### Other queued follow-ups (smaller, can interleave)
 
-- **#8 Phase 2: Drop auto-call at scope exit** — wire `T_drop` into
-  the existing `TypedStmt::Drop` lowering so user-declared
-  `implement Drop for T` runs automatically. Blocked on B above
-  for nested affine fields.
+- ✅ **#8 Phase 2: Drop auto-call at scope exit** — already
+  shipped via closures #229 + #277. End-of-scope Drop fires
+  user-declared `implement Drop for T` automatically for both
+  by-value (`self: T`) and by-ref (`self: mut ref T`) forms.
+  `let _ = make_struct();` discard also fires user-Drop now
+  (closure #277). Verified for structs with nested affine
+  fields (OwnedStr / Vec / nested Struct) — the by-ref form
+  runs user cleanup FIRST, then per-field drops reclaim heap.
 - **#5 follow-ups remaining**: All shipped. `try EXPR(args)`
   parser precedence closed by #230; `try` in nested blocks
   by #217; multiple `try`s in one block by #218; Assign by

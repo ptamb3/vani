@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 991 lib + 50 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 993 lib + 50 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -843,6 +843,35 @@ fn main() returns i64 {
 
    Test totals: 991 lib + 50 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #276.
+
+   **User-Drop fires on `let _ = make_struct()` discard done 2026-05-27**:
+   probing the "remaining work" #5 from the work queue
+   revealed the stale TODO entry (closures #102 / #103 /
+   #105 had already shipped partial-move tracking, multi-
+   field drop order, and Mutex/Guard struct fields). But
+   one real correctness gap surfaced: when a struct with a
+   user-declared `Drop` impl was discarded via `let _ =
+   make_struct();`, both backends ran the per-field free
+   chain but silently SKIPPED the user's drop method.
+   End-of-scope drop already fired user-Drop correctly —
+   only the discard path was broken.
+
+   Fix: both backends' `TypedStmt::Discard { expr }` arms
+   for `Type::Struct` now consult `USER_DROP_REGISTRY` /
+   `LLVM_USER_DROP_REGISTRY` and dispatch to the user's
+   drop function. Two shapes mirror the scope-exit Drop
+   path:
+     • By-value `fn drop(self: T)` with no owning fields
+       — user-drop consumes the discarded value, per-field
+       pass skipped.
+     • By-ref `fn drop(self: mut ref T)` — spill the rvalue
+       to a tmp alloca, call user-drop with the address,
+       then per-field cleanup.
+
+   2 new lib tests pin the fix (C and LLVM backends).
+
+   Test totals: 993 lib + 50 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #277.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

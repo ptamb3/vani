@@ -1396,8 +1396,26 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                     .with(|r| r.borrow().get(struct_name).cloned())
                     .unwrap_or_default();
                 let has_owning = fields.iter().any(|(_, ty)| !ty.is_copy());
+                let has_user_drop = LLVM_USER_DROP_REGISTRY
+                    .with(|r| r.borrow().contains(struct_name));
+                let user_drop_by_ref =
+                    crate::ast::user_drop_is_by_ref(struct_name);
                 let value = emit_expr(expr, ctx, out);
-                if has_owning {
+                // Closure #277: also fire the user's `Drop`
+                // impl on discarded fresh struct values
+                // (e.g. `let _ = make_struct();`). Mirrors
+                // the scope-exit Drop path above. Without
+                // this, user-Drop silently skipped here.
+                if has_user_drop && !user_drop_by_ref && !has_owning {
+                    let s_ty = format!("%Struct_{}", struct_name);
+                    let ret = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = call i64 @fn_{}_drop({} {})\n",
+                        ret, struct_name, s_ty, value
+                    ));
+                    return;
+                }
+                if has_owning || has_user_drop {
                     let s_ty = format!("%Struct_{}", struct_name);
                     let addr = format!("{}.{}.addr", ctx.fresh_tmp(), "_intent_discard");
                     out.push_str(&format!("  {} = alloca {}\n", addr, s_ty));
@@ -1405,6 +1423,13 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                         "  store {} {}, {}* {}\n",
                         s_ty, value, s_ty, addr
                     ));
+                    if has_user_drop && user_drop_by_ref {
+                        let ret = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = call i64 @fn_{}_drop({}* {})\n",
+                            ret, struct_name, s_ty, addr
+                        ));
+                    }
                     let empty: std::collections::HashSet<&String> =
                         std::collections::HashSet::new();
                     emit_llvm_struct_field_drops(
