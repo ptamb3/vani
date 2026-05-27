@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1013 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1014 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -1179,6 +1179,53 @@ fn main() returns i64 {
    Test totals: 1013 lib + 52 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #283 complete
    (both halves).
+
+   **try_vec(n) -> Result<Vec<i64>, AllocError> done 2026-05-27 (C backend)**:
+   first fallible allocation API. Builds on closures #281
+   (generic decls), #282 (Result prelude), #283 (mixed-
+   payload enums) — all the foundation needed for an
+   idiomatic OOM-tolerant builtin.
+
+   Surface:
+
+       fn main() -> i64 {
+         let r: Result<Vec<i64>, AllocError> = try_vec(10 as u64);
+         return match r {
+           Result.Ok then 0,    // alloc succeeded
+           Result.Err then 1,   // alloc failed
+           _ then 2,
+         };
+       }
+
+   Pipeline:
+
+     • Checker — new `check_try_vec_builtin`. Validates a
+       single u64 arg, returns
+       `Type::Enum("Result__Vec_I64___AllocError")` (the
+       mangled monomorphic name produced by closure #281's
+       pass).
+     • C codegen — special-case `Call { name: "try_vec" }`
+       to emit a GCC statement-expression doing
+       malloc-with-null-check + Result construction. AllocError
+       (payload-less enum) lowers to `int32_t`.
+     • Scope-exit Drop for mixed-payload enums — closure
+       #283's drop-dispatch follow-up landed alongside #284.
+       For mixed-payload enum scope-exit Drop, the C
+       backend now emits one `switch (tag)` case per
+       owning variant, reading through the correct
+       `.u.v_<variant>` member.
+
+   LLVM (deferred): panics with a clear "use --backend=c"
+   message at try_vec call sites. The codegen requires
+   if/else basic blocks for the Result construction; queued
+   as a follow-up.
+
+   1 new lib test
+   (`try_vec_returns_result_vec_on_c_backend`) pins the
+   malloc + null-check + Result-construction emit.
+
+   Test totals: 1014 lib + 52 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #284.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

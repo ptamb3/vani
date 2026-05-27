@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #283 complete — mixed-payload enum lift on BOTH backends)
+## ⏳ Resume here (paused 2026-05-27, after closure #284 — try_vec on C backend)
 
 **Next pickup chain (each closure unblocks the next):**
 

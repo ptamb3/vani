@@ -2829,6 +2829,19 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             dest
         }
         TypedExprKind::Call { name, args, .. } => {
+            // Closure #284: try_vec is a C-backend-only
+            // builtin in v1. Emit a clear panic at LLVM time
+            // pointing at `--backend=c`. Lifting requires
+            // basic-block-flavored if/else IR for the
+            // malloc-null-check + Result construction —
+            // queued as a follow-up.
+            if name == "try_vec" {
+                panic!(
+                    "try_vec is currently only supported on the C backend. \
+                     Use `--backend=c` for now; LLVM try_vec is a queued \
+                     follow-up to closure #284."
+                );
+            }
             // Synthetic intrinsic emitted by the parallel-for
             // outliner for each `reduce` clause. First arg is
             // `Var(<reduction_var>)` resolved against

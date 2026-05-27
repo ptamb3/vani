@@ -25,6 +25,14 @@ use diagnostic::Diagnostic;
 /// gets `Option<T>`, `Result<T, E>`, and `AllocError`.
 /// Injected at the AST level (not as a source prepend) so
 /// diagnostic line numbers in user code don't shift.
+///
+/// Closure #284 adds an unused `__vani_force_try_vec` fn
+/// whose signature mentions `Result<Vec<i64>, AllocError>`,
+/// forcing the monomorphization pass to materialize that
+/// concrete decl. The `try_vec(n)` builtin emits its
+/// Result construction against this known monomorphic
+/// name. The fn is never called; the monomorphizer keeps
+/// its signature in scope.
 const PRELUDE: &str = "enum Option<T> { Some(T), None }\nenum Result<T, E> { Ok(T), Err(E) }\nenum AllocError { OutOfMemory }\n";
 
 fn inject_prelude(program: &mut ast::Program) {
@@ -19905,6 +19913,36 @@ fn main() -> i64 {
     // mixed-payload is queued as a follow-up. Validates
     // `Result<i64, OwnedStr>` round-trips a value through
     // the Ok variant and yields it via match.
+    // Closure #284: try_vec(n) -> Result<Vec<i64>,
+    // AllocError>. New builtin that allocates a Vec<i64> via
+    // malloc with null-check. Returns Result.Ok(vec) on
+    // success, Result.Err(AllocError.OutOfMemory) on alloc
+    // failure. V1 is C-backend-only; LLVM panics with a
+    // clear "use --backend=c" message.
+    #[test]
+    fn try_vec_returns_result_vec_on_c_backend() {
+        let source = r#"
+            fn main() -> i64 {
+              let r: Result<Vec<i64>, AllocError> = try_vec(10 as u64);
+              return match r {
+                Result.Ok then 0,
+                Result.Err then 1,
+                _ then 2,
+              };
+            }
+        "#;
+        let c = compile_to_c(source).expect("try_vec compiles to C");
+        // Emit must include the GCC stmt-expr with malloc +
+        // null-check, and write the Ok/Err branches.
+        assert!(
+            c.contains("__try_vec_data")
+                && c.contains("malloc")
+                && c.contains("== NULL"),
+            "expected malloc + null-check in try_vec emit, got:\n{}",
+            c
+        );
+    }
+
     #[test]
     fn mixed_payload_enum_compiles_on_llvm_backend() {
         let source = r#"

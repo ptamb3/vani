@@ -4253,19 +4253,21 @@ fn monomorphize_type_decls_in_program(
         args: &mut Vec<Type>,
         struct_templates: &HashMap<String, StructDecl>,
         enum_templates: &HashMap<String, EnumDecl>,
+        all_enum_names: &std::collections::HashSet<String>,
     ) {
         for a in args.iter_mut() {
-            normalize_one(a, struct_templates, enum_templates);
+            normalize_one(a, struct_templates, enum_templates, all_enum_names);
         }
     }
     fn normalize_one(
         ty: &mut Type,
         st: &HashMap<String, StructDecl>,
         en: &HashMap<String, EnumDecl>,
+        all_enum_names: &std::collections::HashSet<String>,
     ) {
         match ty {
             Type::Apply { name, args } => {
-                normalize_apply_args(args, st, en);
+                normalize_apply_args(args, st, en, all_enum_names);
                 let mangled = mangle_generic_decl(name, args);
                 *ty = if st.contains_key(name) {
                     Type::Struct(mangled)
@@ -4275,31 +4277,49 @@ fn monomorphize_type_decls_in_program(
                     return;
                 };
             }
+            // Closure #284: parser produces `Type::Struct(name)`
+            // for every uppercase ident in type position
+            // (can't disambiguate struct vs enum). When the
+            // name is actually a declared enum, rewrite to
+            // `Type::Enum(name)` so downstream type-equality
+            // checks (variant payload assignability) line up
+            // with what the constructor expression produces.
+            Type::Struct(name) => {
+                if all_enum_names.contains(name) {
+                    let n = name.clone();
+                    *ty = Type::Enum(n);
+                }
+            }
             Type::Vec(i) | Type::Ref(i) | Type::RefMut(i)
             | Type::Atomic(i) | Type::Mutex(i) | Type::Guard(i) => {
-                normalize_one(i, st, en);
+                normalize_one(i, st, en, all_enum_names);
             }
-            Type::Array { element, .. } => normalize_one(element, st, en),
-            Type::Channel(element, _) => normalize_one(element, st, en),
+            Type::Array { element, .. } => normalize_one(element, st, en, all_enum_names),
+            Type::Channel(element, _) => normalize_one(element, st, en, all_enum_names),
             Type::Tuple(elements) => {
                 for e in elements.iter_mut() {
-                    normalize_one(e, st, en);
+                    normalize_one(e, st, en, all_enum_names);
                 }
             }
             Type::FnPtr(params, ret) => {
                 for p in params.iter_mut() {
-                    normalize_one(p, st, en);
+                    normalize_one(p, st, en, all_enum_names);
                 }
-                normalize_one(ret, st, en);
+                normalize_one(ret, st, en, all_enum_names);
             }
             _ => {}
         }
     }
+    let all_enum_names: std::collections::HashSet<String> = program
+        .enums
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
     for (_n, args) in needed_structs.iter_mut() {
-        normalize_apply_args(args, &struct_templates, &enum_templates);
+        normalize_apply_args(args, &struct_templates, &enum_templates, &all_enum_names);
     }
     for (_n, args) in needed_enums.iter_mut() {
-        normalize_apply_args(args, &struct_templates, &enum_templates);
+        normalize_apply_args(args, &struct_templates, &enum_templates, &all_enum_names);
     }
     // Generate monomorphic decls per (template, args).
     // Templates' variant payloads / field types reference
@@ -4362,6 +4382,15 @@ fn monomorphize_type_decls_in_program(
                 for p_ty in variant.payload.iter_mut() {
                     substitute_type_param(p_ty, tp, concrete);
                 }
+            }
+        }
+        // Closure #284: after substitution, any Type::Struct
+        // names that are actually declared enums need to be
+        // rewritten to Type::Enum so the payload type-equality
+        // check at variant constructors lines up.
+        for variant in mono.variants.iter_mut() {
+            for p_ty in variant.payload.iter_mut() {
+                normalize_one(p_ty, &struct_templates, &enum_templates, &all_enum_names);
             }
         }
         new_enums.push(mono);
@@ -11699,6 +11728,16 @@ fn check_call(
     // checker, which is a follow-up.
     match name {
         "vec" => return check_vec_builtin(args, env, signatures, span, diagnostics),
+        // Closure #284: try_vec(n: u64) -> Result<Vec<i64>,
+        // AllocError>. Builtin that allocates a Vec<i64> of
+        // capacity n; returns Result.Ok(vec) on success or
+        // Result.Err(AllocError.OutOfMemory) on malloc null.
+        // The mangled return type is computed by the
+        // monomorphization that ran upstream on the user's
+        // let-annotation (`Result<Vec<i64>, AllocError>`).
+        // V1: i64 element type only; future generics over T
+        // when expected-type threading lands.
+        "try_vec" => return check_try_vec_builtin(args, env, signatures, span, diagnostics),
         "push" => return check_push_builtin(args, env, signatures, span, diagnostics),
         "pop" => return check_pop_builtin(args, env, signatures, span, diagnostics),
         "set" => return check_set_builtin(args, env, signatures, span, diagnostics),
@@ -12813,6 +12852,61 @@ fn try_elaborate_empty_vec(
         None,
         expr.span,
     ))
+}
+
+// Closure #284: `try_vec(n: u64) -> Result<Vec<i64>, AllocError>`.
+// V1 builtin. Type-check args, return the mangled Result enum
+// type. The codegen sites for Call { name: "try_vec" } emit the
+// malloc-with-null-check + Result construction inline.
+//
+// The mangled return type matches what the monomorphization
+// pass produces for `Result<Vec<i64>, AllocError>` use-sites:
+// `Result__<Vec_mangling>__AllocError`. Computed via
+// `mangle_generic_decl("Result", [Type::Vec(I64),
+// Type::Enum("AllocError")])` for consistency with the existing
+// path.
+fn check_try_vec_builtin(
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    if args.len() != 1 {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "try_vec(n) takes 1 argument (the capacity, u64), got {}",
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback(Type::I64, span);
+    }
+    let arg_raw = check_expr(&args[0], env, signatures, diagnostics);
+    let arg = coerce_checked(
+        arg_raw,
+        &Type::U64,
+        args[0].span,
+        "try_vec capacity",
+        diagnostics,
+    );
+    // Compute the mangled Result name. Must match the
+    // monomorphization pass's output so the let-annotation
+    // and the builtin's return type unify.
+    let mangled = mangle_generic_decl(
+        "Result",
+        &[Type::Vec(Box::new(Type::I64)), Type::Enum("AllocError".to_string())],
+    );
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: "try_vec".to_string(),
+            name_span: span,
+            args: vec![arg.expr],
+        },
+        Type::Enum(mangled),
+        None,
+        span,
+    )
 }
 
 fn check_vec_builtin(

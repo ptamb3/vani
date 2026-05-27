@@ -385,9 +385,18 @@ pub fn emit_c(program: &TypedProgram) -> String {
                     continue;
                 };
                 let member = enum_variant_member(variant);
+                // Closure #283: `c_type_name` resolves
+                // payload-less enums (Type::Enum without
+                // `Enum_` typedef) to their `int32_t` tag
+                // form, avoiding "Enum_AllocError
+                // undeclared" errors when a mixed-payload
+                // variant's payload is itself a payload-less
+                // enum. `c_element_storage` is even safer for
+                // struct payloads since it routes nested
+                // Vec / nested-struct types correctly.
                 let payload_decl = match payload_ty {
                     Type::Array { .. } => format_declarator(payload_ty, &member),
-                    _ => format!("{} {}", c_type_name(payload_ty), member),
+                    _ => format!("{} {}", c_element_storage(payload_ty), member),
                 };
                 body.push_str(&format!("    {};\n", payload_decl));
             }
@@ -2348,28 +2357,68 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
             Type::Enum(enum_name) => {
                 // Payloaded enums with a heap-shaped payload
                 // free the payload when the active variant
-                // matches. The payload type is uniform across
-                // payloaded variants (checker enforces this).
-                // Supported heap shapes: `OwnedStr` (free) and
-                // `Vec<T>` (per-element-type
-                // `intent_vec_<T>__free` helper). T1.3 +
-                // T1.2 phase 2b.
+                // matches. Closure #283: mixed-payload enums
+                // route through per-variant `.u.v_<variant>`
+                // access (one switch case per variant with
+                // owning payload); single-payload enums keep
+                // the legacy `.payload` path.
+                let variant_payloads = ENUM_VARIANT_PAYLOADS_REGISTRY
+                    .with(|r| r.borrow().get(enum_name).cloned());
+                let is_mixed_local = variant_payloads.as_ref().map(|v| {
+                    let payloads: Vec<&Type> =
+                        v.iter().filter_map(|(_, p)| p.as_ref()).collect();
+                    payloads.len() >= 2
+                        && payloads[1..].iter().any(|t| *t != payloads[0])
+                }).unwrap_or(false);
+                let local = local_name(name);
+                if is_mixed_local {
+                    let variants = variant_payloads.unwrap();
+                    let mut cases: Vec<String> = Vec::new();
+                    for (tag, (vname, pty)) in variants.iter().enumerate() {
+                        let Some(pty) = pty.as_ref() else { continue; };
+                        let free_for_variant: Option<String> = match pty {
+                            Type::OwnedStr => Some(format!(
+                                "free((void*){}.u.{})",
+                                local, enum_variant_member(vname)
+                            )),
+                            Type::Vec(element) => Some(format!(
+                                "{}({}.u.{})",
+                                vec_helper(element, "free"),
+                                local, enum_variant_member(vname)
+                            )),
+                            _ => None,
+                        };
+                        if let Some(call) = free_for_variant {
+                            cases.push(format!(
+                                "case {}: {}; break;",
+                                tag, call
+                            ));
+                        }
+                    }
+                    if !cases.is_empty() {
+                        out.push_str(&format!(
+                            "  switch ({}.tag) {{ {} default: break; }}\n",
+                            local,
+                            cases.join(" ")
+                        ));
+                    }
+                    return;
+                }
                 let payload_ty = ENUM_PAYLOAD_REGISTRY
                     .with(|r| r.borrow().get(enum_name).cloned());
                 let free_expr: Option<String> = match &payload_ty {
                     Some(Type::OwnedStr) => Some(format!(
                         "free((void*){}.payload)",
-                        local_name(name)
+                        local
                     )),
                     Some(Type::Vec(element)) => Some(format!(
                         "{}({}.payload)",
                         vec_helper(element, "free"),
-                        local_name(name)
+                        local
                     )),
                     _ => None,
                 };
                 if let Some(free_call) = free_expr {
-                    let local = local_name(name);
                     let payload_tags: Vec<u32> =
                         ENUM_PAYLOAD_TAGS_REGISTRY.with(|r| {
                             r.borrow()
@@ -4225,6 +4274,48 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 "intent_guard_i64_set({}, {})",
                 emit_expr(&args[0]),
                 emit_expr(&args[1])
+            );
+        }
+        "try_vec" => {
+            // Closure #284: try_vec(n) -> Result<Vec<i64>,
+            // AllocError>. Emits a GCC statement-expression
+            // that mallocs an i64-buffer with null-check and
+            // builds the Result tagged union. result_ty is
+            // the mangled `Type::Enum("Result__<Vec...>__AllocError")`.
+            let result_enum = match result_ty {
+                Type::Enum(n) => n.clone(),
+                _ => unreachable!("try_vec must return Type::Enum(Result__...)"),
+            };
+            let n_expr = emit_expr(&args[0]);
+            let vec_struct = vec_c_struct(&Type::I64);
+            let result_c = enum_c_name(&result_enum);
+            // Variant tags: Ok=0, Err=1 (declaration order in
+            // `enum Result<T, E> { Ok(T), Err(E) }`).
+            // Note: AllocError is a payload-less enum →
+            // lowers to `int32_t` (no Enum_AllocError
+            // typedef). The Err variant just gets the tag
+            // (0 = OutOfMemory in declaration order).
+            return format!(
+                "({{ \
+                  uint64_t __try_vec_n = ({n}); \
+                  int64_t* __try_vec_data = (int64_t*)malloc((__try_vec_n == 0 ? 1 : __try_vec_n) * sizeof(int64_t)); \
+                  {result} __try_vec_r; \
+                  if (__try_vec_data == NULL) {{ \
+                    __try_vec_r.tag = 1; \
+                    __try_vec_r.u.v_Err = (int32_t)0; \
+                  }} else {{ \
+                    {vs} __try_vec_v; \
+                    __try_vec_v.data = __try_vec_data; \
+                    __try_vec_v.len = 0; \
+                    __try_vec_v.capacity = __try_vec_n == 0 ? 1 : __try_vec_n; \
+                    __try_vec_r.tag = 0; \
+                    __try_vec_r.u.v_Ok = __try_vec_v; \
+                  }} \
+                  __try_vec_r; \
+                }})",
+                n = n_expr,
+                result = result_c,
+                vs = vec_struct,
             );
         }
         "vec" => {
