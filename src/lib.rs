@@ -19759,6 +19759,40 @@ fn main() -> i64 {
         );
     }
 
+    // Closure #288: LLVM ABI lowering for small all-integer
+    // structs at the FFI boundary. Mirrors the C-side
+    // closure #285. extern declarations + call sites emit
+    // packed-integer types (i64 / {i64, i64}) matching
+    // System V x86-64.
+    #[test]
+    fn extern_small_struct_lowers_to_packed_integer_in_llvm() {
+        let source = r#"
+            struct Point { x: i32, y: i32 }
+
+            extern "C" fn point_sum(p: Point) -> i32;
+
+            fn main() -> i64 {
+              let p: Point = Point { x: 3 as i32, y: 4 as i32 };
+              let s: i32 = point_sum(p);
+              return s as i64;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM ABI lowering accepts small struct FFI");
+        // declare site uses lowered i64 form, not %Struct_Point.
+        assert!(
+            ll.contains("declare i32 @point_sum(i64)"),
+            "expected `declare i32 @point_sum(i64)` lowered ABI, got:\n{}",
+            ll
+        );
+        // call site bitcasts the struct alloca to i64* and
+        // loads.
+        assert!(
+            ll.contains("bitcast %Struct_Point*"),
+            "expected bitcast of struct to lowered type at call site, got:\n{}",
+            ll
+        );
+    }
+
     // Closure #285: small all-integer structs are now
     // accepted by-value at the FFI boundary. Validates the
     // happy path.

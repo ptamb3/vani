@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1020 lib + 53 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1021 lib + 53 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -1396,6 +1396,44 @@ fn main() returns i64 {
 
    Test totals: 1020 lib + 53 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #287.
+
+   **FFI v7 — LLVM small-struct ABI lowering done 2026-05-27**:
+   completes the LLVM half of closure #285. Small
+   all-integer-field structs ≤ 16 bytes now cross the FFI
+   boundary correctly via the LLVM backend, matching cc's
+   System V x86-64 packed-register passing.
+
+   Lowering:
+
+     • Struct size ≤ 8 bytes → `i64`.
+     • Struct size 9..=16 bytes → `{ i64, i64 }`.
+     • Larger / mixed payloads → not yet supported (checker
+       still rejects upstream).
+
+   Pipeline:
+
+     • `llvm_ffi_struct_lowered_ty(ty)` — maps a vāṇी
+       struct type to the lowered LLVM form per the rules
+       above.
+     • `emit_function` (extern path) — declare emits the
+       lowered form for struct params + return.
+     • Call-site emit — for each struct arg to an extern,
+       spill to alloca, bitcast to lowered ptr type, load,
+       pass the loaded value.
+     • Return-type lowering — call's result type uses the
+       lowered form for extern returns.
+
+   Verified end-to-end via `intentc build` of a vāṇी
+   program calling `point_sum({x: 3, y: 4})` against a C
+   helper — both backends now return 7.
+
+   1 new lib test
+   (`extern_small_struct_lowers_to_packed_integer_in_llvm`).
+   The defensive `panic!("use --backend=c")` for struct FFI
+   is removed.
+
+   Test totals: 1021 lib + 53 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #288.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

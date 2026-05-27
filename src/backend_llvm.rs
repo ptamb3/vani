@@ -291,6 +291,55 @@ fn llvm_enum_payload_buffer_size(decl: &crate::ir::TypedEnumDecl) -> u64 {
     ((raw + 7) / 8) * 8
 }
 
+// Closure #288: System V x86-64 ABI lowering for small
+// all-integer-field structs in FFI position. Maps a vāṇी
+// `Type::Struct(name)` to the LLVM type that cc / the
+// platform actually expects:
+//   - struct size ≤ 8 bytes  → i64
+//   - struct size 9..=16     → {i64, i64}
+//   - struct > 16 / mixed    → None (struct-by-value not
+//                                    supported; checker
+//                                    rejects upstream).
+//
+// The first integer-class field's representation goes into
+// the bottom bits of the first i64; subsequent fields stack
+// up to 8 bytes, then overflow into the second i64. Float
+// fields would route through SSE registers — out of scope
+// for v1.
+fn llvm_ffi_struct_lowered_ty(ty: &Type) -> Option<String> {
+    let Type::Struct(name) = ty else { return None; };
+    let fields = LLVM_STRUCT_FIELDS_REGISTRY
+        .with(|r| r.borrow().get(name).cloned())
+        .unwrap_or_default();
+    if fields.is_empty() {
+        return None;
+    }
+    // Verify all-integer-class (no float / pointer-only
+    // suffices for v1).
+    let all_int = fields.iter().all(|(_, t)| {
+        matches!(t,
+            Type::I8 | Type::I16 | Type::I32 | Type::I64
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64
+            | Type::Bool | Type::Ref(_) | Type::RefMut(_)
+            | Type::Str
+        )
+    });
+    if !all_int {
+        return None;
+    }
+    let total: u64 = fields.iter().map(|(_, t)| llvm_byte_size(t)).sum();
+    if total == 0 {
+        return None;
+    }
+    if total <= 8 {
+        Some("i64".to_string())
+    } else if total <= 16 {
+        Some("{ i64, i64 }".to_string())
+    } else {
+        None
+    }
+}
+
 /// Closure #283 LLVM half: lookup variant of the above when
 /// only the enum name is in scope.
 fn llvm_enum_payload_buffer_size_by_name(name: &str) -> u64 {
@@ -778,33 +827,47 @@ fn emit_function(
     // `{i64, i64}` for size-9..16, with bitcast at call
     // sites.
     if function.is_extern {
+        // Closure #288: lower small all-integer structs to
+        // their System V x86-64 packed-register ABI form
+        // (i64 / {i64, i64}) at the declare site. The
+        // checker has already verified each struct is
+        // FFI-safe; if `llvm_ffi_struct_lowered_ty` still
+        // returns None for a struct that reached here, the
+        // checker's FFI-safe predicate and the LLVM lowering
+        // predicate disagree — panic to surface the bug
+        // loudly rather than emit bad IR.
         for param in &function.params {
-            if matches!(&param.ty, Type::Struct(_)) {
+            if matches!(&param.ty, Type::Struct(_)) && llvm_ffi_struct_lowered_ty(&param.ty).is_none() {
                 panic!(
-                    "LLVM backend doesn't yet support struct-by-value FFI \
-                     (extern fn '{}' parameter '{}' is a struct). Use \
-                     `--backend=c` for now; LLVM ABI lowering is queued \
-                     as a follow-up to closure #285. The C backend passes \
-                     small all-integer structs correctly via cc's native \
-                     System V handling.",
-                    function.name, param.name
+                    "FFI-safe predicate / LLVM ABI predicate mismatch on \
+                     param '{}' of extern fn '{}'. The checker accepted a \
+                     struct shape the LLVM ABI lowering doesn't recognize. \
+                     Use `--backend=c` as a workaround; file a bug.",
+                    param.name, function.name
                 );
             }
         }
-        if matches!(&function.return_type, Type::Struct(_)) {
+        if matches!(&function.return_type, Type::Struct(_))
+            && llvm_ffi_struct_lowered_ty(&function.return_type).is_none()
+        {
             panic!(
-                "LLVM backend doesn't yet support struct-by-value FFI \
-                 returns (extern fn '{}' returns a struct). Use \
-                 `--backend=c` for now.",
+                "FFI-safe predicate / LLVM ABI predicate mismatch on return \
+                 type of extern fn '{}'. Use `--backend=c`; file a bug.",
                 function.name
             );
         }
-        out.push_str(&format!("declare {} @{}(", ret_ty, function.name));
+        // Closure #288: lower struct params/returns to the
+        // System V x86-64 ABI form (`i64` / `{i64, i64}`).
+        let lowered_ret = llvm_ffi_struct_lowered_ty(&function.return_type)
+            .unwrap_or_else(|| ret_ty.clone());
+        out.push_str(&format!("declare {} @{}(", lowered_ret, function.name));
         for (i, param) in function.params.iter().enumerate() {
             if i > 0 {
                 out.push_str(", ");
             }
-            out.push_str(&llvm_type_string(&param.ty));
+            let lowered = llvm_ffi_struct_lowered_ty(&param.ty)
+                .unwrap_or_else(|| llvm_type_string(&param.ty));
+            out.push_str(&lowered);
         }
         out.push_str(")\n");
         return;
@@ -4271,26 +4334,71 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
-            let arg_strs: Vec<String> = args
-                .iter()
-                .map(|a| format!("{} {}", llvm_type_string(&a.ty), emit_expr(a, ctx, out)))
-                .collect();
-            let dest = ctx.fresh_tmp();
             // Closure #269: extern "C" fns linked from outside
             // emit as `@<name>` (bare C symbol); regular vāṇी
             // fns keep the `@fn_<name>` prefix that the rest of
             // the codegen expects.
             let is_extern = LLVM_EXTERN_FN_REGISTRY
                 .with(|r| r.borrow().contains(name.as_str()));
+            // Closure #288: when calling an extern fn that
+            // takes a struct-by-value, bitcast the struct value
+            // to its System V x86-64 packed-register form
+            // (i64 / {i64, i64}) before the call. Mirrors the
+            // declare-site lowering.
+            let arg_strs: Vec<String> = args
+                .iter()
+                .map(|a| {
+                    let v = emit_expr(a, ctx, out);
+                    if is_extern {
+                        if let Some(lowered) = llvm_ffi_struct_lowered_ty(&a.ty) {
+                            // Spill the struct to an alloca,
+                            // bitcast to the lowered ptr type,
+                            // load. The loaded value matches
+                            // cc's System V x86-64 ABI for the
+                            // call.
+                            let struct_ty = llvm_type_string(&a.ty);
+                            let spill = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = alloca {}\n", spill, struct_ty
+                            ));
+                            out.push_str(&format!(
+                                "  store {} {}, {}* {}\n",
+                                struct_ty, v, struct_ty, spill
+                            ));
+                            let cast_ptr = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = bitcast {}* {} to {}*\n",
+                                cast_ptr, struct_ty, spill, lowered
+                            ));
+                            let loaded = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = load {}, {}* {}\n",
+                                loaded, lowered, lowered, cast_ptr
+                            ));
+                            return format!("{} {}", lowered, loaded);
+                        }
+                    }
+                    format!("{} {}", llvm_type_string(&a.ty), v)
+                })
+                .collect();
+            let dest = ctx.fresh_tmp();
             let symbol = if is_extern {
                 format!("@{}", name)
             } else {
                 format!("@fn_{}", name)
             };
+            // Closure #288: lowered return type for extern
+            // struct returns (if any).
+            let ret_ll = if is_extern {
+                llvm_ffi_struct_lowered_ty(&expr.ty)
+                    .unwrap_or_else(|| llvm_type_string(&expr.ty))
+            } else {
+                llvm_type_string(&expr.ty)
+            };
             out.push_str(&format!(
                 "  {} = call {} {}({})\n",
                 dest,
-                llvm_type_string(&expr.ty),
+                ret_ll,
                 symbol,
                 arg_strs.join(", ")
             ));
