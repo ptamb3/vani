@@ -4230,6 +4230,29 @@ fn emit_cast(
     let from_llvm = llvm_type(from_ty)?;
     let to_llvm = llvm_type(to_ty)?;
     if from_llvm == to_llvm {
+        // Closure #263: when both sides lower to the SAME LLVM
+        // type, we need an identity op. The previous form
+        // `add T 0, x` works for integers and `fadd double 0.0,
+        // x` for floats — but for pointer-typed identity
+        // (e.g. `OwnedStr → Str`, both `i8*`) LLVM rejects
+        // `add i8* 0, x` with "integer constant must have
+        // integer type". Use `bitcast T x to T` (a no-op
+        // bitcast to the same type) for pointers. Same shape
+        // tree-LLVM uses elsewhere for ptr-typed identity.
+        let is_ptr = matches!(
+            to_ty,
+            Type::Str | Type::OwnedStr | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_)
+        );
+        if is_ptr {
+            out.push_str(&format!(
+                "  %v_{} = bitcast {} {} to {}\n",
+                result.0,
+                to_llvm,
+                operand_str(x),
+                to_llvm
+            ));
+            return Ok(());
+        }
         let (op, zero) = match to_ty {
             Type::Bool => ("or", "false"),
             Type::F32 | Type::F64 => ("fadd", "0.0"),

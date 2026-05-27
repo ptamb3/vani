@@ -629,6 +629,31 @@ language semantics, all are pure analyses):
 These all line up behind the SSA-LLVM multi-block work + the
 kosh package-manager arc on the canonical queue.
 
+#263 SSA-LLVM identity-cast — `bitcast` for pointer types.
+`emit_cast` in `src/ssa_backend_llvm.rs` previously emitted
+`add T 0, x` for any case where `from_llvm == to_llvm`
+(the "identity op" path used when two source-level types
+share a backing type — e.g. `i64`/`u64` both lower to
+`i64`, or `OwnedStr`/`Str` both lower to `i8*`).
+
+For integer + float types this is correct. For pointer
+types LLVM rejects `add i8* 0, %x` with "integer constant
+must have integer type". Surfaced when passing an
+`OwnedStr` to a `Str`-typed fn parameter — a common
+pattern (length, comparisons, string-API calls).
+
+Fix uses `bitcast T x to T` for pointer types (Str /
+OwnedStr / Vec / Ref / RefMut). Same shape that tree-LLVM
+already uses for ptr-typed identity elsewhere.
+
+One lib test pins both shapes — the positive `bitcast i8*`
+form AND a regression guard that `add i8* 0` does NOT
+appear in the output. Surfaced through a follow-up sanity
+sweep after #262 that exercised additional borrowed-heap
+operations.
+
+Test totals: 968 lib + 47 e2e + 11 vtables-phase3 + 2
+user-drop-by-ref + 1 ssa-examples.
 #262 Codegen — `len(ref OwnedStr)` 4-layer fix.
 `len(ref s)` for `s: OwnedStr` was broken on every code path:
 

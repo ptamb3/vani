@@ -14914,6 +14914,51 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn ssa_llvm_identity_cast_uses_bitcast_for_ptr_types() {
+        // Closure #263: SSA-LLVM `emit_cast` previously emitted
+        // `add T 0, x` for any case where `from_llvm == to_llvm`
+        // (the "identity op" path). That works for integers and
+        // floats but LLVM rejects `add i8* 0, %x` ("integer
+        // constant must have integer type"). Surfaced when
+        // passing OwnedStr to a `Str`-typed fn parameter —
+        // both lower to `i8*`, the identity cast fired, and
+        // `lli` rejected the IR.
+        //
+        // The fix uses `bitcast T x to T` (a no-op) for pointer
+        // types. Same shape tree-LLVM already uses elsewhere.
+        let source = r#"
+            fn read_str_len_param(s: Str) -> u64 {
+              return len(s);
+            }
+
+            fn main() -> i64 {
+              let s: OwnedStr = "hello, " + "world";
+              let n: u64 = read_str_len_param(s);
+              return n as i64;
+            }
+        "#;
+        let checked = compile(source).expect("compiles");
+        let (module, errs) = crate::ssa::lower_program(&checked.ir);
+        assert!(errs.is_empty(), "SSA lowering errs: {:?}", errs);
+        let ll = crate::ssa_backend_llvm::emit(&module)
+            .expect("SSA-LLVM emit");
+        // The pointer-typed identity cast lowers to bitcast,
+        // NOT `add i8* 0, …`. Regression guard: any future
+        // refactor that re-introduces `add i8*` would fail
+        // here AND fail `lli`.
+        assert!(
+            ll.contains("bitcast i8*"),
+            "expected bitcast on i8* identity cast; got:\n{}",
+            ll.lines().take(80).collect::<Vec<_>>().join("\n")
+        );
+        assert!(
+            !ll.contains("add i8* 0"),
+            "must NOT emit `add i8* 0, …` (lli rejects); got:\n{}",
+            ll.lines().take(80).collect::<Vec<_>>().join("\n")
+        );
+    }
+
+    #[test]
     fn len_of_ref_owned_str_dereferences_through_borrow() {
         // Closure #262: `len(ref s)` for `s: OwnedStr`
         // previously emitted invalid LLVM IR ("'%v_3' defined

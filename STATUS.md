@@ -537,6 +537,25 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **SSA-LLVM identity-cast uses `bitcast` for pointers 2026-05-26**:
+   `emit_cast` previously emitted `add T 0, x` for any
+   case where `from_llvm == to_llvm` (the "identity op"
+   path used when two source-level types share a backing
+   type, e.g. `i64` / `u64` both → `i64`). For pointer-
+   typed identity (`OwnedStr → Str`, both `i8*`) LLVM
+   rejected the IR with "integer constant must have
+   integer type". Surfaced via a follow-up sanity sweep
+   on top of #262 — passing OwnedStr to a `Str`-typed fn
+   parameter is a common pattern that was silently
+   broken on the SSA-LLVM path. Fix uses `bitcast T x
+   to T` (a no-op) for pointer types (Str / OwnedStr /
+   Vec / Ref / RefMut); integers and floats keep the
+   `add 0` / `fadd 0.0` form. One lib test pins the
+   bitcast shape AND adds a regression guard that no
+   `add i8* 0` survives in the output. Test totals: 968
+   lib + 47 e2e + 11 vtables-phase3 + 2 user-drop-by-
+   ref + 1 ssa-examples. Closure #263.
+
    **Codegen fix — `len(ref OwnedStr)` 2026-05-26**:
    `len(ref s)` for `s: OwnedStr` had a 4-layer bug:
    (a) SSA lowerer routed it through the static-array
