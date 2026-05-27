@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #278 — match on f64)
+## ⏳ Resume here (paused 2026-05-27, after closure #279 — FFI callbacks via fn-pointer extern params)
 
 **Queue audit findings (during work-queue probe pass):** several
 TODO items listed under "Other queued follow-ups" or the
@@ -90,13 +90,13 @@ value.
    spelling; the checker rule is the main blocker. Files:
    [src/checker.rs](src/checker.rs), both backends.
 
-5. **#10 FFI varargs + function-pointer callbacks (M)** —
-   completes FFI surface for `printf`, `qsort`, etc. Varargs:
-   add `...` to extern fn parser. Callbacks: function-pointer
-   params already work for vāṇी fns (closure #?); thread
-   through to extern declarations. Files:
-   [src/parser.rs](src/parser.rs), [src/checker.rs](src/checker.rs),
-   both backends.
+5. ✅ **#10 FFI callbacks** — shipped 2026-05-27 (closure #279).
+   `Type::FnPtr` is now FFI-safe in both param and return
+   position; qsort-style callbacks work end-to-end. Varargs
+   (`...` in declarations) deferred to M+ because it requires
+   the declaration shape AND variadic call-site syntax to be
+   useful — declared `printf(...)` can't actually be called
+   from vāṇी source without variadic call expressions.
 
 **Foundational arcs (multi-session enables):**
 

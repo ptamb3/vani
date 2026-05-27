@@ -19857,6 +19857,29 @@ fn main() -> i64 {
     // nested IfExpr chain of `==` checks. NaN literals in the
     // pattern surface a "never fires" diagnostic. Wildcard is
     // required since the float space is open.
+    // Closure #279: FFI callbacks via `fn(...) -> R` extern
+    // params. Function pointers are pointer-sized in both
+    // C ABI and LLVM, so they cross the FFI boundary
+    // cleanly without any ABI gymnastics.
+    #[test]
+    fn extern_fn_with_fn_pointer_param_accepted() {
+        let source = r#"
+            extern "C" fn invoke_cmp(cmp: fn(i32, i32) -> i32, a: i32, b: i32) -> i32;
+
+            fn my_cmp(a: i32, b: i32) -> i32 {
+              if a < b { return -1 as i32; }
+              return 0 as i32;
+            }
+
+            fn main() -> i64 {
+              let r: i32 = invoke_cmp(my_cmp, 5 as i32, 7 as i32);
+              return r as i64;
+            }
+        "#;
+        compile_to_c(source).expect("FnPtr extern param must compile (C)");
+        compile_to_llvm(source).expect("FnPtr extern param must compile (LLVM)");
+    }
+
     #[test]
     fn match_on_f64_classifies_literals_then_falls_through_to_wildcard() {
         let source = r#"

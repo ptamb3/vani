@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 997 lib + 50 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 998 lib + 50 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -920,6 +920,35 @@ fn main() returns i64 {
 
    Test totals: 997 lib + 50 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #278.
+
+   **FFI callbacks via fn-pointer extern params done 2026-05-27**:
+   `extern "C" fn invoke_cmp(cmp: fn(i32, i32) -> i32, a: i32,
+   b: i32) -> i32;` now compiles. The parser already accepted
+   `fn(...) -> R` types in extern positions (#269); the
+   checker's ABI gate (#273) was the blocker. Added
+   `Type::FnPtr` to both `extern_param_rejection_hint` and
+   `extern_return_rejection_hint` since function pointers
+   are pointer-sized in both C ABI (function pointer) and
+   LLVM (`R (T1, ...)*`), crossing the FFI boundary cleanly.
+
+   Common shape — qsort-style callback:
+     extern "C" fn qsort(base: ref u8, n: u64, sz: u64,
+                          cmp: fn(ref u8, ref u8) -> i32);
+
+   Verified end-to-end: vāṇी's `my_cmp` fn passed as
+   callback to a separately-compiled `helper.c` returns the
+   correct `cmp(5, 7) = -1` on both backends.
+
+   Varargs (`...` in declarations) deferred: requires both
+   the declaration shape AND variadic call-site syntax to be
+   useful. Without variadic calls, declared `printf(...)`
+   can't actually be called from vāṇी source. M+ tier.
+
+   1 new lib test (`extern_fn_with_fn_pointer_param_accepted`)
+   pins compile-time acceptance on both backends.
+
+   Test totals: 998 lib + 50 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #279.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

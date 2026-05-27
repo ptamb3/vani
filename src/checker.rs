@@ -4313,6 +4313,15 @@ fn extern_param_rejection_hint(ty: &Type) -> Option<String> {
         | Type::U8 | Type::U16 | Type::U32 | Type::U64
         | Type::F32 | Type::F64 | Type::Bool | Type::Str => None,
         Type::Ref(_) | Type::RefMut(_) => None,
+        // Closure #279: function-pointer types `fn(...) -> R`
+        // are pointer-sized in both C ABI (function pointer)
+        // and LLVM (`R (T1, ...)*`), so they cross the FFI
+        // boundary cleanly. Common callback shape:
+        // `extern "C" fn qsort(base: ref u8, n: u64, sz: u64,
+        //   cmp: fn(ref u8, ref u8) -> i32);`. The function
+        // value's body lives on the vāṇी side; cc's qsort
+        // calls it through the pointer.
+        Type::FnPtr(_, _) => None,
         Type::Struct(name) => Some(format!(
             "pass struct '{}' by reference instead — write `ref {}` \
              (small aggregates have ABI-dependent packing that vāṇी's \
@@ -4366,6 +4375,7 @@ fn extern_return_rejection_hint(ty: &Type) -> Option<String> {
         | Type::U8 | Type::U16 | Type::U32 | Type::U64
         | Type::F32 | Type::F64 | Type::Bool | Type::Str => None,
         Type::Ref(_) | Type::RefMut(_) => None,
+        Type::FnPtr(_, _) => None,
         Type::Struct(name) | Type::Enum(name) => Some(format!(
             "return a pointer instead — declare the return type as \
              `ref {}` (struct/enum return-by-value has ABI-dependent \
