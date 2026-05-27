@@ -31,6 +31,20 @@ Full long-form discussion lives in README.md's "Design Philosophy
 
 ## ⏳ Resume here (paused 2026-05-27, after closure #282 — prelude auto-imports Option/Result/AllocError)
 
+**Next pickup: #6 try_vec(n) -> Result<Vec<i64>, AllocError>** — now
+fully unblocked (Result + AllocError are in the prelude). v1 scope:
+
+  - i64 element type only (mirrors vāṇी's Vec<T> v1 scope where the
+    element type travels via separate codegen paths).
+  - New builtin `try_vec` recognized by the checker; signature is
+    `fn try_vec(n: u64) -> Result<Vec<i64>, AllocError>`.
+  - Codegen emits a runtime malloc-with-null-check that builds
+    `Result.Ok(vec)` or `Result.Err(AllocError.OutOfMemory)`.
+  - Both backends: tree-C + SSA-C + tree-LLVM + SSA-LLVM need the
+    Result-literal construction path.
+
+Effort: M, mostly codegen plumbing.
+
 **Remaining queue items are all L-tier multi-session arcs.** All
 require introducing significant new compiler machinery:
 
