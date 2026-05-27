@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/try_keyword.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/try_keyword.vani --backend=c              # C backend, gcc
+//   intentc build examples/try_keyword.vani -o /tmp/try_keyword && /tmp/try_keyword   # native binary
+
 intent "T2.6 phase 2: `try` keyword sugar over Option error propagation";
 
 // The `try EXPR` keyword extracts the payload from an Option-like

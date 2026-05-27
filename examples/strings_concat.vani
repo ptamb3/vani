@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/strings_concat.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/strings_concat.vani --backend=c              # C backend, gcc
+//   intentc build examples/strings_concat.vani -o /tmp/strings_concat && /tmp/strings_concat   # native binary
+
 intent "Heap-allocated string concatenation via OwnedStr";
 
 // `Str + Str` (or any combination of Str/OwnedStr) produces a

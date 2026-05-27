@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/hindi_keywords.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/hindi_keywords.vani --backend=c              # C backend, gcc
+//   intentc build examples/hindi_keywords.vani -o /tmp/hindi_keywords && /tmp/hindi_keywords   # native binary
+
 // हिन्दी (hindī) — Hindi-keyword example.
 // Per-file language purity (closure #236) requires a single
 // language per file. This file uses Hindi structure keywords

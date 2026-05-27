@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/iterate.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/iterate.vani --backend=c              # C backend, gcc
+//   intentc build examples/iterate.vani -o /tmp/iterate && /tmp/iterate   # native binary
+
 intent "Iterate over arrays and Vecs with `for x in ref xs` and consuming `for x in xs`";
 
 fn sum_vec(xs: ref Vec<i64>) -> i64 {

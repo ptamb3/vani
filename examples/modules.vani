@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/modules.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/modules.vani --backend=c              # C backend, gcc
+//   intentc build examples/modules.vani -o /tmp/modules && /tmp/modules   # native binary
+
 intent "Namespaces — modules, visibility, paths, `use`, nested, glob, rename";
 
 // Closures #242-#249, #253-#254. Rust-style modules: explicit

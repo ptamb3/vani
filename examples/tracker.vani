@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/tracker.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/tracker.vani --backend=c              # C backend, gcc
+//   intentc build examples/tracker.vani -o /tmp/tracker && /tmp/tracker   # native binary
+
 intent "A min/max tracker using struct + methods + mut-ref field-assign";
 
 struct Tracker { count: i64, min: i64, max: i64 }

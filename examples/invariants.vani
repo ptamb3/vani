@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/invariants.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/invariants.vani --backend=c              # C backend, gcc
+//   intentc build examples/invariants.vani -o /tmp/invariants && /tmp/invariants   # native binary
+
 intent "Loop invariants verified by the SMT layer";
 
 fn count_to(n: i64) -> i64

@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/struct_mixed_fields.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/struct_mixed_fields.vani --backend=c              # C backend, gcc
+//   intentc build examples/struct_mixed_fields.vani -o /tmp/struct_mixed_fields && /tmp/struct_mixed_fields   # native binary
+
 intent "T1.2 phase 2b: structs with mixed affine fields";
 
 // v1 admits as struct fields: Copy types, OwnedStr, Vec<T>,

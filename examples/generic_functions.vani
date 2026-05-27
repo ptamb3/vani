@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/generic_functions.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/generic_functions.vani --backend=c              # C backend, gcc
+//   intentc build examples/generic_functions.vani -o /tmp/generic_functions && /tmp/generic_functions   # native binary
+
 intent "T1.4 phase 2: generic function monomorphization";
 
 // V1 supports `fn name<T>(args) -> ret { … }` where T is a single

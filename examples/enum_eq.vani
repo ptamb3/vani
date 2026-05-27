@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/enum_eq.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/enum_eq.vani --backend=c              # C backend, gcc
+//   intentc build examples/enum_eq.vani -o /tmp/enum_eq && /tmp/enum_eq   # native binary
+
 intent "User-defined `==` for enums via `implement Eq for E`";
 
 // Same recipe as `examples/struct_eq.intent`: declare an

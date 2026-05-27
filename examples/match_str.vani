@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/match_str.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/match_str.vani --backend=c              # C backend, gcc
+//   intentc build examples/match_str.vani -o /tmp/match_str && /tmp/match_str   # native binary
+
 intent "Match on Str scrutinee — string-literal pattern dispatch";
 
 // `match` now accepts a `Str` (or `OwnedStr`) scrutinee with

@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/scopes.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/scopes.vani --backend=c              # C backend, gcc
+//   intentc build examples/scopes.vani -o /tmp/scopes && /tmp/scopes   # native binary
+
 intent "Nested lexical scopes with branch-local Vecs and outer mutation";
 
 fn main() -> i64 {

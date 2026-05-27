@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/floats_and_shifts.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/floats_and_shifts.vani --backend=c              # C backend, gcc
+//   intentc build examples/floats_and_shifts.vani -o /tmp/floats_and_shifts && /tmp/floats_and_shifts   # native binary
+
 intent "Exercise f32/f64 promotion, explicit casts, modulo, and shift checks";
 
 fn mix_score(base: f32, count: u32) -> f64 {

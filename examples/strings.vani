@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/strings.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/strings.vani --backend=c              # C backend, gcc
+//   intentc build examples/strings.vani -o /tmp/strings && /tmp/strings   # native binary
+
 // String literals and `Str` operations.
 //
 // Str today is the type of compile-time string literals (a borrowed

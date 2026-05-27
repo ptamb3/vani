@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/memory_safety.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/memory_safety.vani --backend=c              # C backend, gcc
+//   intentc build examples/memory_safety.vani -o /tmp/memory_safety && /tmp/memory_safety   # native binary
+
 intent "Memory safety patterns — affine ownership, move, borrow, deterministic drop";
 
 // vāṇī's memory-safety guarantees, demonstrated positively. Every

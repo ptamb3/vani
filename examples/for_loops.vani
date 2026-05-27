@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/for_loops.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/for_loops.vani --backend=c              # C backend, gcc
+//   intentc build examples/for_loops.vani -o /tmp/for_loops && /tmp/for_loops   # native binary
+
 intent "for-loops over integer ranges";
 
 fn sum_squares(n: i64) -> i64 {

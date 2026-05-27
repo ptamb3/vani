@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/sanskrit_keywords.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/sanskrit_keywords.vani --backend=c              # C backend, gcc
+//   intentc build examples/sanskrit_keywords.vani -o /tmp/sanskrit_keywords && /tmp/sanskrit_keywords   # native binary
+
 // संस्कृत (saṁskṛta) — Sanskrit-keyword example.
 // Uses the classical-Sanskrit verbs for control flow and proof
 // constructs. `शुद्ध` = pure, `अपेक्षित` = requires, `निश्चित` = ensures.

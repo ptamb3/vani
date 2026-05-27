@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/composite_types.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/composite_types.vani --backend=c              # C backend, gcc
+//   intentc build examples/composite_types.vani -o /tmp/composite_types && /tmp/composite_types   # native binary
+
 intent "Demonstrate structs, enums, tuples, match, and const declarations working together";
 
 const ORIGIN_X: i64 = 0;

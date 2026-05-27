@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/array_proofs.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/array_proofs.vani --backend=c              # C backend, gcc
+//   intentc build examples/array_proofs.vani -o /tmp/array_proofs && /tmp/array_proofs   # native binary
+
 intent "SMT-verified array reasoning across function boundaries";
 
 // Demonstrates the array-theory v1 feature surface:

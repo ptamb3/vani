@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/type_associated_fn.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/type_associated_fn.vani --backend=c              # C backend, gcc
+//   intentc build examples/type_associated_fn.vani -o /tmp/type_associated_fn && /tmp/type_associated_fn   # native binary
+
 intent "Type-associated functions — `Type.helper(args)`";
 
 // `methods on T { fn helper(args) -> R { … } }` (without

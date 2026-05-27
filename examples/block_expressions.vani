@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/block_expressions.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/block_expressions.vani --backend=c              # C backend, gcc
+//   intentc build examples/block_expressions.vani -o /tmp/block_expressions && /tmp/block_expressions   # native binary
+
 intent "Demonstrate block expressions as `let` initializers";
 
 // Block expressions let you bundle a short chain of `let` bindings

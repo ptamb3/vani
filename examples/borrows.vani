@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/borrows.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/borrows.vani --backend=c              # C backend, gcc
+//   intentc build examples/borrows.vani -o /tmp/borrows && /tmp/borrows   # native binary
+
 intent "Borrow a Vec without consuming it";
 
 fn sum(xs: ref Vec<i64>) -> i64 {

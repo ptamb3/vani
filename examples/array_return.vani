@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/array_return.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/array_return.vani --backend=c              # C backend, gcc
+//   intentc build examples/array_return.vani -o /tmp/array_return && /tmp/array_return   # native binary
+
 intent "Arrays in function return position (closure #239)";
 
 // Returning `[T; N]` by value works on both backends.

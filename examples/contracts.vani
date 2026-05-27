@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/contracts.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/contracts.vani --backend=c              # C backend, gcc
+//   intentc build examples/contracts.vani -o /tmp/contracts && /tmp/contracts   # native binary
+
 intent "Function contracts: requires + ensures + cross-call SMT reasoning";
 
 // `requires` clauses are verified at every call site against the caller's

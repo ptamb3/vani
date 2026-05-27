@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/match_bool.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/match_bool.vani --backend=c              # C backend, gcc
+//   intentc build examples/match_bool.vani -o /tmp/match_bool && /tmp/match_bool   # native binary
+
 intent "Match on bool scrutinee — `true` / `false` patterns";
 
 // `match` now accepts a `bool` scrutinee in addition to enum

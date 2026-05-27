@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/fn_pointers.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/fn_pointers.vani --backend=c              # C backend, gcc
+//   intentc build examples/fn_pointers.vani -o /tmp/fn_pointers && /tmp/fn_pointers   # native binary
+
 intent "First-class function pointers: pass behavior as a value";
 
 // `fn(T1, T2, ...) -> R` is a type. A top-level function's

@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/integers.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/integers.vani --backend=c              # C backend, gcc
+//   intentc build examples/integers.vani -o /tmp/integers && /tmp/integers   # native binary
+
 intent "Exercise integer widths, safe promotion, and constant arithmetic checks";
 
 fn widen_signed(a: i32, b: i64) -> i64 {

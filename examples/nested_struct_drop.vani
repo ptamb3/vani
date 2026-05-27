@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/nested_struct_drop.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/nested_struct_drop.vani --backend=c              # C backend, gcc
+//   intentc build examples/nested_struct_drop.vani -o /tmp/nested_struct_drop && /tmp/nested_struct_drop   # native binary
+
 intent "Nested affine struct fields with recursive Drop";
 
 // Structs can contain other structs as fields, including

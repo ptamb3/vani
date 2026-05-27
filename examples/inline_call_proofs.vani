@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/inline_call_proofs.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/inline_call_proofs.vani --backend=c              # C backend, gcc
+//   intentc build examples/inline_call_proofs.vani -o /tmp/inline_call_proofs && /tmp/inline_call_proofs   # native binary
+
 intent "Proofs that reference inline function calls (via callee `ensures`)";
 
 // Each callee promises something about its return value. Callers do not

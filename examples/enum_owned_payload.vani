@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/enum_owned_payload.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/enum_owned_payload.vani --backend=c              # C backend, gcc
+//   intentc build examples/enum_owned_payload.vani -o /tmp/enum_owned_payload && /tmp/enum_owned_payload   # native binary
+
 intent "Enum with OwnedStr payload — heap-aware Drop";
 
 // Enum payloads can now hold `OwnedStr` (a heap-allocated

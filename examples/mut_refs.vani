@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/mut_refs.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/mut_refs.vani --backend=c              # C backend, gcc
+//   intentc build examples/mut_refs.vani -o /tmp/mut_refs && /tmp/mut_refs   # native binary
+
 intent "Mutable references and indexed writes";
 
 fn double_each(xs: mut ref Vec<i64>) -> u64 {

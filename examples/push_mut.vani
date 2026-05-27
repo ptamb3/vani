@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/push_mut.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/push_mut.vani --backend=c              # C backend, gcc
+//   intentc build examples/push_mut.vani -o /tmp/push_mut && /tmp/push_mut   # native binary
+
 intent "In-place Vec push — `push(mut ref xs, v)`";
 
 // Two forms of `push`:

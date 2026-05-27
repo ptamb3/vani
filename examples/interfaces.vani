@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/interfaces.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/interfaces.vani --backend=c              # C backend, gcc
+//   intentc build examples/interfaces.vani -o /tmp/interfaces && /tmp/interfaces   # native binary
+
 intent "T1.5 phase 2: interface dispatch (static)";
 
 // `interface Iface { fn m(...) -> R; }` declares an abstract

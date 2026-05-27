@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/drop_interface.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/drop_interface.vani --backend=c              # C backend, gcc
+//   intentc build examples/drop_interface.vani -o /tmp/drop_interface && /tmp/drop_interface   # native binary
+
 intent "T2.7 phase 2: user-defined Drop interface (auto-call at scope exit)";
 
 // `implement Drop for T { fn drop(self: T) -> i64 { ... } }` declares

@@ -556,6 +556,44 @@ The move-by-default story is **already shipping**; no semantic
 gap remains in v1. Small polish items below are quality-of-life
 improvements, not correctness fixes.
 
+### FFI — calling external code from vāṇी (queued, medium effort)
+
+Today vāṇी **produces** `.o` files (via `intentc emit + llc -filetype=obj`)
+that external linkers (cc / clang++ / rustc) can consume. Function
+symbols are emitted as `fn_<vani_name>` with C ABI, so C / C++ / Rust
+code can declare them as `extern int64_t fn_add(int64_t, int64_t);`
+and call them at the linker level.
+
+What's MISSING is the opposite direction: **declaring an external
+function in vāṇी source so vāṇी code can call into C / C++ / Rust /
+libc / pthread / etc.**
+
+Plan for the future closure:
+- Surface syntax: `extern "C" fn malloc(n: u64) -> ref u8;`
+  declares a foreign function with C ABI. Type signatures use the
+  existing vāṇी type vocabulary; the checker validates the ABI is
+  representable (scalars, pointers, structs with all-Copy fields).
+- IR: a new `ExternFn` declaration that bypasses body type-
+  checking. Calls to it generate `call` to the external symbol
+  directly (no `@fn_` prefix on the external side).
+- Effects: extern fns are conservatively treated as IMPURE (could
+  do anything observable). Parallel-for / pure-fn bodies reject
+  extern calls. The user can mark specific extern fns `pure extern`
+  to opt into purity (no side effects, deterministic output) at
+  their own risk.
+- ABI nuances: structs by value, packed layout, varargs, callbacks —
+  scope decisions per feature.
+- Toolchain: `intentc build` already invokes `cc` and could
+  thread `--link-with foo.o` / `-lfoo` flags through. A small CLI
+  addition.
+
+Without FFI, vāṇी is effectively "linker-output-only" — it can ship
+libraries that other languages call, but can't call existing C
+libraries from inside vāṇी source. The single concession today is
+that runtime helpers (intent_str_concat, GOMP_*, pthread_create,
+atomicrmw) are emitted inline in the LLVM IR; nothing user code
+can extend.
+
 ### Known codegen bugs (small lifts each)
 
 - ✅ **`len(ref OwnedStr)`** — closure #262. Surfaced while
@@ -628,6 +666,52 @@ language semantics, all are pure analyses):
 
 These all line up behind the SSA-LLVM multi-block work + the
 kosh package-manager arc on the canonical queue.
+
+#268 Docs sweep — smart-pointer comparison, FFI plan, build-and-run headers on every example.
+triple update in response to user questions:
+
+  - README's *Memory safety & concurrency model* gains a
+    "Smart-pointer primitives — Rust / C++ comparison"
+    subsection. vāṇी ships no Box / Rc / Arc / RefCell /
+    Weak (or C++ unique_ptr / shared_ptr / weak_ptr)
+    because each use case is either covered by an existing
+    primitive or structurally avoided by the type system.
+    "What about cyclic data structures?" walks through the
+    `Vec<Node>` + index pattern as the idiomatic
+    replacement for `Rc<RefCell<Node>>` shape, with
+    trade-offs explicit (no cycles by construction;
+    cache-friendly; less ergonomic for tree-traversal-
+    heavy code).
+
+  - README's *Multi-file projects* section gains a
+    "How linking works (build pipeline)" subsection
+    documenting the `intentc emit + llc -filetype=obj
+    → .o` route, function symbol naming
+    (`fn_<vani_name>` with C ABI), and declaring vāṇी
+    fns on the C / C++ / Rust side via `extern "C"`
+    blocks. Calling-INTO vāṇी works today. Calling-OUT
+    (declaring foreign symbols in vāṇी source) is
+    queued.
+
+  - TODO.md gets a new "FFI" top-level section laying
+    out the future closure: `extern "C" fn foo() -> R;`
+    syntax, an ExternFn IR shape that bypasses body
+    type-checking, effects treatment (extern fns
+    conservatively impure; `pure extern` opt-in for
+    deterministic helpers), and toolchain integration
+    (`intentc build --link-with foo.o`).
+
+  - All 62 `examples/*.vani` files now carry a 4-line
+    build-and-run header showing the three invocations:
+    `intentc run`, `intentc run --backend=c`, and
+    `intentc build … && /tmp/<stem>`. Headers were
+    added via a small bash loop with a sentinel check
+    so re-running is idempotent. The formatter's
+    comment-preserving emit keeps them intact through
+    round-trip.
+
+Test totals unchanged: 978 lib + 47 e2e + 11
+vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples.
 
 #267 Devanagari Sanskrit / Hindi / Marathi 3-way alias parity (Phase 2).
 pragmatic best-effort sweep filling lexer alias gaps so

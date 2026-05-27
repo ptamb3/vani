@@ -210,6 +210,66 @@ will point at the consume site with the binding's earlier move
 location and the suggestion to either restructure or call
 `clone()` explicitly. The compiler never picks the clone for you.
 
+### Smart-pointer primitives — Rust / C++ comparison
+
+Rust ships `Box<T>`, `Rc<T>` / `Arc<T>`, `RefCell<T>`, and `Weak<T>` as
+distinct types for different memory-management patterns. C++ has
+`unique_ptr`, `shared_ptr`, and `weak_ptr` for the same patterns.
+**vāṇी ships none of these.** Each of the use cases is either covered
+by an existing primitive or **structurally avoided by the type system**:
+
+| Rust / C++ tool | What it solves | vāṇी's approach |
+|---|---|---|
+| `Box<T>` / `unique_ptr<T>` | Single-owner heap allocation | `Vec<T>` and `OwnedStr` already heap-allocate and own. There is no free-form `Box<T>` for arbitrary T — recursive data structures use index-based references into a `Vec` (see *Basic data structures* below). |
+| `Rc<T>` / `Arc<T>` / `shared_ptr<T>` | Reference-counted shared ownership | **Not available by design.** Shared ownership is unrepresentable in the type system. Producer / consumer parallelism uses `Channel<T, N>`. Shared mutable state across threads uses `Atomic<T>` references or `Mutex<T>` + `Guard<T>` — borrowed (not cloned) into each thread. |
+| `RefCell<T>` (interior mutability) | Mutate through a shared reference at runtime | **Not available by design.** vāṇी has no runtime borrow-checker — every aliasing rule fires at compile time. The need is mitigated by `mut ref T` parameters + mixed-place assignment (`xs[i].field = v;` writes through an index into a struct field in one statement). |
+| `Weak<T>` (cycle breaker) | Non-owning back-reference to break `Rc`/`Arc` cycles | **Unnecessary.** No `Rc`/`Arc` means no cycles can form. Single-owner affine types + second-class references produce a strict ownership tree — there is literally no way to construct a cyclic ownership graph in the type system. |
+
+### What about cyclic data structures?
+
+Graph-like data (parent ↔ child, observer pattern, doubly-linked list)
+typically needs cycles in languages that have shared ownership. In
+vāṇी the idiom is **indices into a `Vec`**:
+
+```vani
+struct Node {
+  value: i64,
+  parent: i64,    // index into nodes[]; -1 for root
+  children: Vec<i64>,  // indices into nodes[]
+}
+
+fn add_child(nodes: mut ref Vec<Node>, parent_idx: i64, value: i64) -> i64 {
+  let new_idx: i64 = len(nodes) as i64;
+  let _ = push(mut ref nodes, Node {
+    value: value,
+    parent: parent_idx,
+    children: vec(),
+  });
+  // Update parent's children list — borrow + mixed-place assign.
+  // (Sketch — actual API needs a helper since you can't take
+  // two mut borrows of the same Vec simultaneously.)
+  return new_idx;
+}
+```
+
+This trades the "ergonomic graph node" for:
+
+- **No cycles by construction** — a Node holds indices, not pointers; nothing the verifier needs to prove about lifetimes.
+- **Cache-friendliness** — all Nodes live in one contiguous Vec.
+- **Cheap clone / serialize** — Vec<Node> is a flat buffer with no internal heap pointers (when fields are Copy).
+- **Compile-time bounds checks** — the SMT layer can prove `idx < len(nodes)` for many patterns and elide the runtime guard.
+
+The trade-off is **less ergonomic for tree-traversal-heavy code** —
+parent pointer chases become index lookups. For graph algorithms
+that fit naturally on a Vec (BFS, DFS, dependency graphs, ECS-style
+arrangements) the index pattern is often *more* idiomatic than the
+`Rc<RefCell<Node>>` shape Rust would use.
+
+`dyn Iface` (closure #220–#228) covers the "heterogeneous collection
+without enumerating variants" use case that often pushes Rust users
+toward `Box<dyn Trait>`. vāṇी's `Vec<dyn Iface>` is a vector of
+fat pointers (16 bytes each: vtable + data pointer); no `Box` needed.
+
 ### What's NOT in the language (deliberate)
 
 - **No garbage collector.** Affine ownership + deterministic Drop
@@ -1794,6 +1854,82 @@ related note.
 Caveats (v1):
 - Name collisions across files surface as the normal "function 'X' is
   already defined" diagnostic.
+
+### How linking works (build pipeline)
+
+`intentc build file.vani -o out` lowers the entire program through
+the LLVM pipeline:
+
+```
+file.vani  →  intentc check       (typecheck + SMT)
+            →  emit LLVM IR (.ll)  (SSA path or tree fallback)
+            →  opt -O2 (optional)
+            →  llc -filetype=obj   (-O2, PIC)  →  .o
+            →  cc -o out           (links libc, -pthread)
+```
+
+There is **no separate compile-then-link step** today — the whole
+program goes through one driver invocation. Multi-file inputs are
+**concatenated at the source level** through `use "path.vani";`
+before the LLVM backend ever sees them, so all functions land in
+one `.o` and `cc` produces the final binary in a single link.
+
+#### Generating `.o` files for external linking
+
+Two ways to produce an object file you can hand to another linker
+(GCC / Clang / Rust's linker driver):
+
+```bash
+# Step 1: emit LLVM IR
+intentc emit my_lib.vani --backend=llvm -o my_lib.ll
+# Step 2: assemble to .o
+llc -filetype=obj -relocation-model=pic -O=2 my_lib.ll -o my_lib.o
+# Step 3: link with anything else
+cc -o app my_lib.o c_main.c                    # link with C
+clang++ -o app my_lib.o cpp_main.cpp           # link with C++
+rustc cargo_main.rs --extern my_lib=my_lib.o  # link with Rust
+```
+
+Function symbols in the produced `.o` are named `fn_<vani_name>`
+(e.g. `fn add` in vāṇी lowers to `fn_add` in the object). Their
+ABI matches the C ABI for the target platform (System V on Linux /
+macOS, MSVC on Windows). Declare them on the C / C++ side as:
+
+```c
+extern int64_t fn_add(int64_t a, int64_t b);
+```
+
+And on the Rust side as:
+
+```rust
+extern "C" {
+    fn fn_add(a: i64, b: i64) -> i64;
+}
+```
+
+#### Calling INTO vāṇी from external code
+
+Works today via the `.o` route above. The vāṇी function's signature
+must use Copy / pointer-compatible types (scalars, `ref T` borrows,
+`Str` borrowed pointer). Affine handles (`Vec<T>`, `OwnedStr`,
+`Atomic`, `Mutex`, `Guard`, `Channel`, `Task`) at the ABI boundary
+need conversion — currently no FFI helper exists, so the
+recommended pattern is to expose scalar / pointer entry points and
+let vāṇी own the allocations internally.
+
+#### Calling FROM vāṇी into external code
+
+**Not supported in v1.** There is no `extern fn` declaration syntax
+for naming functions the linker provides from outside the vāṇी
+build. Workaround: wrap the external API in a C shim file, compile
+the shim separately, and link the two `.o`s manually — but vāṇी
+has no way to declare the foreign signature yet.
+
+Adding proper FFI (an `extern "C" fn foo(...) -> ...;` decl + ABI
+marshalling) is on the **TODO queue** for a future closure (see
+TODO.md). Until that lands, treat vāṇी as "linker-output-only" —
+it produces objects that other languages can link, but it doesn't
+consume external symbol declarations.
 
 ### JSON diagnostics
 

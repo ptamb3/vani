@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/vec_invariants.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/vec_invariants.vani --backend=c              # C backend, gcc
+//   intentc build examples/vec_invariants.vani -o /tmp/vec_invariants && /tmp/vec_invariants   # native binary
+
 intent "Loop invariants over Vec length, end-to-end";
 
 // Builds a Vec by pushing one element per iteration. The invariant

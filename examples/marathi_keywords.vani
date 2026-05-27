@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/marathi_keywords.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/marathi_keywords.vani --backend=c              # C backend, gcc
+//   intentc build examples/marathi_keywords.vani -o /tmp/marathi_keywords && /tmp/marathi_keywords   # native binary
+
 // मराठी (marāṭhī) — Marathi-keyword example.
 // `कार्य` / `फलन` = fn, `मान` = let, `परत` = return,
 // `जर` / `नाहीतर` = if / else, `खात्री` = assert (certainty).

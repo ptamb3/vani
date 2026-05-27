@@ -537,6 +537,44 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **README + examples + TODO refresh — smart pointers, FFI, build headers done 2026-05-27**:
+   triple update in response to three user questions:
+
+   1. **Smart-pointer / cycle-avoidance section** added to
+      the README's *Memory safety & concurrency model*:
+      vāṇी ships none of Rust's Box / Rc / Arc / RefCell /
+      Weak or C++'s unique_ptr / shared_ptr / weak_ptr.
+      Each use case is either covered by an existing
+      primitive (Vec/OwnedStr replace Box; Channel /
+      Atomic / Mutex through refs replace Arc + lock
+      patterns) or **structurally avoided by the type
+      system** (no shared ownership → no cycles → no
+      Weak needed). Added a `Vec<Node>` + index pattern
+      worked example for cyclic data structures.
+
+   2. **Multi-file linking + cross-language FFI** section
+      added under *Multi-file projects*. Documents the
+      `intentc emit + llc -filetype=obj → .o` pipeline,
+      function symbol naming (`fn_<name>` with C ABI),
+      and how to declare vāṇी fns on the C / C++ / Rust
+      side via `extern "C"` blocks. Calling-INTO vāṇी
+      works today. Calling-OUT (`extern fn foo();`
+      declarations in vāṇी source) is queued — TODO.md
+      gets a new FFI section laying out the design
+      (surface syntax, ExternFn IR shape, effects
+      treatment as impure-by-default, toolchain
+      threading).
+
+   3. **All 62 example files** now have a 4-line build-and-
+      run header at the top: `intentc run` (LLVM JIT),
+      `intentc run --backend=c`, and `intentc build`
+      (native binary) variants. Headers survive the
+      formatter's round-trip (comments preserved).
+
+   Test totals unchanged: 978 lib + 47 e2e + 11
+   vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples.
+   Closure #268.
+
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table
    to give pure-Hindi / pure-Sanskrit / pure-Marathi

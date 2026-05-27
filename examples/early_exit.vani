@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/early_exit.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/early_exit.vani --backend=c              # C backend, gcc
+//   intentc build examples/early_exit.vani -o /tmp/early_exit && /tmp/early_exit   # native binary
+
 intent "break and continue for early exit and skip";
 
 fn find_first_negative(xs: ref Vec<i64>) -> i64 {

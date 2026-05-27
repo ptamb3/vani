@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/methods.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/methods.vani --backend=c              # C backend, gcc
+//   intentc build examples/methods.vani -o /tmp/methods && /tmp/methods   # native binary
+
 intent "Demonstrate methods on structs + enums with auto-ref dispatch and field assignment";
 
 const ORIGIN_X: i64 = 0;

@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/bounds_elision.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/bounds_elision.vani --backend=c              # C backend, gcc
+//   intentc build examples/bounds_elision.vani -o /tmp/bounds_elision && /tmp/bounds_elision   # native binary
+
 intent "SMT-discharged bounds checks — runtime guard elided when provable";
 
 // Case 1: caller proves the requires via the caller's own facts.

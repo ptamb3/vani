@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/verified.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/verified.vani --backend=c              # C backend, gcc
+//   intentc build examples/verified.vani -o /tmp/verified && /tmp/verified   # native binary
+
 intent "Use the SMT verifier to discharge preconditions";
 
 fn clamp_low(x: i64, lo: i64) -> i64

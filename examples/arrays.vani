@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/arrays.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/arrays.vani --backend=c              # C backend, gcc
+//   intentc build examples/arrays.vani -o /tmp/arrays && /tmp/arrays   # native binary
+
 intent "Exercise fixed-size stack arrays with affine ownership";
 
 fn sum_four(xs: [i64; 4]) -> i64 {

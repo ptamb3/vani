@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/unit_return.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/unit_return.vani --backend=c              # C backend, gcc
+//   intentc build examples/unit_return.vani -o /tmp/unit_return && /tmp/unit_return   # native binary
+
 intent "Unit-return functions: `fn name() { … }` without `-> Type`";
 
 // Functions that exist only for their side effects (printing,

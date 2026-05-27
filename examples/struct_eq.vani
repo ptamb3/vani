@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/struct_eq.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/struct_eq.vani --backend=c              # C backend, gcc
+//   intentc build examples/struct_eq.vani -o /tmp/struct_eq && /tmp/struct_eq   # native binary
+
 intent "User-defined `==` via `implement Eq for T`";
 
 // Aggregate types (struct / tuple / enum) have no built-in

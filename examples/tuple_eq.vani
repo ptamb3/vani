@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/tuple_eq.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/tuple_eq.vani --backend=c              # C backend, gcc
+//   intentc build examples/tuple_eq.vani -o /tmp/tuple_eq && /tmp/tuple_eq   # native binary
+
 intent "Tuple auto-equality — compiler-derived field-by-field `==`";
 
 // Tuples are anonymous, so there's no user `implement Eq for

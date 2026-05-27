@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/struct_atomic_field.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/struct_atomic_field.vani --backend=c              # C backend, gcc
+//   intentc build examples/struct_atomic_field.vani -o /tmp/struct_atomic_field && /tmp/struct_atomic_field   # native binary
+
 intent "Field-borrow expressions — `ref t.f` / `mut ref t.f`";
 
 // `ref t.f` and `mut ref t.f` take a borrow of a struct field.

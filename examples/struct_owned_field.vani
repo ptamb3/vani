@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/struct_owned_field.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/struct_owned_field.vani --backend=c              # C backend, gcc
+//   intentc build examples/struct_owned_field.vani -o /tmp/struct_owned_field && /tmp/struct_owned_field   # native binary
+
 intent "T1.2 phase 2b: struct fields can hold OwnedStr (RAII free at scope exit)";
 
 // Structs in v1 originally restricted every field to a Copy

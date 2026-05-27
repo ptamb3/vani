@@ -1,3 +1,8 @@
+// build & run:
+//   intentc run examples/control_flow.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/control_flow.vani --backend=c              # C backend, gcc
+//   intentc build examples/control_flow.vani -o /tmp/control_flow && /tmp/control_flow   # native binary
+
 intent "Demonstrate if/else and while loops with Vec mutation";
 
 fn sum(xs: ref Vec<i64>) -> i64 {
