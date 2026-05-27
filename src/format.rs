@@ -736,6 +736,9 @@ fn format_impl_decl(im: &crate::ast::ImplDecl, ctx: &mut FmtCtx, out: &mut Strin
 }
 
 fn format_function(f: &Function, ctx: &mut FmtCtx, out: &mut String) {
+    if f.is_extern {
+        out.push_str("extern \"C\" ");
+    }
     if f.is_pure {
         out.push_str("pure ");
     }
@@ -761,6 +764,10 @@ fn format_function(f: &Function, ctx: &mut FmtCtx, out: &mut String) {
     out.push(')');
     out.push_str(" -> ");
     out.push_str(&type_to_source(&f.return_type));
+    if f.is_extern {
+        out.push_str(";\n\n");
+        return;
+    }
     if !f.where_clauses.is_empty() {
         out.push_str(" where ");
         for (i, w) in f.where_clauses.iter().enumerate() {

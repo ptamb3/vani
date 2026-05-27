@@ -538,6 +538,17 @@ pub struct Function {
     /// for` body must target a pure function — the absence of
     /// shared mutable state then proves data-race freedom.
     pub is_pure: bool,
+    /// Closure #269: FFI marker. Set when the parser saw
+    /// `extern "C" fn name(...) -> R;` — a body-less
+    /// declaration of an externally-linked C-ABI symbol.
+    /// The checker registers the signature and skips body
+    /// validation entirely. The codegen emits `declare RET
+    /// @<name>` (no `fn_` prefix) so the bare C symbol is
+    /// linked. The body Vec is always empty when is_extern
+    /// is true. Effects analysis treats extern fns as
+    /// impure-by-default (rejected from `pure fn` and
+    /// `parallel for` bodies).
+    pub is_extern: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

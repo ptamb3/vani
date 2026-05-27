@@ -56,6 +56,12 @@ pub struct TypedFunction {
     /// (e.g., CSE across calls). Callers in a pure context or a
     /// `parallel for` body may only invoke pure functions.
     pub is_pure: bool,
+    /// Closure #269: FFI marker (default false; only true for
+    /// `extern "C" fn name(...) -> R;` declarations). Body is
+    /// empty by construction. Backends emit `declare` (LLVM) /
+    /// `extern` prototype (C) instead of a definition, using
+    /// the bare C-ABI name (no `fn_` prefix).
+    pub is_extern: bool,
     /// Source-byte range covering the entire `fn` declaration
     /// (`fn` keyword through the closing `}`). Carried forward
     /// from the AST so LSP features can pin "which function

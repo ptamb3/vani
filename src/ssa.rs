@@ -445,6 +445,13 @@ pub struct Function {
     pub return_type: Type,
     pub entry: BlockId,
     pub blocks: Vec<BasicBlock>,
+    /// Closure #269: `extern "C"` FFI declarations carry only
+    /// a signature, no body. The SSA-LLVM backend emits
+    /// `declare RET @<name>(PARAMS)` (no `fn_` prefix) for
+    /// these; the parent fn's Call to the same name routes
+    /// through the same registry to skip the `fn_` prefix on
+    /// the call site.
+    pub is_extern: bool,
 }
 
 impl fmt::Display for Function {
@@ -518,6 +525,31 @@ pub fn lower_program(program: &TypedProgram) -> (Module, Vec<LowerError>) {
 }
 
 pub fn lower_function(f: &TypedFunction) -> Result<Function, LowerError> {
+    // Closure #269: `extern "C"` declarations have no body
+    // — just a signature. Produce a stub SSA Function that
+    // carries the signature + `is_extern = true`; the
+    // SSA-LLVM backend emits a bare `declare` instead of a
+    // `define`. No blocks needed since nothing executes.
+    if f.is_extern {
+        let mut b = FunctionBuilder::new(f.name.clone(), f.return_type.clone());
+        let entry = b.new_block();
+        let mut param_records = Vec::new();
+        for param in &f.params {
+            let v = b.fresh_value();
+            b.add_block_param(entry, v, param.ty.clone());
+            param_records.push((param.name.clone(), param.ty.clone(), v));
+        }
+        b.params = param_records;
+        b.entry = entry;
+        // Terminate the (otherwise-empty) entry block so the
+        // builder's `build()` doesn't choke. The block is
+        // never emitted — `is_extern` short-circuits the
+        // backend's emit_function.
+        b.terminate(Terminator::Unreachable);
+        let mut built = b.build();
+        built.is_extern = true;
+        return Ok(built);
+    }
     let mut b = FunctionBuilder::new(f.name.clone(), f.return_type.clone());
 
     let entry = b.new_block();
@@ -2479,6 +2511,7 @@ impl FunctionBuilder {
             return_type: self.return_type,
             entry: self.entry,
             blocks: self.blocks,
+            is_extern: false,
         }
     }
 }

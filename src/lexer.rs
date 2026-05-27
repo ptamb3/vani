@@ -17,6 +17,13 @@ pub enum TokenKind {
     /// `pure` function modifier: keyword that precedes `fn`.
     /// Marks the function as side-effect-free.
     Pure,
+    /// `extern "C" fn name(params) -> R;` — FFI declaration
+    /// (closure #269). The body is supplied by an externally-
+    /// linked object file; the checker registers the signature
+    /// only and never validates a body. Calls to the fn emit
+    /// the bare C-ABI symbol (no `fn_` prefix) so external
+    /// linkers find it.
+    Extern,
     /// `parallel` loop modifier: keyword that precedes `for`.
     /// Marks the iteration as independently parallelizable
     /// (verified by the effects checker).
@@ -416,6 +423,7 @@ fn is_structure_keyword_kind(kind: &TokenKind) -> bool {
         kind,
         TokenKind::Fn
             | TokenKind::Pure
+            | TokenKind::Extern
             | TokenKind::Parallel
             | TokenKind::Reduce
             | TokenKind::With
@@ -963,6 +971,7 @@ impl<'a> Lexer<'a> {
         let kind = match text {
             "fn" => TokenKind::Fn,
             "pure" => TokenKind::Pure,
+            "extern" => TokenKind::Extern,
             "parallel" => TokenKind::Parallel,
             "reduce" => TokenKind::Reduce,
             "with" => TokenKind::With,

@@ -197,6 +197,14 @@ thread_local! {
     /// table. Consulted by the `TypedStmt::Drop` handler to
     /// auto-call the user's `drop(self)` method at scope exit
     /// when the type has no owning fields. T2.7 phase 2.
+    /// Closure #269: set of `extern "C"` fn names. Populated at
+    /// the start of `emit_llvm` from any `is_extern` function in
+    /// the program. Consulted by the Call emitter to choose
+    /// `@<name>` (bare C-ABI symbol) over `@fn_<name>` (vāṇी's
+    /// prefixed convention).
+    pub(crate) static LLVM_EXTERN_FN_REGISTRY:
+        std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
     pub(crate) static LLVM_USER_DROP_REGISTRY:
         std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
@@ -253,6 +261,17 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         for f in &program.functions {
             if let Some(type_name) = f.name.strip_suffix("_drop") {
                 reg.insert(type_name.to_string());
+            }
+        }
+    });
+    // Closure #269: populate the extern-fn registry. The Call
+    // emitter consults this to pick `@<name>` over `@fn_<name>`.
+    LLVM_EXTERN_FN_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        reg.clear();
+        for f in &program.functions {
+            if f.is_extern {
+                reg.insert(f.name.clone());
             }
         }
     });
@@ -574,6 +593,20 @@ fn emit_function(
     out: &mut String,
 ) {
     let ret_ty = llvm_type_string(&function.return_type);
+    // Closure #269: `extern "C" fn name(...) -> R;` emits a
+    // `declare` line with the bare C-ABI name (no `fn_` prefix).
+    // The body is empty; the linker provides the symbol.
+    if function.is_extern {
+        out.push_str(&format!("declare {} @{}(", ret_ty, function.name));
+        for (i, param) in function.params.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&llvm_type_string(&param.ty));
+        }
+        out.push_str(")\n");
+        return;
+    }
     out.push_str(&format!("define {} @fn_{}(", ret_ty, function.name));
     for (i, param) in function.params.iter().enumerate() {
         if i > 0 {
@@ -3769,11 +3802,22 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 .map(|a| format!("{} {}", llvm_type_string(&a.ty), emit_expr(a, ctx, out)))
                 .collect();
             let dest = ctx.fresh_tmp();
+            // Closure #269: extern "C" fns linked from outside
+            // emit as `@<name>` (bare C symbol); regular vāṇी
+            // fns keep the `@fn_<name>` prefix that the rest of
+            // the codegen expects.
+            let is_extern = LLVM_EXTERN_FN_REGISTRY
+                .with(|r| r.borrow().contains(name.as_str()));
+            let symbol = if is_extern {
+                format!("@{}", name)
+            } else {
+                format!("@fn_{}", name)
+            };
             out.push_str(&format!(
-                "  {} = call {} @fn_{}({})\n",
+                "  {} = call {} {}({})\n",
                 dest,
                 llvm_type_string(&expr.ty),
-                name,
+                symbol,
                 arg_strs.join(", ")
             ));
             dest

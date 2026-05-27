@@ -4238,6 +4238,34 @@ fn check_function(
             requires: Vec::new(),
             body: Vec::new(),
             is_pure: function.is_pure,
+            is_extern: false,
+            span: function.span,
+        };
+    }
+    // Closure #269: `extern "C" fn name(...) -> R;` is a body-
+    // less FFI declaration. The signature is registered (so
+    // calls type-check) and the body is empty by construction.
+    // No "must return" check fires. The codegen layer emits a
+    // `declare` (LLVM) or `extern` prototype (C) instead of a
+    // definition. Calls bypass the `fn_` prefix to match the
+    // bare C-ABI symbol the linker provides.
+    if function.is_extern {
+        let mut typed_params: Vec<crate::ir::TypedParam> = Vec::new();
+        for p in &function.params {
+            typed_params.push(crate::ir::TypedParam {
+                name: p.name.clone(),
+                ty: p.ty.clone(),
+                name_span: p.name_span,
+            });
+        }
+        return TypedFunction {
+            name: function.name.clone(),
+            params: typed_params,
+            return_type: function.return_type.clone(),
+            requires: Vec::new(),
+            body: Vec::new(),
+            is_pure: false,
+            is_extern: true,
             span: function.span,
         };
     }
@@ -4449,6 +4477,7 @@ fn check_function(
         requires,
         body,
         is_pure: function.is_pure,
+        is_extern: false,
         span: function.span,
     }
 }

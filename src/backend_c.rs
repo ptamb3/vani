@@ -46,6 +46,13 @@ thread_local! {
     /// Monotonic counter assigning outline IDs. Reset at the
     /// start of every `emit_c` call.
     static TASK_OUTLINE_COUNTER: std::cell::Cell<u32> = std::cell::Cell::new(0);
+    /// Closure #269: set of `extern "C"` fn names. Populated at
+    /// the start of `emit_c` from any `is_extern` function in
+    /// the program. Consulted by the Call emitter to choose the
+    /// bare C-ABI name (no `fn_` prefix).
+    pub(crate) static C_EXTERN_FN_REGISTRY:
+        std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
     /// Per-program registry of enum payload types. Populated
     /// at the start of `emit_c` from `program.enums`. Maps
     /// each enum name → `Some(payload_ty)` if any variant has
@@ -104,6 +111,18 @@ fn enum_common_payload_ty(decl: &crate::ir::TypedEnumDecl) -> Option<Type> {
 pub fn emit_c(program: &TypedProgram) -> String {
     TASK_OUTLINES.with(|b| b.borrow_mut().clear());
     TASK_OUTLINE_COUNTER.with(|c| c.set(0));
+    // Closure #269: populate the extern-fn registry from the
+    // program's extern declarations. The Call emitter consults
+    // this to skip the `fn_` prefix on calls to FFI symbols.
+    C_EXTERN_FN_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        reg.clear();
+        for f in &program.functions {
+            if f.is_extern {
+                reg.insert(f.name.clone());
+            }
+        }
+    });
     // Populate the enum payload registry from the program's
     // enum decls so `c_type_name(Type::Enum)` routes
     // payloaded enums to their tagged-union struct typedef.
@@ -1816,6 +1835,16 @@ pub(crate) fn c_element_deep_clone(slot: &str, ty: &Type) -> String {
 }
 
 fn emit_prototype(function: &TypedFunction, out: &mut String) {
+    if function.is_extern {
+        out.push_str("extern ");
+        out.push_str(&c_type_name(&function.return_type));
+        out.push(' ');
+        out.push_str(&function.name);
+        out.push('(');
+        emit_params(function, out);
+        out.push_str(");\n");
+        return;
+    }
     out.push_str("static ");
     out.push_str(&c_type_name(&function.return_type));
     out.push(' ');
@@ -1826,6 +1855,20 @@ fn emit_prototype(function: &TypedFunction, out: &mut String) {
 }
 
 fn emit_function(function: &TypedFunction, out: &mut String) {
+    // Closure #269: `extern "C" fn name(...) -> R;` emits a
+    // forward declaration of the bare C symbol (no `fn_`
+    // prefix, no `static` storage class) and returns. The
+    // linker provides the body.
+    if function.is_extern {
+        out.push_str("extern ");
+        out.push_str(&c_type_name(&function.return_type));
+        out.push(' ');
+        out.push_str(&function.name);
+        out.push('(');
+        emit_params(function, out);
+        out.push_str(");\n");
+        return;
+    }
     out.push_str("static ");
     out.push_str(&c_type_name(&function.return_type));
     out.push(' ');
@@ -4152,7 +4195,18 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         }
         _ => {
             let rendered_args = args.iter().map(emit_expr).collect::<Vec<_>>().join(", ");
-            format!("{}({})", function_name(name), rendered_args)
+            // Closure #269: extern "C" fns emit a bare C-ABI
+            // call (no `fn_` prefix). The C_EXTERN_FN_REGISTRY
+            // gets populated at backend entry from the
+            // program's extern fn list.
+            let is_extern = C_EXTERN_FN_REGISTRY
+                .with(|r| r.borrow().contains(name));
+            let symbol = if is_extern {
+                name.to_string()
+            } else {
+                function_name(name)
+            };
+            format!("{}({})", symbol, rendered_args)
         }
     }
 }

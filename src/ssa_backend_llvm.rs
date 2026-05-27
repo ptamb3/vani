@@ -77,6 +77,20 @@ pub fn emit(module: &Module) -> Result<String, EmitError> {
     STR_COUNTER.with(|c| c.set(0));
     DEFERRED_FUNCTIONS.with(|b| b.borrow_mut().clear());
     OUTLINE_COUNTER.with(|c| c.set(0));
+    // Closure #269: populate the extern-fn registry from the
+    // SSA module's `is_extern` flags. Both the SSA-LLVM and
+    // tree-LLVM call emitters consult the same registry to
+    // decide between `@<name>` (bare C symbol) and
+    // `@fn_<name>` (vāṇी's prefixed convention).
+    crate::backend_llvm::LLVM_EXTERN_FN_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        reg.clear();
+        for f in &module.functions {
+            if f.is_extern {
+                reg.insert(f.name.clone());
+            }
+        }
+    });
 
     // Walk the SSA module for `Type::Vec(T)` element types.
     // Each unique element gets one `%intent_vec_<elt>` struct
@@ -313,6 +327,25 @@ fn emit_function(
     fn_sigs: &BTreeMap<String, (Vec<Type>, Type)>,
     out: &mut String,
 ) -> Result<(), EmitError> {
+    // Closure #269: `extern "C"` FFI declarations — emit a
+    // `declare RET @<name>(PARAMS)` with bare C-ABI name and
+    // no body. The parent fn's Call to the same name skips
+    // the `fn_` prefix via the LLVM_EXTERN_FN_REGISTRY.
+    if f.is_extern {
+        out.push_str(&format!(
+            "declare {} @{}(",
+            llvm_type_string(&f.return_type)?,
+            f.name
+        ));
+        for (i, (_, ty, _)) in f.params.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&llvm_type_string(ty)?);
+        }
+        out.push_str(")\n");
+        return Ok(());
+    }
     out.push_str(&format!(
         "define {} @fn_{}(",
         llvm_type_string(&f.return_type)?,
@@ -3987,11 +4020,21 @@ fn emit_instr(
                 })
                 .collect();
             let arg_pairs = arg_pairs?;
+            // Closure #269: extern "C" fns lower to a bare
+            // C-ABI symbol (`@<name>`); regular vāṇी fns keep
+            // the `@fn_<name>` prefix.
+            let is_extern = crate::backend_llvm::LLVM_EXTERN_FN_REGISTRY
+                .with(|r| r.borrow().contains(name.as_str()));
+            let symbol = if is_extern {
+                format!("@{}", name)
+            } else {
+                format!("@fn_{}", name)
+            };
             out.push_str(&format!(
-                "  %v_{} = call {} @fn_{}({})\n",
+                "  %v_{} = call {} {}({})\n",
                 instr.result.0,
                 ret_ty,
-                name,
+                symbol,
                 arg_pairs.join(", ")
             ));
         }

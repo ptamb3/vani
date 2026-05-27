@@ -168,6 +168,18 @@ impl Parser {
                         self.sync_to_top_level();
                     }
                 }
+            } else if self.check(|kind| matches!(kind, TokenKind::Extern)) {
+                // Closure #269: top-level `extern "C" fn name(...) -> R;`
+                // FFI declaration. Parser handles it; the resulting
+                // Function has an empty body and `is_extern = true`
+                // for downstream effect / codegen routing.
+                match self.parse_extern_fn() {
+                    Ok(f) => functions.push(f),
+                    Err(e) => {
+                        self.errors.push(e);
+                        self.sync_to_top_level();
+                    }
+                }
             } else {
                 let err = self.error_here("expected 'use', 'intent', 'struct', or 'fn'");
                 self.errors.push(err);
@@ -1159,6 +1171,77 @@ impl Parser {
             body,
             span: fn_token.span.merge(close.span).merge(name_span),
             is_pure,
+            is_extern: false,
+        })
+    }
+
+    /// Closure #269: parse a body-less `extern "C" fn` declaration.
+    /// Surface form:
+    ///   `extern "C" fn name(p1: T1, p2: T2, …) -> R;`
+    /// The body is supplied by an externally-linked object file
+    /// (`.o` / `.a`); the checker registers only the signature.
+    /// v1 limits the ABI to `"C"`; other strings reject. Param
+    /// + return types are restricted to scalars / `Str` / `ref T`
+    /// — affine types (Vec, OwnedStr, etc.) crossing the FFI
+    /// boundary need explicit conversion helpers, not implicit.
+    fn parse_extern_fn(&mut self) -> Result<Function, Diagnostic> {
+        let start = self
+            .expect_keyword("'extern'", |k| matches!(k, TokenKind::Extern))?;
+        // Require an explicit ABI string — only "C" in v1.
+        let abi_tok = self.expect_string()?;
+        let TokenKind::Str(abi) = abi_tok.kind else {
+            unreachable!("expect_string only returns Str tokens")
+        };
+        if abi != "C" {
+            return Err(Diagnostic::new(
+                abi_tok.span,
+                format!(
+                    "only `extern \"C\"` is supported in v1; got `extern \"{}\"`",
+                    abi
+                ),
+            ));
+        }
+        self.expect_keyword("'fn' after `extern \"C\"`", |k| matches!(k, TokenKind::Fn))?;
+        let name_tok = self.expect_ident()?;
+        let name = ident_text(name_tok);
+        self.expect_keyword("'(' after extern fn name", |k| matches!(k, TokenKind::LParen))?;
+        let mut params: Vec<Param> = Vec::new();
+        if !self.check(|k| matches!(k, TokenKind::RParen)) {
+            loop {
+                let param_name_tok = self.expect_ident()?;
+                let param_name_span = param_name_tok.span;
+                let param_name = ident_text(param_name_tok);
+                self.expect_keyword("':' after extern param name", |k| matches!(k, TokenKind::Colon))?;
+                let ty = self.parse_type()?;
+                let param_span = param_name_span.merge(self.current().span);
+                params.push(Param {
+                    name: param_name,
+                    ty,
+                    name_span: param_name_span,
+                    span: param_span,
+                });
+                if self.match_token(|k| matches!(k, TokenKind::Comma)).is_none() {
+                    break;
+                }
+            }
+        }
+        self.expect_keyword("')' to close extern fn params", |k| matches!(k, TokenKind::RParen))?;
+        self.expect_keyword("'->' before extern fn return type", |k| matches!(k, TokenKind::Arrow))?;
+        let return_type = self.parse_type()?;
+        let semi = self
+            .expect_keyword("';' after extern fn signature", |k| matches!(k, TokenKind::Semicolon))?;
+        Ok(Function {
+            name,
+            type_params: Vec::new(),
+            where_clauses: Vec::new(),
+            params,
+            return_type,
+            requires: Vec::new(),
+            ensures: Vec::new(),
+            body: Vec::new(),
+            span: start.span.merge(semi.span),
+            is_pure: false,
+            is_extern: true,
         })
     }
 

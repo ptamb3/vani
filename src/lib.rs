@@ -120,7 +120,7 @@ pub fn compile_to_llvm(source: &str) -> Result<String, Vec<Diagnostic>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compile, compile_to_c};
+    use super::{compile, compile_to_c, compile_to_llvm};
     use crate::backend::Backend;
 
     #[test]
@@ -19590,6 +19590,74 @@ fn main() -> i64 {
                 || d.message.to_lowercase().contains("undefined")),
             "expected an unknown-variable diagnostic for `_`, got: {:?}",
             errs
+        );
+    }
+
+    // FFI v1 — `extern "C" fn` declarations bind a C-ABI symbol at
+    // link time. The parser must accept a body-less prototype, the
+    // checker must skip the "must return" rule, and codegen must
+    // emit a `declare`/`extern` prototype (no `fn_` prefix) and
+    // call by the bare C name.
+    #[test]
+    fn extern_c_fn_parses_and_checks_without_body() {
+        let source = r#"
+            extern "C" fn abs(x: i32) -> i32;
+
+            fn main() -> i64 {
+              let a: i32 = abs(-7 as i32);
+              return a as i64;
+            }
+        "#;
+        // Must compile cleanly through the checker.
+        compile(source).expect("extern fn without body should check");
+    }
+
+    #[test]
+    fn extern_c_fn_emits_bare_c_prototype_and_call() {
+        let source = r#"
+            extern "C" fn abs(x: i32) -> i32;
+
+            fn main() -> i64 {
+              let a: i32 = abs(-7 as i32);
+              return a as i64;
+            }
+        "#;
+        let c = compile_to_c(source).expect("compiles to C");
+        // Prototype: no `fn_` prefix, no `static`, marked extern.
+        assert!(
+            c.contains("extern") && c.contains("abs("),
+            "expected extern prototype for `abs`, got:\n{}",
+            c
+        );
+        // Call site uses the bare C name, not `fn_abs`.
+        assert!(
+            !c.contains("fn_abs("),
+            "extern call must not use `fn_` prefix, got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn extern_c_fn_emits_llvm_declare() {
+        let source = r#"
+            extern "C" fn abs(x: i32) -> i32;
+
+            fn main() -> i64 {
+              let a: i32 = abs(-7 as i32);
+              return a as i64;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("compiles to LLVM");
+        // Prototype is a `declare @abs(...)`, not `define @fn_abs`.
+        assert!(
+            ll.contains("declare ") && ll.contains("@abs("),
+            "expected `declare @abs`, got:\n{}",
+            ll
+        );
+        assert!(
+            !ll.contains("@fn_abs("),
+            "extern call must not use `@fn_` prefix, got:\n{}",
+            ll
         );
     }
 

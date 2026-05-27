@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-25
-**Test totals:** 917 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 57 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-27
+**Test totals:** 981 lib + 47 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -574,6 +574,53 @@ fn main() returns i64 {
    Test totals unchanged: 978 lib + 47 e2e + 11
    vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples.
    Closure #268.
+
+   **FFI v1 — `extern "C" fn` declarations done 2026-05-27**:
+   first-class foreign-function interface. Surface syntax
+   `extern "C" fn name(params) -> R;` declares a C-ABI symbol
+   that the linker resolves at build time. Touches every
+   layer:
+
+     • Lexer — new `Extern` token + structure-keyword
+       registration so error-recovery treats `extern` as a
+       top-level boundary.
+     • Parser — `parse_extern_fn` accepts the body-less
+       prototype, dispatches at the top level.
+     • AST / IR / SSA — `is_extern: bool` field on Function /
+       TypedFunction / SSA Function, defaulted false; carries
+       the marker through every pass.
+     • Checker — early-return on `is_extern`: registers the
+       signature, skips the "must return" rule (empty body
+       is correct for an FFI declaration).
+     • SSA lowering — emits a stub Function with `is_extern
+       = true` and an unreachable terminator; no body
+       lowering.
+     • Codegen — both backends emit a prototype, not a
+       definition: LLVM `declare RET @name(...)` (no `fn_`
+       prefix), C `extern RET name(...);` (no `static`).
+       Call sites consult per-backend thread-local
+       registries (`LLVM_EXTERN_FN_REGISTRY` /
+       `C_EXTERN_FN_REGISTRY`) populated at module entry,
+       and switch to the bare C-ABI name. Tree-C path's
+       prototype emitter also short-circuits so we don't
+       emit a `static fn_<name>(...)` ghost prototype.
+     • Both tree and SSA emit paths updated in lock-step for
+       both backends (4 paths total).
+
+   Effects model: extern fns are conservatively treated as
+   impure — the SMT engine can't reason across the FFI
+   boundary, so `prove`/`assume` involving an extern call
+   must rest on caller-side invariants.
+
+   New tests: 3 lib tests (`extern_c_fn_parses_and_checks_
+   without_body`, `extern_c_fn_emits_bare_c_prototype_and_
+   call`, `extern_c_fn_emits_llvm_declare`). New example
+   `examples/ffi.vani` (calls libm's `abs`) runs end-to-end
+   on LLVM-JIT, AOT LLVM, tree-C, and SSA-C — all four
+   paths emit `abs(-7) = 7`.
+
+   Test totals: 981 lib + 47 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #269.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

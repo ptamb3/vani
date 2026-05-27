@@ -1,0 +1,27 @@
+// build & run:
+//   intentc run examples/ffi.vani                          # LLVM backend, JIT via lli
+//   intentc run examples/ffi.vani --backend=c              # C backend, gcc
+//   intentc build examples/ffi.vani -o /tmp/ffi && /tmp/ffi   # native binary
+
+intent "FFI v1 — calling a C-ABI function from vāṇī";
+
+// `extern "C" fn name(params) -> R;` declares a function whose
+// implementation lives in another translation unit (the C
+// standard library, a Rust staticlib, a C++ object file, …).
+// vāṇī emits a forward declaration (LLVM `declare`, C `extern`)
+// against the bare C-ABI symbol and lets the linker bind it at
+// build time. The checker accepts a body-less prototype; the
+// codegen path skips the "must return" rule.
+//
+// Effects: extern fns are conservatively treated as impure —
+// the SMT engine cannot reason across the FFI boundary, so any
+// `prove`/`assume` involving an extern call must rest on
+// caller-side invariants.
+
+extern "C" fn abs(x: i32) -> i32;
+
+fn main() -> i64 {
+  let a: i32 = abs(-7 as i32);
+  write "abs(-7) =", a;
+  return 0;
+}

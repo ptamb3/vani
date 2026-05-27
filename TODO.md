@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-26, after closure #249 — implicit sibling-module references)
+## ⏳ Resume here (paused 2026-05-27, after closure #269 — FFI v1 `extern "C" fn`)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -556,7 +556,32 @@ The move-by-default story is **already shipping**; no semantic
 gap remains in v1. Small polish items below are quality-of-life
 improvements, not correctness fixes.
 
-### FFI — calling external code from vāṇी (queued, medium effort)
+### FFI v1 — `extern "C" fn` declarations (closed 2026-05-27, closure #269)
+
+✅ **DONE**: vāṇी can now call into C / C++ / Rust / libc / pthread / etc.
+Surface syntax `extern "C" fn name(params) -> R;` declares a C-ABI
+symbol. The checker accepts the body-less prototype, every codegen
+path (tree-LLVM, SSA-LLVM, tree-C, SSA-C) emits a forward
+declaration against the bare C-ABI name (no `fn_` prefix), and the
+linker binds at build time. Effects: extern fns are conservatively
+treated as impure — the SMT engine can't reason across the FFI
+boundary.
+
+Verified end-to-end via `examples/ffi.vani` (calls libm's `abs`).
+3 new lib tests pin parser + checker + emit behavior. See
+[STATUS.md](STATUS.md) closure #269 for the per-file change list.
+
+**Follow-ups (not blocking)**:
+- ABI nuances — structs by value, packed layout, varargs,
+  callbacks. Scope decisions per feature.
+- `pure extern` opt-in marker so parallel-for / pure-fn bodies
+  can call known-pure extern fns (today they reject all extern
+  calls conservatively).
+- `intentc build --link-with foo.o` / `-lfoo` flag threading.
+- Documenting the symbol-naming convention (vāṇī defines emit
+  `fn_<name>`; vāṇī externs call bare `<name>`).
+
+### FFI history — original plan (closed by #269)
 
 Today vāṇी **produces** `.o` files (via `intentc emit + llc -filetype=obj`)
 that external linkers (cc / clang++ / rustc) can consume. Function

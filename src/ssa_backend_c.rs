@@ -50,6 +50,15 @@ thread_local! {
 pub fn emit(module: &Module) -> Result<String, EmitError> {
     TASK_OUTLINES.with(|b| b.borrow_mut().clear());
     TASK_OUTLINE_COUNTER.with(|c| c.set(0));
+    crate::backend_c::C_EXTERN_FN_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        reg.clear();
+        for f in &module.functions {
+            if f.is_extern {
+                reg.insert(f.name.clone());
+            }
+        }
+    });
     let mut out = String::new();
     preamble(&mut out);
     // `intent_task_handle` carries the pthread/Win32 thread
@@ -235,7 +244,14 @@ fn preamble(out: &mut String) {
 
 fn emit_function_prototype(f: &Function, out: &mut String) -> Result<(), EmitError> {
     let ret_c = c_type(&f.return_type)?;
-    write!(out, "{} fn_{}(", ret_c, f.name).unwrap();
+    // Closure #269: `extern "C"` declarations emit an `extern`
+    // prototype with the bare C symbol (no `fn_` prefix). The
+    // body emit also skips for extern (see `emit_function`).
+    if f.is_extern {
+        write!(out, "extern {} {}(", ret_c, f.name).unwrap();
+    } else {
+        write!(out, "{} fn_{}(", ret_c, f.name).unwrap();
+    }
     // Closure #202: empty-param prototypes must say `(void)`,
     // not `()`. Empty parens mean "unspecified prototype" in
     // C (not "no args"), tripping `-Wstrict-prototypes` and
@@ -256,6 +272,11 @@ fn emit_function_prototype(f: &Function, out: &mut String) -> Result<(), EmitErr
 }
 
 fn emit_function(f: &Function, out: &mut String) -> Result<(), EmitError> {
+    // Closure #269: extern fns are forward-declared via
+    // `emit_function_prototype`; no body to emit.
+    if f.is_extern {
+        return Ok(());
+    }
     let ret_c = c_type(&f.return_type)?;
     write!(out, "{} fn_{}(", ret_c, f.name).unwrap();
     // Closure #202: see `emit_function_prototype` for why
@@ -2084,11 +2105,20 @@ fn emit_instr(
                 writeln!(out, "  v_{} = {};", instr.result.0, cloned).unwrap();
                 return Ok(());
             }
+            // Closure #269: extern "C" fns call with the bare
+            // C-ABI name (no `fn_` prefix).
+            let is_extern = crate::backend_c::C_EXTERN_FN_REGISTRY
+                .with(|r| r.borrow().contains(name.as_str()));
+            let symbol = if is_extern {
+                name.clone()
+            } else {
+                format!("fn_{}", name)
+            };
             writeln!(
                 out,
-                "  v_{} = fn_{}({});",
+                "  v_{} = {}({});",
                 instr.result.0,
-                name,
+                symbol,
                 arg_strs.join(", ")
             )
             .unwrap();
