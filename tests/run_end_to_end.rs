@@ -186,6 +186,122 @@ fn main() -> i64 {
     );
 }
 
+// Closure #280: vani.toml manifest auto-discovery. When
+// `intentc build|run|check` is invoked without a positional
+// source file, the driver walks up from cwd to find a
+// `vani.toml`, parses `[package].entry`, and uses that as
+// the entry point. Tests the parent-walk + flag-interleaving
+// behavior end-to-end.
+#[test]
+fn manifest_discovery_resolves_entry_from_subdir() {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let binary = env!("CARGO_BIN_EXE_intentc");
+    let dir: PathBuf = std::env::temp_dir().join(format!(
+        "intentc-manifest-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let src_dir = dir.join("src");
+    let sub_dir = dir.join("nested/deep");
+    fs::create_dir_all(&src_dir).expect("mkdir src");
+    fs::create_dir_all(&sub_dir).expect("mkdir nested/deep");
+
+    fs::write(
+        dir.join("vani.toml"),
+        "[package]\nname = \"manifest_test\"\nentry = \"src/main.vani\"\n",
+    )
+    .expect("write manifest");
+    fs::write(
+        src_dir.join("main.vani"),
+        "fn main() -> i64 { write \"from manifest\"; return 42; }\n",
+    )
+    .expect("write entry");
+
+    // Invoke `intentc run` from the deep subdir with no
+    // positional arg. The driver must walk up to find the
+    // manifest and use its entry.
+    let output = std::process::Command::new(binary)
+        .args(["run"])
+        .current_dir(&sub_dir)
+        .output()
+        .expect("intentc run executes");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let status = output.status;
+
+    let _ = fs::remove_dir_all(&dir);
+
+    assert!(
+        status.success() || status.code() == Some(42),
+        "intentc run via manifest failed: {} (stdout: {}, stderr: {})",
+        status,
+        stdout,
+        stderr,
+    );
+    assert!(
+        stdout.contains("from manifest"),
+        "expected `from manifest` in stdout, got: {stdout}"
+    );
+}
+
+#[test]
+fn manifest_build_with_o_flag_finds_entry() {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let binary = env!("CARGO_BIN_EXE_intentc");
+    let dir: PathBuf = std::env::temp_dir().join(format!(
+        "intentc-manifest-build-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let src_dir = dir.join("src");
+    fs::create_dir_all(&src_dir).expect("mkdir src");
+    fs::write(
+        dir.join("vani.toml"),
+        "[package]\nname = \"build_test\"\nentry = \"src/main.vani\"\n",
+    )
+    .expect("write manifest");
+    fs::write(
+        src_dir.join("main.vani"),
+        "fn main() -> i64 { return 17; }\n",
+    )
+    .expect("write entry");
+
+    let bin_path = dir.join("out_binary");
+    let build = std::process::Command::new(binary)
+        .args(["build", "-o", bin_path.to_str().unwrap()])
+        .current_dir(&dir)
+        .output()
+        .expect("intentc build executes");
+
+    if !build.status.success() {
+        let _ = fs::remove_dir_all(&dir);
+        panic!(
+            "intentc build via manifest + -o failed:\nstderr: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+    }
+
+    let run = std::process::Command::new(&bin_path)
+        .output()
+        .expect("binary runs");
+    let exit = run.status.code().unwrap_or(-1);
+
+    let _ = fs::remove_dir_all(&dir);
+
+    assert_eq!(exit, 17, "expected exit 17 from manifest-built binary");
+}
+
 // FFI v4 follow-up: `intentc run --backend=c --link-with foo.c`
 // threads the same linker flags as `build` so rapid iteration
 // can call user-provided extern bodies without a separate

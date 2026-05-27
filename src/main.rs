@@ -472,6 +472,17 @@ COMMANDS:
                                           and z3 response is dumped to
                                           stderr (also via INTENTC_SMT_DEBUG=1).
 
+MANIFEST (vani.toml):
+    For run / build / check / emit / ir / ast / tokens, if
+    no source file is given on the command line, the driver
+    walks up from the current directory looking for a
+    `vani.toml` manifest. When found, its `[package].entry`
+    key supplies the source file. Minimal format:
+
+        [package]
+        name = "my_project"
+        entry = "src/main.vani"
+
 GLOBAL OPTIONS:
     -h, --help        Show this message
     -V, --version     Show version
@@ -650,8 +661,8 @@ fn run() -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         "run" => {
-            let file = required_file(&args, 2, "run")?;
-            let (backend_kind, link_args) = parse_run_args(&args, 3)?;
+            let (file, flag_start) = required_file_at(&args, 2, "run")?;
+            let (backend_kind, link_args) = parse_run_args(&args, flag_start)?;
             match backend_kind {
                 BackendKind::C => run_program(&file, &link_args),
                 BackendKind::Llvm => {
@@ -669,8 +680,8 @@ fn run() -> Result<ExitCode, String> {
             }
         }
         "build" => {
-            let file = required_file(&args, 2, "build")?;
-            let (out, link_args) = parse_build_args(&args, 3)?;
+            let (file, flag_start) = required_file_at(&args, 2, "build")?;
+            let (out, link_args) = parse_build_args(&args, flag_start)?;
             build_program_llvm(&file, out.as_deref(), &link_args)
         }
         "tokens" => {
@@ -954,9 +965,56 @@ fn run() -> Result<ExitCode, String> {
 }
 
 fn required_file(args: &[String], index: usize, command: &str) -> Result<PathBuf, String> {
-    args.get(index)
-        .map(PathBuf::from)
-        .ok_or_else(|| format!("'{}' requires a source file argument\n\n{}", command, HELP))
+    let (file, _next_idx) = required_file_at(args, index, command)?;
+    Ok(file)
+}
+
+/// Like `required_file` but also returns the next arg index
+/// to scan from. When a positional file is present at `index`
+/// the next index is `index + 1`; when the file comes from
+/// `vani.toml` (no positional consumed) the next index is
+/// `index` itself so flag parsing sees every remaining arg.
+/// Closure #280.
+fn required_file_at(
+    args: &[String],
+    index: usize,
+    command: &str,
+) -> Result<(PathBuf, usize), String> {
+    // Look for the first positional (non-flag) arg, skipping
+    // flag pairs `-o PATH` / `--out PATH` / `--link-with PATH`
+    // / `--backend=...` etc. Without this, `intentc build -o
+    // out` with an implicit manifest entry would mis-read
+    // `out` as the source path.
+    let mut idx = index;
+    while let Some(arg) = args.get(idx) {
+        if arg == "-o" || arg == "--out" || arg == "--link-with" {
+            idx += 2;
+            continue;
+        }
+        if arg.starts_with('-') {
+            idx += 1;
+            continue;
+        }
+        // Found the positional file at `idx`. The caller
+        // should start flag parsing from `idx + 1` (the arg
+        // just after).
+        return Ok((PathBuf::from(arg), idx + 1));
+    }
+    // No positional — try manifest discovery. The caller
+    // should start flag parsing from `index` (no arg
+    // consumed for the source).
+    let cwd = std::env::current_dir()
+        .map_err(|e| format!("failed to read cwd: {}", e))?;
+    if let Some(manifest_path) = vani::manifest::find_manifest(&cwd) {
+        let manifest = vani::manifest::load_manifest(&manifest_path)
+            .map_err(|e| e.to_string())?;
+        return Ok((manifest.entry_path, index));
+    }
+    Err(format!(
+        "'{}' requires a source file argument (or a `vani.toml` \
+         manifest with [package].entry in cwd / a parent directory)\n\n{}",
+        command, HELP
+    ))
 }
 
 #[derive(Clone, Copy, Debug)]

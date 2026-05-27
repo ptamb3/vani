@@ -8,6 +8,7 @@ pub mod format;
 pub mod ir;
 pub mod lexer;
 pub mod lsp;
+pub mod manifest;
 pub mod parser;
 pub mod smt;
 pub mod span;

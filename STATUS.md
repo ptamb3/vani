@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 998 lib + 50 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1005 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -949,6 +949,52 @@ fn main() returns i64 {
 
    Test totals: 998 lib + 50 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #279.
+
+   **vani.toml manifest + auto-discovery done 2026-05-27**:
+   foundational for multi-file projects and the future Kosh
+   package manager. `intentc build|run|check|emit|ir|ast|
+   tokens` invoked without a positional source file now walks
+   up from cwd looking for a `vani.toml`. When found, its
+   `[package].entry` key supplies the entry source.
+
+   Minimal v1 manifest format:
+
+       [package]
+       name = "my_project"
+       entry = "src/main.vani"
+
+   New `src/manifest.rs` module: hand-rolled minimal TOML
+   parser (no new dependency), `find_manifest(start)`
+   parent-walk, `load_manifest(path) -> Manifest { name,
+   entry_path, root_dir }`. 7 inline lib tests pin the
+   parser shapes: minimal, comments+blanks, unknown section
+   rejected, non-string value rejected, kv-outside-section
+   rejected, missing-entry diagnostic, parent-walk
+   discovery.
+
+   Driver changes: new `required_file_at(args, idx, cmd) ->
+   (PathBuf, next_idx)` that returns both the resolved
+   source path AND the next index to scan from. When the
+   positional file is present, returns `idx + 1`; when it
+   came from manifest (no arg consumed), returns `idx` so
+   flag parsing sees every remaining arg. Skips flag pairs
+   (`-o PATH` / `--out PATH` / `--link-with PATH`) and
+   standalone flags when looking for the positional.
+   `run` / `build` dispatchers updated to use it.
+
+   Future v2 additions queued (not in this closure):
+   `[deps]` table for Kosh-registry packages, optional
+   `[build]` knobs for backend default / opt level /
+   `--link-with` defaults.
+
+   2 new e2e tests
+   (`manifest_discovery_resolves_entry_from_subdir`,
+   `manifest_build_with_o_flag_finds_entry`) pin the
+   end-to-end shape including parent-walk + flag
+   interleaving.
+
+   Test totals: 1005 lib + 52 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #280.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

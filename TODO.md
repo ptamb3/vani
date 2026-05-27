@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #279 — FFI callbacks)
+## ⏳ Resume here (paused 2026-05-27, after closure #280 — vani.toml manifest)
 
 **Remaining queue items are all L-tier multi-session arcs.** All
 require introducing significant new compiler machinery:
@@ -149,11 +149,16 @@ value.
    [src/parser.rs](src/parser.rs), [src/checker.rs](src/checker.rs),
    both backends.
 
-9. **#14 Multi-file pipeline + `vani.toml` manifest (L)** —
-   foundational for Kosh package manager. Beyond `use "path"`,
-   add include-path resolution, diamond-import dedup, entry-
-   point manifest. Files: [src/main.rs](src/main.rs),
-   [src/lib.rs](src/lib.rs), new `src/manifest.rs`.
+9. ✅ **#14 vani.toml manifest v1** — shipped 2026-05-27
+   (closure #280). Hand-rolled minimal TOML parser
+   (`src/manifest.rs`), `find_manifest` parent-walk,
+   auto-discovery in `intentc build|run|check`.
+   `[package].entry` supplies the source file when no
+   positional arg is given. 7 inline lib tests + 2 e2e
+   integration tests. v2 follow-ups queued: `[deps]` table
+   for Kosh-registry packages, `[build]` knobs (backend
+   default, opt level, `--link-with` defaults), diamond-
+   import dedup beyond the existing `use "path"` machinery.
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
