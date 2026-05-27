@@ -629,6 +629,56 @@ language semantics, all are pure analyses):
 These all line up behind the SSA-LLVM multi-block work + the
 kosh package-manager arc on the canonical queue.
 
+#264 SSA-LLVM multi-block parallel-for body emit (Phi-traceback).
+the larger work item that #252 left as deferred. The
+SSA-LLVM `emit_parallel_for_region_llvm` previously
+early-exited with "multi-block" → tree-LLVM fallback;
+now it lowers the body region directly to atomicrmw.
+
+Three pieces landed together:
+
+  - **Capture + body-defined** extended to walk every
+    block in `region.region_blocks` (not just
+    `body_block`), including block-params. Without this,
+    intermediate-block locals were misclassified as
+    captures.
+  - **Phi-traceback reduction-update detection**: when
+    `update_v` isn't a direct instruction in any region
+    block, it's a Phi result on the merge block's params.
+    The analysis walks predecessors (restricted to
+    region_blocks), reads each Jump/Branch arg at the
+    relevant param-index, and records the in-branch
+    Binary/Call matching the reduction shape as the
+    update site. v1 requires all sites for a reduction
+    to share the same increment operand; divergent shapes
+    surface a clear EmitError → fallback.
+  - **Multi-block outlined emit**: each region block
+    becomes a labeled LLVM block `body_bb<N>:` with Phi
+    nodes for params (predecessors restricted to
+    region_blocks). Reduction-update instructions are
+    intercepted at their actual production site (which
+    may be in a conditional branch) and replaced with
+    atomicrmw. The merge block's Jump-to-step terminator
+    becomes `br label %body_end`. The Phi result at
+    merge for the reduction's merged value is skipped
+    (atomicrmw owns that value; the back-edge is
+    replaced).
+
+Parent walk's `skip_blocks` extends to include all region
+blocks so the parent fn doesn't emit orphan labels
+referencing the now-absorbed in-region blocks.
+
+Closure #252's "falls back to tree-LLVM" test is
+inverted — the new test
+`ssa_llvm_multi_block_parallel_for_lowers_to_atomicrmw`
+asserts the outlined fn contains BOTH `body_bb<N>:`
+labels AND `atomicrmw add i64*`. The original example
+program (`parallel for { if i > 4 { total = total + i }`
+} ; total → 35) runs identically on both backends.
+
+Test totals: 968 lib + 47 e2e + 11 vtables-phase3 + 2
+user-drop-by-ref + 1 ssa-examples — all green.
+
 #263 SSA-LLVM identity-cast — `bitcast` for pointer types.
 `emit_cast` in `src/ssa_backend_llvm.rs` previously emitted
 `add T 0, x` for any case where `from_llvm == to_llvm`

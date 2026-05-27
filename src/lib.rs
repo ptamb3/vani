@@ -15688,17 +15688,26 @@ fn main() -> i64 {
     }
 
     #[test]
-    fn ssa_llvm_multi_block_parallel_for_falls_back_to_tree_llvm() {
-        // Closure #252: SSA-LLVM's outlined-fn emit only handles
-        // single-block parallel-for bodies — atomicrmw needs the
-        // `+`/`*`/etc. update to live at a single static location.
-        // For multi-block bodies (e.g. `if cond { acc = acc + i; }`)
-        // the update lives inside a conditional branch and the
-        // back-edge arg is a Phi-equivalent block param, not the
-        // arithmetic op itself. The SSA-LLVM emit surfaces an
-        // EmitError; `emit_llvm_via_ssa` in main.rs falls back to
-        // tree-LLVM (which uses GOMP's reduction combine and
-        // handles multi-block fine).
+    fn ssa_llvm_multi_block_parallel_for_lowers_to_atomicrmw() {
+        // Closure #264: SSA-LLVM's outlined-fn emit now handles
+        // multi-block parallel-for bodies directly via Phi-
+        // traceback. For the `if cond { acc = acc + i; }` shape:
+        // 1. The recognizer (#241) accepts the multi-block region.
+        // 2. The analysis walks region_blocks looking for the
+        //    actual reduction-update instruction. When the
+        //    back-edge arg is a merge-block param (not an
+        //    instruction), it traces predecessors to find the
+        //    Binary in the conditional branch.
+        // 3. The outlined fn emits each region block as a
+        //    labeled LLVM block with Phi nodes for params;
+        //    the update Binary is replaced with atomicrmw at
+        //    its production site. The merge block's Jump-to-
+        //    step terminator becomes `br body_end`.
+        //
+        // Pre-#264 this test asserted the OPPOSITE (that the
+        // SSA-LLVM emit returned an EmitError and tree-LLVM
+        // took over via fallback). The flip is the entire point
+        // of the closure.
         let source = r#"
             fn main() -> i64 {
               let total: i64 = 0;
@@ -15715,30 +15724,22 @@ fn main() -> i64 {
         let checked = compile(source).expect("multi-block parallel-for compiles");
         let (module, errs) = crate::ssa::lower_program(&checked.ir);
         assert!(errs.is_empty(), "SSA lowering errors: {:?}", errs);
-        // SSA-LLVM rejects multi-block at the emit step. The
-        // exact error message names the gate so a future SSA-LLVM
-        // multi-block emit can flip the bit cleanly.
-        let result = crate::ssa_backend_llvm::emit(&module);
-        match result {
-            Ok(_) => panic!(
-                "SSA-LLVM unexpectedly accepted multi-block body — \
-                 if a follow-up landed multi-block emit, update this test"
-            ),
-            Err(e) => {
-                assert!(
-                    e.message.contains("multi-block"),
-                    "expected multi-block fallback diagnostic, got: {}",
-                    e.message
-                );
-            }
-        }
-        // The wrapper `emit_llvm_via_ssa` falls back automatically;
-        // the tree-LLVM backend handles multi-block correctly.
-        let ll = crate::backend_llvm::LlvmBackend.emit(&checked.ir);
+        let ll = crate::ssa_backend_llvm::emit(&module)
+            .expect("SSA-LLVM emits multi-block directly (no fallback)");
+        // The outlined fn must contain BOTH:
+        //   - `body_bb<N>:` labels for the region blocks
+        //   - an `atomicrmw add i64*` for the reduction
         assert!(
-            ll.contains("@GOMP_parallel"),
-            "tree-LLVM falls back to GOMP runtime for multi-block:\n{}",
-            ll.lines().take(80).collect::<Vec<_>>().join("\n")
+            ll.contains("body_bb"),
+            "expected `body_bb<N>:` labels for multi-block region;\
+             got:\n{}",
+            ll.lines().take(120).collect::<Vec<_>>().join("\n")
+        );
+        assert!(
+            ll.contains("atomicrmw add i64*"),
+            "expected `atomicrmw add i64*` for the in-branch update;\
+             got:\n{}",
+            ll.lines().take(120).collect::<Vec<_>>().join("\n")
         );
     }
 

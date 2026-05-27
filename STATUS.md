@@ -537,6 +537,59 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **SSA-LLVM multi-block parallel-for body emit done 2026-05-26**:
+   the larger work item from the queue. SSA-LLVM now
+   lowers `parallel for { if cond { acc = acc + i; } }`
+   directly to atomicrmw in the outlined fn, without
+   falling back to tree-LLVM. Three pieces landed
+   together (closure #264):
+
+   1. **Capture + body-defined analysis** extended to
+      walk every block in `region.region_blocks` (not
+      just `body_block`), including block-params. Without
+      this, intermediate-block-local values would be
+      misclassified as captures.
+
+   2. **Phi-traceback reduction-update detection**: when
+      the `update_v` value isn't a direct instruction in
+      any region block, it's recognized as a Phi result
+      on a region block's params; the new analysis walks
+      predecessors of that Phi block (restricted to
+      region_blocks), reads each predecessor's Jump/Branch
+      arg at the relevant param-index, and if the
+      contribution is itself a Binary/Call matching the
+      reduction shape, records it as the update site. v1
+      requires all sites in a region to use the same
+      increment operand; divergent shapes surface a clear
+      EmitError → tree-LLVM fallback as before.
+
+   3. **Multi-block outlined-fn emit**: each region block
+      becomes a labeled LLVM block `body_bb<N>:` with Phi
+      nodes for params (predecessors restricted to
+      region_blocks). Reduction-update instructions are
+      intercepted at their actual production site (which
+      may be in a conditional branch) and replaced with
+      atomicrmw. The merge block's Jump-to-step
+      terminator becomes `br label %body_end`. The Phi
+      result at the merge block for the reduction's
+      merged value is skipped (atomicrmw owns that
+      value's effect — the Phi has no downstream user
+      because the back-edge is replaced).
+
+   Parent walk's `skip_blocks` extends to cover all
+   region blocks so the parent fn doesn't emit orphan
+   labels referencing the now-absorbed in-region
+   blocks. Closure #252's fallback gate is gone —
+   replaced by the new "ssa_llvm_multi_block_parallel_
+   for_lowers_to_atomicrmw" lib test that asserts the
+   outlined fn contains BOTH `body_bb<N>:` labels and
+   `atomicrmw add i64*`.
+
+   Test totals: 968 lib + 47 e2e + 11 vtables-phase3 +
+   2 user-drop-by-ref + 1 ssa-examples — all green
+   (the parity runner diffs both backends and they
+   agree). Closure #264.
+
    **SSA-LLVM identity-cast uses `bitcast` for pointers 2026-05-26**:
    `emit_cast` previously emitted `add T 0, x` for any
    case where `from_llvm == to_llvm` (the "identity op"

@@ -367,11 +367,20 @@ fn emit_function(
             // it's absorbed into the outlined fn's update
             // arithmetic, not emitted as a free-standing
             // LLVM basic block.
-            [
+            //
+            // Closure #264: also skip every block in the body
+            // region (then / else / merge for the if-cond
+            // shape). They're emitted INSIDE the outlined fn
+            // as `body_bb<id>` labels; leaving them in the
+            // parent walk produced orphan blocks whose `br`
+            // to `step` referenced an undefined label.
+            let mut blocks = vec![
                 r.shape.header_block,
                 r.shape.body_block,
                 r.shape.step_block,
-            ]
+            ];
+            blocks.extend(r.region_blocks.iter().copied());
+            blocks
         })
         .collect();
     let par_by_begin: std::collections::BTreeMap<BlockId, &ParallelRegion> =
@@ -1275,45 +1284,45 @@ fn emit_parallel_for_region_llvm(
             });
         }
     }
-    // Closure #252: SSA-LLVM only optimizes single-block
-    // parallel-for bodies today. Multi-block bodies (which the
-    // recognizer accepts via #241 since 2026-05-26) need
-    // Phi-traceback to find the actual `+`/`*`/etc. update
-    // operation inside the conditional branch — the back-edge
-    // arg is a block-param (`v_<merge>` Phi result), not the
-    // arithmetic instruction itself. SSA-C handles this via
-    // labels + gotos in #251, but SSA-LLVM's atomicrmw-based
-    // reduction strategy needs to identify where the update
-    // physically lives so it can replace it in place. That
-    // analysis is deferred — the tree-LLVM fallback (already
-    // wired via `emit_llvm_via_ssa` in main.rs) handles multi-
-    // block bodies correctly using GOMP's non-atomic reduction
-    // combine. Surfacing the gate as a clear EmitError keeps
-    // the fallback automatic and gives a precise reason in
-    // debug builds.
-    if region.region_blocks.len() != 1 {
-        return Err(EmitError {
-            message: format!(
-                "SSA-LLVM parallel-for: body has {} blocks (multi-block); \
-                 falling back to tree-LLVM. Single-block bodies (no internal \
-                 control flow) are the only shape SSA-LLVM lowers to \
-                 atomicrmw directly today.",
-                region.region_blocks.len()
-            ),
-        });
-    }
+    // Closure #264: multi-block parallel-for body support.
+    // Previously (#252) SSA-LLVM early-exited on multi-block
+    // regions and fell back to tree-LLVM. Now the analysis +
+    // emit walks every block in `region.region_blocks` and
+    // uses Phi-traceback to locate the actual reduction-
+    // update instruction (which for multi-block bodies lives
+    // inside a conditional branch rather than as a direct
+    // back-edge arg). The atomicrmw fires at that location;
+    // the merge block's terminator (Jump-to-step) is replaced
+    // with `br body_end`. Shapes the new analysis can't make
+    // sense of still surface a clear EmitError → automatic
+    // tree-LLVM fallback.
+    let _multi_block = region.region_blocks.len() > 1;
 
-    // Capture analysis: collect every body-instruction
-    // operand that's NOT the counter, NOT a Const, NOT a
-    // value defined IN the body block, AND not a reduction
-    // carry (reductions are marshalled through atomicrmw
-    // against parent-side allocas, not as captures).
-    let body = &f.blocks[region.shape.body_block.0 as usize];
+    // Capture analysis: collect every operand referenced from
+    // anywhere in the body region that's NOT defined locally
+    // (by an instruction or block param within the region),
+    // not the counter, not a Const, and not a reduction carry.
+    // Reductions are marshalled through atomicrmw against
+    // parent-side allocas, not as captures.
+    let _body = &f.blocks[region.shape.body_block.0 as usize];
     let mut body_defined: std::collections::BTreeSet<ValueId> =
         std::collections::BTreeSet::new();
     body_defined.insert(region.shape.counter_header_value);
-    for instr in &body.instructions {
-        body_defined.insert(instr.result);
+    // Closure #264: extend body_defined to include EVERY
+    // instruction result + block param across all region_blocks
+    // (not just body_block). Without this, capture analysis
+    // for multi-block bodies would treat then/else/merge-local
+    // values as "captures from outside" and try to thread them
+    // through the ctx struct — wrong, since they're defined
+    // INSIDE the loop region per-iteration.
+    for &bid in &region.region_blocks {
+        let blk = &f.blocks[bid.0 as usize];
+        for (v, _) in &blk.params {
+            body_defined.insert(*v);
+        }
+        for instr in &blk.instructions {
+            body_defined.insert(instr.result);
+        }
     }
     // Reduction carries are header params for the
     // accumulator; treat them as "body-defined" for capture
@@ -1343,36 +1352,59 @@ fn emit_parallel_for_region_llvm(
         captures.push((v, ty));
         Ok(())
     };
-    for instr in &body.instructions {
-        for op in instr_operands(&instr.kind) {
-            if let Operand::Value(v) = op {
-                collect_capture(*v)?;
-            }
-        }
-    }
-    if let Terminator::Jump { args, .. } = &body.terminator {
-        for op in args {
-            if let Operand::Value(v) = op {
-                if !reduction_carry_set.contains(v) {
-                    // Back-edge reduction-carry args are
-                    // synthesized values defined inside the
-                    // body (the `%v_<update>` from `%v_<carry>
-                    // + %v_<rhs>`); they don't escape as
-                    // captures. The back-edge counter is
-                    // similarly body-defined. Skip both.
+    // Walk every region block's instructions + terminator args
+    // for capture candidates.
+    for &bid in &region.region_blocks {
+        let blk = &f.blocks[bid.0 as usize];
+        for instr in &blk.instructions {
+            for op in instr_operands(&instr.kind) {
+                if let Operand::Value(v) = op {
                     collect_capture(*v)?;
                 }
             }
         }
+        match &blk.terminator {
+            Terminator::Jump { args, target } => {
+                // Reduction-carry back-edge args (merge → step)
+                // are synthesized by the loop's update logic
+                // and don't escape as captures. Skip them.
+                let is_back_edge_to_step = *target == region.shape.step_block;
+                for op in args {
+                    if let Operand::Value(v) = op {
+                        if is_back_edge_to_step && reduction_carry_set.contains(v) {
+                            continue;
+                        }
+                        collect_capture(*v)?;
+                    }
+                }
+            }
+            Terminator::Branch { cond, then_args, else_args, .. } => {
+                if let Operand::Value(v) = cond {
+                    collect_capture(*v)?;
+                }
+                for op in then_args.iter().chain(else_args.iter()) {
+                    if let Operand::Value(v) = op {
+                        collect_capture(*v)?;
+                    }
+                }
+            }
+            _ => {}
+        }
     }
-    // Reduction analysis: extract the per-iteration
-    // increment for each reduction carry. The body has, for
-    // each reduction, an instruction
-    //   %v_<update> = add T %v_<carry>, %v_<rhs>
-    // (or symmetric — operands may be swapped). We need
-    // %v_<rhs> as the atomicrmw operand inside the outlined
-    // fn. Reject if the shape doesn't match.
+    // Reduction analysis: find where each reduction's update
+    // physically lives. For single-block bodies it's a direct
+    // instruction in body_block whose result == update_v. For
+    // multi-block (closure #264) the update is buried inside a
+    // conditional branch and `update_v` is actually a Phi
+    // result at the merge block — we need to trace one hop
+    // back to find the real arithmetic instruction.
+    //
+    // `update_sites[i]` records, for reduction `i`, the
+    // (block_id, increment_operand) pair so the emit pass
+    // can replace the Binary at that location with atomicrmw.
     let mut reduction_increments: Vec<Operand> =
+        Vec::with_capacity(region.reductions.len());
+    let mut update_sites: Vec<Vec<(BlockId, ValueId)>> =
         Vec::with_capacity(region.reductions.len());
     for ((carry_v, update_v), (_, red_op, _)) in region
         .reduction_carries
@@ -1380,21 +1412,113 @@ fn emit_parallel_for_region_llvm(
         .zip(region.reduction_update_values.iter())
         .zip(region.reductions.iter())
     {
-        let update_instr = body
-            .instructions
-            .iter()
-            .find(|i| i.result == *update_v)
-            .ok_or_else(|| EmitError {
+        // Step 1: search every region block (not just body)
+        // for the instruction. Works for single-block bodies
+        // AND for multi-block shapes where the update is a
+        // direct instruction in some non-merge block whose
+        // Jump-to-merge contribution IS the update.
+        let mut update_locations: Vec<(BlockId, &crate::ssa::Instruction)> = Vec::new();
+        for &bid in &region.region_blocks {
+            let blk = &f.blocks[bid.0 as usize];
+            if let Some(instr) = blk.instructions.iter().find(|i| i.result == *update_v) {
+                update_locations.push((bid, instr));
+            }
+        }
+        // Step 2: Phi-traceback. If `update_v` isn't a direct
+        // instruction, it's a Phi result — find which region
+        // block has it as a param, then walk that block's
+        // predecessors (restricted to region_blocks). Each
+        // predecessor's Jump/Branch arg at the relevant index
+        // gives the per-branch contribution; if that
+        // contribution is itself an instruction with the
+        // expected reduction shape, that's where atomicrmw
+        // belongs.
+        if update_locations.is_empty() {
+            // Locate `update_v` as a block param.
+            let phi_loc = region.region_blocks.iter().find_map(|bid| {
+                let blk = &f.blocks[bid.0 as usize];
+                blk.params
+                    .iter()
+                    .position(|(v, _)| v == update_v)
+                    .map(|idx| (*bid, idx))
+            });
+            let (phi_block_id, param_idx) = phi_loc.ok_or_else(|| EmitError {
                 message: format!(
-                    "reduction update v_{} not found in body block",
+                    "SSA-LLVM multi-block parallel-for: reduction update \
+                     v_{} not found as instruction OR as block param in \
+                     any region block — falling back to tree-LLVM",
                     update_v.0
                 ),
             })?;
-        // Figure out which Binary op the reduction-update
-        // SSA instruction should have, based on the
-        // reduction's source-level op. `min`/`max` come
-        // through as Call instructions; everything else is
-        // a Binary.
+            // For each in-region predecessor of phi_block,
+            // look at the contribution at param_idx.
+            for &pred_bid in &region.region_blocks {
+                if pred_bid == phi_block_id {
+                    continue;
+                }
+                let pred = &f.blocks[pred_bid.0 as usize];
+                let contribution = match &pred.terminator {
+                    Terminator::Jump { target, args } if *target == phi_block_id => {
+                        args.get(param_idx).cloned()
+                    }
+                    Terminator::Branch {
+                        then_block,
+                        then_args,
+                        else_block,
+                        else_args,
+                        ..
+                    } => {
+                        if *then_block == phi_block_id {
+                            then_args.get(param_idx).cloned()
+                        } else if *else_block == phi_block_id {
+                            else_args.get(param_idx).cloned()
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                let Some(Operand::Value(contributed_v)) = contribution else {
+                    continue;
+                };
+                // Carry-unchanged branch: no atomicrmw needed
+                // (it just passes the unmodified accumulator).
+                if contributed_v == *carry_v {
+                    continue;
+                }
+                // Look up `contributed_v` as an instruction in
+                // `pred_bid` (the predecessor that branched
+                // here with the update value).
+                let pred_instr = pred
+                    .instructions
+                    .iter()
+                    .find(|i| i.result == contributed_v)
+                    .ok_or_else(|| EmitError {
+                        message: format!(
+                            "SSA-LLVM multi-block parallel-for: Phi-traceback \
+                             couldn't locate update v_{} as a direct \
+                             instruction in predecessor bb{} — falling back",
+                            contributed_v.0, pred_bid.0
+                        ),
+                    })?;
+                update_locations.push((pred_bid, pred_instr));
+            }
+            if update_locations.is_empty() {
+                return Err(EmitError {
+                    message: format!(
+                        "SSA-LLVM multi-block parallel-for: no update site \
+                         found via Phi-traceback for reduction v_{} (only \
+                         carry-pass-through predecessors) — falling back",
+                        update_v.0
+                    ),
+                });
+            }
+        }
+        // Step 3: validate every located update has the
+        // expected reduction shape, then extract the per-site
+        // increment. v1 requires all sites in a region to use
+        // the same increment operand; if branches diverge,
+        // fall back (would need per-block atomicrmw operands).
         let expected_binary_op: Option<BinaryOp> = match red_op {
             crate::ast::ReductionOp::Add => Some(BinaryOp::Add),
             crate::ast::ReductionOp::Mul => Some(BinaryOp::Mul),
@@ -1405,47 +1529,75 @@ fn emit_parallel_for_region_llvm(
             crate::ast::ReductionOp::BitXor => Some(BinaryOp::BitXor),
             crate::ast::ReductionOp::Min | crate::ast::ReductionOp::Max => None,
         };
-        let (l, r): (Operand, Operand) = match (&update_instr.kind, expected_binary_op) {
-            (InstrKind::Binary { op, l, r, .. }, Some(expected))
-                if std::mem::discriminant(op) == std::mem::discriminant(&expected) =>
-            {
-                (l.clone(), r.clone())
+        let mut sites_for_this_red: Vec<(BlockId, ValueId)> = Vec::new();
+        let mut increment_for_this_red: Option<Operand> = None;
+        for (site_bid, update_instr) in &update_locations {
+            let (l, r): (Operand, Operand) = match (&update_instr.kind, expected_binary_op) {
+                (InstrKind::Binary { op, l, r, .. }, Some(expected))
+                    if std::mem::discriminant(op) == std::mem::discriminant(&expected) =>
+                {
+                    (l.clone(), r.clone())
+                }
+                (InstrKind::Call { name, args, .. }, None)
+                    if (name == "min" || name == "max") && args.len() == 2 =>
+                {
+                    (args[0].clone(), args[1].clone())
+                }
+                (other, _) => {
+                    return Err(EmitError {
+                        message: format!(
+                            "SSA-LLVM parallel-for: reduction update v_{} at bb{} \
+                             shape doesn't match {:?} (got {:?})",
+                            update_instr.result.0, site_bid.0, red_op, other
+                        ),
+                    });
+                }
+            };
+            let increment = match (&l, &r) {
+                (Operand::Value(lv), other) if lv == carry_v => other.clone(),
+                (other, Operand::Value(rv)) if rv == carry_v => other.clone(),
+                _ => {
+                    return Err(EmitError {
+                        message: format!(
+                            "SSA-LLVM parallel-for: reduction update v_{} at bb{} \
+                             doesn't reference carry v_{}",
+                            update_instr.result.0, site_bid.0, carry_v.0
+                        ),
+                    });
+                }
+            };
+            // v1 multi-block requires all sites for a reduction
+            // to share the same increment operand. Branches
+            // that compute different increments would need
+            // per-site atomicrmw operands threaded through —
+            // deferred to a follow-up.
+            if let Some(prev) = &increment_for_this_red {
+                if prev != &increment {
+                    return Err(EmitError {
+                        message: format!(
+                            "SSA-LLVM multi-block parallel-for: reduction sites \
+                             have divergent increments ({:?} vs {:?}) — falling back",
+                            prev, increment
+                        ),
+                    });
+                }
+            } else {
+                increment_for_this_red = Some(increment.clone());
             }
-            (InstrKind::Call { name, args, .. }, None)
-                if (name == "min" || name == "max") && args.len() == 2 =>
-            {
-                (args[0].clone(), args[1].clone())
+            if let Operand::Value(v) = &increment {
+                collect_capture(*v)?;
             }
-            (other, _) => {
-                return Err(EmitError {
-                    message: format!(
-                        "reduction-update v_{} shape doesn't match {:?} (got {:?})",
-                        update_v.0, red_op, other
-                    ),
-                });
-            }
-        };
-        let increment = match (&l, &r) {
-            (Operand::Value(lv), other) if lv == carry_v => other.clone(),
-            (other, Operand::Value(rv)) if rv == carry_v => other.clone(),
-            _ => {
-                return Err(EmitError {
-                    message: format!(
-                        "reduction-update v_{} doesn't reference carry v_{}",
-                        update_v.0, carry_v.0
-                    ),
-                });
-            }
-        };
-        // The increment operand may itself reference outer
-        // values (e.g., `xs[i]` is loaded into a body-local
-        // SSA value, but a constant or non-loop-local value
-        // is a capture). Make sure to register it as a
-        // capture if needed.
-        if let Operand::Value(v) = &increment {
-            collect_capture(*v)?;
+            sites_for_this_red.push((*site_bid, update_instr.result));
         }
-        reduction_increments.push(increment);
+        let final_increment = increment_for_this_red.ok_or_else(|| EmitError {
+            message: format!(
+                "SSA-LLVM parallel-for: no update sites located for reduction \
+                 with update_v = v_{}",
+                update_v.0
+            ),
+        })?;
+        reduction_increments.push(final_increment);
+        update_sites.push(sites_for_this_red);
     }
     // Drop the unused-binding `_` from the variable name.
     let _ = reduction_carry_set;
@@ -1834,6 +1986,7 @@ fn emit_parallel_for_region_llvm(
         &captures,
         &capture_field_tys,
         &reduction_increments,
+        &update_sites,
         value_types,
         fn_sigs,
     )?;
@@ -1976,6 +2129,7 @@ fn emit_outlined_parallel_for(
     captures: &[(ValueId, Type)],
     capture_field_tys: &[String],
     reduction_increments: &[Operand],
+    update_sites: &[Vec<(BlockId, ValueId)>],
     value_types: &BTreeMap<ValueId, Type>,
     fn_sigs: &BTreeMap<String, (Vec<Type>, Type)>,
 ) -> Result<(), EmitError> {
@@ -2146,76 +2300,219 @@ fn emit_outlined_parallel_for(
     out.push_str("  %has_work = icmp slt i64 %my_lo, %my_hi\n");
     out.push_str("  br i1 %has_work, label %check, label %done\n");
 
-    // Iteration loop.
+    // Iteration loop. For single-block bodies the next-block
+    // is just `body`. For multi-block bodies (closure #264)
+    // it's the body-region's entry block `body_bb<id>`; the
+    // emit below sets up each region block as a labeled LLVM
+    // block.
+    let entry_body_label = if region.region_blocks.len() == 1 {
+        "body".to_string()
+    } else {
+        format!("body_bb{}", region.shape.body_block.0)
+    };
     out.push_str("check:\n");
     out.push_str("  %i = phi i64 [%my_lo, %entry], [%i_next, %body_end]\n");
     out.push_str("  %cond = icmp slt i64 %i, %my_hi\n");
-    out.push_str("  br i1 %cond, label %body, label %done\n");
-    out.push_str("body:\n");
-    // Bind the body's SSA counter ValueId to %i (narrowing
-    // back to its source-level integer type if needed).
-    let counter_id = region.shape.counter_header_value.0;
-    if counter_ty_str == "i64" {
-        out.push_str(&format!(
-            "  %v_{} = add i64 %i, 0\n",
-            counter_id
-        ));
-    } else {
-        out.push_str(&format!(
-            "  %v_{} = trunc i64 %i to {}\n",
-            counter_id, counter_ty_str
-        ));
-    }
-    // Emit each body instruction except the counter-
-    // increment (the loop's %i_next handles that) and the
-    // back-edge terminator. Build a value_types map scoped
-    // to the outlined fn — it sees the counter binding and
-    // every body-defined value.
-    let body = &f.blocks[region.shape.body_block.0 as usize];
+    out.push_str(&format!(
+        "  br i1 %cond, label %{}, label %done\n",
+        entry_body_label
+    ));
+
+    // Build the value_types map scoped to the outlined fn.
+    // For multi-block bodies we walk every region block.
     let mut outline_value_types: BTreeMap<ValueId, Type> = BTreeMap::new();
     outline_value_types.insert(
         region.shape.counter_header_value,
         region.shape.counter_ty.clone(),
     );
-    for instr in &body.instructions {
-        outline_value_types.insert(instr.result, instr.ty.clone());
+    for &bid in &region.region_blocks {
+        let blk = &f.blocks[bid.0 as usize];
+        for (v, ty) in &blk.params {
+            outline_value_types.insert(*v, ty.clone());
+        }
+        for instr in &blk.instructions {
+            outline_value_types.insert(instr.result, instr.ty.clone());
+        }
     }
-    // Carry over outer value-types referenced indirectly by
-    // type-dispatched ops (the no-capture check above proves
-    // no body instruction reads a non-body-defined ValueId,
-    // but `operand_type` lookups during type-dispatched emit
-    // may still consult the outer map for completeness).
     for (k, v) in value_types {
         outline_value_types.entry(*k).or_insert_with(|| v.clone());
     }
-    // Map reduction-update ValueId → (reduction index,
-    // increment operand, reduction type). When emitting body
-    // instructions, intercept these IDs and emit
-    // `atomicrmw <op>` against the parent accumulator
-    // pointer instead of the normal Binary emit.
-    let red_update_to_idx: std::collections::BTreeMap<ValueId, usize> = region
-        .reduction_update_values
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (*v, i))
-        .collect();
-    for instr in &body.instructions {
-        if instr.result == region.counter_increment_value {
-            continue;
+
+    // Map every update-site instruction (across all region
+    // blocks) → its reduction index. The emit pass intercepts
+    // matching instructions and emits atomicrmw instead.
+    let mut red_update_to_idx: std::collections::BTreeMap<ValueId, usize> =
+        std::collections::BTreeMap::new();
+    for (red_idx, sites) in update_sites.iter().enumerate() {
+        for (_, v) in sites {
+            red_update_to_idx.insert(*v, red_idx);
         }
-        if let Some(red_idx) = red_update_to_idx.get(&instr.result) {
-            emit_reduction_update(
-                &region.reductions[*red_idx],
-                &reduction_ptr_names[*red_idx],
-                &reduction_increments[*red_idx],
-                instr.result,
-                &mut out,
-            )?;
-            continue;
-        }
-        emit_instr(instr, &outline_value_types, fn_sigs, &mut out)?;
     }
-    out.push_str("  br label %body_end\n");
+
+    let counter_id = region.shape.counter_header_value.0;
+    let counter_emit = if counter_ty_str == "i64" {
+        format!("  %v_{} = add i64 %i, 0\n", counter_id)
+    } else {
+        format!(
+            "  %v_{} = trunc i64 %i to {}\n",
+            counter_id, counter_ty_str
+        )
+    };
+
+    // Emit each region block. For single-block bodies this
+    // collapses to the pre-#264 shape: one `body:` label,
+    // counter binding, body instructions, `br body_end`. For
+    // multi-block, each block gets its own
+    // `body_bb<id>:` label with Phi nodes for its params and
+    // a terminator either branching to another body_bb<id>
+    // or — for the merge block — to `body_end`.
+    for (block_idx, &bid) in region.region_blocks.iter().enumerate() {
+        let blk = &f.blocks[bid.0 as usize];
+        // First region block: use the synthetic `body:` label
+        // for single-block bodies (back-compat with existing
+        // tests + the IR shape lli expects).
+        let is_first = block_idx == 0;
+        if region.region_blocks.len() == 1 {
+            out.push_str("body:\n");
+        } else {
+            out.push_str(&format!("body_bb{}:\n", bid.0));
+        }
+        if is_first {
+            // Counter binding goes at the top of the entry
+            // block (where %i is freshly Phi'd).
+            out.push_str(&counter_emit);
+        }
+        // Emit Phi nodes for block params, restricting
+        // predecessors to in-region blocks. Skip for the
+        // entry block (its predecessors are `check`, not
+        // in-region blocks).
+        if !is_first {
+            for (param_idx, (param_v, param_ty)) in blk.params.iter().enumerate() {
+                // Skip Phi nodes for block params that are
+                // reduction-update results — atomicrmw owns
+                // those values; the original Phi merged
+                // per-branch contributions, but in the
+                // outlined fn the contributions either
+                // already fired atomicrmw or passed through
+                // the carry (which doesn't exist here). Any
+                // downstream use of the Phi value is in the
+                // back-edge to step, which we replace with
+                // `br body_end` anyway.
+                if region
+                    .reduction_update_values
+                    .iter()
+                    .any(|v| v == param_v)
+                {
+                    continue;
+                }
+                let param_llvm = llvm_type(param_ty)?;
+                let mut incoming: Vec<String> = Vec::new();
+                for &pred_bid in &region.region_blocks {
+                    if pred_bid == bid {
+                        continue;
+                    }
+                    let pred = &f.blocks[pred_bid.0 as usize];
+                    let contribution = match &pred.terminator {
+                        Terminator::Jump { target, args } if *target == bid => {
+                            args.get(param_idx).cloned()
+                        }
+                        Terminator::Branch {
+                            then_block,
+                            then_args,
+                            else_block,
+                            else_args,
+                            ..
+                        } => {
+                            if *then_block == bid {
+                                then_args.get(param_idx).cloned()
+                            } else if *else_block == bid {
+                                else_args.get(param_idx).cloned()
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(op) = contribution {
+                        incoming.push(format!(
+                            "[{}, %body_bb{}]",
+                            operand_str(&op),
+                            pred_bid.0
+                        ));
+                    }
+                }
+                if incoming.is_empty() {
+                    // Block has no in-region predecessors —
+                    // unreachable in this loop. Skip the Phi
+                    // (LLVM would reject a 0-arg phi).
+                    continue;
+                }
+                out.push_str(&format!(
+                    "  %v_{} = phi {} {}\n",
+                    param_v.0,
+                    param_llvm,
+                    incoming.join(", ")
+                ));
+            }
+        }
+        // Emit instructions, intercepting reduction-update
+        // sites with atomicrmw. Skip the counter-increment
+        // (the loop's `%i_next` handles that).
+        for instr in &blk.instructions {
+            if instr.result == region.counter_increment_value {
+                continue;
+            }
+            if let Some(red_idx) = red_update_to_idx.get(&instr.result) {
+                emit_reduction_update(
+                    &region.reductions[*red_idx],
+                    &reduction_ptr_names[*red_idx],
+                    &reduction_increments[*red_idx],
+                    instr.result,
+                    &mut out,
+                )?;
+                continue;
+            }
+            emit_instr(instr, &outline_value_types, fn_sigs, &mut out)?;
+        }
+        // Emit terminator. Merge block's Jump-to-step is
+        // replaced with `br body_end`; other terminators
+        // map to standard br / cond_br against in-region
+        // labels.
+        if bid == region.merge_block {
+            out.push_str("  br label %body_end\n");
+        } else {
+            match &blk.terminator {
+                Terminator::Jump { target, .. } => {
+                    out.push_str(&format!(
+                        "  br label %body_bb{}\n",
+                        target.0
+                    ));
+                }
+                Terminator::Branch {
+                    cond,
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    out.push_str(&format!(
+                        "  br i1 {}, label %body_bb{}, label %body_bb{}\n",
+                        operand_str(cond),
+                        then_block.0,
+                        else_block.0
+                    ));
+                }
+                other => {
+                    return Err(EmitError {
+                        message: format!(
+                            "SSA-LLVM multi-block parallel-for: \
+                             unsupported terminator {:?} in region block bb{}",
+                            other, bid.0
+                        ),
+                    });
+                }
+            }
+        }
+    }
     out.push_str("body_end:\n");
     out.push_str("  %i_next = add i64 %i, 1\n");
     out.push_str("  br label %check\n");
