@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 981 lib + 48 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 983 lib + 48 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -648,6 +648,43 @@ fn main() returns i64 {
 
    Test totals: 981 lib + 48 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #270.
+
+   **FFI v3 — `pure extern "C" fn` opt-in marker done 2026-05-27**:
+   the purity side of FFI. `pure extern "C" fn name(...) -> R;`
+   declares an FFI symbol that vāṇी's effect tracker treats as
+   pure, so `pure fn` bodies (and parallel-for bodies, once
+   those gain extern-call support) can call it. The caller
+   asserts the foreign symbol is actually pure — no side
+   effects, no shared state, deterministic output — vāṇी can't
+   verify across the FFI boundary.
+
+   Changes:
+     • Parser — top-level dispatch peeks `Pure` followed by
+       `Extern`, consumes the `Pure` token, calls
+       `parse_extern_fn`, and sets `is_pure = true` on the
+       returned Function.
+     • Checker — `Signature` carries an `is_extern: bool`
+       mirror of the function's flag so the impurity
+       diagnostic can phrase the suggested marker as
+       `pure extern` for extern callees, `pure fn`
+       otherwise. The existing `sig.is_pure` check naturally
+       admits `pure extern` callees without a separate code
+       path.
+     • Formatter — emit `pure ` before `extern "C" ` (not
+       after), so round-trip preserves the canonical ordering.
+
+   Verified: a `pure fn` body now compiles a call to a
+   `pure extern "C" fn` (LLVM + C backends both). Without
+   the `pure` marker, the same call surfaces the existing
+   purity diagnostic with the corrected "mark it `pure extern`"
+   hint.
+
+   New tests: 2 lib tests (`pure_extern_c_fn_parses_and_a_pure_
+   fn_can_call_it`, `impure_extern_rejected_from_pure_fn_with_
+   pure_extern_hint`).
+
+   Test totals: 983 lib + 48 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #271.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

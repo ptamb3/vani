@@ -1957,8 +1957,19 @@ resolution follows usual link order.
 **Effects**: extern fns are conservatively treated as impure. The
 SMT engine can't reason across the FFI boundary, so any
 `prove`/`assume` involving an extern call must rest on caller-side
-invariants. Parallel-for / pure-fn bodies reject extern calls today
-(future `pure extern` opt-in queued).
+invariants. `pure fn` bodies reject impure extern calls.
+
+For foreign functions that are genuinely pure (`abs`, `sqrt`, the
+trig functions, `strlen`, etc.), mark the declaration `pure
+extern "C" fn name(...) -> R;` to opt into purity. The caller is
+asserting the symbol has no side effects, no shared state, and
+deterministic output — vāṇी can't verify across the FFI boundary,
+so misuse falls back to runtime behavior.
+
+```vani
+pure extern "C" fn sqrt(x: f64) -> f64;   // libm — known pure
+extern "C" fn rand() -> i32;              // impure — no annotation
+```
 
 **ABI scope**: scalars, pointers (`ref T`), and `Str` work. Structs
 by value, packed layout, varargs, and callbacks are not yet wired —

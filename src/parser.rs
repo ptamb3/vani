@@ -160,6 +160,30 @@ impl Parser {
                         self.sync_to_top_level();
                     }
                 }
+            } else if self.check(|kind| matches!(kind, TokenKind::Pure))
+                && matches!(
+                    self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                    Some(TokenKind::Extern)
+                )
+            {
+                // Closure #271: `pure extern "C" fn name(...) -> R;`
+                // The `pure` opt-in lets parallel-for / pure-fn
+                // bodies call this extern. Caller's responsibility
+                // to ensure the foreign symbol is actually pure
+                // (no side effects, no shared state, deterministic
+                // output) — vāṇी can't verify across the FFI
+                // boundary.
+                self.bump();
+                match self.parse_extern_fn() {
+                    Ok(mut f) => {
+                        f.is_pure = true;
+                        functions.push(f);
+                    }
+                    Err(e) => {
+                        self.errors.push(e);
+                        self.sync_to_top_level();
+                    }
+                }
             } else if self.check(|kind| matches!(kind, TokenKind::Fn | TokenKind::Pure)) {
                 match self.parse_function() {
                     Ok(f) => functions.push(f),

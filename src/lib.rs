@@ -19637,6 +19637,46 @@ fn main() -> i64 {
         );
     }
 
+    // FFI v3 — `pure extern "C" fn name(...) -> R;` opts the
+    // foreign function into purity, letting `pure fn` bodies
+    // (and parallel-for bodies in the future) call it. Caller's
+    // responsibility to ensure the symbol is actually pure.
+    #[test]
+    fn pure_extern_c_fn_parses_and_a_pure_fn_can_call_it() {
+        let source = r#"
+            pure extern "C" fn abs(x: i32) -> i32;
+
+            pure fn use_extern(x: i32) -> i32 {
+              return abs(x);
+            }
+
+            fn main() -> i64 {
+              let a: i32 = use_extern(-5 as i32);
+              return a as i64;
+            }
+        "#;
+        compile(source).expect("pure extern should parse + check");
+    }
+
+    #[test]
+    fn impure_extern_rejected_from_pure_fn_with_pure_extern_hint() {
+        let source = r#"
+            extern "C" fn abs(x: i32) -> i32;
+
+            pure fn use_extern(x: i32) -> i32 {
+              return abs(x);
+            }
+
+            fn main() -> i64 { return 0; }
+        "#;
+        let errs = compile(source).expect_err("impure extern in pure fn must fail");
+        assert!(
+            errs.iter().any(|d| d.message.contains("pure extern")),
+            "diagnostic must suggest `pure extern` for the marker, got: {:?}",
+            errs
+        );
+    }
+
     #[test]
     fn extern_c_fn_emits_llvm_declare() {
         let source = r#"

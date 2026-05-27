@@ -153,6 +153,10 @@ struct Signature {
     /// checker uses this to forbid impure call sites inside a
     /// pure context or a `parallel for` body.
     is_pure: bool,
+    /// True if the function was declared `extern "C" fn`.
+    /// Used at call sites to phrase the impurity diagnostic
+    /// against the right marker (`pure extern` vs `pure fn`).
+    is_extern: bool,
     /// One bool per parameter: true when the function body
     /// contains a direct `mutex_lock` call naming this
     /// parameter as its target (either `mutex_lock(p)` or
@@ -1011,6 +1015,7 @@ fn collect_signatures(
                     requires: function.requires.clone(),
                     ensures: function.ensures.clone(),
                     is_pure: function.is_pure,
+                    is_extern: function.is_extern,
                     locks_params: compute_locks_params(function),
                 },
             )
@@ -13791,11 +13796,12 @@ fn verify_pure_body(
                     ));
                 } else if let Some(sig) = signatures.get(name) {
                     if !sig.is_pure {
+                        let marker = if sig.is_extern { "pure extern" } else { "pure fn" };
                         diagnostics.push(Diagnostic::new(
                             expr.span,
                             format!(
-                                "{} cannot call non-pure function '{}'; mark it `pure fn` or remove the call",
-                                context, name
+                                "{} cannot call non-pure function '{}'; mark it `{}` or remove the call",
+                                context, name, marker
                             ),
                         ));
                     }

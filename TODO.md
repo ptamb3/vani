@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #270 — FFI v2 `--link-with` / `-l<name>`)
+## ⏳ Resume here (paused 2026-05-27, after closure #271 — FFI v3 `pure extern "C" fn` opt-in)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
@@ -582,9 +582,15 @@ Verified end-to-end via `examples/ffi.vani` (calls libm's `abs`).
   `triple(x: i32) -> i32`.
 - ABI nuances — structs by value, packed layout, varargs,
   callbacks. Scope decisions per feature.
-- `pure extern` opt-in marker so parallel-for / pure-fn bodies
-  can call known-pure extern fns (today they reject all extern
-  calls conservatively).
+- ✅ **`pure extern` opt-in marker** — closure #271.
+  `pure extern "C" fn name(...) -> R;` lets `pure fn` bodies
+  call the foreign symbol. Caller's responsibility to ensure
+  the symbol is actually pure (vāṇी can't verify across the
+  FFI boundary). Parallel-for body's extern-call gate is
+  separate and queued — today the existing purity check
+  admits `pure extern` callees from pure-fn contexts but the
+  parallel-for body has its own walker that may need a
+  parallel update.
 - Documenting the symbol-naming convention (vāṇī defines emit
   `fn_<name>`; vāṇī externs call bare `<name>`).
 
