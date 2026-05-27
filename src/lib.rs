@@ -15688,6 +15688,64 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn sov_for_loop_devanagari_natural_word_order() {
+        // Closure #265: Devanagari SOV (subject-object-verb) word
+        // order for the range `for` header. Natural Hindi puts
+        // the loop variable BEFORE the `for` postposition (के लिए)
+        // and the operands BEFORE the `से` / `तक` postpositions.
+        // The compiler accepts both orders; the AST shape is
+        // identical so the checker / backends don't see the
+        // difference.
+        let source = r#"
+            कार्य main() -> i64 {
+              माना total: i64 = 0;
+              i के लिए 0 से 5 तक {
+                माना _ = total + i;
+              }
+              पुनरागम total;
+            }
+        "#;
+        compile(source).expect("SOV-form for loop compiles");
+    }
+
+    #[test]
+    fn sov_for_loop_english_form_still_works() {
+        // Regression guard: the English word order
+        // (`for i from 0 to 5`) must still compile after #265.
+        // The detector for `IDENT For …` keys off the leading
+        // ident, so a pure `for …` statement is unaffected.
+        let source = r#"
+            fn main() -> i64 {
+              let total: i64 = 0;
+              for i from 0 to 5 {
+                let _ = total + i;
+              }
+              return total;
+            }
+        "#;
+        compile(source).expect("English for loop still compiles");
+    }
+
+    #[test]
+    fn sov_parallel_for_with_reduce_devanagari() {
+        // The parallel-for SOV variant: `समान्तर प्रति` (parallel)
+        // → IDENT → `के लिए` → start → `से` → end → `तक` →
+        // `संक्षेप X सह OP;` (reduce X with OP) → body.
+        let source = r#"
+            कार्य main() -> i64 {
+              माना total: i64 = 0;
+              समान्तर प्रति i के लिए 0 से 10 तक
+              संक्षेप total सह +;
+              {
+                total = total + i;
+              }
+              पुनरागम total;
+            }
+        "#;
+        compile(source).expect("SOV-form parallel-for compiles");
+    }
+
+    #[test]
     fn ssa_llvm_multi_block_parallel_for_lowers_to_atomicrmw() {
         // Closure #264: SSA-LLVM's outlined-fn emit now handles
         // multi-block parallel-for bodies directly via Phi-

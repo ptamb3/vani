@@ -629,6 +629,52 @@ language semantics, all are pure analyses):
 These all line up behind the SSA-LLVM multi-block work + the
 kosh package-manager arc on the canonical queue.
 
+#265 Devanagari SOV word-order — range `for` loop.
+the Phase-1 Devanagari aliases (`के लिए` = for,
+`से` = from, `तक` = to) already lexed correctly, but
+the parser only accepted English word order — the
+awkward `के लिए i से 0 तक 5` form. Natural Indo-Aryan
+grammar uses postpositions (noun, then marker), so
+the natural shape is:
+
+  `i के लिए 0 से 5 तक { … }`       (range)
+  `समान्तर प्रति i के लिए 0 से N तक संक्षेप X सह +; { … }`
+                                  (parallel + reduce)
+
+Two new parser helpers detect the SOV variant:
+
+  `looks_like_sov_for(&self) -> bool`
+      Ident immediately followed by For (2-token
+      lookahead)
+  `looks_like_sov_parallel_for(&self) -> bool`
+      Parallel then Ident then For (3-token lookahead)
+
+`parse_stmt` checks these BEFORE the English `For`
+branch, so the SOV path takes precedence on the
+Ident-starting shape (which would otherwise be
+treated as a reassign / call). The new
+`parse_sov_for_stmt(parallel: bool)` consumes:
+
+    IDENT 'के लिए' START 'से' END 'तक'
+    [invariants] [reductions] { body }
+
+and produces the same `Stmt::For` AST shape as the
+English form — checker, SSA pass, and backends see
+no difference.
+
+Three new lib tests cover:
+  - sov_for_loop_devanagari_natural_word_order
+  - sov_for_loop_english_form_still_works (regression)
+  - sov_parallel_for_with_reduce_devanagari
+
+This closes the most-visible Devanagari ergonomic
+gap. The remaining grammar work (#29: per-language
+distinct verb forms across Sanskrit / Hindi / Marathi)
+still wants a grammar consultant pass.
+
+Test totals: 971 lib + 47 e2e + 11 vtables-phase3 +
+2 user-drop-by-ref + 1 ssa-examples.
+
 #264 SSA-LLVM multi-block parallel-for body emit (Phi-traceback).
 the larger work item that #252 left as deferred. The
 SSA-LLVM `emit_parallel_for_region_llvm` previously

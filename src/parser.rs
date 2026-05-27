@@ -1506,6 +1506,25 @@ impl Parser {
             self.parse_while_stmt()
         } else if self.check(|kind| matches!(kind, TokenKind::For)) {
             self.parse_for_stmt()
+        } else if self.looks_like_sov_for() {
+            // Closure #265: Devanagari SOV (subject-object-verb)
+            // word order for the range `for`. The English form
+            // `for i from 0 to 5` reads as `के लिए i से 0 तक 5`
+            // with Devanagari keywords — but that puts `से`
+            // (from) BEFORE its operand, which is grammatically
+            // wrong in Hindi/Sanskrit/Marathi (postpositions
+            // follow nouns). The natural shape is
+            // `i के लिए 0 से 5 तक { … }` — variable, then "for"
+            // postposition; operand, then `से`; operand, then
+            // `तक`. We detect `IDENT For …` and route to the
+            // SOV parser. AST shape is identical to the
+            // English form.
+            self.parse_sov_for_stmt(false)
+        } else if self.looks_like_sov_parallel_for() {
+            // Same SOV detection for `parallel for`. Hindi:
+            // `समान्तर i के लिए 0 से 5 तक reduce total with +; { … }`.
+            self.bump(); // consume Parallel keyword
+            self.parse_sov_for_stmt(true)
         } else if self.check(|kind| matches!(kind, TokenKind::Parallel)) {
             // `parallel for i in start..end { … }` — the modifier
             // precedes `for`. Consume it then dispatch to the
@@ -1661,6 +1680,37 @@ impl Parser {
         matches!(
             self.tokens.get(self.pos + 1).map(|t| &t.kind),
             Some(TokenKind::Equal)
+        )
+    }
+
+    /// `IDENT For …` — Devanagari SOV-style range-for header
+    /// (closure #265). Natural Hindi / Sanskrit / Marathi
+    /// puts the loop variable BEFORE the `for` postposition
+    /// (`के लिए`) and the operands BEFORE `से` (from) / `तक`
+    /// (to). The detection key is current==Ident AND next==For.
+    fn looks_like_sov_for(&self) -> bool {
+        if !matches!(self.current().kind, TokenKind::Ident(_)) {
+            return false;
+        }
+        matches!(
+            self.tokens.get(self.pos + 1).map(|t| &t.kind),
+            Some(TokenKind::For)
+        )
+    }
+
+    /// `Parallel IDENT For …` — Devanagari SOV parallel-for
+    /// header. Same shape as `looks_like_sov_for` with an
+    /// initial `Parallel` keyword.
+    fn looks_like_sov_parallel_for(&self) -> bool {
+        if !matches!(self.current().kind, TokenKind::Parallel) {
+            return false;
+        }
+        matches!(
+            self.tokens.get(self.pos + 1).map(|t| &t.kind),
+            Some(TokenKind::Ident(_))
+        ) && matches!(
+            self.tokens.get(self.pos + 2).map(|t| &t.kind),
+            Some(TokenKind::For)
         )
     }
 
@@ -1999,6 +2049,65 @@ impl Parser {
             invariants,
             body,
             span: start_tok.span.merge(end_span),
+            parallel,
+            reductions,
+        })
+    }
+
+    /// Parse a Devanagari SOV-style range `for` header (closure
+    /// #265):
+    ///
+    ///     IDENT 'के लिए' START 'से' END 'तक' [invariants]
+    ///     [reductions] { body }
+    ///
+    /// Both `के लिए` and `से` / `तक` are already lexed as
+    /// `TokenKind::For` / `From` / `To` via the existing
+    /// Devanagari alias tables. This parser only swaps the
+    /// POSITIONS: variable first, then `for`-postposition,
+    /// then operands followed by their postpositions. AST shape
+    /// produced is identical to the English form, so downstream
+    /// passes (checker, SSA, backends) see no difference.
+    ///
+    /// The `parallel` flag is set by the caller after consuming
+    /// a leading `Parallel` keyword (Hindi: `समान्तर`).
+    fn parse_sov_for_stmt(&mut self, parallel: bool) -> Result<Stmt, Diagnostic> {
+        let var_tok = self.expect_ident()?;
+        let var_span = var_tok.span;
+        let var = ident_text(var_tok);
+        let for_tok = self.expect_keyword(
+            "'for' / 'के लिए' postposition after the loop variable",
+            |k| matches!(k, TokenKind::For),
+        )?;
+        let start_expr = self.parse_expr()?;
+        self.expect_keyword(
+            "'from' / 'से' postposition after the start value",
+            |k| matches!(k, TokenKind::From),
+        )?;
+        let end_expr = self.parse_expr()?;
+        self.expect_keyword(
+            "'to' / 'तक' postposition after the end value",
+            |k| matches!(k, TokenKind::To),
+        )?;
+        let invariants = self.parse_invariants()?;
+        let reductions = self.parse_reductions()?;
+        if !reductions.is_empty() && !parallel {
+            return Err(Diagnostic::new(
+                reductions[0].span,
+                "'reduce' clauses are only valid on a `parallel for` loop",
+            ));
+        }
+        let body = self.parse_block()?;
+        let end_span = body
+            .last()
+            .map(|s| s.span())
+            .unwrap_or(for_tok.span);
+        Ok(Stmt::For {
+            var,
+            start: start_expr,
+            end: end_expr,
+            invariants,
+            body,
+            span: var_span.merge(end_span),
             parallel,
             reductions,
         })

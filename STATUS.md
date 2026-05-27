@@ -537,6 +537,47 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Devanagari SOV word-order `for` loop done 2026-05-26**:
+   the Phase-1 Devanagari aliases (`के लिए` = for,
+   `से` = from, `तक` = to) already lexed correctly but
+   the parser only accepted English word order — the
+   awkward `के लिए i से 0 तक 5` (literally "for i
+   from 0 to 5" with `से` PRECEDING its operand, which
+   is grammatically wrong in Hindi/Sanskrit/Marathi).
+   Natural Indo-Aryan grammar uses **postpositions**:
+   noun first, then the marker. The compiler now ALSO
+   accepts the natural shape:
+
+     `i के लिए 0 से 5 तक { … }`     (range)
+     `समान्तर प्रति i के लिए 0 से N तक संक्षेप X सह +; { … }`
+                                     (parallel + reduce)
+
+   Two new parser helpers detect the SOV variant:
+   `looks_like_sov_for` (Ident immediately followed by
+   For) and `looks_like_sov_parallel_for` (Parallel
+   then Ident then For). When detected, `parse_stmt`
+   routes to the new `parse_sov_for_stmt` which
+   consumes:
+
+       IDENT 'के लिए' START 'से' END 'तक'
+       [invariants] [reductions] { body }
+
+   AST shape produced is identical to the English form
+   — the checker, SSA pass, and backends see no
+   difference. Three new lib tests cover the SOV range
+   form, regression-guard for the English form (still
+   compiles), and the parallel-for SOV with reduce
+   clause. English `for` users are unaffected.
+
+   This closes the largest remaining Devanagari gap
+   without a grammar consultant pass — the
+   postpositional shape was always grammatically
+   uncontroversial; the consultant pass for #29 is
+   about verb-form parity across Sanskrit / Hindi /
+   Marathi. Test totals: 971 lib + 47 e2e + 11
+   vtables-phase3 + 2 user-drop-by-ref + 1
+   ssa-examples. Closure #265.
+
    **SSA-LLVM multi-block parallel-for body emit done 2026-05-26**:
    the larger work item from the queue. SSA-LLVM now
    lowers `parallel for { if cond { acc = acc + i; } }`
