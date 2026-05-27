@@ -629,6 +629,62 @@ language semantics, all are pure analyses):
 These all line up behind the SSA-LLVM multi-block work + the
 kosh package-manager arc on the canonical queue.
 
+#267 Devanagari Sanskrit / Hindi / Marathi 3-way alias parity (Phase 2).
+pragmatic best-effort sweep filling lexer alias gaps so
+pure-Hindi / pure-Sanskrit / pure-Marathi programs have
+full keyword coverage for the previously English-only
+constructs. Specifically:
+
+  else        वरना (Hindi)
+  mut         परिवर्तनीय (Sanskrit/Hindi tatsama)
+  prove       प्रमाणित (Hindi/Marathi), दर्शाओ (Hindi),
+              दाखवा (Marathi)
+  ensures     सुनिश्चयित (Sanskrit)
+  true        सही (colloquial, Hindi/Marathi)
+  false       अशुद्ध (colloquial, Hindi/Marathi)
+  enum        गणन (Hindi/Marathi)
+  const       नियत (Hindi/Marathi)
+  continue    अग्रे (Sanskrit)
+  parallel    समानांतर (single-word, all three)
+  use         उपयोग
+  module      खण्ड, मॉड्यूल
+  pub         सार्वजनिक
+  as          यथा
+  interface   संकेत, अंतरापृष्ठ
+  implement   कार्यान्वित
+  methods     विधि
+  where       जहाँ / यत्र / जिथे  (Hindi/Sanskrit/Marathi)
+  is          है / अस्ति / आहे  (Hindi/Sanskrit/Marathi)
+  try         प्रयास
+  task        नियोग
+  join        संयोजन
+
+Where a Sanskrit-root word is tatsama in Hindi+Marathi
+(e.g. `संरचना` = struct, `शुद्ध` = pure, `संक्षेप` =
+reduce, `सह` = with), the alias is documented as shared
+across all three languages rather than duplicated. The
+specific verb choices are best-effort and welcome
+revision by a grammar consultant — the goal of this
+closure is COVERAGE first, finesse second.
+
+Closes the 3-way parity gap that was originally marked
+"blocked: grammar consultant". The remaining grammar-
+consultant work (idiomaticity refinement, dialect-
+specific phrasing, multi-word forms) is independent
+and can land incrementally.
+
+Two new lib tests pin coverage:
+  - devanagari_three_way_alias_parity_fills_gaps —
+    pure-Hindi program using `वरना` / `अग्रे` /
+    `प्रमाणित` / `सही`.
+  - devanagari_namespace_keyword_aliases —
+    pure-Devanagari `खण्ड` (module) / `सार्वजनिक` (pub)
+    / `उपयोग` (use) / `यथा` (as) round-trip through
+    the namespace machinery.
+
+Test totals: 978 lib (+2) + 47 e2e + 11 vtables-phase3 +
+2 user-drop-by-ref + 1 ssa-examples.
+
 #266 Devanagari SOV verb-at-end statements (return / print / assert / prove).
 follows from #265's SOV for-loop work. Hindi / Sanskrit /
 Marathi are verb-final ("my name is Ryan" → `मेरा नाम

@@ -208,6 +208,7 @@ fn devanagari_keyword(text: &str) -> Option<TokenKind> {
         "अगर" => TokenKind::If,           // agar (Hindi: "if")
         "जर" => TokenKind::If,            // jar (Marathi: "if")
         "अन्यथा" => TokenKind::Else,      // anyathā (Sanskrit: "else")
+        "वरना" => TokenKind::Else,         // varnā (Hindi: "otherwise") — closure #267
         "नाहीतर" => TokenKind::Else,      // nāhītar (Marathi: "else")
         // while
         "यावत्" => TokenKind::While,      // yāvat (Sanskrit: "while/until")
@@ -223,8 +224,9 @@ fn devanagari_keyword(text: &str) -> Option<TokenKind> {
         // ref
         "पहा" => TokenKind::Ref,          // pahā (Marathi: "see/look")
         "देखो" => TokenKind::Ref,         // dekho (Hindi: "see!")
-        // mut
+        // mut — closure #267 fills Sanskrit + Hindi gaps
         "बदल" => TokenKind::Mut,          // badla (Marathi root: "change")
+        "परिवर्तनीय" => TokenKind::Mut,   // parivartanīya (Sanskrit/Hindi: "mutable")
         // match
         "जुळवा" => TokenKind::Match,      // juḷvā (Marathi: "match")
         "मिलान" => TokenKind::Match,      // milān (Hindi: "match")
@@ -233,17 +235,27 @@ fn devanagari_keyword(text: &str) -> Option<TokenKind> {
         "खात्री" => TokenKind::Assert,    // khātrī (Marathi: "certainty")
         "सुनिश्चित" => TokenKind::Assert, // sunishchit (Hindi: "ensured")
         "सिद्धम्" => TokenKind::Assert,   // siddham (Sanskrit)
-        // prove
+        // prove — closure #267 fills Hindi + Marathi single-word
         "सिद्ध" => TokenKind::Prove,      // siddha (Sanskrit root)
         "प्रमाण" => TokenKind::Prove,     // pramāṇa (Sanskrit: "proof")
+        "प्रमाणित" => TokenKind::Prove,   // pramāṇita (Hindi/Marathi: "proven")
+        "दर्शाओ" => TokenKind::Prove,     // darśāo (Hindi imperative: "show!")
+        "दाखवा" => TokenKind::Prove,      // dākhvā (Marathi imperative: "show!")
         // requires / ensures
         "अपेक्षित" => TokenKind::Requires, // apekṣita (Sanskrit: "required")
         "चाहिए" => TokenKind::Requires,    // cāhiye (Hindi: "needs")
         "पाहिजे" => TokenKind::Requires,   // pāhije (Marathi: "needs")
+        // ensures — `निश्चित` shared Hindi/Marathi; add a Sanskrit
+        // alternate. Closure #267.
         "निश्चित" => TokenKind::Ensures,   // nishchit (Hindi/Marathi: "definite")
-        // bool literals
-        "सत्य" => TokenKind::True,         // satya (Sanskrit: "truth")
-        "असत्य" => TokenKind::False,       // asatya (Sanskrit: "untruth")
+        "सुनिश्चयित" => TokenKind::Ensures, // sunischayita (Sanskrit: "ensured")
+        // bool literals — `सत्य/असत्य` are tatsama (Sanskrit
+        // loanwords) widely used in all three languages. Add
+        // colloquial Hindi/Marathi alternates. Closure #267.
+        "सत्य" => TokenKind::True,         // satya (Sanskrit, shared)
+        "सही" => TokenKind::True,          // sahī (Hindi/Marathi colloquial: "correct")
+        "असत्य" => TokenKind::False,       // asatya (Sanskrit, shared)
+        "अशुद्ध" => TokenKind::False,      // aśuddha (Hindi/Marathi: "incorrect")
         // print / write — `लिख` (likh, root for "write") +
         // imperative `लिखो` (likho, "write!"). `छाप` (chāp,
         // "imprint/stamp") was the previous spelling but
@@ -252,26 +264,66 @@ fn devanagari_keyword(text: &str) -> Option<TokenKind> {
         // Devanagari-script languages.
         "लिख" => TokenKind::Print,         // likh (Sanskrit root: "write")
         "लिखो" => TokenKind::Print,        // likho (Hindi/Marathi imperative: "write!")
-        // pure
-        "शुद्ध" => TokenKind::Pure,        // śuddha (Sanskrit: "pure")
-        // struct / enum
-        "संरचना" => TokenKind::Struct,     // saṁracanā (Sanskrit/Hindi: "structure")
+        // pure — `शुद्ध` is tatsama, shared across all three.
+        "शुद्ध" => TokenKind::Pure,        // śuddha (Sanskrit/Hindi/Marathi: "pure")
+        // struct / enum — closure #267 fills gaps. `संरचना`
+        // is tatsama and works in Marathi too.
+        "संरचना" => TokenKind::Struct,     // saṁracanā (Sanskrit/Hindi/Marathi: "structure")
         "विकल्प" => TokenKind::Enum,       // vikalpa (Sanskrit: "option/alternative")
+        "गणन" => TokenKind::Enum,          // gaṇan (Hindi/Marathi: "enumeration")
         // const
-        "स्थिर" => TokenKind::Const,       // sthira (Sanskrit: "fixed/constant")
+        "स्थिर" => TokenKind::Const,       // sthira (Sanskrit/Hindi/Marathi: "fixed/constant")
+        "नियत" => TokenKind::Const,        // niyat (Hindi/Marathi: "fixed/determined")
         // break / continue
         "विराम" => TokenKind::Break,       // virāma (Sanskrit: "pause/stop")
         "रुको" => TokenKind::Break,        // ruko (Hindi: "stop")
         "थांब" => TokenKind::Break,        // thāmba (Marathi: "stop")
+        "अग्रे" => TokenKind::Continue,    // agre (Sanskrit: "forward") — closure #267
         "पुढे" => TokenKind::Continue,     // puḍhe (Marathi: "ahead/onward")
         "आगे" => TokenKind::Continue,      // āge (Hindi: "ahead")
         // for-loop range words
         "में" => TokenKind::In,             // meṁ (Hindi: "in")
         "से" => TokenKind::From,           // se (Hindi: "from")
         "तक" => TokenKind::To,             // tak (Hindi: "to/until")
-        // reduce / with for `parallel for X reduce Y with op`
-        "संक्षेप" => TokenKind::Reduce,    // saṁkṣepa (Sanskrit: "reduction")
-        "सह" => TokenKind::With,           // saha (Sanskrit: "with")
+        // reduce / with for `parallel for X reduce Y with op` —
+        // `संक्षेप` / `सह` are tatsama and work in all three.
+        "संक्षेप" => TokenKind::Reduce,    // saṁkṣepa (Sanskrit/Hindi/Marathi: "reduction")
+        "सह" => TokenKind::With,           // saha (Sanskrit/Hindi/Marathi: "with")
+        // parallel — closure #267 adds a single-word alias
+        // (the existing multi-word `समान्तर प्रति` stays for
+        // back-compat with Sanskrit-style writing).
+        "समानांतर" => TokenKind::Parallel, // samānāntara (Sanskrit/Hindi/Marathi: "parallel")
+        // Closure #267: namespace + concurrency keywords now
+        // have Devanagari aliases. These are technical terms
+        // with no single natural translation in any of the
+        // three languages; we pick a Sanskrit-root form that
+        // works as tatsama (loanword) in Hindi and Marathi too.
+        // `kosh` (कोश, "treasure/repository") is already vāṇी's
+        // name for the crate concept — aliased at the parser
+        // level via `pub(kosh)` syntax, not at the lexer.
+        //
+        // use / module / pub / as — namespace imports
+        "उपयोग" => TokenKind::Use,         // upayog (Sanskrit/Hindi/Marathi: "use")
+        "खण्ड" => TokenKind::Module,       // khaṇḍa (Sanskrit/Hindi/Marathi: "section/module")
+        "मॉड्यूल" => TokenKind::Module,    // mōḍyūla (Hindi/Marathi loanword: "module")
+        "सार्वजनिक" => TokenKind::Pub,     // sārvajanik (Sanskrit/Hindi/Marathi: "public")
+        "यथा" => TokenKind::As,            // yathā (Sanskrit/Hindi/Marathi: "as/like")
+        // interface / implement / methods
+        "संकेत" => TokenKind::Interface,   // saṅket (Sanskrit/Hindi/Marathi: "protocol/sign")
+        "अंतरापृष्ठ" => TokenKind::Interface, // antarāpṛṣṭha (Sanskrit literal: "inter-face")
+        "कार्यान्वित" => TokenKind::Implement, // kāryānvit (Sanskrit/Hindi/Marathi: "to put into effect")
+        "विधि" => TokenKind::Methods,       // vidhi (Sanskrit/Hindi/Marathi: "method/procedure")
+        // where / is — for generic bounds (`where T is Trait`)
+        "जहाँ" => TokenKind::Where,        // jahām̐ (Hindi: "where")
+        "यत्र" => TokenKind::Where,        // yatra (Sanskrit: "where")
+        "जिथे" => TokenKind::Where,        // jithe (Marathi: "where")
+        "है" => TokenKind::Is,             // hai (Hindi: "is")
+        "अस्ति" => TokenKind::Is,          // asti (Sanskrit: "is")
+        "आहे" => TokenKind::Is,            // āhe (Marathi: "is")
+        // try (Rust `?` operator analog) / task / join
+        "प्रयास" => TokenKind::Try,        // prayās (Sanskrit/Hindi/Marathi: "attempt")
+        "नियोग" => TokenKind::Task,        // niyog (Sanskrit/Hindi/Marathi: "assignment/task")
+        "संयोजन" => TokenKind::Join,       // saṁyojan (Sanskrit/Hindi/Marathi: "joining")
         _ => return None,
     };
     Some(kind)

@@ -15789,6 +15789,70 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn devanagari_three_way_alias_parity_fills_gaps() {
+        // Closure #267: fills the Sanskrit / Hindi / Marathi
+        // alias parity gaps surveyed in TODO.md #30. Pure-
+        // Hindi / Pure-Sanskrit / Pure-Marathi programs now
+        // have keyword coverage for the constructs that
+        // previously forced English fall-back: else (Hindi
+        // `वरना`), prove (Hindi `प्रमाणित`, Marathi `दाखवा`),
+        // mut (Sanskrit/Hindi `परिवर्तनीय`), continue
+        // (Sanskrit `अग्रे`), enum (`गणन`), const (`नियत`),
+        // bool literals (colloquial `सही`/`अशुद्ध`), plus
+        // namespace + concurrency keywords (`उपयोग` = use,
+        // `खण्ड`/`मॉड्यूल` = module, `सार्वजनिक` = pub,
+        // `यथा` = as, `संकेत` = interface, `कार्यान्वित` =
+        // implement, `विधि` = methods, `जहाँ`/`यत्र`/`जिथे`
+        // = where, `है`/`अस्ति`/`आहे` = is, `प्रयास` = try,
+        // `नियोग` = task, `संयोजन` = join, `समानांतर` =
+        // parallel single-word).
+        let source = r#"
+            कार्य main() -> i64 {
+              माना x: i64 = 7;
+              अगर x > 0 {
+                "positive" लिखो;
+              } वरना {
+                "non-positive" लिखो;
+              }
+              के लिए i से 0 तक 3 {
+                अगर i == 1 {
+                  अग्रे;
+                }
+                "i =", i लिखो;
+              }
+              x > 0 प्रमाणित;
+              माना flag: bool = सही;
+              x पुनरागम;
+            }
+        "#;
+        compile(source).expect("Hindi-with-#267-aliases compiles");
+    }
+
+    #[test]
+    fn devanagari_namespace_keyword_aliases() {
+        // The `module` / `use` / `pub` / `as` Devanagari aliases
+        // route through the same parser paths as their English
+        // counterparts. Test that a small module + use + pub-fn
+        // compiles in pure Hindi/Sanskrit-tatsama form.
+        let source = r#"
+            खण्ड geo {
+              सार्वजनिक संरचना Point { x: i64, y: i64 }
+              सार्वजनिक कार्य origin() -> Point {
+                पुनरागम Point { x: 0, y: 0 };
+              }
+            }
+
+            उपयोग geo::origin यथा make_origin;
+
+            कार्य main() -> i64 {
+              माना p: geo::Point = make_origin();
+              पुनरागम p.x;
+            }
+        "#;
+        compile(source).expect("Devanagari module + use + as compiles");
+    }
+
+    #[test]
     fn sov_verb_at_end_english_form_still_works() {
         // Regression guard: the English `return X;` / `print X;`
         // / `assert X;` / `prove X;` forms still parse after

@@ -537,6 +537,49 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
+   pragmatic best-effort sweep of the lexer's alias table
+   to give pure-Hindi / pure-Sanskrit / pure-Marathi
+   programs full keyword coverage for the constructs that
+   previously forced English fall-back. Added aliases:
+
+     else        वरना (Hindi)
+     mut         परिवर्तनीय (Sanskrit/Hindi)
+     prove       प्रमाणित (Hindi/Marathi), दर्शाओ (Hindi),
+                 दाखवा (Marathi)
+     ensures     सुनिश्चयित (Sanskrit)
+     true        सही (Hindi/Marathi colloquial)
+     false       अशुद्ध (Hindi/Marathi colloquial)
+     enum        गणन (Hindi/Marathi)
+     const       नियत (Hindi/Marathi)
+     continue    अग्रे (Sanskrit)
+     parallel    समानांतर (single-word, all three)
+     use         उपयोग
+     module      खण्ड, मॉड्यूल
+     pub         सार्वजनिक
+     as          यथा
+     interface   संकेत, अंतरापृष्ठ
+     implement   कार्यान्वित
+     methods     विधि
+     where       जहाँ / यत्र / जिथे (Hindi/Sanskrit/Marathi)
+     is          है / अस्ति / आहे (Hindi/Sanskrit/Marathi)
+     try         प्रयास
+     task        नियोग
+     join        संयोजन
+
+   Where a Sanskrit-root word is tatsama (loanword in
+   Hindi/Marathi), it's documented as shared across the
+   three languages rather than duplicated per-language.
+   The picks are practical "best-effort, awaits consultant
+   refinement" — the user can adjust specific verb
+   choices later. Two new lib tests pin: a pure-Hindi
+   program using `वरना` / `अग्रे` / `प्रमाणित` / `सही`,
+   and a pure-Devanagari namespace declaration with
+   `खण्ड` (module) / `सार्वजनिक` (pub) / `उपयोग` (use) /
+   `यथा` (as). Test totals: 978 lib + 47 e2e + 11
+   vtables-phase3 + 2 user-drop-by-ref + 1
+   ssa-examples. Closure #267.
+
    **Devanagari SOV verb-at-end statements done 2026-05-26**:
    follows naturally from #265's SOV for-loop work. Hindi /
    Sanskrit / Marathi are verb-final ("my name is Ryan" →
