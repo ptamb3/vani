@@ -19729,6 +19729,58 @@ fn main() -> i64 {
         compile(source).expect("ref-passed struct is FFI-safe and must check");
     }
 
+    // Closure #275: parallel-for body purity gate now catches
+    // impure calls hidden inside a reduction RHS. Previously,
+    // `strip_reduction_uses` replaced approved reduction reassigns
+    // with `Discard 0`, swallowing whatever was on the non-self
+    // side. The fix preserves the non-self subexpression so the
+    // pure-body walker still sees it.
+    #[test]
+    fn pure_extern_in_parallel_for_body_accepted() {
+        let source = r#"
+            pure extern "C" fn labs(x: i64) -> i64;
+
+            fn main() -> i64 {
+              let total: i64 = 0;
+              parallel for i from 1 to 4
+              reduce total with +;
+              {
+                total = total + labs(-(i as i64));
+              }
+              return 0;
+            }
+        "#;
+        compile(source).expect("pure extern in parallel-for body should check");
+    }
+
+    #[test]
+    fn impure_extern_in_reduction_rhs_rejected() {
+        let source = r#"
+            extern "C" fn rand() -> i32;
+
+            fn main() -> i64 {
+              let total: i32 = 0 as i32;
+              parallel for i from 0 to 4
+              reduce total with +;
+              {
+                total = total + rand();
+              }
+              return 0;
+            }
+        "#;
+        let errs = compile(source)
+            .expect_err("impure call hidden in reduction RHS must be rejected");
+        assert!(
+            errs.iter().any(|d| {
+                let m = &d.message;
+                m.contains("'parallel for' body")
+                    && m.contains("non-pure function 'rand'")
+            }),
+            "expected parallel-for purity diagnostic about 'rand', got: {:?}",
+            errs
+        );
+    }
+
     #[test]
     fn extern_struct_return_rejected_with_ref_hint() {
         let source = r#"

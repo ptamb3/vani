@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 987 lib + 50 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 989 lib + 50 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -772,6 +772,35 @@ fn main() returns i64 {
 
    Test totals: 987 lib + 50 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #274.
+
+   **Parallel-for purity gate covers reduction RHS done 2026-05-27**:
+   discovered a real silent-acceptance bug while validating
+   the FFI v3 follow-up: `total = total + rand();` inside a
+   `parallel for ... reduce total with +;` body was accepted
+   even though `rand` is impure. Root cause:
+   `strip_reduction_uses` replaced approved reduction
+   reassigns with `Discard 0`, which swallowed the entire
+   non-self subexpression — including any impure calls
+   hidden inside it.
+
+   Fix:
+     • Refactored `validate_reduction_rhs(name, expr, op) -> bool`
+       into `extract_reduction_other_side(name, expr, op) ->
+       Option<TypedExpr>`. Returns the non-self subexpression
+       (the X in `total + X` / `total * X` /
+       `min(total, X)`, etc.) for valid shapes; None for
+       invalid.
+     • `strip_reduction_uses` now emits
+       `Discard { expr: other_side }` instead of
+       `Discard 0`, so the pure-body walker still sees X
+       and surfaces any impurity inside it.
+
+   2 new lib tests pin both shapes:
+     - `pure_extern_in_parallel_for_body_accepted` (positive)
+     - `impure_extern_in_reduction_rhs_rejected` (negative)
+
+   Test totals: 989 lib + 50 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #275.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

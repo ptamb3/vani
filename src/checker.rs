@@ -13530,19 +13530,16 @@ fn strip_reduction_uses(
         for stmt in stmts {
             match stmt {
                 TypedStmt::Reassign { name, expr, .. } if reductions.contains_key(name) => {
-                    if validate_reduction_rhs(name, expr, reductions[name]) {
-                        // Approved shape; replace with a harmless
-                        // discard so the pure walk doesn't reject
-                        // the reassign-over-non-Copy rule.
-                        out.push(TypedStmt::Discard {
-                            expr: TypedExpr {
-                                kind: TypedExprKind::Int(0),
-                                ty: Type::I64,
-                                constant: None,
-                                span: expr.span,
-                                binding_decl_span: None,
-                            },
-                        });
+                    if let Some(other) =
+                        extract_reduction_other_side(name, expr, reductions[name])
+                    {
+                        // Approved shape. Keep the non-self
+                        // subexpression visible to the pure-body
+                        // walk so impurity hidden inside it (e.g.
+                        // `total + rand()` or `min(total,
+                        // impure_call())`) still surfaces.
+                        // Closure #275.
+                        out.push(TypedStmt::Discard { expr: other });
                     } else {
                         use crate::ast::ReductionOp;
                         let sym = reductions[name].display_symbol();
@@ -13617,10 +13614,22 @@ fn strip_reduction_uses(
     rec(body, reductions, context, diagnostics)
 }
 
-fn validate_reduction_rhs(name: &str, expr: &TypedExpr, op: crate::ast::ReductionOp) -> bool {
+// Returns the "other side" subexpression of a valid reduction-
+// shape reassign (the X in `total = total + X` / `total = total *
+// X` / `min(total, X)` / `max(total, X)`, etc.) so the caller can
+// keep walking it for impurity. Returns `None` if the shape is
+// not a valid reduction. Closure #275: lifting this from the
+// previous `validate_reduction_rhs -> bool` lets
+// `strip_reduction_uses` preserve the non-self subexpression so
+// the pure-body walker still sees calls hidden inside it (e.g.
+// `total = total + rand()` — without this, the strip pass
+// swallowed the impure call).
+fn extract_reduction_other_side(
+    name: &str,
+    expr: &TypedExpr,
+    op: crate::ast::ReductionOp,
+) -> Option<TypedExpr> {
     use crate::ast::ReductionOp;
-    // Map ReductionOp to the BinaryOp the user must have written
-    // (for infix ops) or to the intrinsic Call name (for min/max).
     match op {
         ReductionOp::Add
         | ReductionOp::Mul
@@ -13641,37 +13650,37 @@ fn validate_reduction_rhs(name: &str, expr: &TypedExpr, op: crate::ast::Reductio
             };
             if let TypedExprKind::Binary { op: rhs_op, left, right, .. } = &expr.kind {
                 if *rhs_op != binary_op {
-                    return false;
+                    return None;
                 }
                 let left_is_self = matches!(&left.kind, TypedExprKind::Var(n) if n == name);
                 let right_is_self = matches!(&right.kind, TypedExprKind::Var(n) if n == name);
                 if left_is_self && !contains_var(right, name) {
-                    return true;
+                    return Some((**right).clone());
                 }
                 if right_is_self && !contains_var(left, name) {
-                    return true;
+                    return Some((**left).clone());
                 }
             }
-            false
+            None
         }
         ReductionOp::Min | ReductionOp::Max => {
             let intrinsic = if matches!(op, ReductionOp::Min) { "min" } else { "max" };
             if let TypedExprKind::Call { name: call_name, args, .. } = &expr.kind {
                 if call_name != intrinsic || args.len() != 2 {
-                    return false;
+                    return None;
                 }
                 let left_is_self =
                     matches!(&args[0].kind, TypedExprKind::Var(n) if n == name);
                 let right_is_self =
                     matches!(&args[1].kind, TypedExprKind::Var(n) if n == name);
                 if left_is_self && !contains_var(&args[1], name) {
-                    return true;
+                    return Some(args[1].clone());
                 }
                 if right_is_self && !contains_var(&args[0], name) {
-                    return true;
+                    return Some(args[0].clone());
                 }
             }
-            false
+            None
         }
     }
 }
