@@ -452,6 +452,10 @@ pub struct Function {
     /// through the same registry to skip the `fn_` prefix on
     /// the call site.
     pub is_extern: bool,
+    /// Closure #286: optional recursion-depth bound. Carried
+    /// through SSA so the backends can emit the depth-guard
+    /// instrumentation. None for unbounded fns.
+    pub recursion_bound: Option<u64>,
 }
 
 impl fmt::Display for Function {
@@ -575,7 +579,10 @@ pub fn lower_function(f: &TypedFunction) -> Result<Function, LowerError> {
     if b.current_block_terminator().is_none() {
         b.terminate(Terminator::Unreachable);
     }
-    Ok(b.build())
+    let mut built = b.build();
+    // Closure #286: thread the recursion bound through.
+    built.recursion_bound = f.recursion_bound;
+    Ok(built)
 }
 
 type Locals = BTreeMap<String, ValueId>;
@@ -2512,6 +2519,7 @@ impl FunctionBuilder {
             entry: self.entry,
             blocks: self.blocks,
             is_extern: false,
+            recursion_bound: None,
         }
     }
 }

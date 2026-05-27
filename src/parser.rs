@@ -160,6 +160,19 @@ impl Parser {
                         self.sync_to_top_level();
                     }
                 }
+            } else if self.check(|k| matches!(k, TokenKind::Hash)) {
+                // Closure #286: `#[bounded(N)]` attribute
+                // before a function declaration. v1 only
+                // recognizes the literal `bounded` attribute;
+                // future attributes (`inline`, `deprecated`,
+                // etc.) ride the same parser.
+                match self.parse_attributed_fn() {
+                    Ok(f) => functions.push(f),
+                    Err(e) => {
+                        self.errors.push(e);
+                        self.sync_to_top_level();
+                    }
+                }
             } else if self.check(|kind| matches!(kind, TokenKind::Pure))
                 && matches!(
                     self.tokens.get(self.pos + 1).map(|t| &t.kind),
@@ -1246,6 +1259,7 @@ impl Parser {
             span: fn_token.span.merge(close.span).merge(name_span),
             is_pure,
             is_extern: false,
+            recursion_bound: None,
         })
     }
 
@@ -1258,6 +1272,47 @@ impl Parser {
     /// + return types are restricted to scalars / `Str` / `ref T`
     /// — affine types (Vec, OwnedStr, etc.) crossing the FFI
     /// boundary need explicit conversion helpers, not implicit.
+    /// Closure #286: parse `#[bounded(N)]` attribute then a
+    /// regular function declaration. The bound is attached
+    /// to the returned Function. Only `bounded` recognized
+    /// in v1; unknown attribute names get a clear "not
+    /// recognized" diagnostic.
+    fn parse_attributed_fn(&mut self) -> Result<Function, Diagnostic> {
+        self.expect_keyword("'#'", |k| matches!(k, TokenKind::Hash))?;
+        self.expect_keyword("'['", |k| matches!(k, TokenKind::LBracket))?;
+        let attr_name_tok = self.expect_ident()?;
+        let attr_name = ident_text(attr_name_tok);
+        let bound_value: Option<u64> = if attr_name == "bounded" {
+            self.expect_keyword("'(' after `bounded`", |k| matches!(k, TokenKind::LParen))?;
+            let n_tok = self.bump();
+            let n = match n_tok.kind {
+                TokenKind::Int(v) if v >= 0 => v as u64,
+                _ => {
+                    return Err(Diagnostic::new(
+                        n_tok.span,
+                        "expected a non-negative integer literal as the bound",
+                    ));
+                }
+            };
+            self.expect_keyword("')'", |k| matches!(k, TokenKind::RParen))?;
+            Some(n)
+        } else {
+            return Err(Diagnostic::new(
+                self.current().span,
+                format!(
+                    "unknown attribute '#[{}]' — only `#[bounded(N)]` is recognized in v1",
+                    attr_name
+                ),
+            ));
+        };
+        self.expect_keyword("']'", |k| matches!(k, TokenKind::RBracket))?;
+        // Continue with the fn declaration. Supports both
+        // plain `fn` and `pure fn`.
+        let mut f = self.parse_function()?;
+        f.recursion_bound = bound_value;
+        Ok(f)
+    }
+
     fn parse_extern_fn(&mut self) -> Result<Function, Diagnostic> {
         let start = self
             .expect_keyword("'extern'", |k| matches!(k, TokenKind::Extern))?;
@@ -1316,6 +1371,7 @@ impl Parser {
             span: start.span.merge(semi.span),
             is_pure: false,
             is_extern: true,
+            recursion_bound: None,
         })
     }
 

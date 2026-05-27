@@ -749,6 +749,19 @@ fn emit_function(
     out: &mut String,
 ) {
     let ret_ty = llvm_type_string(&function.return_type);
+    // Closure #286: the LLVM backend doesn't yet implement
+    // `#[bounded(N)]` instrumentation. The C backend uses
+    // GCC's __attribute__((cleanup)) for the decrement; LLVM
+    // would need ret-instruction interception. Panic with a
+    // clear message until the LLVM lift lands.
+    if function.recursion_bound.is_some() {
+        panic!(
+            "LLVM backend doesn't yet support `#[bounded(N)]` recursion \
+             guards (fn '{}'). Use `--backend=c` for now; LLVM lift is \
+             queued as a follow-up to closure #286.",
+            function.name
+        );
+    }
     // Closure #269: `extern "C" fn name(...) -> R;` emits a
     // `declare` line with the bare C-ABI name (no `fn_` prefix).
     // The body is empty; the linker provides the symbol.

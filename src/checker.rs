@@ -5060,6 +5060,7 @@ fn check_function(
             body: Vec::new(),
             is_pure: function.is_pure,
             is_extern: false,
+            recursion_bound: function.recursion_bound,
             span: function.span,
         };
     }
@@ -5114,6 +5115,7 @@ fn check_function(
             body: Vec::new(),
             is_pure: function.is_pure,
             is_extern: true,
+            recursion_bound: None,
             span: function.span,
         };
     }
@@ -5326,6 +5328,7 @@ fn check_function(
         body,
         is_pure: function.is_pure,
         is_extern: false,
+        recursion_bound: function.recursion_bound,
         span: function.span,
     }
 }

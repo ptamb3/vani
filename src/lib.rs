@@ -19941,6 +19941,50 @@ fn main() -> i64 {
     // success, Result.Err(AllocError.OutOfMemory) on alloc
     // failure. V1 is C-backend-only; LLVM panics with a
     // clear "use --backend=c" message.
+    // Closure #286: `#[bounded(N)]` attribute caps the
+    // recursion depth of a fn at N. Exceeding the bound at
+    // runtime aborts with a diagnostic to stderr. Caller's
+    // responsibility: pick a sane N. C backend uses GCC's
+    // __attribute__((cleanup)) to decrement on every exit
+    // path; LLVM panics with a clear "use --backend=c"
+    // message (queued follow-up).
+    #[test]
+    fn bounded_attribute_emits_depth_counter_on_c_backend() {
+        let source = r#"
+            #[bounded(5)]
+            fn deep(n: i64) -> i64 {
+              if n <= 0 { return 0; }
+              return deep(n - 1) + 1;
+            }
+
+            fn main() -> i64 { return deep(3); }
+        "#;
+        let c = compile_to_c(source).expect("bounded fn compiles to C");
+        assert!(
+            c.contains("__intent_depth_deep")
+                && c.contains("__attribute__((cleanup(")
+                && c.contains("recursion bound exceeded"),
+            "expected depth counter + cleanup attribute + abort emit, got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn bounded_attribute_unknown_name_rejected() {
+        let source = r#"
+            #[inline(always)]
+            fn unused() -> i64 { return 0; }
+
+            fn main() -> i64 { return 0; }
+        "#;
+        let errs = compile(source).expect_err("unknown attribute must reject");
+        assert!(
+            errs.iter().any(|d| d.message.contains("unknown attribute")),
+            "expected 'unknown attribute' diagnostic, got: {:?}",
+            errs
+        );
+    }
+
     #[test]
     fn try_vec_returns_result_vec_on_llvm_backend() {
         let source = r#"

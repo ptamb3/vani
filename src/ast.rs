@@ -553,6 +553,12 @@ pub struct Function {
     /// for` body must target a pure function — the absence of
     /// shared mutable state then proves data-race freedom.
     pub is_pure: bool,
+    /// Closure #286: optional recursion-depth bound from
+    /// `#[bounded(N)]` attribute. When set, codegen wraps the
+    /// fn body in a thread-local depth counter — increments
+    /// on entry, decrements on exit, aborts if the counter
+    /// exceeds N. `None` for unbounded fns (the common case).
+    pub recursion_bound: Option<u64>,
     /// Closure #269: FFI marker. Set when the parser saw
     /// `extern "C" fn name(...) -> R;` — a body-less
     /// declaration of an externally-linked C-ABI symbol.

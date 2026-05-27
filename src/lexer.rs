@@ -168,6 +168,9 @@ pub enum TokenKind {
     Pipe,
     OrOr,
     Caret,
+    /// `#` — start of an attribute marker (`#[bounded(N)]`,
+    /// etc.). Closure #286.
+    Hash,
     Arrow,
     /// `module name { ... }` — namespace declaration (closure
     /// #242). vāṇī uses Rust-style modules: explicit paths
@@ -736,6 +739,12 @@ impl<'a> Lexer<'a> {
                 b'^' => self.push(TokenKind::Caret, start),
                 b'.' if self.match_byte(b'.') => self.push(TokenKind::DotDot, start),
                 b'.' => self.push(TokenKind::Dot, start),
+                // Closure #286: `#` for attribute syntax,
+                // e.g. `#[bounded(N)]`. v1 only recognizes
+                // the literal `bounded` attribute; future
+                // attributes (`inline`, `deprecated`, etc.)
+                // ride the same token.
+                b'#' => self.push(TokenKind::Hash, start),
                 other => {
                     return Err(Diagnostic::new(
                         Span::new(start, start + 1),

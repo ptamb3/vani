@@ -1959,6 +1959,50 @@ fn emit_function(function: &TypedFunction, out: &mut String) {
         out.push_str(");\n");
         return;
     }
+    // Closure #286: `#[bounded(N)]` attribute emits a
+    // thread-local depth counter + bound check at fn entry.
+    // GCC's __attribute__((cleanup)) ensures the decrement
+    // runs on every exit path (including early returns).
+    // Same shape works on clang.
+    if let Some(bound) = function.recursion_bound {
+        let counter_name = format!("__intent_depth_{}", function.name);
+        let dec_helper = format!("__intent_dec_depth_{}", function.name);
+        out.push_str(&format!(
+            "static __thread int {} = 0;\n", counter_name
+        ));
+        out.push_str(&format!(
+            "static void {}(int* __u) {{ (void)__u; --{}; }}\n",
+            dec_helper, counter_name
+        ));
+        out.push_str("static ");
+        out.push_str(&c_type_name(&function.return_type));
+        out.push(' ');
+        out.push_str(&function_name(&function.name));
+        out.push('(');
+        emit_params(function, out);
+        out.push_str(") {\n");
+        out.push_str(&format!(
+            "  int __depth_guard __attribute__((cleanup({}))) = 0;\n  (void)__depth_guard;\n",
+            dec_helper
+        ));
+        out.push_str(&format!(
+            "  if (++{} > {}) {{ \
+              fprintf(stderr, \"recursion bound exceeded in '{}' (#[bounded({})]); aborting\\n\"); \
+              abort(); \
+            }}\n",
+            counter_name, bound, function.name, bound
+        ));
+        for requirement in &function.requires {
+            out.push_str("  assert(");
+            out.push_str(&emit_expr(requirement));
+            out.push_str(");\n");
+        }
+        for stmt in &function.body {
+            emit_stmt(stmt, out);
+        }
+        out.push_str("}\n");
+        return;
+    }
     out.push_str("static ");
     out.push_str(&c_type_name(&function.return_type));
     out.push(' ');

@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1016 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1018 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -1302,6 +1302,55 @@ fn main() returns i64 {
 
    Test totals: 1016 lib + 52 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #285.
+
+   **#[bounded(N)] recursion-depth attribute done 2026-05-27 (C backend)**:
+   first attribute syntax in vāṇी. Caps fn recursion depth
+   at runtime — exceeding N aborts with a diagnostic.
+   Caller's responsibility: pick a sane N.
+
+   Surface:
+
+       #[bounded(100)]
+       fn factorial(n: i64) -> i64 {
+         if n <= 1 { return 1; }
+         return n * factorial(n - 1);
+       }
+
+   Pipeline:
+
+     • Lexer — new `TokenKind::Hash` for `#`.
+     • AST — `Function.recursion_bound: Option<u64>`. New
+       `parse_attributed_fn` recognizes `#[bounded(N)]`
+       before a fn decl. Unknown attribute names surface
+       a "not recognized in v1" diagnostic.
+     • IR / SSA — `recursion_bound` threaded through
+       `TypedFunction` and SSA `Function`.
+     • C backend (tree + SSA) — emits a thread-local depth
+       counter `__intent_depth_<fn>` + GCC
+       `__attribute__((cleanup))` helper that decrements on
+       every exit path (return, fall-through). Bound check
+       at entry: `if (++counter > N) abort()`.
+
+   Backend status:
+
+     • C ✓ — works on both tree-C and SSA-C paths via
+       `intentc run --backend=c` and `intentc build` on the
+       C output. Verified: bound exceeded aborts with exit
+       134 (SIGABRT) + stderr diagnostic.
+     • LLVM — panics with a clear "use --backend=c" message
+       at fn-emit time on both tree-LLVM and SSA-LLVM (the
+       latter returns an `EmitError` to take the tree-LLVM
+       fallback path, which also panics — uniform user
+       experience). Lifting LLVM requires either GCC-cleanup-
+       like instrumentation (which LLVM lacks directly) or
+       ret-instruction interception. Queued as a follow-up.
+
+   2 new lib tests
+   (`bounded_attribute_emits_depth_counter_on_c_backend`,
+   `bounded_attribute_unknown_name_rejected`).
+
+   Test totals: 1018 lib + 52 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #286.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

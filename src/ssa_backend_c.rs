@@ -277,6 +277,23 @@ fn emit_function(f: &Function, out: &mut String) -> Result<(), EmitError> {
     if f.is_extern {
         return Ok(());
     }
+    // Closure #286: emit thread-local depth counter + GCC
+    // cleanup helper for `#[bounded(N)]` functions. The
+    // helper decrements on every exit path (return,
+    // fall-through). Increments + bound check happen at fn
+    // entry below.
+    if let Some(bound) = f.recursion_bound {
+        let counter_name = format!("__intent_depth_{}", f.name);
+        let dec_helper = format!("__intent_dec_depth_{}", f.name);
+        writeln!(out, "static __thread int {} = 0;", counter_name).unwrap();
+        writeln!(
+            out,
+            "static void {}(int* __u) {{ (void)__u; --{}; }}",
+            dec_helper, counter_name
+        )
+        .unwrap();
+        let _ = bound;
+    }
     let ret_c = c_type(&f.return_type)?;
     write!(out, "{} fn_{}(", ret_c, f.name).unwrap();
     // Closure #202: see `emit_function_prototype` for why
@@ -292,6 +309,23 @@ fn emit_function(f: &Function, out: &mut String) -> Result<(), EmitError> {
         write!(out, "{} /* {} */", p_decl, name).unwrap();
     }
     out.push_str(") {\n");
+
+    // Closure #286: bounded-recursion entry sequence.
+    if let Some(bound) = f.recursion_bound {
+        let counter_name = format!("__intent_depth_{}", f.name);
+        let dec_helper = format!("__intent_dec_depth_{}", f.name);
+        writeln!(
+            out,
+            "  int __depth_guard __attribute__((cleanup({}))) = 0;\n  (void)__depth_guard;",
+            dec_helper
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "  if (++{} > {}) {{ fprintf(stderr, \"recursion bound exceeded in '{}' (#[bounded({})]); aborting\\n\"); abort(); }}",
+            counter_name, bound, f.name, bound
+        ).unwrap();
+    }
 
     // Track each SSA value's source type so instruction
     // emit can dispatch on shape (e.g., Vec vs Array for

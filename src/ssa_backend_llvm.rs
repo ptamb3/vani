@@ -327,6 +327,20 @@ fn emit_function(
     fn_sigs: &BTreeMap<String, (Vec<Type>, Type)>,
     out: &mut String,
 ) -> Result<(), EmitError> {
+    // Closure #286: SSA-LLVM doesn't yet implement
+    // `#[bounded(N)]`. Surface a clear EmitError so the
+    // SSA-LLVM fallback machinery routes the program to
+    // tree-LLVM (which has the same gap — both panic with a
+    // clear message).
+    if f.recursion_bound.is_some() {
+        return Err(EmitError {
+            message: format!(
+                "SSA-LLVM doesn't yet support #[bounded(N)] on fn '{}'; \
+                 use --backend=c for now",
+                f.name
+            ),
+        });
+    }
     // Closure #269: `extern "C"` FFI declarations — emit a
     // `declare RET @<name>(PARAMS)` with bare C-ABI name and
     // no body. The parent fn's Call to the same name skips

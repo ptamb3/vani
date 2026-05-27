@@ -62,6 +62,10 @@ pub struct TypedFunction {
     /// `extern` prototype (C) instead of a definition, using
     /// the bare C-ABI name (no `fn_` prefix).
     pub is_extern: bool,
+    /// Closure #286: optional `#[bounded(N)]` recursion-depth
+    /// guard. None for the common case. Backends emit a
+    /// thread-local depth counter check when set.
+    pub recursion_bound: Option<u64>,
     /// Source-byte range covering the entire `fn` declaration
     /// (`fn` keyword through the closing `}`). Carried forward
     /// from the AST so LSP features can pin "which function
