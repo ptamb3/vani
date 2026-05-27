@@ -1547,6 +1547,13 @@ impl Parser {
             Ok(Stmt::Continue {
                 span: token.span.merge(semi.span),
             })
+        } else if let Some(verb) = self.looks_like_sov_verb_at_end() {
+            // Closure #266: Devanagari SOV verb-at-end. Statements
+            // that read naturally with the verb at the end
+            // (`X पुनरागम;` = "X return;") route through the
+            // matching SOV parser. AST shape is identical to
+            // the English form.
+            self.parse_sov_verb_stmt(verb)
         } else if self.looks_like_assignment() {
             self.parse_assign_stmt()
         } else if self.looks_like_index_assign() {
@@ -1696,6 +1703,64 @@ impl Parser {
             self.tokens.get(self.pos + 1).map(|t| &t.kind),
             Some(TokenKind::For)
         )
+    }
+
+    /// `… VERB ;` — Devanagari SOV statement detector
+    /// (closure #266). Hindi / Sanskrit / Marathi grammar is
+    /// verb-final, so `मेरा नाम Ryan है` ("my name is Ryan")
+    /// reads as "my name Ryan is" with the verb at the end.
+    /// The same pattern applies to vāṇी's verb-like
+    /// statements: `पुनरागम X;` (return X) reads more
+    /// naturally as `X पुनरागम;`. Similarly for `print` →
+    /// `लिखो`, `assert` → `सुनिश्चित` / `खात्री`, `prove` →
+    /// `सिद्ध` / `प्रमाण`.
+    ///
+    /// Scans from `self.pos` to the next `;` at depth 0
+    /// (tracking parens / brackets / braces). If the token
+    /// IMMEDIATELY before that `;` is one of the four verbs,
+    /// returns its kind so the dispatcher can route to the
+    /// matching SOV parser. Returns None on unbalanced
+    /// nesting or no semicolon found.
+    fn looks_like_sov_verb_at_end(&self) -> Option<TokenKind> {
+        let mut depth: i32 = 0;
+        let mut i = self.pos;
+        loop {
+            let Some(tok) = self.tokens.get(i) else {
+                return None;
+            };
+            match &tok.kind {
+                TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket => {
+                    depth += 1;
+                }
+                TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return None;
+                    }
+                }
+                TokenKind::Semicolon if depth == 0 => {
+                    // Need at least one token before this `;`
+                    // AND that token must be a verb-keyword.
+                    if i <= self.pos {
+                        return None;
+                    }
+                    let prev = &self.tokens[i - 1];
+                    if matches!(
+                        prev.kind,
+                        TokenKind::Return
+                            | TokenKind::Print
+                            | TokenKind::Assert
+                            | TokenKind::Prove
+                    ) {
+                        return Some(prev.kind.clone());
+                    }
+                    return None;
+                }
+                TokenKind::Eof => return None,
+                _ => {}
+            }
+            i += 1;
+        }
     }
 
     /// `Parallel IDENT For …` — Devanagari SOV parallel-for
@@ -2358,6 +2423,94 @@ impl Parser {
             items,
             span: start.span.merge(semi.span),
         })
+    }
+
+    /// SOV-form verb-at-end statement dispatch (closure #266).
+    /// `looks_like_sov_verb_at_end` has already scanned ahead
+    /// and identified which verb closes this statement; we
+    /// route to the matching parser. All four AST shapes are
+    /// identical to their English counterparts — the only
+    /// thing that changed is the surface order.
+    fn parse_sov_verb_stmt(&mut self, verb: TokenKind) -> Result<Stmt, Diagnostic> {
+        let start_span = self.current().span;
+        match verb {
+            TokenKind::Return => {
+                let expr = self.parse_expr()?;
+                self.bump(); // consume Return
+                let semi = self.expect_keyword("';'", |k| matches!(k, TokenKind::Semicolon))?;
+                Ok(Stmt::Return {
+                    expr,
+                    span: start_span.merge(semi.span),
+                })
+            }
+            TokenKind::Prove => {
+                let expr = self.parse_expr()?;
+                self.bump(); // consume Prove
+                let semi = self.expect_keyword("';'", |k| matches!(k, TokenKind::Semicolon))?;
+                Ok(Stmt::Prove {
+                    expr,
+                    span: start_span.merge(semi.span),
+                })
+            }
+            TokenKind::Assert => {
+                let expr = self.parse_expr()?;
+                let message = if self
+                    .match_token(|k| matches!(k, TokenKind::Comma))
+                    .is_some()
+                {
+                    let msg_tok = self.expect_string()?;
+                    let TokenKind::Str(s) = msg_tok.kind else {
+                        unreachable!("expect_string only returns Str tokens")
+                    };
+                    Some(s)
+                } else {
+                    None
+                };
+                self.bump(); // consume Assert
+                let semi = self.expect_keyword("';'", |k| matches!(k, TokenKind::Semicolon))?;
+                Ok(Stmt::Assert {
+                    expr,
+                    message,
+                    span: start_span.merge(semi.span),
+                })
+            }
+            TokenKind::Print => {
+                let mut items = Vec::new();
+                loop {
+                    items.push(self.parse_print_item()?);
+                    // Stop on Print keyword (the verb-at-end) so
+                    // the surrounding loop doesn't consume it.
+                    if matches!(self.current().kind, TokenKind::Print) {
+                        break;
+                    }
+                    if self
+                        .match_token(|k| matches!(k, TokenKind::Comma))
+                        .is_some()
+                    {
+                        continue;
+                    }
+                    break;
+                }
+                self.bump(); // consume Print
+                let semi = self.expect_keyword("';'", |k| matches!(k, TokenKind::Semicolon))?;
+                Ok(Stmt::Print {
+                    items,
+                    span: start_span.merge(semi.span),
+                })
+            }
+            other => {
+                // Shouldn't reach — looks_like_sov_verb_at_end
+                // only returns the four supported verbs.
+                Err(Diagnostic::new(
+                    start_span,
+                    format!(
+                        "internal: unexpected SOV verb {:?} — expected \
+                         Return / Print / Assert / Prove",
+                        other
+                    ),
+                ))
+            }
+        }
     }
 
     fn parse_print_item(&mut self) -> Result<crate::ast::PrintItem, Diagnostic> {

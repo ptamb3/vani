@@ -629,6 +629,51 @@ language semantics, all are pure analyses):
 These all line up behind the SSA-LLVM multi-block work + the
 kosh package-manager arc on the canonical queue.
 
+#266 Devanagari SOV verb-at-end statements (return / print / assert / prove).
+follows from #265's SOV for-loop work. Hindi / Sanskrit /
+Marathi are verb-final ("my name is Ryan" → `मेरा नाम
+Ryan है`). Four verb-like statement forms now accept the
+verb-at-end surface:
+
+  `X पुनरागम;`                   (return X)
+  `"x =", x लिखो;`                (print "x =", x)
+  `cond सुनिश्चित;`              (assert cond)
+  `cond, "msg" खात्री;`          (assert cond, "msg")
+  `expr प्रमाण;`                  (prove expr)
+
+A new parser helper
+`looks_like_sov_verb_at_end(&self) -> Option<TokenKind>`
+scans from `self.pos` to the next `;` at depth 0
+(tracking parens / brackets / braces). If the token
+immediately before `;` is Return / Print / Assert /
+Prove, it returns that kind so the dispatcher routes
+to `parse_sov_verb_stmt(verb)`. The check runs BEFORE
+the assignment / discard branches in `parse_stmt`,
+so SOV statements take precedence on the
+non-verb-keyword-starting shape.
+
+`parse_sov_verb_stmt(verb)` dispatches per-verb,
+re-using `parse_print_item` for the multi-item form
+and producing the same `Stmt::Return` / `::Print` /
+`::Assert` / `::Prove` AST as the English path.
+
+Five new lib tests pin each form individually
+(`sov_verb_at_end_return_compiles` etc.) plus a
+regression guard
+(`sov_verb_at_end_english_form_still_works`) that
+English `return X;` / `print …;` etc. still compile.
+The SOV detector only fires when the leading token is
+NOT a verb-keyword.
+
+Together with #265 (SOV for-loop), this closes the
+two main Devanagari ergonomic gaps. The remaining
+grammar work (#29: distinct Sanskrit / Hindi /
+Marathi verb forms reaching grammatical accuracy)
+still wants a consultant pass.
+
+Test totals: 976 lib + 47 e2e + 11 vtables-phase3 +
+2 user-drop-by-ref + 1 ssa-examples.
+
 #265 Devanagari SOV word-order — range `for` loop.
 the Phase-1 Devanagari aliases (`के लिए` = for,
 `से` = from, `तक` = to) already lexed correctly, but

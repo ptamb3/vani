@@ -537,6 +537,38 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Devanagari SOV verb-at-end statements done 2026-05-26**:
+   follows naturally from #265's SOV for-loop work. Hindi /
+   Sanskrit / Marathi are verb-final ("my name is Ryan" →
+   `मेरा नाम Ryan है`, verb at the end). Four verb-like
+   statement forms now accept the verb-at-end shape:
+
+     `X पुनरागम;`              (return X)
+     `"x =", x लिखो;`          (print "x =", x)
+     `cond सुनिश्चित;`        (assert cond)
+     `cond, "msg" खात्री;`    (assert cond, "msg")
+     `expr प्रमाण;`            (prove expr)
+
+   A new helper `looks_like_sov_verb_at_end(&self) -> Option<TokenKind>`
+   scans the current statement from `self.pos` to the next
+   `;` at depth 0 (tracking parens / brackets / braces),
+   and returns the verb-kind if the token immediately
+   before `;` is one of Return / Print / Assert / Prove.
+   `parse_stmt` runs the check BEFORE the assignment /
+   discard branches so SOV statements take precedence.
+   `parse_sov_verb_stmt(verb)` dispatches per-verb,
+   re-using `parse_print_item` for the multi-item form
+   and producing the same `Stmt::Return` / `::Print` /
+   `::Assert` / `::Prove` AST as the English path.
+
+   Five new lib tests cover each form individually plus a
+   regression guard that English `return X;` /
+   `print …;` etc. still compile (the SOV detector only
+   fires when the leading token is NOT a verb-keyword).
+
+   Test totals: 976 lib + 47 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #266.
+
    **Devanagari SOV word-order `for` loop done 2026-05-26**:
    the Phase-1 Devanagari aliases (`के लिए` = for,
    `से` = from, `तक` = to) already lexed correctly but

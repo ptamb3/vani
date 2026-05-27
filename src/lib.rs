@@ -15727,6 +15727,86 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn sov_verb_at_end_return_compiles() {
+        // Closure #266: Devanagari SOV verb-at-end. The natural
+        // Indo-Aryan word order puts the verb last, so
+        // `पुनरागम X` ("return X") reads more naturally as
+        // `X पुनरागम`. The parser scans ahead to the next `;`
+        // and routes through the SOV verb-stmt parser when the
+        // last token before `;` is a verb-keyword.
+        let source = r#"
+            कार्य main() -> i64 {
+              माना x: i64 = 7;
+              x पुनरागम;
+            }
+        "#;
+        compile(source).expect("SOV return compiles");
+    }
+
+    #[test]
+    fn sov_verb_at_end_print_compiles() {
+        // SOV print: items first, verb last. Works with multi-
+        // item comma-separated lists too.
+        let source = r#"
+            कार्य main() -> i64 {
+              माना x: i64 = 42;
+              "x =", x लिखो;
+              पुनरागम 0;
+            }
+        "#;
+        compile(source).expect("SOV print compiles");
+    }
+
+    #[test]
+    fn sov_verb_at_end_assert_compiles() {
+        // SOV assert: condition (+ optional message) first,
+        // verb last. Two variants: bare `cond verb;` and
+        // `cond, "msg" verb;`.
+        let source = r#"
+            कार्य main() -> i64 {
+              माना x: i64 = 5;
+              x > 0 सुनिश्चित;
+              x > 0, "x must be positive" खात्री;
+              पुनरागम 0;
+            }
+        "#;
+        compile(source).expect("SOV assert compiles");
+    }
+
+    #[test]
+    fn sov_verb_at_end_prove_compiles() {
+        // SOV prove: expression first, verb last. The SMT layer
+        // discharges the proof identically to the English form.
+        let source = r#"
+            कार्य main() -> i64 {
+              माना x: i64 = 3;
+              माना y: i64 = 4;
+              x + y == 7 प्रमाण;
+              पुनरागम 0;
+            }
+        "#;
+        compile(source).expect("SOV prove compiles + SMT discharges");
+    }
+
+    #[test]
+    fn sov_verb_at_end_english_form_still_works() {
+        // Regression guard: the English `return X;` / `print X;`
+        // / `assert X;` / `prove X;` forms still parse after
+        // #266. The SOV detector only routes when the first
+        // statement token is NOT a verb-keyword.
+        let source = r#"
+            fn main() -> i64 {
+              let x: i64 = 5;
+              print "x =", x;
+              assert x > 0;
+              prove x > 0;
+              return x;
+            }
+        "#;
+        compile(source).expect("English verb-first form still compiles");
+    }
+
+    #[test]
     fn sov_parallel_for_with_reduce_devanagari() {
         // The parallel-for SOV variant: `समान्तर प्रति` (parallel)
         // → IDENT → `के लिए` → start → `से` → end → `तक` →
