@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, starting dependency-ordered queue)
+## ⏳ Resume here (paused 2026-05-27, after closure #278 — match on f64)
 
 **Queue audit findings (during work-queue probe pass):** several
 TODO items listed under "Other queued follow-ups" or the
@@ -57,29 +57,32 @@ value.
 
 **Codegen completion (closes known parity gaps):**
 
-1. **#12 SSA-C multi-block parallel-for emit (L)** — closes the
-   last major SSA parity gap. Tree-C already lowers
-   `parallel for { if ... }` natively; SSA-C falls back to
-   tree-C today. Mirrors closure #264's work for SSA-LLVM.
-   Self-contained. Files:
-   [src/ssa_backend_c.rs](src/ssa_backend_c.rs).
+1. ✅ **#12 SSA-C multi-block parallel-for emit** — already
+   shipped via closure #251 ("Step 3b emit half"). Verified
+   2026-05-27: `parallel for i ... reduce ... { if cond { ...
+   } }` lowers natively in SSA-C with `_Pragma("omp parallel
+   for")` + for-loop + internal `bb<N>:` labels and gotos
+   for the if-branches. Returns correct result end-to-end.
+   Queue entry was stale.
 
-2. **#13 FFI ABI lowering for small aggregates by value (L)** —
-   completes FFI v2 → v3. Today the checker REJECTS struct-by-
-   value across FFI (closure #273) to prevent silent ABI
-   corruption. Wire correct System V x86-64 packed-register
-   passing (and per-platform equivalents) so users can write
-   `extern "C" fn point_sum(p: Point) -> i32;` directly.
-   Self-contained. Files: both LLVM backends,
-   [src/checker.rs](src/checker.rs) (lift the rejection).
+2. **#13 FFI ABI lowering for small aggregates by value (L,
+   deferred)** — genuinely multi-session. Needs per-platform
+   ABI classifier (System V x86-64 packed-register passing,
+   Windows x64, ARM64), plus emit-side struct decomposition
+   on both backends. Today the checker rejects with a `ref T`
+   hint (closure #273); users have a clean migration path,
+   so the safety bug is closed. Lifting the rejection is
+   ergonomic polish, not a correctness fix.
+
 
 **Surface additions (open up new programs):**
 
-3. **#4 Match on f64 (M)** — add `Pattern::Float` AST variant,
-   parser support, checker desugar (`scrut == lit` chain).
-   NaN-aware semantics documented as v1 limitation. Files:
-   [src/ast.rs](src/ast.rs), [src/parser.rs](src/parser.rs),
-   [src/checker.rs](src/checker.rs).
+3. ✅ **#4 Match on f64 / f32** — shipped 2026-05-27 (closure
+   #278). `Pattern::Float(f64)` AST variant + parser
+   support + `check_match_float` desugars to nested IfExpr
+   chain. Clear diagnostics for missing wildcard, duplicate
+   literals, NaN-in-pattern, wrong scrutinee type. 4 new
+   lib tests pin the shape. See STATUS.md closure #278.
 
 4. **#8 Nested arrays `[[T;N]; M]`, `[Vec<T>; N]` (M+)** — lift
    the "array element must be Copy" restriction. Closure #133's

@@ -1229,6 +1229,16 @@ fn format_expr(e: &Expr, parens_if_binary: bool, out: &mut String) {
                         out.push_str(s);
                         out.push('"');
                     }
+                    crate::ast::Pattern::Float(f) => {
+                        // Match the lexer's float-literal form:
+                        // always include a `.` so round-trip
+                        // parses back as a float, not an int.
+                        let s = format!("{}", f);
+                        out.push_str(&s);
+                        if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+                            out.push_str(".0");
+                        }
+                    }
                     crate::ast::Pattern::Wildcard => {
                         out.push('_');
                     }

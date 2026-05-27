@@ -1269,6 +1269,14 @@ pub enum Pattern {
     /// `strcmp`. A wildcard arm is required since the
     /// string space is open. T1.3 follow-up.
     Str(String),
+    /// `3.14 then …` — float literal pattern. Scrutinee
+    /// must be `f32` or `f64`; dispatch is via `==`.
+    /// A wildcard arm is required since the float space
+    /// is open. NaN scrutinees never match any literal arm
+    /// (IEEE 754 `NaN != NaN`), so they fall through to
+    /// the wildcard — documented as v1 limitation.
+    /// Closure #278.
+    Float(f64),
     /// `_ then …` — catch-all that covers every remaining
     /// variant; must appear last in the arm list.
     Wildcard,

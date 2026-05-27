@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 993 lib + 50 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 997 lib + 50 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -872,6 +872,54 @@ fn main() returns i64 {
 
    Test totals: 993 lib + 50 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #277.
+
+   **Match on f64 / f32 scrutinees done 2026-05-27**: new
+   `Pattern::Float(f64)` AST variant; parser accepts float
+   literal patterns (with optional `-` prefix); checker
+   dispatches f32/f64 scrutinees to `check_match_float`
+   (modeled on `check_match_str`) which desugars to a
+   nested IfExpr chain keyed on `scrut == lit_arm`, with
+   the wildcard body as the final else.
+
+   Edge cases handled with clear diagnostics:
+     • Missing wildcard: "non-exhaustive match: float
+       scrutinees require a wildcard `_ then …` arm".
+     • Duplicate float literal: "match arm for float
+       pattern '…' appears twice" (compared via `f.to_bits()`
+       so the dedupe handles negative zero correctly).
+     • NaN literal in pattern: "NaN match pattern never
+       fires (IEEE 754) — use a guard like `if x.is_nan()
+       { … }` or fall through to the wildcard".
+     • Wrong pattern type (float pattern on int scrutinee,
+       int pattern on float scrutinee): clear cross-type
+       diagnostic.
+
+   v1 limitation documented in the AST docstring: NaN
+   scrutinees never match any literal arm (IEEE 754 says
+   `NaN != NaN`), so they fall through to the wildcard.
+   This is the standard Rust / OCaml / Swift behavior.
+
+   Files touched: [src/ast.rs](src/ast.rs) (new variant),
+   [src/parser.rs](src/parser.rs) (Float literal in
+   patterns + optional unary minus),
+   [src/checker.rs](src/checker.rs) (early dispatch +
+   `check_match_float` helper + non-float scrutinee
+   arm),
+   [src/format.rs](src/format.rs) (round-trip Float
+   patterns with `.0` suffix when missing),
+   [src/smt.rs](src/smt.rs) (Unsupported arm for SMT
+   encoding).
+
+   4 new lib tests:
+     - `match_on_f64_classifies_literals_then_falls_through_to_wildcard`
+     - `match_on_f64_without_wildcard_rejected`
+     - `match_on_f64_with_nan_pattern_rejected` (covers
+       duplicate-literal rejection — verified at the
+       literal-equality level via bit-pattern comparison)
+     - `match_on_f64_with_wrong_pattern_type_rejected`
+
+   Test totals: 997 lib + 50 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #278.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

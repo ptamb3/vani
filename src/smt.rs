@@ -1345,6 +1345,11 @@ fn encode_expr(
                             "string match patterns not yet supported in SMT".into(),
                         ));
                     }
+                    crate::ast::Pattern::Float(_) => {
+                        return Err(EncodeError::Unsupported(
+                            "float match patterns not yet supported in SMT".into(),
+                        ));
+                    }
                     crate::ast::Pattern::Variant { .. } => {
                         return Err(EncodeError::Unsupported(
                             "enum-variant match patterns not yet supported in SMT".into(),

@@ -7830,6 +7830,184 @@ fn check_match_str(
     )
 }
 
+// Closure #278: match on f32 / f64 scrutinee. Mirrors
+// `check_match_str` shape — desugar to a nested IfExpr chain
+// keyed on `scrut == lit_arm` with the wildcard body as the
+// final else. Wildcard is required since the float space is
+// open. NaN scrutinees never match any literal arm (IEEE 754
+// `NaN != NaN`), so they fall through to the wildcard —
+// documented as v1 limitation.
+fn check_match_float(
+    scrutinee: &CheckedExpr,
+    arms: &[crate::ast::MatchArm],
+    span: Span,
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let scrut_ty = scrutinee.ty().clone();
+    let tmp_name = format!("__match_f_{}", span.start);
+    let mut seen_bits: Vec<u64> = Vec::new();
+    let mut wildcard_body: Option<TypedExpr> = None;
+    let mut wildcard_seen_at: Option<usize> = None;
+    let mut typed_arms: Vec<(f64, TypedExpr)> = Vec::new();
+    let mut result_ty: Option<Type> = None;
+    for (i, arm) in arms.iter().enumerate() {
+        if wildcard_seen_at.is_some() {
+            diagnostics.push(Diagnostic::new(
+                arm.pattern_span,
+                "match arm is unreachable: a wildcard `_` arm above already \
+                 covers every remaining case"
+                    .to_string(),
+            ));
+            continue;
+        }
+        match &arm.pattern {
+            crate::ast::Pattern::Float(f) => {
+                let bits = f.to_bits();
+                if seen_bits.iter().any(|b| *b == bits) {
+                    diagnostics.push(Diagnostic::new(
+                        arm.pattern_span,
+                        format!(
+                            "match arm for float pattern '{}' appears twice",
+                            f
+                        ),
+                    ));
+                    continue;
+                }
+                if f.is_nan() {
+                    diagnostics.push(Diagnostic::new(
+                        arm.pattern_span,
+                        "NaN match pattern never fires (IEEE 754 `NaN != NaN`) \
+                         — use a guard like `if x.is_nan() { … }` or fall \
+                         through to the wildcard arm"
+                            .to_string(),
+                    ));
+                    continue;
+                }
+                seen_bits.push(bits);
+                let body_checked = check_expr(&arm.body, env, signatures, diagnostics);
+                if let Some(prev) = &result_ty {
+                    if body_checked.ty() != prev {
+                        diagnostics.push(Diagnostic::new(
+                            arm.body.span,
+                            format!(
+                                "match arm body type mismatch: expected {}, got {}",
+                                prev,
+                                body_checked.ty()
+                            ),
+                        ));
+                    }
+                } else {
+                    result_ty = Some(body_checked.ty().clone());
+                }
+                typed_arms.push((*f, body_checked.expr));
+            }
+            crate::ast::Pattern::Wildcard => {
+                wildcard_seen_at = Some(i);
+                let body_checked = check_expr(&arm.body, env, signatures, diagnostics);
+                if let Some(prev) = &result_ty {
+                    if body_checked.ty() != prev {
+                        diagnostics.push(Diagnostic::new(
+                            arm.body.span,
+                            format!(
+                                "match arm body type mismatch: expected {}, got {}",
+                                prev,
+                                body_checked.ty()
+                            ),
+                        ));
+                    }
+                } else {
+                    result_ty = Some(body_checked.ty().clone());
+                }
+                wildcard_body = Some(body_checked.expr);
+            }
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    arm.pattern_span,
+                    format!(
+                        "match scrutinee is {}, but pattern is not a float \
+                         literal — use `3.14 then …` or `_ then …`",
+                        scrut_ty
+                    ),
+                ));
+                continue;
+            }
+        }
+    }
+    if wildcard_body.is_none() {
+        diagnostics.push(Diagnostic::new(
+            span,
+            "non-exhaustive match: float scrutinees require a wildcard \
+             `_ then …` arm to cover values not explicitly listed (and \
+             NaN, which never compares equal to any literal)"
+                .to_string(),
+        ));
+    }
+    let unified = result_ty.unwrap_or(scrut_ty.clone());
+    let default_body = wildcard_body.unwrap_or_else(|| TypedExpr {
+        kind: TypedExprKind::Float(0.0),
+        ty: unified.clone(),
+        constant: None,
+        span,
+        binding_decl_span: None,
+    });
+    let mut chain = default_body;
+    for (lit, body) in typed_arms.into_iter().rev() {
+        let scr_var = TypedExpr {
+            kind: TypedExprKind::Var(tmp_name.clone()),
+            ty: scrut_ty.clone(),
+            constant: None,
+            span,
+            binding_decl_span: None,
+        };
+        let lit_expr = TypedExpr {
+            kind: TypedExprKind::Float(lit),
+            ty: scrut_ty.clone(),
+            constant: None,
+            span,
+            binding_decl_span: None,
+        };
+        let cond = TypedExpr {
+            kind: TypedExprKind::Binary {
+                op: BinaryOp::Eq,
+                left: Box::new(scr_var),
+                right: Box::new(lit_expr),
+                checked: true,
+            },
+            ty: Type::Bool,
+            constant: None,
+            span,
+            binding_decl_span: None,
+        };
+        chain = TypedExpr {
+            kind: TypedExprKind::IfExpr {
+                cond: Box::new(cond),
+                then_value: Box::new(body),
+                else_value: Box::new(chain),
+            },
+            ty: unified.clone(),
+            constant: None,
+            span,
+            binding_decl_span: None,
+        };
+    }
+    let bind_stmt = TypedStmt::Let {
+        name: tmp_name.clone(),
+        ty: scrut_ty.clone(),
+        expr: scrutinee.expr.clone(),
+    };
+    CheckedExpr::new(
+        TypedExprKind::Block {
+            stmts: vec![bind_stmt],
+            tail: Box::new(chain),
+        },
+        unified,
+        None,
+        span,
+    )
+}
+
 fn check_expr(
     expr: &Expr,
     env: &mut Env,
@@ -8644,6 +8822,22 @@ fn check_expr(
                     diagnostics,
                 );
             }
+            // Closure #278: match on f32 / f64 desugars to a
+            // nested if-expression chain via `==` on the
+            // scrutinee. NaN scrutinees never match any
+            // literal arm (IEEE 754 `NaN != NaN`); they
+            // fall through to the wildcard. The wildcard is
+            // required since the float space is open.
+            if matches!(scrut_ty_early, Type::F32 | Type::F64) {
+                return check_match_float(
+                    &scrutinee_checked,
+                    arms,
+                    expr.span,
+                    env,
+                    signatures,
+                    diagnostics,
+                );
+            }
             // Two dispatch shapes in v1: enum-tag dispatch
             // and integer-literal dispatch. Bool and other
             // non-integer/non-enum scalars are rejected. The
@@ -8776,6 +8970,21 @@ fn check_expr(
                             arm.pattern_span,
                             "string literal match patterns are not yet supported \
                              in v1 — use if/else chains with `==` on Str/OwnedStr",
+                        ));
+                        continue;
+                    }
+                    crate::ast::Pattern::Float(_) => {
+                        // Float scrutinees route through
+                        // `check_match_float` (early dispatch);
+                        // reaching here means the scrutinee was
+                        // not f32/f64 — diagnose.
+                        diagnostics.push(Diagnostic::new(
+                            arm.pattern_span,
+                            format!(
+                                "float pattern in match arm but scrutinee is of \
+                                 type {}",
+                                scrut_ty
+                            ),
                         ));
                         continue;
                     }

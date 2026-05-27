@@ -3091,7 +3091,7 @@ impl Parser {
                         };
                         (Pattern::Str(text), span)
                     } else if self
-                        .check(|k| matches!(k, TokenKind::Minus | TokenKind::Int(_)))
+                        .check(|k| matches!(k, TokenKind::Minus | TokenKind::Int(_) | TokenKind::Float(_)))
                     {
                         let pat_start = self.current().span;
                         let mut negative = false;
@@ -3101,32 +3101,42 @@ impl Parser {
                         {
                             negative = true;
                         }
-                        let int_tok = self.bump();
-                        let int_span = int_tok.span;
-                        let value = match int_tok.kind {
+                        let lit_tok = self.bump();
+                        let lit_span = lit_tok.span;
+                        match lit_tok.kind {
                             TokenKind::Int(v) => {
-                                if negative {
+                                let value = if negative {
                                     match v.checked_neg() {
                                         Some(neg) => neg,
                                         None => {
                                             return Err(Diagnostic::new(
-                                                pat_start.merge(int_span),
+                                                pat_start.merge(lit_span),
                                                 "integer pattern overflow when negating",
                                             ));
                                         }
                                     }
                                 } else {
                                     v
-                                }
+                                };
+                                (Pattern::Int(value), pat_start.merge(lit_span))
+                            }
+                            // Closure #278: float literal pattern.
+                            // Scrutinee must be `f32` / `f64`;
+                            // dispatch is via `==`. A wildcard arm
+                            // is required since the float space is
+                            // open. NaN scrutinees never match any
+                            // literal arm (IEEE 754).
+                            TokenKind::Float(v) => {
+                                let value = if negative { -v } else { v };
+                                (Pattern::Float(value), pat_start.merge(lit_span))
                             }
                             _ => {
                                 return Err(Diagnostic::new(
-                                    int_span,
-                                    "expected integer literal in match pattern",
+                                    lit_span,
+                                    "expected integer or float literal in match pattern",
                                 ));
                             }
-                        };
-                        (Pattern::Int(value), pat_start.merge(int_span))
+                        }
                     } else {
                         let first_tok = self.expect_ident()?;
                         let pat_start = first_tok.span;
