@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #277 — user-Drop fires on discard)
+## ⏳ Resume here (paused 2026-05-27, starting dependency-ordered queue)
 
 **Queue audit findings (during work-queue probe pass):** several
 TODO items listed under "Other queued follow-ups" or the
@@ -44,28 +44,84 @@ remaining-work section turned out to already be shipped:
     by-value and by-ref user-Drop forms fire automatically.
     Subsequent #277 closes the only remaining gap (discard of
     fresh struct value).
-
-The non-trivial remaining items in the queue are scoped larger
-than estimated:
-
-  - **#4 Match on f64** — needs new `Pattern::Float` AST variant
-    + parser support, not just a checker desugar like Str. M tier
-    (not S).
-  - **#6 Fallible allocation `try_vec`** — needs first-class
-    `Result<T, E>` generic plumbing (vāṇी today supports
-    user-declared payloaded enums but not generic Result). M+
-    tier.
-  - **#8 Nested arrays `[[T;N]; M]`** — requires lifting the
-    "array element must be Copy" restriction, plus codegen for
-    nested array layout. M+ tier.
   - **#9 Array-return SSA-LLVM** — already works through SSA in
     practice (verified by emit); the documented "gate" no longer
     applies. Effectively closed; queue entry stale.
 
-The genuinely-remaining queue items are mostly L-tier multi-day
-work: SSA-C multi-block parallel-for emit (#12), FFI small-
-aggregate ABI lowering (#13), and the `vani.toml` manifest /
-multi-file pipeline (#14).
+## Dependency-ordered queue (2026-05-27, after #277)
+
+Sequencing by foundational value and dependency-readiness.
+None of these have hard inter-deps; ordering reflects "which
+unblocks the most future work" first, then descending by user
+value.
+
+**Codegen completion (closes known parity gaps):**
+
+1. **#12 SSA-C multi-block parallel-for emit (L)** — closes the
+   last major SSA parity gap. Tree-C already lowers
+   `parallel for { if ... }` natively; SSA-C falls back to
+   tree-C today. Mirrors closure #264's work for SSA-LLVM.
+   Self-contained. Files:
+   [src/ssa_backend_c.rs](src/ssa_backend_c.rs).
+
+2. **#13 FFI ABI lowering for small aggregates by value (L)** —
+   completes FFI v2 → v3. Today the checker REJECTS struct-by-
+   value across FFI (closure #273) to prevent silent ABI
+   corruption. Wire correct System V x86-64 packed-register
+   passing (and per-platform equivalents) so users can write
+   `extern "C" fn point_sum(p: Point) -> i32;` directly.
+   Self-contained. Files: both LLVM backends,
+   [src/checker.rs](src/checker.rs) (lift the rejection).
+
+**Surface additions (open up new programs):**
+
+3. **#4 Match on f64 (M)** — add `Pattern::Float` AST variant,
+   parser support, checker desugar (`scrut == lit` chain).
+   NaN-aware semantics documented as v1 limitation. Files:
+   [src/ast.rs](src/ast.rs), [src/parser.rs](src/parser.rs),
+   [src/checker.rs](src/checker.rs).
+
+4. **#8 Nested arrays `[[T;N]; M]`, `[Vec<T>; N]` (M+)** — lift
+   the "array element must be Copy" restriction. Closure #133's
+   `c_element_storage(Type)` mostly handles the codegen storage
+   spelling; the checker rule is the main blocker. Files:
+   [src/checker.rs](src/checker.rs), both backends.
+
+5. **#10 FFI varargs + function-pointer callbacks (M)** —
+   completes FFI surface for `printf`, `qsort`, etc. Varargs:
+   add `...` to extern fn parser. Callbacks: function-pointer
+   params already work for vāṇी fns (closure #?); thread
+   through to extern declarations. Files:
+   [src/parser.rs](src/parser.rs), [src/checker.rs](src/checker.rs),
+   both backends.
+
+**Foundational arcs (multi-session enables):**
+
+6. **Generic Result<T, E> stdlib type (M)** — prerequisite for
+   #6 try_vec. Lifts payloaded enum generics so a single
+   Result definition covers all `Result<T, E>` instantiations.
+   Future error-handling features (file I/O, etc.) all benefit.
+   Files: stdlib module, [src/checker.rs](src/checker.rs)
+   (generic enum support).
+
+7. **#6 Fallible allocation API `try_vec(N) -> Result<Vec<T>,
+   AllocError>` (M)** — once Generic Result lands, add a
+   `try_vec` builtin that emits a malloc null-check. Lets
+   programs handle OOM gracefully instead of aborting.
+
+8. **#7 Recursion depth bound `#[bounded(N)]` annotation (M)** —
+   first attribute syntax in vāṇी. Parser recognizes
+   `#[bounded(N)]` before fn; checker emits a runtime depth
+   guard (atomic counter + abort if exceeded). Files:
+   [src/lexer.rs](src/lexer.rs) (`#` token),
+   [src/parser.rs](src/parser.rs), [src/checker.rs](src/checker.rs),
+   both backends.
+
+9. **#14 Multi-file pipeline + `vani.toml` manifest (L)** —
+   foundational for Kosh package manager. Beyond `use "path"`,
+   add include-path resolution, diamond-import dedup, entry-
+   point manifest. Files: [src/main.rs](src/main.rs),
+   [src/lib.rs](src/lib.rs), new `src/manifest.rs`.
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow
