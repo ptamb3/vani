@@ -14914,6 +14914,52 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn len_of_ref_owned_str_dereferences_through_borrow() {
+        // Closure #262: `len(ref s)` for `s: OwnedStr`
+        // previously emitted invalid LLVM IR ("'%v_3' defined
+        // with type 'i8**' but expected 'i8*'") AND, on C,
+        // silently returned `strlen(&s)` — the strlen of the
+        // pointer's own byte representation, ≈ 6 on x86-64
+        // little-endian. The fix touches three layers (SSA
+        // lowerer, SSA-C, SSA-LLVM, tree-C) so each
+        // dereferences once when the operand's type is a
+        // borrow. This test pins both backends' answer.
+        let source = r#"
+            fn main() -> i64 {
+              let s: OwnedStr = "Hello, " + "world";
+              let n: u64 = len(ref s);
+              print s;
+              return n as i64;
+            }
+        "#;
+        // Both `compile_to_c` (tree-C) and the LLVM IR string
+        // must produce a `strlen(*…)` shape that reads the
+        // inner i8* — not the address of the binding.
+        let c = compile_to_c(source).expect("compiles to C");
+        // Tree-C uses `(*<expr>)` deref on the operand before
+        // calling strlen when the operand is a borrow.
+        assert!(
+            c.contains("strlen((*"),
+            "expected strlen((*…)) shape on borrowed OwnedStr; got:\n{}",
+            c.lines().take(50).collect::<Vec<_>>().join("\n")
+        );
+        // LLVM SSA path: a `load i8*, i8**` precedes the strlen
+        // call when the operand is a borrow.
+        let checked = compile(source).expect("compiles");
+        let (module, errs) = crate::ssa::lower_program(&checked.ir);
+        assert!(errs.is_empty(), "SSA lowering errs: {:?}", errs);
+        let ll = crate::ssa_backend_llvm::emit(&module)
+            .expect("SSA-LLVM emits without falling back");
+        assert!(
+            ll.contains("load i8*, i8** ")
+                && ll.contains("call i64 @strlen"),
+            "expected `load i8*, i8** %v_…` before strlen on borrowed OwnedStr; \
+             got:\n{}",
+            ll.lines().take(80).collect::<Vec<_>>().join("\n")
+        );
+    }
+
+    #[test]
     fn move_diagnostic_suggests_ref_or_clone_for_vec() {
         // Closure #260: when a Vec / OwnedStr is consumed by move
         // and then re-used, the existing "value 'v' was moved"

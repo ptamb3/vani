@@ -2718,10 +2718,29 @@ fn emit_instr(
                 let arg = args.first().ok_or_else(|| EmitError {
                     message: "intent_str_len expects 1 arg".to_string(),
                 })?;
+                // Closure #262: if the operand is a borrow
+                // (`ref s` / `mut ref s` for `s: OwnedStr` /
+                // `Str`), the SSA value points at the alloca
+                // (`i8**`) rather than the inner pointer
+                // (`i8*`). `strlen` wants `i8*`, so load
+                // through the borrow first. Without this,
+                // `len(ref s)` produced LLVM IR that `lli`
+                // rejected.
+                let arg_str = operand_str(arg);
+                let inner = match operand_type(arg, value_types) {
+                    Some(Type::Ref(_)) | Some(Type::RefMut(_)) => {
+                        let tmp = format!("%v_{}.deref", instr.result.0);
+                        out.push_str(&format!(
+                            "  {} = load i8*, i8** {}\n",
+                            tmp, arg_str
+                        ));
+                        tmp
+                    }
+                    _ => arg_str,
+                };
                 out.push_str(&format!(
                     "  %v_{} = call i64 @strlen(i8* {})\n",
-                    instr.result.0,
-                    operand_str(arg)
+                    instr.result.0, inner
                 ));
                 return Ok(());
             }

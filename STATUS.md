@@ -537,6 +537,29 @@ fn main() returns i64 {
    payloaded tags, branch to free vs done block) arms.
    Closure #157.
 
+   **Codegen fix — `len(ref OwnedStr)` 2026-05-26**:
+   `len(ref s)` for `s: OwnedStr` had a 4-layer bug:
+   (a) SSA lowerer routed it through the static-array
+   path (which uses a `length: u64` field defaulting to
+   0) instead of the strlen call, because the type
+   match was on `array.ty` not `array.ty.deref()`;
+   (b) SSA-LLVM intent_str_len emit passed the alloca
+   address `i8**` straight to strlen which wants `i8*`,
+   producing IR `lli` rejected; (c) SSA-C emitted
+   `strlen(<ref expr>)` which compiled but read junk
+   bytes (returned ≈ 6 on x86-64); (d) tree-C had the
+   same junk-byte bug. The fix dereferences once when
+   the operand's type is `Type::Ref(_) | Type::RefMut(_)`
+   — SSA-LLVM emits `load i8*, i8** %x` first, SSA-C +
+   tree-C wrap the operand with `(*<expr>)`. One lib
+   test pins both shapes (`strlen((*…)` for C,
+   `load i8*, i8** … call i64 @strlen` for LLVM).
+   Surfaced by `examples/memory_safety.vani`; the
+   example now uses `len(ref greeting)` cleanly and
+   returns 12. Test totals: 967 lib + 47 e2e + 11
+   vtables-phase3 + 2 user-drop-by-ref + 1
+   ssa-examples. Closure #262.
+
    **examples/memory_safety.vani — canonical patterns demo done 2026-05-26**:
    added a single example that exercises the seven core
    memory-safety patterns end-to-end and is now wired into

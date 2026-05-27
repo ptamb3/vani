@@ -2109,7 +2109,13 @@ fn lower_expr_to_operand(
             // the `InstrKind::Len` path because the length is
             // either a compile-time constant or a single
             // aggregate-field extract.
-            if matches!(array.ty, Type::Str | Type::OwnedStr) {
+            //
+            // Closure #262: `len(ref s)` / `len(mut ref s)` for
+            // `s: OwnedStr` was previously routed through the
+            // Array/Vec path (which uses a static `length`
+            // field defaulting to 0 — wrong). Dereferencing
+            // through Ref / RefMut catches the borrow case.
+            if matches!(array.ty.deref(), Type::Str | Type::OwnedStr) {
                 // Fresh-OwnedStr operand (Call / Binary `+`)
                 // owns a heap allocation with no other
                 // binding. `intent_str_len` (strlen) doesn't

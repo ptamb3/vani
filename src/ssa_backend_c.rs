@@ -1647,11 +1647,24 @@ fn emit_instr(
                 let arg = args.first().ok_or_else(|| EmitError {
                     message: "intent_str_len expects 1 arg".to_string(),
                 })?;
+                // Closure #262: borrowed Str / OwnedStr lowers
+                // as `const char**` / `char**` in C — strlen
+                // wants `const char*`. Dereference once when
+                // the operand's type is a Ref / RefMut.
+                let arg_str = c_operand(arg);
+                let arg_expr = match arg {
+                    Operand::Value(v) => match value_types.get(v) {
+                        Some(Type::Ref(_)) | Some(Type::RefMut(_)) => {
+                            format!("(*({}))", arg_str)
+                        }
+                        _ => arg_str,
+                    },
+                    _ => arg_str,
+                };
                 writeln!(
                     out,
                     "  v_{} = (uint64_t)strlen({});",
-                    instr.result.0,
-                    c_operand(arg)
+                    instr.result.0, arg_expr
                 )
                 .unwrap();
                 return Ok(());

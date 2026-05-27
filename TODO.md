@@ -558,12 +558,14 @@ improvements, not correctness fixes.
 
 ### Known codegen bugs (small lifts each)
 
-- ⚠️ **`len(ref OwnedStr)` produces invalid LLVM IR.** Surfaced
-  while wiring `examples/memory_safety.vani` (closure #261). The
-  ref-conversion passes the OwnedStr binding's address (`i8**`)
-  where `strlen` expects the inner pointer (`i8*`). Workaround:
-  call `len(s)` without `ref`. Fix: the ref-of-OwnedStr lowering
-  needs a load before passing to `strlen`. Small.
+- ✅ **`len(ref OwnedStr)`** — closure #262. Surfaced while
+  wiring `examples/memory_safety.vani` (#261). Was a 4-layer
+  bug: SSA lowerer routed it through the static-array path
+  (length defaulted to 0), SSA-LLVM passed `i8**` to strlen
+  (rejected by `lli`), SSA-C + tree-C emitted strlen of the
+  pointer's own bytes (returned ≈6). Fixed by dereferencing
+  once when the operand is `Ref` / `RefMut`. One lib test
+  pins both shapes.
 
 ### Move/clone polish — small items
 
@@ -627,6 +629,42 @@ language semantics, all are pure analyses):
 These all line up behind the SSA-LLVM multi-block work + the
 kosh package-manager arc on the canonical queue.
 
+#262 Codegen — `len(ref OwnedStr)` 4-layer fix.
+`len(ref s)` for `s: OwnedStr` was broken on every code path:
+
+  - SSA lowerer (`src/ssa.rs`): match on `array.ty` instead
+    of `array.ty.deref()` routed borrows through the
+    static-array path (which uses a `length: u64` field
+    defaulting to 0 for non-array types).
+  - SSA-LLVM intent_str_len emit: passed `i8**` straight to
+    `@strlen`; `lli` rejected the IR.
+  - SSA-C intent_str_len emit: `strlen(<ref expr>)` compiled
+    silently but `strlen` read the alloca pointer's own bytes
+    (returned ≈ 6 on x86-64 little-endian).
+  - Tree-C `emit_len`: same as SSA-C — wrong inner expression.
+
+Fix dereferences once at every layer when the operand's type
+is `Type::Ref(_) | Type::RefMut(_)`. SSA-LLVM emits a
+`load i8*, i8** %x` before the strlen call. SSA-C + tree-C
+wrap the operand expression with `(*<expr>)`. One lib test
+(`len_of_ref_owned_str_dereferences_through_borrow`) pins
+both shapes — the tree-C `strlen((*…))` form AND the
+SSA-LLVM `load i8*, i8** … call i64 @strlen` sequence.
+
+Surfaced by `examples/memory_safety.vani` (#261); that
+example now uses `len(ref greeting)` cleanly and the
+cross-backend parity test passes. Test totals: 967 lib +
+47 e2e + 11 vtables-phase3 + 2 user-drop-by-ref + 1
+ssa-examples.
+#261 examples/memory_safety.vani — canonical patterns end-to-end.
+new top-level example that demonstrates the seven core
+memory-safety patterns: (1) affine Vec ownership +
+move-into-callee, (2) explicit `clone(xs)`, (3) push/pop
+Stack pattern through `mut ref`, (4) OwnedStr auto-drop,
+(5) user-defined Drop interface, (6) `parallel for` with
+`reduce total with +;`, (7) `task` + `join`. Wired into
+both `check_examples_all_succeed` and the parity runner.
+Surfaced #262's codegen bug; that's now fixed too.
 #260 Move-rejection diagnostic — type-aware fix hint.
 the "value 'v' was moved; cannot use after move"
 diagnostic now carries a secondary note suggesting the

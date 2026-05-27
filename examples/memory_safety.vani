@@ -69,11 +69,12 @@ fn stack_pattern() -> i64 {
 fn owned_str_drops() -> i64 {
   let greeting: OwnedStr = "Hello, " + "world";
   // greeting is heap-allocated. No `free` call needed —
-  // the codegen emits one at scope exit. We bind a Copy
-  // value (length is i64) to demonstrate without
-  // touching the binding via a ref.
+  // the codegen emits one at scope exit. `len(ref greeting)`
+  // takes a shared borrow and returns the length without
+  // consuming the OwnedStr.
+  let n: u64 = len(ref greeting);
   print greeting;
-  return 0;
+  return n as i64;
 }
 
 // ---------------------------------------------------------------

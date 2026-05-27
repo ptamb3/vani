@@ -4261,13 +4261,27 @@ fn emit_len(array: &TypedExpr, static_length: u64) -> String {
             // strlen via a GCC statement-expression. Var /
             // FieldAccess / Str operands stay non-consuming.
             // Closure #140.
+            //
+            // Closure #262: when the operand is a borrow (Ref
+            // / RefMut), the C expression has type `char**` /
+            // `const char**` — strlen wants the inner pointer.
+            // Dereference once with `(*expr)`. Without this,
+            // `len(ref s)` for `s: OwnedStr` returned
+            // `strlen(&s)` which read junk from the pointer's
+            // own bytes (≈ 6 on x86-64 little-endian).
+            let arg_str = emit_expr(array);
+            let arg_expr = if is_ref {
+                format!("(*{})", arg_str)
+            } else {
+                arg_str
+            };
             if crate::ir::is_fresh_owned_str(array) {
                 format!(
                     "((uint64_t)({{ char* _intent_len_tmp = ({}); uint64_t _intent_len_r = (uint64_t)strlen(_intent_len_tmp); free((void*)_intent_len_tmp); _intent_len_r; }}))",
-                    emit_expr(array)
+                    arg_expr
                 )
             } else {
-                format!("((uint64_t)strlen({}))", emit_expr(array))
+                format!("((uint64_t)strlen({}))", arg_expr)
             }
         }
         _ => format!("((uint64_t){})", static_length),
