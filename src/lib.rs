@@ -19920,6 +19920,31 @@ fn main() -> i64 {
     // failure. V1 is C-backend-only; LLVM panics with a
     // clear "use --backend=c" message.
     #[test]
+    fn try_vec_returns_result_vec_on_llvm_backend() {
+        let source = r#"
+            fn main() -> i64 {
+              let r: Result<Vec<i64>, AllocError> = try_vec(10 as u64);
+              return match r {
+                Result.Ok then 0,
+                Result.Err then 1,
+                _ then 2,
+              };
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("try_vec compiles to LLVM");
+        // Emit must include malloc + null check + branch to
+        // try_vec_ok/err labels.
+        assert!(
+            ll.contains("call i8* @malloc(i64 ")
+                && ll.contains("icmp eq i8* ")
+                && ll.contains("try_vec_ok")
+                && ll.contains("try_vec_err"),
+            "expected malloc + null-check + branch labels in LLVM emit, got:\n{}",
+            ll
+        );
+    }
+
+    #[test]
     fn try_vec_returns_result_vec_on_c_backend() {
         let source = r#"
             fn main() -> i64 {

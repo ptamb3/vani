@@ -623,6 +623,23 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
             collect_vec_elements_in_stmt(s, &mut seen, &mut vec_elements);
         }
     }
+    // Closure #284: also walk enum-variant payload types so
+    // `Result<Vec<i64>, AllocError>` (whose Ok variant
+    // carries a Vec<i64>) gets the Vec typedef emitted even
+    // when the user only references the Result type at the
+    // surface.
+    for decl in &program.enums {
+        for pty in &decl.payload_types {
+            if let Some(pty) = pty {
+                collect_vec_elements_ty(pty, &mut seen, &mut vec_elements);
+            }
+        }
+    }
+    for decl in &program.structs {
+        for (_, fty) in &decl.fields {
+            collect_vec_elements_ty(fty, &mut seen, &mut vec_elements);
+        }
+    }
     // User-declared structs emitted before vec / tuple
     // typedefs so other shapes can reference them. T1.2.
     for decl in &program.structs {
@@ -1360,9 +1377,104 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
             } else if let Type::Enum(enum_name) = ty {
                 // Payloaded enums with a heap-shaped payload
                 // free the payload when the active variant
-                // tag matches. Supported: `OwnedStr` (free
-                // i8*) and `Vec<T>` (intent_vec_<T>__free).
-                // T1.3 + T1.2 phase 2b.
+                // tag matches. Closure #283/#284 LLVM:
+                // mixed-payload enums route through
+                // per-variant switch + bitcast on the byte
+                // buffer (the `extractvalue ... 1` would
+                // return `[N x i8]`, not the variant's actual
+                // type).
+                let variant_payloads = LLVM_ENUM_VARIANT_PAYLOADS_REGISTRY
+                    .with(|r| r.borrow().get(enum_name).cloned());
+                let is_mixed = variant_payloads.as_ref().map(|v| {
+                    let payloads: Vec<&Type> =
+                        v.iter().filter_map(|(_, p)| p.as_ref()).collect();
+                    payloads.len() >= 2
+                        && payloads[1..].iter().any(|t| *t != payloads[0])
+                }).unwrap_or(false);
+                if is_mixed {
+                    if let Some((_, addr)) = ctx.locals.get(name).cloned() {
+                        let s_ty = format!("%Enum_{}", enum_name);
+                        let buf_size = llvm_enum_payload_buffer_size_by_name(enum_name);
+                        let buf_ty = format!("[{} x i8]", buf_size);
+                        let variants = variant_payloads.unwrap();
+                        // Read the tag once.
+                        let tag_ptr = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = getelementptr {}, {}* {}, i32 0, i32 0\n",
+                            tag_ptr, s_ty, s_ty, addr
+                        ));
+                        let tag = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = load i32, i32* {}\n", tag, tag_ptr
+                        ));
+                        let done_lbl = ctx.fresh_label("enum_drop_done");
+                        // For each variant with a heap-shaped
+                        // payload, emit cmp + branch +
+                        // bitcast-load + free.
+                        for (vtag, (_vname, pty)) in variants.iter().enumerate() {
+                            let Some(pty) = pty.as_ref() else { continue; };
+                            let (free_fn, val_ty) = match pty {
+                                Type::OwnedStr => (
+                                    "@free".to_string(),
+                                    "i8*".to_string(),
+                                ),
+                                Type::Vec(element) => (
+                                    format!(
+                                        "@intent_vec_{}__free",
+                                        vec_struct_tag(element)
+                                    ),
+                                    vec_struct_name(element),
+                                ),
+                                _ => continue,
+                            };
+                            let cmp = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = icmp eq i32 {}, {}\n",
+                                cmp, tag, vtag
+                            ));
+                            let do_lbl = ctx.fresh_label("enum_drop_variant");
+                            let next_lbl = ctx.fresh_label("enum_drop_next");
+                            out.push_str(&format!(
+                                "  br i1 {}, label %{}, label %{}\n",
+                                cmp, do_lbl, next_lbl
+                            ));
+                            out.push_str(&format!("{}:\n", do_lbl));
+                            ctx.current_block = do_lbl.clone();
+                            let pay_buf_ptr = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = getelementptr {}, {}* {}, i32 0, i32 1\n",
+                                pay_buf_ptr, s_ty, s_ty, addr
+                            ));
+                            let first_elem = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = getelementptr inbounds {}, {}* {}, i64 0, i64 0\n",
+                                first_elem, buf_ty, buf_ty, pay_buf_ptr
+                            ));
+                            let typed_ptr = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = bitcast i8* {} to {}*\n",
+                                typed_ptr, first_elem, val_ty
+                            ));
+                            let val = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = load {}, {}* {}\n",
+                                val, val_ty, val_ty, typed_ptr
+                            ));
+                            out.push_str(&format!(
+                                "  call void {}({} {})\n",
+                                free_fn, val_ty, val
+                            ));
+                            out.push_str(&format!("  br label %{}\n", done_lbl));
+                            out.push_str(&format!("{}:\n", next_lbl));
+                            ctx.current_block = next_lbl.clone();
+                        }
+                        // Fall-through if no variant matched.
+                        out.push_str(&format!("  br label %{}\n", done_lbl));
+                        out.push_str(&format!("{}:\n", done_lbl));
+                        ctx.current_block = done_lbl;
+                    }
+                    return;
+                }
                 let payload_ty = LLVM_ENUM_PAYLOAD_REGISTRY
                     .with(|r| r.borrow().get(enum_name).cloned());
                 let heap_kind = match &payload_ty {
@@ -2829,18 +2941,157 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             dest
         }
         TypedExprKind::Call { name, args, .. } => {
-            // Closure #284: try_vec is a C-backend-only
-            // builtin in v1. Emit a clear panic at LLVM time
-            // pointing at `--backend=c`. Lifting requires
-            // basic-block-flavored if/else IR for the
-            // malloc-null-check + Result construction —
-            // queued as a follow-up.
+            // Closure #284 LLVM half: try_vec(n) ->
+            // Result<Vec<i64>, AllocError>. Emit a sequence
+            // of basic blocks for malloc + null-check +
+            // Result construction. Mirrors the C-side
+            // statement-expression.
+            //
+            // Lowered shape:
+            //   call malloc(n * 8) -> i8*
+            //   cmp eq null -> i1
+            //   br i1, ok, err
+            //   ok: build Vec<i64> struct {data,len=0,cap=n};
+            //       bitcast result's byte-buffer to Vec*;
+            //       store; load result; br merge
+            //   err: tag = 1 (Err); no payload; load result;
+            //        br merge
+            //   merge: phi
             if name == "try_vec" {
-                panic!(
-                    "try_vec is currently only supported on the C backend. \
-                     Use `--backend=c` for now; LLVM try_vec is a queued \
-                     follow-up to closure #284."
-                );
+                let n_v = emit_expr(&args[0], ctx, out);
+                let result_enum = match &expr.ty {
+                    Type::Enum(n) => n.clone(),
+                    _ => unreachable!("try_vec must return Type::Enum(Result__...)"),
+                };
+                let struct_ty = format!("%Enum_{}", result_enum);
+                let buf_size = llvm_enum_payload_buffer_size_by_name(&result_enum);
+                let buf_ty = format!("[{} x i8]", buf_size);
+                let vec_ty = vec_struct_name(&Type::I64);
+                // n bytes = n * 8.
+                let bytes = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = mul i64 {}, 8\n", bytes, n_v
+                ));
+                // Avoid zero-byte malloc — malloc(0) returns
+                // implementation-defined; use 8 minimum.
+                let bytes_min = ctx.fresh_tmp();
+                let is_zero = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp eq i64 {}, 0\n", is_zero, bytes
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 8, i64 {}\n",
+                    bytes_min, is_zero, bytes
+                ));
+                let raw = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i8* @malloc(i64 {})\n", raw, bytes_min
+                ));
+                // Result alloca (shared across branches).
+                // Must precede the terminator so it's in the
+                // entry block of this expression.
+                let r_addr = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = alloca {}\n", r_addr, struct_ty
+                ));
+                let is_null = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp eq i8* {}, null\n", is_null, raw
+                ));
+                let ok_lbl = ctx.fresh_label("try_vec_ok");
+                let err_lbl = ctx.fresh_label("try_vec_err");
+                let merge_lbl = ctx.fresh_label("try_vec_merge");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    is_null, err_lbl, ok_lbl
+                ));
+                // Pre-emit each label's body. ctx.current_block
+                // tracks which block we're in for downstream
+                // ops in this expression — but we'll force the
+                // merge block at the end.
+                //
+                // OK branch
+                out.push_str(&format!("{}:\n", ok_lbl));
+                ctx.current_block = ok_lbl.clone();
+                // Cast raw i8* to i64* (Vec data).
+                let data_ptr = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = bitcast i8* {} to i64*\n", data_ptr, raw
+                ));
+                // Build Vec<i64> = {data, len=0, capacity=n_min/8}.
+                // Reconstruct capacity = bytes_min / 8.
+                let cap = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = sdiv i64 {}, 8\n", cap, bytes_min
+                ));
+                let v0 = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue {} undef, i64* {}, 0\n",
+                    v0, vec_ty, data_ptr
+                ));
+                let v1 = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue {} {}, i64 0, 1\n",
+                    v1, vec_ty, v0
+                ));
+                let v2 = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue {} {}, i64 {}, 2\n",
+                    v2, vec_ty, v1, cap
+                ));
+                // Write tag = 0.
+                let tag_ptr = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr {}, {}* {}, i32 0, i32 0\n",
+                    tag_ptr, struct_ty, struct_ty, r_addr
+                ));
+                out.push_str(&format!(
+                    "  store i32 0, i32* {}\n", tag_ptr
+                ));
+                // Write payload via bitcast.
+                let pay_buf_ptr = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr {}, {}* {}, i32 0, i32 1\n",
+                    pay_buf_ptr, struct_ty, struct_ty, r_addr
+                ));
+                let first_elem = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr inbounds {}, {}* {}, i64 0, i64 0\n",
+                    first_elem, buf_ty, buf_ty, pay_buf_ptr
+                ));
+                let typed_ptr = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = bitcast i8* {} to {}*\n",
+                    typed_ptr, first_elem, vec_ty
+                ));
+                out.push_str(&format!(
+                    "  store {} {}, {}* {}\n",
+                    vec_ty, v2, vec_ty, typed_ptr
+                ));
+                out.push_str(&format!("  br label %{}\n", merge_lbl));
+                // ERR branch
+                out.push_str(&format!("{}:\n", err_lbl));
+                ctx.current_block = err_lbl.clone();
+                let tag_ptr_err = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr {}, {}* {}, i32 0, i32 0\n",
+                    tag_ptr_err, struct_ty, struct_ty, r_addr
+                ));
+                out.push_str(&format!(
+                    "  store i32 1, i32* {}\n", tag_ptr_err
+                ));
+                // AllocError is payload-less (lowers to i32 tag);
+                // no payload to write into the buffer.
+                out.push_str(&format!("  br label %{}\n", merge_lbl));
+                // Merge.
+                out.push_str(&format!("{}:\n", merge_lbl));
+                ctx.current_block = merge_lbl.clone();
+                let loaded = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load {}, {}* {}\n",
+                    loaded, struct_ty, struct_ty, r_addr
+                ));
+                return loaded;
             }
             // Synthetic intrinsic emitted by the parallel-for
             // outliner for each `reduce` clause. First arg is

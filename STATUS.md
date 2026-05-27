@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1014 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1015 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -1226,6 +1226,40 @@ fn main() returns i64 {
 
    Test totals: 1014 lib + 52 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #284.
+
+   **try_vec LLVM half done 2026-05-27**: completes closure
+   #284 — try_vec(n) now works on both backends.
+
+   LLVM pipeline:
+
+     • Call emit detects `name == "try_vec"` and lowers to
+       basic-block IR: alloca result struct → call malloc →
+       null-check via `icmp eq i8* %raw, null` → branch to
+       try_vec_ok / try_vec_err labels.
+     • Ok block: build Vec<i64> {data, len=0, cap=n} via
+       insertvalue, write tag=0 to result, bitcast result's
+       `[N x i8]` payload buffer to `%intent_vec_i64*` and
+       store the Vec.
+     • Err block: write tag=1 to result; AllocError has no
+       payload so nothing to store in the buffer.
+     • Merge block: load result struct.
+     • Vec typedef emission now walks enum-variant payload
+       types + struct field types (in addition to the
+       existing fn-walking) so `Vec<i64>` inside a
+       `Result<Vec<i64>, AllocError>` triggers its typedef
+       even when the user never spells `Vec<i64>` directly.
+     • Scope-exit Drop for mixed-payload enums: LLVM now
+       emits per-variant `icmp eq i32 tag, T` + branch +
+       bitcast-on-buffer + free, matching the C-side closure
+       #283 fix.
+
+   1 new lib test (`try_vec_returns_result_vec_on_llvm_backend`)
+   pins the LLVM emit shape. The defensive `panic!("use
+   --backend=c")` for try_vec is removed.
+
+   Test totals: 1015 lib + 52 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #284 complete
+   (both backends).
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table
