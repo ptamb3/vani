@@ -4258,6 +4258,65 @@ fn monomorphize_type_decls_in_program(
             }
         }
     }
+    // Closure #281: collected args still carry unresolved
+    // `Type::Apply` for nested generics
+    // (`Option<Option<i64>>`). Normalize each args list to
+    // fully concrete `Type::Struct(mangled)` /
+    // `Type::Enum(mangled)` before generating decls and
+    // before mangling the outer name, otherwise the
+    // mangling produces garbled debug-derived strings.
+    fn normalize_apply_args(
+        args: &mut Vec<Type>,
+        struct_templates: &HashMap<String, StructDecl>,
+        enum_templates: &HashMap<String, EnumDecl>,
+    ) {
+        for a in args.iter_mut() {
+            normalize_one(a, struct_templates, enum_templates);
+        }
+    }
+    fn normalize_one(
+        ty: &mut Type,
+        st: &HashMap<String, StructDecl>,
+        en: &HashMap<String, EnumDecl>,
+    ) {
+        match ty {
+            Type::Apply { name, args } => {
+                normalize_apply_args(args, st, en);
+                let mangled = mangle_generic_decl(name, args);
+                *ty = if st.contains_key(name) {
+                    Type::Struct(mangled)
+                } else if en.contains_key(name) {
+                    Type::Enum(mangled)
+                } else {
+                    return;
+                };
+            }
+            Type::Vec(i) | Type::Ref(i) | Type::RefMut(i)
+            | Type::Atomic(i) | Type::Mutex(i) | Type::Guard(i) => {
+                normalize_one(i, st, en);
+            }
+            Type::Array { element, .. } => normalize_one(element, st, en),
+            Type::Channel(element, _) => normalize_one(element, st, en),
+            Type::Tuple(elements) => {
+                for e in elements.iter_mut() {
+                    normalize_one(e, st, en);
+                }
+            }
+            Type::FnPtr(params, ret) => {
+                for p in params.iter_mut() {
+                    normalize_one(p, st, en);
+                }
+                normalize_one(ret, st, en);
+            }
+            _ => {}
+        }
+    }
+    for (_n, args) in needed_structs.iter_mut() {
+        normalize_apply_args(args, &struct_templates, &enum_templates);
+    }
+    for (_n, args) in needed_enums.iter_mut() {
+        normalize_apply_args(args, &struct_templates, &enum_templates);
+    }
     // Generate monomorphic decls per (template, args).
     // Templates' variant payloads / field types reference
     // Type::Param(name); substitute each occurrence with
@@ -4360,9 +4419,21 @@ fn mangle_generic_decl(name: &str, args: &[Type]) -> String {
     let mut s = name.to_string();
     for a in args {
         s.push_str("__");
-        s.push_str(&type_mangle(a));
+        s.push_str(&type_mangle_for_decl(a));
     }
     s
+}
+
+// Closure #281: like `type_mangle` but uses the name
+// directly for monomorphic nominal types (so nested
+// instantiations read as `Option__Option__i64` rather than
+// `Option__Enum_Option__i64`). Used only for the
+// struct/enum monomorphization pass.
+fn type_mangle_for_decl(ty: &Type) -> String {
+    match ty {
+        Type::Struct(name) | Type::Enum(name) => name.clone(),
+        _ => type_mangle(ty),
+    }
 }
 
 fn rewrite_apply_in_ty(
