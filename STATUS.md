@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1011 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1012 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -1092,6 +1092,56 @@ fn main() returns i64 {
 
    Test totals: 1011 lib + 52 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #282.
+
+   **Mixed-payload-type enum lift (C backend) done 2026-05-27**:
+   v1's restriction "all payload-bearing variants must share
+   the payload type" is lifted on the C backend, unblocking
+   `Result<T, E>` with T != E and (once LLVM is also lifted)
+   #6 try_vec.
+
+   Surface: any enum can now mix payload types across
+   variants:
+
+       enum R { Ok(i64), Err(OwnedStr) }      // works
+       enum Result<T, E> { Ok(T), Err(E) }    // works for all T, E
+
+   Pipeline (C backend):
+
+     • New `ENUM_VARIANT_PAYLOADS_REGISTRY: HashMap<String,
+       Vec<(variant_name, Option<Type>)>>` carries per-variant
+       payload info. Existing single-type registry kept for
+       back-compat with the legacy `{ tag; T payload; }`
+       layout when all payload-bearing variants agree.
+     • Mixed-payload enums emit the new layout:
+         typedef struct {
+             int32_t tag;
+             union {
+                 <Type0> v_<Variant0>;
+                 <Type1> v_<Variant1>;
+                 …
+             } u;
+         } Enum_<Name>;
+     • Variant construction emits `(Enum_X){ .tag = T, .u = {
+       .v_<variant> = <payload> } }` for mixed-payload, legacy
+       `.payload = <payload>` for single-payload.
+     • Match-extract emits `__scr.u.v_<variant>` for mixed,
+       `__scr.payload` for single.
+     • New `enum_has_mixed_payloads(decl)` helper routes
+       between the two paths at every codegen site.
+
+   Limitation queued: **LLVM backend** still uses the legacy
+   `{ i32, T }` layout and panics with a clear "use
+   --backend=c" message when a mixed-payload enum reaches
+   it. Lifting requires byte-buffer `[N x i8]` payload + per-
+   variant bitcast at every variant access (~15 sites).
+   Tracked as the immediate follow-up to this closure.
+
+   1 new lib test
+   (`mixed_payload_enum_compiles_on_c_backend`) validates
+   both the typedef shape and the variant-construction emit.
+
+   Test totals: 1012 lib + 52 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #283.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

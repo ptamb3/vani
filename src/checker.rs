@@ -817,41 +817,14 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
         }
         // Mixed-payload-type check: all variants with payloads
         // must share the same payload type (single-field
-        // V1 restriction: all payload-bearing variants must
-        // share the same payload type. Lifting this needs:
-        //   - ENUM_PAYLOAD_REGISTRY → per-variant Vec
-        //   - C enum typedef → `{ tag; union { v_<var>; … } u; }`
-        //   - Variant construction emit → `e.u.v_<var> = …`
-        //   - Match-extract emit → `e.u.v_<var>` per arm
-        //   - Drop dispatch → switch on tag, free correct
-        //     union member
-        //   - Same lift in LLVM backend (max-size payload
-        //     buffer + per-variant bitcast)
-        // L-tier work — gates Result<T, E> with T != E and
-        // #6 try_vec which requires Result<Vec<i64>, AllocError>.
-        let payload_types: Vec<(&str, &Type)> = decl
-            .variants
-            .iter()
-            .filter_map(|v| v.payload.first().map(|p| (v.name.as_str(), p)))
-            .collect();
-        if payload_types.len() >= 2 {
-            let (first_name, first_ty) = payload_types[0];
-            for (other_name, other_ty) in &payload_types[1..] {
-                if *other_ty != first_ty {
-                    diagnostics.push(Diagnostic::new(
-                        decl.name_span,
-                        format!(
-                            "enum '{}' has mixed payload types — '{}' carries {} \
-                             but '{}' carries {}. V1 requires all payload-bearing \
-                             variants to share the same payload type (multi-type \
-                             representation deferred).",
-                            decl.name, first_name, first_ty, other_name, other_ty
-                        ),
-                    ));
-                    break;
-                }
-            }
-        }
+        // Closure #283: mixed payload types across variants
+        // ARE allowed. The backend tagged-union layout uses
+        // a C `union` keyed by the variant's tag, so each
+        // variant can carry its own payload type — see
+        // `enum_has_mixed_payloads` in backend_c.rs.
+        // `Result<T, E> { Ok(T), Err(E) }` works even with
+        // T != E. Drop dispatch + match-extract switch on
+        // the active tag to select the correct union member.
         for i in 0..decl.variants.len() {
             for j in (i + 1)..decl.variants.len() {
                 if decl.variants[i].name == decl.variants[j].name {

@@ -86,6 +86,18 @@ thread_local! {
     static ENUM_PAYLOAD_TAGS_REGISTRY:
         std::cell::RefCell<std::collections::HashMap<String, Vec<u32>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Closure #283: per-variant payload-type registry,
+    /// keyed by enum name. Stores `Vec<(variant_name,
+    /// Option<Type>)>` in declaration order. Populated for
+    /// every enum that has at least one payloaded variant.
+    /// Enables mixed-payload-type enums (e.g. `Result<T,
+    /// E> { Ok(T), Err(E) }`) by routing each variant's
+    /// payload through its own union member, rather than
+    /// forcing all variants to share a single payload type.
+    pub(crate) static ENUM_VARIANT_PAYLOADS_REGISTRY:
+        std::cell::RefCell<
+            std::collections::HashMap<String, Vec<(String, Option<Type>)>>
+        > = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 /// Per-name C struct typedef for a payloaded enum. Prefixed
@@ -99,6 +111,32 @@ pub(crate) fn enum_c_name(name: &str) -> String {
 /// T1.3 phase 2b.
 fn enum_has_payload(decl: &crate::ir::TypedEnumDecl) -> bool {
     decl.payload_types.iter().any(|p| p.is_some())
+}
+
+/// Closure #283: true if this enum carries variants with
+/// payloads of differing types (e.g. `Result<i64, OwnedStr>`
+/// where Ok carries i64 and Err carries OwnedStr). Triggers
+/// the new union-layout codegen path. Single-payload-type
+/// enums stay on the legacy `{ tag; T payload; }` layout for
+/// back-compat (no test breakage).
+fn enum_has_mixed_payloads(decl: &crate::ir::TypedEnumDecl) -> bool {
+    let payloaded: Vec<&Type> = decl
+        .payload_types
+        .iter()
+        .filter_map(|p| p.as_ref())
+        .collect();
+    if payloaded.len() < 2 {
+        return false;
+    }
+    let first = payloaded[0];
+    payloaded[1..].iter().any(|t| *t != first)
+}
+
+/// Closure #283: C identifier for the per-variant union
+/// member name. `v_Ok`, `v_Err`, etc. Mirrored on the LLVM
+/// side via `intent_enum_v_<variant>`-style globals.
+pub(crate) fn enum_variant_member(variant: &str) -> String {
+    format!("v_{}", variant)
 }
 
 /// Common payload type across all payloaded variants of the
@@ -149,6 +187,25 @@ pub fn emit_c(program: &TypedProgram) -> String {
             if !tags.is_empty() {
                 reg.insert(decl.name.clone(), tags);
             }
+        }
+    });
+    // Closure #283: per-variant payload registry. Populated
+    // for every payloaded enum (uniform OR mixed) so the
+    // codegen sites can choose the right access pattern.
+    ENUM_VARIANT_PAYLOADS_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        reg.clear();
+        for decl in &program.enums {
+            if !enum_has_payload(decl) {
+                continue;
+            }
+            let pairs: Vec<(String, Option<Type>)> = decl
+                .variants
+                .iter()
+                .zip(decl.payload_types.iter())
+                .map(|(name, pty)| (name.clone(), pty.clone()))
+                .collect();
+            reg.insert(decl.name.clone(), pairs);
         }
     });
     STRUCT_FIELDS_REGISTRY.with(|r| {
@@ -312,6 +369,30 @@ pub fn emit_c(program: &TypedProgram) -> String {
     let mut any_enum_emitted = false;
     for decl in &program.enums {
         if !enum_has_payload(decl) {
+            continue;
+        }
+        // Closure #283: mixed-payload-type enums lay out
+        // each variant's payload through its own union
+        // member, keyed by variant name (`u.v_<variant>`).
+        // Single-payload-type enums keep the legacy
+        // `{ tag; T payload; }` layout for back-compat.
+        if enum_has_mixed_payloads(decl) {
+            body.push_str(&format!(
+                "typedef struct {{ int32_t tag; union {{\n",
+            ));
+            for (variant, pty) in decl.variants.iter().zip(decl.payload_types.iter()) {
+                let Some(payload_ty) = pty.as_ref() else {
+                    continue;
+                };
+                let member = enum_variant_member(variant);
+                let payload_decl = match payload_ty {
+                    Type::Array { .. } => format_declarator(payload_ty, &member),
+                    _ => format!("{} {}", c_type_name(payload_ty), member),
+                };
+                body.push_str(&format!("    {};\n", payload_decl));
+            }
+            body.push_str(&format!("}} u; }} {};\n", enum_c_name(&decl.name)));
+            any_enum_emitted = true;
             continue;
         }
         let payload_ty = match enum_common_payload_ty(decl) {
@@ -3429,25 +3510,35 @@ fn emit_expr(expr: &TypedExpr) -> String {
             // Plain (payload-less) variant: just the tag.
             // Payloaded enum's payload-less variant: build a
             // tagged-union struct with `.tag` set and the
-            // `.payload` field zero-initialized. Aggregate
-            // payload types (Vec / struct / tuple) need an
-            // empty designated-initializer `{ 0 }` instead
-            // of bare `0` since C can't init a struct from
-            // an integer. T1.3 phase 2b.
+            // payload field zero-initialized. For mixed-payload
+            // enums (closure #283) the payload sits inside a
+            // `.u` union; the payload-less variant just sets
+            // the tag and leaves the union zeroed. Aggregate
+            // payload types need brace-init.
             let payloaded = ENUM_PAYLOAD_REGISTRY.with(|r| r.borrow().contains_key(enum_name));
             if payloaded {
+                let is_mixed = ENUM_VARIANT_PAYLOADS_REGISTRY.with(|r| {
+                    r.borrow().get(enum_name).map(|v| {
+                        let payloads: Vec<&Type> =
+                            v.iter().filter_map(|(_, p)| p.as_ref()).collect();
+                        payloads.len() >= 2
+                            && payloads[1..].iter().any(|t| *t != payloads[0])
+                    }).unwrap_or(false)
+                });
+                if is_mixed {
+                    // Mixed-payload: just set the tag; the
+                    // union's storage is zero-initialized
+                    // implicitly by the absent designator.
+                    return format!(
+                        "(({}){{ .tag = (int32_t){} }})",
+                        enum_c_name(enum_name),
+                        tag,
+                    );
+                }
                 let payload_ty = ENUM_PAYLOAD_REGISTRY
                     .with(|r| r.borrow().get(enum_name).cloned())
                     .expect("just checked payloaded");
                 let payload_zero = match &payload_ty {
-                    // Aggregates and arrays can't be initialized
-                    // from a bare integer. Closure #203 adds
-                    // `Type::Array` to the brace-init list —
-                    // `.payload = 0` was tripping
-                    // `-Wmissing-braces` and is technically
-                    // ill-formed for array initializers (gcc
-                    // accepts via zero-fill extension, but
-                    // -Werror or stricter compilers reject).
                     Type::Vec(_) | Type::Tuple(_) | Type::Struct(_) | Type::Array { .. } => "{0}",
                     _ => "0",
                 };
@@ -3476,6 +3567,36 @@ fn emit_expr(expr: &TypedExpr) -> String {
                 }
                 _ => emit_expr(payload),
             };
+            // Closure #283: mixed-payload-type enums store
+            // the payload through a per-variant union member
+            // (`.u.v_<variant>`). Single-payload-type enums
+            // keep the legacy `.payload` field for back-
+            // compat.
+            let is_mixed = ENUM_VARIANT_PAYLOADS_REGISTRY.with(|r| {
+                r.borrow().get(enum_name).map(|v| {
+                    let payloads: Vec<&Type> =
+                        v.iter().filter_map(|(_, p)| p.as_ref()).collect();
+                    payloads.len() >= 2
+                        && payloads[1..].iter().any(|t| *t != payloads[0])
+                }).unwrap_or(false)
+            });
+            if is_mixed {
+                // Look up the variant name from the
+                // per-variant registry by tag.
+                let variant_name = ENUM_VARIANT_PAYLOADS_REGISTRY.with(|r| {
+                    r.borrow().get(enum_name).and_then(|v| {
+                        v.get(*tag as usize).map(|(n, _)| n.clone())
+                    })
+                }).unwrap_or_else(|| format!("tag{}", tag));
+                let member = enum_variant_member(&variant_name);
+                return format!(
+                    "(({}){{ .tag = (int32_t){}, .u = {{ .{} = {} }} }})",
+                    enum_c_name(enum_name),
+                    tag,
+                    member,
+                    payload_str
+                );
+            }
             format!(
                 "(({}){{ .tag = (int32_t){}, .payload = {} }})",
                 enum_c_name(enum_name),
@@ -3547,14 +3668,42 @@ fn emit_expr(expr: &TypedExpr) -> String {
                 }
                 // For VariantWithBinding patterns, emit a fresh
                 // scoped block that declares the local binding
-                // initialized from `__scr.payload`, then emits
-                // the arm body referencing it.
+                // initialized from the payload (legacy
+                // `.payload` for single-type, or `.u.v_<variant>`
+                // for mixed-payload — closure #283).
                 let arm_block = if let Some((bname, bty)) = &arm.binding {
                     let body_v = emit_expr(&arm.body);
+                    let scrutinee_enum_name = match &scrutinee.ty {
+                        Type::Enum(n) => Some(n.clone()),
+                        _ => None,
+                    };
+                    let payload_access = if let Some(enum_n) = &scrutinee_enum_name {
+                        let is_mixed = ENUM_VARIANT_PAYLOADS_REGISTRY.with(|r| {
+                            r.borrow().get(enum_n).map(|v| {
+                                let payloads: Vec<&Type> =
+                                    v.iter().filter_map(|(_, p)| p.as_ref()).collect();
+                                payloads.len() >= 2
+                                    && payloads[1..].iter().any(|t| *t != payloads[0])
+                            }).unwrap_or(false)
+                        });
+                        if is_mixed {
+                            let variant_name = ENUM_VARIANT_PAYLOADS_REGISTRY.with(|r| {
+                                r.borrow().get(enum_n).and_then(|v| {
+                                    v.get(arm.tag as usize).map(|(n, _)| n.clone())
+                                })
+                            }).unwrap_or_else(|| format!("tag{}", arm.tag));
+                            format!("__scr.u.{}", enum_variant_member(&variant_name))
+                        } else {
+                            "__scr.payload".to_string()
+                        }
+                    } else {
+                        "__scr.payload".to_string()
+                    };
                     format!(
-                        "{{ {} v_{} = __scr.payload; __r = ({}); }}",
+                        "{{ {} v_{} = {}; __r = ({}); }}",
                         c_type_name(bty),
                         bname,
+                        payload_access,
                         body_v
                     )
                 } else {

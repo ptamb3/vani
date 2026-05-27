@@ -29,32 +29,32 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #282 — prelude auto-imports Option/Result/AllocError)
+## ⏳ Resume here (paused 2026-05-27, after closure #283 — mixed-payload enum C-backend lift)
 
 **Next pickup chain (each closure unblocks the next):**
 
-### Closure A: Lift mixed-payload-type enum restriction (L)
+### Closure A: Mixed-payload-type enum lift
 
-The dependency that surfaced while attempting #6 try_vec: v1
-rejects `enum X { A(i64), B(OwnedStr) }` because all
-payload-bearing variants must share the payload type
-(checker.rs ~line 820). This blocks `Result<T, E>` with
-T != E, which blocks `Result<Vec<i64>, AllocError>`, which
-blocks #6 try_vec.
-
-Required work:
-  - `ENUM_PAYLOAD_REGISTRY: HashMap<String, Type>` →
-    `HashMap<String, Vec<Option<Type>>>` (per-variant).
-  - Both backends' enum typedef → `{ tag; union { v_<var> } u; }`.
-  - All variant construction sites (~15 in C, similar in LLVM)
-    → use `e.u.v_<variant>` field.
-  - Match-extract sites → switch by tag to correct union member.
-  - Drop dispatch → per-tag switch over which payload to free.
-  - Test updates for any enum tests assuming old layout.
-
-Effort: L (4-6 hours focused). Touches both backends, both
-tree + SSA paths. Worth the time — unblocks idiomatic
-error-handling.
+  - **C backend half:** ✅ shipped 2026-05-27 (closure #283).
+    New `ENUM_VARIANT_PAYLOADS_REGISTRY` + union typedef +
+    `u.v_<variant>` access at construction + match-extract.
+    `Result<T, E>` with T != E now compiles on tree-C.
+    SSA-C currently routes through tree-C and inherits the
+    fix; explicit SSA-C audit pending.
+  - **LLVM backend half:** ⏳ pending. Tree-LLVM + SSA-LLVM
+    still use the legacy `%Enum_<Name> = type { i32, T }`
+    layout and panic at emit-time when they see a
+    mixed-payload enum, pointing users at `--backend=c`.
+    Lifting requires `[N x i8]` payload buffer + per-variant
+    bitcast at ~15 sites. `llvm_byte_size(ty)` helper
+    needed for max-payload sizing.
+  - **Drop dispatch follow-up:** the C-side closure #283
+    handles construction + extract. Per-variant drop
+    dispatch (free the right heap when an OwnedStr / Vec
+    variant is active) still routes through the legacy
+    `.payload` path for single-type enums; mixed-type drop
+    needs a `switch (tag)` over `u.v_<variant>` access.
+    Pending lib test exercising mixed-payload Drop.
 
 ### Closure B: #6 try_vec (M, deps: Closure A)
 

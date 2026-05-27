@@ -19897,6 +19897,43 @@ fn main() -> i64 {
     // `Result<T, E>`, and `AllocError`. Users get them
     // without declaring; explicit user redeclarations
     // override the prelude versions (deduplicated by name).
+    // Closure #283: mixed-payload-type enum lift. The
+    // previous v1 restriction "all payload-bearing variants
+    // must share the same payload type" blocked `Result<T,
+    // E>` with T != E. Now lifted on the C backend via
+    // per-variant union members (`u.v_<variant>`); LLVM
+    // mixed-payload is queued as a follow-up. Validates
+    // `Result<i64, OwnedStr>` round-trips a value through
+    // the Ok variant and yields it via match.
+    #[test]
+    fn mixed_payload_enum_compiles_on_c_backend() {
+        let source = r#"
+            enum R { Ok(i64), Err(OwnedStr) }
+
+            fn main() -> i64 {
+              let r: R = R.Ok(42);
+              return match r {
+                R.Ok(v) then v,
+                R.Err(_) then -1,
+              };
+            }
+        "#;
+        let c = compile_to_c(source).expect("mixed-payload enum compiles to C");
+        // Validate the typedef emits the union form
+        // `union { … v_Ok; … v_Err; }`.
+        assert!(
+            c.contains("union {") && c.contains("v_Ok") && c.contains("v_Err"),
+            "expected union-form typedef with per-variant members, got:\n{}",
+            c
+        );
+        // Construction must use the variant's union member.
+        assert!(
+            c.contains(".u = { .v_Ok ="),
+            "expected `.u = {{ .v_Ok = ...` variant construction, got:\n{}",
+            c
+        );
+    }
+
     #[test]
     fn prelude_provides_option_without_user_declaration() {
         let source = r#"

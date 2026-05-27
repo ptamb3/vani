@@ -521,8 +521,34 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // for each payloaded enum. The first field is the variant
     // tag, the second is the shared payload type. Plain enums
     // (no payload variants) stay as bare `i32`.
+    //
+    // Closure #283: mixed-payload enums (Result<T, E> with
+    // T != E) are supported on the C backend via per-variant
+    // union members. The LLVM backend's payload typing is
+    // more invasive to lift (byte-buffer + bitcast at every
+    // variant access — ~15 sites). For now, panic with a
+    // clear message pointing at `--backend=c` if a
+    // mixed-payload enum reaches LLVM emit. Future closure
+    // mirrors the C-side lift via `[N x i8]` payload buffers.
     let mut any_enum_emitted = false;
     for decl in &program.enums {
+        let payloaded: Vec<&Type> = decl
+            .payload_types
+            .iter()
+            .filter_map(|p| p.as_ref())
+            .collect();
+        let is_mixed = payloaded.len() >= 2
+            && payloaded[1..].iter().any(|t| *t != payloaded[0]);
+        if is_mixed {
+            panic!(
+                "LLVM backend doesn't yet support mixed-payload-type \
+                 enums (enum '{}' has variants carrying different \
+                 payload types). Use `--backend=c` for now; LLVM \
+                 mixed-payload lift is queued as a follow-up to \
+                 closure #283.",
+                decl.name
+            );
+        }
         if let Some(payload_ty) = decl.payload_types.iter().find_map(|p| p.clone()) {
             out.push_str(&format!(
                 "%Enum_{} = type {{ i32, {} }}\n",
