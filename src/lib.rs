@@ -20024,14 +20024,33 @@ fn main() -> i64 {
         );
     }
 
-    // Closure #289: `#[bounded(N)]` LLVM lift on SSA-LLVM
-    // path (the default `intentc run` / `build`). Tree-LLVM
-    // still uses the legacy path and panics for bounded
-    // fns; that's tested separately. SSA-LLVM verified
-    // end-to-end via the bounded_over.vani example (exits
-    // with SIGABRT when the bound is exceeded). The lib
-    // test here pins compile-time acceptance only —
-    // running the IR happens at the e2e layer.
+    // Closure #289 + tree-LLVM follow-up: bounded fn emit
+    // on both tree-LLVM (via compile_to_llvm) and SSA-LLVM
+    // (via the e2e abort test). Tree-LLVM emits the
+    // thread-local global at module scope before the
+    // `define`, the entry sequence inside the fn, and the
+    // decrement before each Return.
+    #[test]
+    fn bounded_attribute_emits_depth_counter_on_llvm_backend() {
+        let source = r#"
+            #[bounded(5)]
+            fn deep(n: i64) -> i64 {
+              if n <= 0 { return 0; }
+              return deep(n - 1) + 1;
+            }
+
+            fn main() -> i64 { return deep(3); }
+        "#;
+        let ll = compile_to_llvm(source).expect("bounded fn compiles to LLVM");
+        assert!(
+            ll.contains("@__intent_depth_deep = thread_local global i32 0")
+                && ll.contains("icmp sgt i32")
+                && ll.contains("call void @abort()"),
+            "expected thread-local depth counter + bound check + abort emit, got:\n{}",
+            ll
+        );
+    }
+
     #[test]
     fn bounded_attribute_unknown_name_rejected() {
         let source = r#"

@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #289 — #[bounded(N)] LLVM lift)
+## ⏳ Resume here (paused 2026-05-27, after closure #290 — #[bounded(N)] tree-LLVM follow-up)
 
 **Next pickup chain (each closure unblocks the next):**
 

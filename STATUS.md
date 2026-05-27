@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1021 lib + 54 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1022 lib + 54 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -1465,6 +1465,34 @@ fn main() returns i64 {
 
    Test totals: 1021 lib + 54 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #289.
+
+   **#[bounded(N)] tree-LLVM follow-up done 2026-05-27**:
+   tree-LLVM now emits the same depth-counter
+   instrumentation as SSA-LLVM. Both LLVM paths handle
+   `#[bounded(N)]` end-to-end.
+
+   Tree-LLVM pipeline:
+
+     • Module-level thread-local global emitted just before
+       the fn's `define`.
+     • Entry sequence at fn opening: load → +1 → store →
+       cmp > N → branch to `__bd_abort` or fall-through to
+       a fresh label that holds the body.
+     • New `FnCtx.bounded_fn_name: Option<String>` carries
+       the fn name into Return-statement codegen so the
+       per-return decrement knows which counter to touch.
+     • `TypedStmt::Return` emit checks `ctx.bounded_fn_name`
+       and emits `load → -1 → store` before the actual
+       `ret`.
+
+   The defensive `panic!("SSA-LLVM supports this")` for
+   tree-LLVM is removed. 1 lib test
+   (`bounded_attribute_emits_depth_counter_on_llvm_backend`)
+   pins the tree-LLVM emit shape — restored from a previous
+   removal now that tree-LLVM works.
+
+   Test totals: 1022 lib + 54 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #290.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

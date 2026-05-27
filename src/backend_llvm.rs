@@ -798,21 +798,20 @@ fn emit_function(
     out: &mut String,
 ) {
     let ret_ty = llvm_type_string(&function.return_type);
-    // Closure #289: `#[bounded(N)]` LLVM lift. SSA-LLVM is
-    // the default LLVM path and already implements the
-    // depth-counter instrumentation. Tree-LLVM still uses
-    // the legacy emit; route through SSA-LLVM by panicking
-    // here so the SSA fallback machinery doesn't fall back
-    // to tree-LLVM for bounded fns. (Tree-LLVM lift is a
-    // smaller follow-up — same pattern, just open-coded in
-    // the Return statement emit.)
-    if function.recursion_bound.is_some() {
-        panic!(
-            "Tree-LLVM backend doesn't yet support `#[bounded(N)]` recursion \
-             guards (fn '{}'). The SSA-LLVM path (default for `intentc \
-             run` / `build`) supports them as of closure #289.",
+    // Closure #289 tree-LLVM follow-up: bounded recursion
+    // instrumentation now works on tree-LLVM too. Same
+    // pattern as SSA-LLVM (thread-local depth counter +
+    // entry increment+check + decrement before each Return).
+    // The thread-local global is emitted just before the
+    // `define` line so it sits at module scope. The Return
+    // decrement runs through `ctx.bounded_fn_name` plumbed
+    // into the FnCtx.
+    if let Some(bound) = function.recursion_bound {
+        out.push_str(&format!(
+            "@__intent_depth_{} = thread_local global i32 0\n",
             function.name
-        );
+        ));
+        let _ = bound;
     }
     // Closure #269: `extern "C" fn name(...) -> R;` emits a
     // `declare` line with the bare C-ABI name (no `fn_` prefix).
@@ -889,6 +888,25 @@ fn emit_function(
     out.push_str(") {\n");
 
     let mut ctx = FnCtx::new(assert_msg_indices, print_str_indices);
+    // Closure #289 tree-LLVM: record the fn's bounded-name
+    // (if any) so Return emits can reference the
+    // thread-local counter. Then emit the entry sequence.
+    if let Some(bound) = function.recursion_bound {
+        ctx.bounded_fn_name = Some(function.name.clone());
+        let counter = format!("@__intent_depth_{}", function.name);
+        out.push_str(&format!("  %__bd_cur = load i32, i32* {}\n", counter));
+        out.push_str("  %__bd_new = add i32 %__bd_cur, 1\n");
+        out.push_str(&format!("  store i32 %__bd_new, i32* {}\n", counter));
+        out.push_str(&format!("  %__bd_over = icmp sgt i32 %__bd_new, {}\n", bound));
+        let body_lbl = ctx.fresh_label("bd_body");
+        out.push_str(&format!(
+            "  br i1 %__bd_over, label %__bd_abort, label %{}\n\
+             __bd_abort:\n  call void @abort()\n  unreachable\n\
+             {}:\n",
+            body_lbl, body_lbl
+        ));
+        ctx.current_block = body_lbl;
+    }
 
     // For each parameter:
     //  - Reference params (`&T` / `&mut T`) arrive as pointer values
@@ -1011,6 +1029,11 @@ struct FnCtx<'a> {
     /// expression has introduced its own basic blocks (e.g.
     /// nested if-exprs in else-if chains). T4 follow-up.
     current_block: String,
+    /// Closure #289 follow-up: if the enclosing fn carries
+    /// a `#[bounded(N)]` attribute, its name (so Return
+    /// emits can reference `@__intent_depth_<name>`).
+    /// `None` when the fn is unbounded.
+    bounded_fn_name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -1040,6 +1063,7 @@ impl<'a> FnCtx<'a> {
             // this to the empty string; the first label we
             // emit will overwrite it.
             current_block: String::new(),
+            bounded_fn_name: None,
         }
     }
     fn fresh_tmp(&mut self) -> String {
@@ -1061,6 +1085,23 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
     match stmt {
         TypedStmt::Return { expr } => {
             let v = emit_expr(expr, ctx, out);
+            // Closure #289 tree-LLVM: decrement bounded-fn
+            // depth counter before each return so exit paths
+            // balance the entry increment.
+            if let Some(fn_name) = ctx.bounded_fn_name.clone() {
+                let counter = format!("@__intent_depth_{}", fn_name);
+                let pre = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load i32, i32* {}\n", pre, counter
+                ));
+                let dec = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = sub i32 {}, 1\n", dec, pre
+                ));
+                out.push_str(&format!(
+                    "  store i32 {}, i32* {}\n", dec, counter
+                ));
+            }
             // Use the string form so Vec / Array / Ref return types
             // get the correct LLVM type — the scalar fallback in
             // `llvm_type` would emit `i64` for everything else.
