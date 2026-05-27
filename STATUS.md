@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1015 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1016 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -1260,6 +1260,48 @@ fn main() returns i64 {
    Test totals: 1015 lib + 52 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #284 complete
    (both backends).
+
+   **FFI v6 — small struct-by-value on C backend done 2026-05-27**:
+   the silent-corruption guard from closure #273 is lifted
+   for all-integer-field structs ≤ 16 bytes. Common case:
+   `struct Point { x: i32, y: i32 }` passed by value to a C
+   helper now works correctly via cc's native System V
+   x86-64 packed-register handling.
+
+   New checker helpers:
+
+     • `is_ffi_integer_class(ty)` — true for scalar integers,
+       bool, refs, Str.
+     • `ffi_byte_size(ty)` — best-effort byte size per type.
+     • `is_ffi_safe_struct(name, structs)` — struct passes by
+       value iff all fields are integer-class AND total size
+       ≤ 16 bytes.
+     • `extern_param_rejection_hint` and
+       `extern_return_rejection_hint` now consult these to
+       carve out the FFI-safe subset.
+
+   Backend status:
+
+     • **C backend** ✓ — cc handles ABI natively. Just emits
+       the struct as a parameter type; the C compiler does
+       packed-register passing automatically.
+     • **LLVM backend** — panics with a clear "use
+       --backend=c" message at extern struct param/return
+       sites. Proper LLVM ABI lowering (emit `declare RET
+       @name(i64)` for size-8 structs and `{i64, i64}` for
+       size-9..16, with bitcast at call sites) is queued as
+       a follow-up.
+
+   2 updated lib tests + 1 new:
+     - `extern_struct_by_value_param_rejected_with_ref_hint`
+       now uses a mixed-type struct (i32 + f64) to test the
+       rejection path.
+     - `extern_struct_return_rejected_with_ref_hint` likewise.
+     - `extern_small_integer_struct_by_value_accepted` (new)
+       confirms the happy path for FFI-safe structs.
+
+   Test totals: 1016 lib + 52 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #285.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

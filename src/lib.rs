@@ -19713,6 +19713,36 @@ fn main() -> i64 {
     // value would silently corrupt under System V x86-64.
     #[test]
     fn extern_struct_by_value_param_rejected_with_ref_hint() {
+        // Closure #285: all-integer structs ≤ 16 bytes are
+        // now allowed by-value (cc handles ABI on the C
+        // backend). To test the rejection path, use a struct
+        // with a float field — float fields aren't yet in
+        // the FFI-safe set (they'd route through SSE
+        // registers under System V).
+        let source = r#"
+            struct Mixed { x: i32, y: f64 }
+
+            extern "C" fn takes_mixed(m: Mixed) -> i32;
+
+            fn main() -> i64 { return 0; }
+        "#;
+        let errs = compile(source).expect_err("float-field struct by value must be rejected");
+        assert!(
+            errs.iter().any(|d| {
+                let m = &d.message;
+                m.contains("unsupported FFI type Mixed")
+                    && m.contains("ref Mixed")
+            }),
+            "expected `ref Mixed` migration hint, got: {:?}",
+            errs
+        );
+    }
+
+    // Closure #285: small all-integer structs are now
+    // accepted by-value at the FFI boundary. Validates the
+    // happy path.
+    #[test]
+    fn extern_small_integer_struct_by_value_accepted() {
         let source = r#"
             struct Point { x: i32, y: i32 }
 
@@ -19720,16 +19750,8 @@ fn main() -> i64 {
 
             fn main() -> i64 { return 0; }
         "#;
-        let errs = compile(source).expect_err("struct by value must be rejected");
-        assert!(
-            errs.iter().any(|d| {
-                let m = &d.message;
-                m.contains("unsupported FFI type Point")
-                    && m.contains("ref Point")
-            }),
-            "expected `ref Point` migration hint, got: {:?}",
-            errs
-        );
+        compile_to_c(source)
+            .expect("all-integer struct ≤ 16 bytes is FFI-safe (C backend handles ABI)");
     }
 
     #[test]
@@ -20315,21 +20337,24 @@ fn main() -> i64 {
 
     #[test]
     fn extern_struct_return_rejected_with_ref_hint() {
+        // Closure #285: all-integer structs ≤ 16 bytes are
+        // now allowed; use a non-FFI-safe shape (float field)
+        // to keep testing the rejection path.
         let source = r#"
-            struct Point { x: i32, y: i32 }
+            struct Mixed { x: i32, y: f64 }
 
-            extern "C" fn make_point() -> Point;
+            extern "C" fn make_mixed() -> Mixed;
 
             fn main() -> i64 { return 0; }
         "#;
-        let errs = compile(source).expect_err("struct return must be rejected");
+        let errs = compile(source).expect_err("non-FFI-safe struct return must be rejected");
         assert!(
             errs.iter().any(|d| {
                 let m = &d.message;
-                m.contains("return type Point is unsupported")
-                    && m.contains("ref Point")
+                m.contains("return type Mixed is unsupported")
+                    && m.contains("ref Mixed")
             }),
-            "expected `ref Point` return migration hint, got: {:?}",
+            "expected `ref Mixed` return migration hint, got: {:?}",
             errs
         );
     }

@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #284 complete — try_vec on BOTH backends)
+## ⏳ Resume here (paused 2026-05-27, after closure #285 — small struct-by-value FFI on C backend)
 
 **Next pickup chain (each closure unblocks the next):**
 

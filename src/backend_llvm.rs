@@ -752,7 +752,40 @@ fn emit_function(
     // Closure #269: `extern "C" fn name(...) -> R;` emits a
     // `declare` line with the bare C-ABI name (no `fn_` prefix).
     // The body is empty; the linker provides the symbol.
+    //
+    // Closure #285: the checker now allows struct-by-value
+    // FFI for all-integer-field structs ≤ 16 bytes. C
+    // backend passes via cc directly (correct ABI). LLVM's
+    // current emit produces `declare RET @name(%Struct_T)`
+    // which doesn't match cc's System V x86-64
+    // packed-register passing. Panic with a clear message
+    // pointing at `--backend=c` until proper LLVM ABI
+    // lowering lands. Future closure: emit `declare RET
+    // @name(i64)` for size-8 all-integer structs and
+    // `{i64, i64}` for size-9..16, with bitcast at call
+    // sites.
     if function.is_extern {
+        for param in &function.params {
+            if matches!(&param.ty, Type::Struct(_)) {
+                panic!(
+                    "LLVM backend doesn't yet support struct-by-value FFI \
+                     (extern fn '{}' parameter '{}' is a struct). Use \
+                     `--backend=c` for now; LLVM ABI lowering is queued \
+                     as a follow-up to closure #285. The C backend passes \
+                     small all-integer structs correctly via cc's native \
+                     System V handling.",
+                    function.name, param.name
+                );
+            }
+        }
+        if matches!(&function.return_type, Type::Struct(_)) {
+            panic!(
+                "LLVM backend doesn't yet support struct-by-value FFI \
+                 returns (extern fn '{}' returns a struct). Use \
+                 `--backend=c` for now.",
+                function.name
+            );
+        }
         out.push_str(&format!("declare {} @{}(", ret_ty, function.name));
         for (i, param) in function.params.iter().enumerate() {
             if i > 0 {

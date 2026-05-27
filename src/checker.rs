@@ -4878,7 +4878,57 @@ fn make_dyn_coerce(
 // Aggregates by value silently corrupt under System V
 // x86-64 ABI; handles have semantics that don't survive a
 // cross-language boundary.
-fn extern_param_rejection_hint(ty: &Type) -> Option<String> {
+// Closure #285: integer-class scalar test for FFI ABI
+// classification. System V x86-64 (and most other ABIs) pass
+// these in integer registers and pack adjacent fields into
+// 64-bit "eightbytes". Float fields would route through SSE
+// regs — defer until v2.
+fn is_ffi_integer_class(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::I8 | Type::I16 | Type::I32 | Type::I64
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64
+            | Type::Bool
+            | Type::Ref(_) | Type::RefMut(_)
+            | Type::Str
+    )
+}
+
+fn ffi_byte_size(ty: &Type) -> u64 {
+    match ty {
+        Type::I8 | Type::U8 | Type::Bool => 1,
+        Type::I16 | Type::U16 => 2,
+        Type::I32 | Type::U32 | Type::F32 => 4,
+        Type::I64 | Type::U64 | Type::F64 => 8,
+        Type::Str | Type::OwnedStr => 8,
+        Type::Ref(_) | Type::RefMut(_) | Type::FnPtr(_, _) => 8,
+        _ => 16, // overestimate for unsupported types
+    }
+}
+
+// Closure #285: classifies a struct as FFI-safe-by-value
+// under the v1 System V x86-64 rules. A struct passes
+// directly when (a) every field is an integer-class scalar,
+// and (b) total size ≤ 16 bytes. Float fields and nested
+// aggregates push it to the rejection path.
+fn is_ffi_safe_struct(name: &str, structs: &BTreeMap<String, StructInfo>) -> bool {
+    let Some(info) = structs.get(name) else {
+        return false;
+    };
+    if info.fields.is_empty() {
+        return false;
+    }
+    let total: u64 = info.fields.iter().map(|(_, t)| ffi_byte_size(t)).sum();
+    if total > 16 {
+        return false;
+    }
+    info.fields.iter().all(|(_, t)| is_ffi_integer_class(t))
+}
+
+fn extern_param_rejection_hint(
+    ty: &Type,
+    structs: &BTreeMap<String, StructInfo>,
+) -> Option<String> {
     match ty {
         Type::I8 | Type::I16 | Type::I32 | Type::I64
         | Type::U8 | Type::U16 | Type::U32 | Type::U64
@@ -4893,10 +4943,11 @@ fn extern_param_rejection_hint(ty: &Type) -> Option<String> {
         // value's body lives on the vāṇी side; cc's qsort
         // calls it through the pointer.
         Type::FnPtr(_, _) => None,
+        Type::Struct(name) if is_ffi_safe_struct(name, structs) => None,
         Type::Struct(name) => Some(format!(
             "pass struct '{}' by reference instead — write `ref {}` \
-             (small aggregates have ABI-dependent packing that vāṇी's \
-             v1 FFI doesn't model, leading to silent corruption)",
+             (v1 FFI passes by value only for all-integer-field structs \
+             ≤ 16 bytes; this struct has floats or exceeds the size)",
             name, name
         )),
         Type::Tuple(_) => Some(
@@ -4940,13 +4991,17 @@ fn extern_param_rejection_hint(ty: &Type) -> Option<String> {
 // freed correctly on the foreign side). Pointer returns are
 // allowed but discouraged — the caller must reason about
 // lifetime independently.
-fn extern_return_rejection_hint(ty: &Type) -> Option<String> {
+fn extern_return_rejection_hint(
+    ty: &Type,
+    structs: &BTreeMap<String, StructInfo>,
+) -> Option<String> {
     match ty {
         Type::I8 | Type::I16 | Type::I32 | Type::I64
         | Type::U8 | Type::U16 | Type::U32 | Type::U64
         | Type::F32 | Type::F64 | Type::Bool | Type::Str => None,
         Type::Ref(_) | Type::RefMut(_) => None,
         Type::FnPtr(_, _) => None,
+        Type::Struct(name) if is_ffi_safe_struct(name, structs) => None,
         Type::Struct(name) | Type::Enum(name) => Some(format!(
             "return a pointer instead — declare the return type as \
              `ref {}` (struct/enum return-by-value has ABI-dependent \
@@ -5024,7 +5079,7 @@ fn check_function(
         // with a `ref T` migration hint so users don't fall into
         // the trap.
         for p in &function.params {
-            if let Some(hint) = extern_param_rejection_hint(&p.ty) {
+            if let Some(hint) = extern_param_rejection_hint(&p.ty, structs) {
                 diagnostics.push(Diagnostic::new(
                     p.span,
                     format!(
@@ -5034,7 +5089,7 @@ fn check_function(
                 ));
             }
         }
-        if let Some(hint) = extern_return_rejection_hint(&function.return_type) {
+        if let Some(hint) = extern_return_rejection_hint(&function.return_type, structs) {
             diagnostics.push(Diagnostic::new(
                 function.span,
                 format!(
