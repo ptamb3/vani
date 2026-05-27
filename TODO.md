@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #286 — `#[bounded(N)]` attribute on C backend)
+## ⏳ Resume here (paused 2026-05-27, after closure #287 — vani.toml v2 [deps] with local paths)
 
 **Next pickup chain (each closure unblocks the next):**
 

@@ -85,6 +85,27 @@ pub fn compile_path(
         std::collections::HashSet::new();
     let mut combined = String::new();
     let mut file_map = diagnostic::FileMap::new();
+    // Closure #287: if the entry is reached through a
+    // vani.toml manifest with `[deps]` entries, prepend each
+    // dep's entry source so its definitions are in scope for
+    // the main entry. Walks the manifest discovered from the
+    // entry's parent dir (or itself if entry IS a manifest).
+    if let Some(manifest_path) = manifest::find_manifest(
+        entry.parent().unwrap_or(entry),
+    ) {
+        if let Ok(m) = manifest::load_manifest(&manifest_path) {
+            for dep in &m.deps {
+                if let Err(err) = resolve_uses(
+                    &dep.entry_path, &mut visited, &mut combined, &mut file_map,
+                ) {
+                    return Err((
+                        file_map,
+                        vec![Diagnostic::new(crate::span::Span::new(0, 0), err)],
+                    ));
+                }
+            }
+        }
+    }
     if let Err(err) = resolve_uses(entry, &mut visited, &mut combined, &mut file_map) {
         return Err((
             file_map,

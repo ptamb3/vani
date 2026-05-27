@@ -192,6 +192,70 @@ fn main() -> i64 {
 // `vani.toml`, parses `[package].entry`, and uses that as
 // the entry point. Tests the parent-walk + flag-interleaving
 // behavior end-to-end.
+// Closure #287: vani.toml v2 `[deps]` with local-path
+// entries pulls the dep's entry source into the main
+// program's build. Validates the local-path resolution end-
+// to-end: a `mathlib` package with a `triple` fn is
+// declared as a dep of `main_app`, which calls `triple(7)`.
+#[test]
+fn manifest_deps_local_path_brings_lib_into_scope() {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let binary = env!("CARGO_BIN_EXE_intentc");
+    let workspace: PathBuf = std::env::temp_dir().join(format!(
+        "intentc-deps-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let lib_dir = workspace.join("lib");
+    let main_dir = workspace.join("main");
+    fs::create_dir_all(lib_dir.join("src")).expect("mkdir lib/src");
+    fs::create_dir_all(main_dir.join("src")).expect("mkdir main/src");
+
+    fs::write(
+        lib_dir.join("vani.toml"),
+        "[package]\nname = \"mathlib\"\nentry = \"src/mathlib.vani\"\n",
+    )
+    .expect("write lib manifest");
+    fs::write(
+        lib_dir.join("src/mathlib.vani"),
+        "fn triple(x: i64) -> i64 { return x * 3; }\n",
+    )
+    .expect("write lib source");
+    fs::write(
+        main_dir.join("vani.toml"),
+        "[package]\nname = \"main_app\"\nentry = \"src/main.vani\"\n\n\
+         [deps]\nmathlib = { path = \"../lib\" }\n",
+    )
+    .expect("write main manifest");
+    fs::write(
+        main_dir.join("src/main.vani"),
+        "fn main() -> i64 { return triple(7); }\n",
+    )
+    .expect("write main source");
+
+    let output = std::process::Command::new(binary)
+        .args(["run"])
+        .current_dir(&main_dir)
+        .output()
+        .expect("intentc run executes");
+
+    let status = output.status;
+    let _ = fs::remove_dir_all(&workspace);
+
+    assert_eq!(
+        status.code(),
+        Some(21),
+        "expected triple(7)=21, got status {} (stderr: {})",
+        status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 #[test]
 fn manifest_discovery_resolves_entry_from_subdir() {
     use std::fs;

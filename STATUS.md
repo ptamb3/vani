@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1018 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1020 lib + 53 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -1351,6 +1351,51 @@ fn main() returns i64 {
 
    Test totals: 1018 lib + 52 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #286.
+
+   **vani.toml v2 — [deps] table with local paths done 2026-05-27**:
+   foundation for future Kosh package management. Manifest
+   v2 adds:
+
+       [deps]
+       mathlib = { path = "../math-lib" }
+       other_lib = { path = "../other" }
+
+   Local-path deps are resolved transitively at compile time:
+   the driver reads each dep's `vani.toml`, finds its entry
+   source, and prepends it (and any of its `use "..."`
+   resolves) to the main entry's combined source before
+   type-checking. Functions / types declared in the dep are
+   directly callable from the main entry without a
+   namespace prefix in v1.
+
+   Pipeline:
+
+     • `manifest::Manifest` gains `deps: Vec<Dependency>`.
+     • `manifest::Dependency { name, entry_path }`.
+     • Parser accepts the inline-table form `name = { path =
+       "..." }`. Unknown keys (e.g. `version = "1.0"`)
+       surface a "only `path` is recognized in v1" hint —
+       reserves the syntax for future Kosh registry coords.
+     • `compile_path` walks `find_manifest` from the entry's
+       parent dir; for each resolved dep, calls
+       `resolve_uses` to inline the dep's source into the
+       combined buffer.
+     • Recursive dep loading: a dep with its own `[deps]`
+       cascades. Shared visited set prevents cycles /
+       diamond duplication.
+
+   2 new lib tests (`parses_deps_inline_table`,
+   `rejects_unknown_key_in_inline_table`) and 1 e2e test
+   (`manifest_deps_local_path_brings_lib_into_scope`).
+
+   Future v3 follow-ups queued:
+   - Kosh registry coords: `name = "1.0"` shorthand.
+   - Namespacing: `mathlib::triple` per-dep prefix.
+   - `[build]` knobs (default backend, opt level,
+     `--link-with` defaults).
+
+   Test totals: 1020 lib + 53 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #287.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table
