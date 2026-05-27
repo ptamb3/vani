@@ -216,6 +216,110 @@ thread_local! {
     pub(crate) static LLVM_ENUM_PAYLOAD_TAGS_REGISTRY:
         std::cell::RefCell<std::collections::HashMap<String, Vec<u32>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Closure #283 LLVM half: per-variant payload-type
+    /// registry. Mirrors the C backend's
+    /// `ENUM_VARIANT_PAYLOADS_REGISTRY`. Used to route
+    /// mixed-payload-type enums through a `[N x i8]` byte-
+    /// buffer payload slot with per-variant bitcast at
+    /// construction + access.
+    pub(crate) static LLVM_ENUM_VARIANT_PAYLOADS_REGISTRY:
+        std::cell::RefCell<
+            std::collections::HashMap<String, Vec<(String, Option<Type>)>>
+        > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Closure #283 LLVM half: approximate byte size for an
+/// LLVM-mapped vāṇी type on the canonical Linux x86-64
+/// target. Used to size the `[N x i8]` payload buffer of
+/// mixed-payload enums. Best-effort — overestimates are
+/// safe (extra padding); underestimates miscompile.
+fn llvm_byte_size(ty: &Type) -> u64 {
+    match ty {
+        Type::I8 | Type::U8 | Type::Bool => 1,
+        Type::I16 | Type::U16 => 2,
+        Type::I32 | Type::U32 | Type::F32 => 4,
+        Type::I64 | Type::U64 | Type::F64 => 8,
+        Type::Str | Type::OwnedStr => 8, // char*
+        Type::Ref(_) | Type::RefMut(_) => 8, // T*
+        Type::FnPtr(_, _) => 8, // function pointer
+        Type::Atomic(inner) | Type::Mutex(inner) | Type::Guard(inner) => {
+            // Atomic/Mutex/Guard storage matches inner type
+            // size on the C side; LLVM follows.
+            llvm_byte_size(inner).max(8)
+        }
+        Type::Channel(_, _) => 32, // ring buffer header — generous
+        Type::Task => 16, // pthread_t + ctx*
+        Type::Object(_) => 16, // fat pointer: vtable + data
+        Type::Vec(_) => 24, // {data, len, cap} on 64-bit
+        Type::Array { element, length } => llvm_byte_size(element) * length,
+        Type::Tuple(elements) => elements.iter().map(llvm_byte_size).sum::<u64>().max(8),
+        Type::Struct(name) => {
+            // Sum field sizes via the registry. Overestimate
+            // 8-byte alignment per field for safety.
+            LLVM_STRUCT_FIELDS_REGISTRY.with(|r| {
+                r.borrow()
+                    .get(name)
+                    .map(|fs| fs.iter().map(|(_, t)| llvm_byte_size(t)).sum::<u64>().max(8))
+                    .unwrap_or(8)
+            })
+        }
+        Type::Enum(name) => {
+            // 4 bytes tag + max payload across variants.
+            let payload = LLVM_ENUM_VARIANT_PAYLOADS_REGISTRY.with(|r| {
+                r.borrow().get(name).map(|v| {
+                    v.iter().filter_map(|(_, p)| p.as_ref())
+                        .map(llvm_byte_size).max().unwrap_or(0)
+                }).unwrap_or(0)
+            });
+            4 + payload
+        }
+        Type::Param(_) | Type::Apply { .. } => 16, // generic; defensive
+    }
+}
+
+/// Closure #283 LLVM half: max payload size across variants
+/// of a mixed-payload enum, rounded up to 8-byte alignment.
+fn llvm_enum_payload_buffer_size(decl: &crate::ir::TypedEnumDecl) -> u64 {
+    let raw: u64 = decl
+        .payload_types
+        .iter()
+        .filter_map(|p| p.as_ref())
+        .map(llvm_byte_size)
+        .max()
+        .unwrap_or(8);
+    // Round up to 8-byte alignment.
+    ((raw + 7) / 8) * 8
+}
+
+/// Closure #283 LLVM half: lookup variant of the above when
+/// only the enum name is in scope.
+fn llvm_enum_payload_buffer_size_by_name(name: &str) -> u64 {
+    LLVM_ENUM_VARIANT_PAYLOADS_REGISTRY.with(|r| {
+        r.borrow().get(name).map(|v| {
+            let raw: u64 = v.iter()
+                .filter_map(|(_, p)| p.as_ref())
+                .map(llvm_byte_size)
+                .max()
+                .unwrap_or(8);
+            ((raw + 7) / 8) * 8
+        }).unwrap_or(8)
+    })
+}
+
+/// Closure #283 LLVM half: true if the enum has variants
+/// with mismatched payload types (mixed-payload). Mirrors
+/// the C backend's `enum_has_mixed_payloads`.
+fn llvm_enum_has_mixed_payloads(decl: &crate::ir::TypedEnumDecl) -> bool {
+    let payloaded: Vec<&Type> = decl
+        .payload_types
+        .iter()
+        .filter_map(|p| p.as_ref())
+        .collect();
+    if payloaded.len() < 2 {
+        return false;
+    }
+    let first = payloaded[0];
+    payloaded[1..].iter().any(|t| *t != first)
 }
 
 pub fn emit_llvm(program: &TypedProgram) -> String {
@@ -224,6 +328,25 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // Populate the enum payload registry from the program's
     // enum decls so `llvm_type_string(Type::Enum)` routes
     // payloaded enums to their named struct typedef.
+    // Closure #283: populate the per-variant registry FIRST
+    // (used by typedef emission + `llvm_byte_size` for
+    // mixed-payload sizing).
+    LLVM_ENUM_VARIANT_PAYLOADS_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        reg.clear();
+        for decl in &program.enums {
+            if !decl.payload_types.iter().any(|p| p.is_some()) {
+                continue;
+            }
+            let pairs: Vec<(String, Option<Type>)> = decl
+                .variants
+                .iter()
+                .zip(decl.payload_types.iter())
+                .map(|(name, pty)| (name.clone(), pty.clone()))
+                .collect();
+            reg.insert(decl.name.clone(), pairs);
+        }
+    });
     LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
         let mut reg = r.borrow_mut();
         reg.clear();
@@ -518,45 +641,35 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         out.push('\n');
     }
     // T1.3 phase 2b LLVM: emit `%Enum_<Name> = type { i32, T }`
-    // for each payloaded enum. The first field is the variant
-    // tag, the second is the shared payload type. Plain enums
-    // (no payload variants) stay as bare `i32`.
+    // for each payloaded enum. Plain enums stay as bare `i32`.
     //
-    // Closure #283: mixed-payload enums (Result<T, E> with
-    // T != E) are supported on the C backend via per-variant
-    // union members. The LLVM backend's payload typing is
-    // more invasive to lift (byte-buffer + bitcast at every
-    // variant access — ~15 sites). For now, panic with a
-    // clear message pointing at `--backend=c` if a
-    // mixed-payload enum reaches LLVM emit. Future closure
-    // mirrors the C-side lift via `[N x i8]` payload buffers.
+    // Closure #283: mixed-payload enums emit
+    // `%Enum_<Name> = type { i32, [N x i8] }` where N is the
+    // largest variant payload size (rounded to 8-byte
+    // alignment). Variant construction + match-extract sites
+    // bitcast the byte-buffer to/from the active variant's
+    // payload type.
     let mut any_enum_emitted = false;
     for decl in &program.enums {
-        let payloaded: Vec<&Type> = decl
-            .payload_types
-            .iter()
-            .filter_map(|p| p.as_ref())
-            .collect();
-        let is_mixed = payloaded.len() >= 2
-            && payloaded[1..].iter().any(|t| *t != payloaded[0]);
-        if is_mixed {
-            panic!(
-                "LLVM backend doesn't yet support mixed-payload-type \
-                 enums (enum '{}' has variants carrying different \
-                 payload types). Use `--backend=c` for now; LLVM \
-                 mixed-payload lift is queued as a follow-up to \
-                 closure #283.",
-                decl.name
-            );
+        if !decl.payload_types.iter().any(|p| p.is_some()) {
+            continue;
         }
-        if let Some(payload_ty) = decl.payload_types.iter().find_map(|p| p.clone()) {
+        if llvm_enum_has_mixed_payloads(decl) {
+            let n = llvm_enum_payload_buffer_size(decl);
             out.push_str(&format!(
-                "%Enum_{} = type {{ i32, {} }}\n",
-                decl.name,
-                llvm_type_string(&payload_ty)
+                "%Enum_{} = type {{ i32, [{} x i8] }}\n",
+                decl.name, n
             ));
             any_enum_emitted = true;
+            continue;
         }
+        let payload_ty = decl.payload_types.iter().find_map(|p| p.clone()).unwrap();
+        out.push_str(&format!(
+            "%Enum_{} = type {{ i32, {} }}\n",
+            decl.name,
+            llvm_type_string(&payload_ty)
+        ));
+        any_enum_emitted = true;
     }
     if any_enum_emitted {
         out.push('\n');
@@ -4271,6 +4384,39 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 return format!("{}", tag);
             }
             let struct_ty = format!("%Enum_{}", enum_name);
+            // Closure #283 LLVM half: mixed-payload enums
+            // route through `[N x i8]` byte buffer. The
+            // payload-less variant alloca's the struct, sets
+            // the tag, leaves the byte buffer with undef
+            // contents, then loads the whole struct value.
+            let is_mixed = LLVM_ENUM_VARIANT_PAYLOADS_REGISTRY.with(|r| {
+                r.borrow().get(enum_name).map(|v| {
+                    let payloads: Vec<&Type> =
+                        v.iter().filter_map(|(_, p)| p.as_ref()).collect();
+                    payloads.len() >= 2
+                        && payloads[1..].iter().any(|t| *t != payloads[0])
+                }).unwrap_or(false)
+            });
+            if is_mixed {
+                let addr = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = alloca {}\n", addr, struct_ty
+                ));
+                let tag_ptr = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr {}, {}* {}, i32 0, i32 0\n",
+                    tag_ptr, struct_ty, struct_ty, addr
+                ));
+                out.push_str(&format!(
+                    "  store i32 {}, i32* {}\n", tag, tag_ptr
+                ));
+                let loaded = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load {}, {}* {}\n",
+                    loaded, struct_ty, struct_ty, addr
+                ));
+                return loaded;
+            }
             let payload_ty = LLVM_ENUM_PAYLOAD_REGISTRY
                 .with(|r| r.borrow().get(enum_name).cloned())
                 .expect("registry insists this is payloaded");
@@ -4312,6 +4458,58 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             let struct_ty = format!("%Enum_{}", enum_name);
             let payload_ll = llvm_type_string(payload_ty);
             let payload_val = emit_expr(payload, ctx, out);
+            // Closure #283 LLVM half: mixed-payload enums
+            // route the payload through a per-variant
+            // bitcast against the `[N x i8]` byte buffer.
+            let is_mixed = LLVM_ENUM_VARIANT_PAYLOADS_REGISTRY.with(|r| {
+                r.borrow().get(enum_name).map(|v| {
+                    let payloads: Vec<&Type> =
+                        v.iter().filter_map(|(_, p)| p.as_ref()).collect();
+                    payloads.len() >= 2
+                        && payloads[1..].iter().any(|t| *t != payloads[0])
+                }).unwrap_or(false)
+            });
+            if is_mixed {
+                let buf_size = llvm_enum_payload_buffer_size_by_name(enum_name);
+                let buf_ty = format!("[{} x i8]", buf_size);
+                let addr = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = alloca {}\n", addr, struct_ty
+                ));
+                let tag_ptr = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr {}, {}* {}, i32 0, i32 0\n",
+                    tag_ptr, struct_ty, struct_ty, addr
+                ));
+                out.push_str(&format!(
+                    "  store i32 {}, i32* {}\n", tag, tag_ptr
+                ));
+                let pay_buf_ptr = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr {}, {}* {}, i32 0, i32 1\n",
+                    pay_buf_ptr, struct_ty, struct_ty, addr
+                ));
+                let first_elem = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr inbounds {}, {}* {}, i64 0, i64 0\n",
+                    first_elem, buf_ty, buf_ty, pay_buf_ptr
+                ));
+                let pay_typed_ptr = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = bitcast i8* {} to {}*\n",
+                    pay_typed_ptr, first_elem, payload_ll
+                ));
+                out.push_str(&format!(
+                    "  store {} {}, {}* {}\n",
+                    payload_ll, payload_val, payload_ll, pay_typed_ptr
+                ));
+                let loaded = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load {}, {}* {}\n",
+                    loaded, struct_ty, struct_ty, addr
+                ));
+                return loaded;
+            }
             let s0 = ctx.fresh_tmp();
             out.push_str(&format!(
                 "  {} = insertvalue {} undef, i32 {}, 0\n",
@@ -4389,11 +4587,70 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     if let Some((bname, bty)) = &arm.binding {
                         let struct_ty = llvm_type_string(&scrutinee.ty);
                         let bty_ll = llvm_type_string(bty);
+                        // Closure #283 LLVM half: for mixed-
+                        // payload enums, extractvalue at index
+                        // 1 returns a `[N x i8]` byte buffer.
+                        // Bitcast through an alloca to the
+                        // variant's actual payload type and
+                        // load.
+                        let scr_enum_name = match &scrutinee.ty {
+                            Type::Enum(n) => Some(n.clone()),
+                            _ => None,
+                        };
+                        let is_mixed = scr_enum_name
+                            .as_ref()
+                            .map(|n| {
+                                LLVM_ENUM_VARIANT_PAYLOADS_REGISTRY.with(|r| {
+                                    r.borrow().get(n).map(|v| {
+                                        let payloads: Vec<&Type> =
+                                            v.iter().filter_map(|(_, p)| p.as_ref()).collect();
+                                        payloads.len() >= 2
+                                            && payloads[1..].iter().any(|t| *t != payloads[0])
+                                    }).unwrap_or(false)
+                                })
+                            })
+                            .unwrap_or(false);
                         let extracted = ctx.fresh_tmp();
-                        out.push_str(&format!(
-                            "  {} = extractvalue {} {}, 1\n",
-                            extracted, struct_ty, scr_v
-                        ));
+                        if is_mixed {
+                            let enum_n = scr_enum_name.as_ref().unwrap();
+                            let buf_size = llvm_enum_payload_buffer_size_by_name(enum_n);
+                            let buf_ty = format!("[{} x i8]", buf_size);
+                            // Spill scrutinee to a local addr
+                            // so we can address into its byte
+                            // buffer.
+                            let spill = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = alloca {}\n", spill, struct_ty
+                            ));
+                            out.push_str(&format!(
+                                "  store {} {}, {}* {}\n",
+                                struct_ty, scr_v, struct_ty, spill
+                            ));
+                            let buf_ptr = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = getelementptr {}, {}* {}, i32 0, i32 1\n",
+                                buf_ptr, struct_ty, struct_ty, spill
+                            ));
+                            let first_elem = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = getelementptr inbounds {}, {}* {}, i64 0, i64 0\n",
+                                first_elem, buf_ty, buf_ty, buf_ptr
+                            ));
+                            let typed_ptr = ctx.fresh_tmp();
+                            out.push_str(&format!(
+                                "  {} = bitcast i8* {} to {}*\n",
+                                typed_ptr, first_elem, bty_ll
+                            ));
+                            out.push_str(&format!(
+                                "  {} = load {}, {}* {}\n",
+                                extracted, bty_ll, bty_ll, typed_ptr
+                            ));
+                        } else {
+                            out.push_str(&format!(
+                                "  {} = extractvalue {} {}, 1\n",
+                                extracted, struct_ty, scr_v
+                            ));
+                        }
                         let addr = format!("{}.{}.addr", ctx.fresh_tmp(), bname);
                         out.push_str(&format!("  {} = alloca {}\n", addr, bty_ll));
                         out.push_str(&format!(

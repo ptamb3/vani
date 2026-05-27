@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1012 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1013 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -1142,6 +1142,43 @@ fn main() returns i64 {
 
    Test totals: 1012 lib + 52 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #283.
+
+   **Mixed-payload-type enum lift (LLVM backend) done 2026-05-27**:
+   completing closure #283 — `Result<T, E>` with T != E now
+   works on the LLVM backend too. Both backends fully
+   support mixed-payload enums end-to-end.
+
+   LLVM pipeline:
+
+     • New `LLVM_ENUM_VARIANT_PAYLOADS_REGISTRY` (mirror of
+       the C-side per-variant registry). New `llvm_byte_size(ty)`
+       helper (target Linux x86-64 best-effort sizing) and
+       `llvm_enum_payload_buffer_size(decl)` for max-payload
+       sizing rounded to 8-byte alignment.
+     • Mixed-payload enums emit
+       `%Enum_<Name> = type { i32, [N x i8] }` (byte buffer
+       payload) where N = max(payload_size).
+     • Variant construction (EnumVariant + EnumVariantWithPayload):
+       alloca the struct, GEP to tag + byte-buffer fields,
+       bitcast `i8*` → `<PayloadTy>*`, store payload, load
+       whole struct back.
+     • Match-extract (VariantWithBinding arms): spill scrutinee
+       to alloca, GEP into byte buffer, bitcast to variant's
+       payload type, load.
+     • Single-payload enums keep the legacy `{ i32, T }`
+       layout for back-compat.
+
+   Verified end-to-end: `enum R { Ok(i64), Err(OwnedStr) }`
+   round-trips a value through R.Ok(42), match returns 42 on
+   both backends.
+
+   1 new lib test (`mixed_payload_enum_compiles_on_llvm_backend`)
+   pins the LLVM emit shape. The defensive
+   `panic!("use --backend=c")` is removed.
+
+   Test totals: 1013 lib + 52 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #283 complete
+   (both halves).
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

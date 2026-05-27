@@ -19906,6 +19906,36 @@ fn main() -> i64 {
     // `Result<i64, OwnedStr>` round-trips a value through
     // the Ok variant and yields it via match.
     #[test]
+    fn mixed_payload_enum_compiles_on_llvm_backend() {
+        let source = r#"
+            enum R { Ok(i64), Err(OwnedStr) }
+
+            fn main() -> i64 {
+              let r: R = R.Ok(42);
+              return match r {
+                R.Ok(v) then v,
+                R.Err(_) then -1,
+              };
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("mixed-payload enum compiles to LLVM");
+        // The mixed-payload typedef uses a `[N x i8]` byte buffer
+        // (closure #283 LLVM half), not the legacy `{ i32, T }`.
+        assert!(
+            ll.contains("%Enum_R = type { i32, [") && ll.contains("x i8] }"),
+            "expected `%Enum_R = type {{ i32, [N x i8] }}`, got:\n{}",
+            ll
+        );
+        // Variant construction bitcasts the buffer to the
+        // payload's type and stores.
+        assert!(
+            ll.contains("bitcast i8*") && ll.contains("to i64*"),
+            "expected bitcast i8* -> i64* for Ok variant construction, got:\n{}",
+            ll
+        );
+    }
+
+    #[test]
     fn mixed_payload_enum_compiles_on_c_backend() {
         let source = r#"
             enum R { Ok(i64), Err(OwnedStr) }

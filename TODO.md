@@ -29,32 +29,28 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #283 — mixed-payload enum C-backend lift)
+## ⏳ Resume here (paused 2026-05-27, after closure #283 complete — mixed-payload enum lift on BOTH backends)
 
 **Next pickup chain (each closure unblocks the next):**
 
 ### Closure A: Mixed-payload-type enum lift
 
   - **C backend half:** ✅ shipped 2026-05-27 (closure #283).
-    New `ENUM_VARIANT_PAYLOADS_REGISTRY` + union typedef +
+    `ENUM_VARIANT_PAYLOADS_REGISTRY` + union typedef +
     `u.v_<variant>` access at construction + match-extract.
-    `Result<T, E>` with T != E now compiles on tree-C.
-    SSA-C currently routes through tree-C and inherits the
-    fix; explicit SSA-C audit pending.
-  - **LLVM backend half:** ⏳ pending. Tree-LLVM + SSA-LLVM
-    still use the legacy `%Enum_<Name> = type { i32, T }`
-    layout and panic at emit-time when they see a
-    mixed-payload enum, pointing users at `--backend=c`.
-    Lifting requires `[N x i8]` payload buffer + per-variant
-    bitcast at ~15 sites. `llvm_byte_size(ty)` helper
-    needed for max-payload sizing.
-  - **Drop dispatch follow-up:** the C-side closure #283
-    handles construction + extract. Per-variant drop
-    dispatch (free the right heap when an OwnedStr / Vec
-    variant is active) still routes through the legacy
-    `.payload` path for single-type enums; mixed-type drop
-    needs a `switch (tag)` over `u.v_<variant>` access.
-    Pending lib test exercising mixed-payload Drop.
+  - **LLVM backend half:** ✅ shipped 2026-05-27 (closure
+    #283 LLVM). `LLVM_ENUM_VARIANT_PAYLOADS_REGISTRY` +
+    `[N x i8]` byte-buffer typedef + per-variant bitcast
+    at construction + match-extract. `llvm_byte_size(ty)`
+    + `llvm_enum_payload_buffer_size(decl)` helpers handle
+    sizing.
+  - **Drop dispatch follow-up:** the closure #283 paths
+    handle construction + match-extract. Per-variant drop
+    dispatch for mixed-payload enums (free the right heap
+    when an OwnedStr / Vec variant is active) still needs
+    the `switch (tag)` pattern threaded through both
+    backends' Drop arms. Pending lib test that exercises a
+    `Result<Vec<i64>, OwnedStr>` scope-exit drop.
 
 ### Closure B: #6 try_vec (M, deps: Closure A)
 
