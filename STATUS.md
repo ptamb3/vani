@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1008 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1011 lib + 52 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -1066,6 +1066,32 @@ fn main() returns i64 {
 
    Test totals: 1008 lib + 52 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #281.
+
+   **Prelude — auto-import of Option / Result / AllocError done 2026-05-27**:
+   piggybacking on the new generic-decl machinery (#281),
+   every program now implicitly receives three enum
+   declarations without the user needing to write them:
+
+       enum Option<T> { Some(T), None }
+       enum Result<T, E> { Ok(T), Err(E) }
+       enum AllocError { OutOfMemory }
+
+   Injected at the AST level (NOT as a source prepend) so
+   user diagnostic spans / line numbers stay anchored to
+   the user's actual source text. `inject_prelude` parses
+   the prelude string into a Program, then merges its
+   `enums` into the user's parsed Program — skipping any
+   prelude enum the user has already declared by name, so
+   user redeclarations override the prelude shape (with no
+   "duplicate declaration" error).
+
+   3 new lib tests:
+     - `prelude_provides_option_without_user_declaration`
+     - `prelude_provides_result_without_user_declaration`
+     - `user_redeclaration_of_option_overrides_prelude`
+
+   Test totals: 1011 lib + 52 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #282.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

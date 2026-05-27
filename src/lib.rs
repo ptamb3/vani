@@ -21,9 +21,30 @@ use backend::Backend;
 use checker::CheckedProgram;
 use diagnostic::Diagnostic;
 
+/// Closure #282: built-in prelude. Every program implicitly
+/// gets `Option<T>`, `Result<T, E>`, and `AllocError`.
+/// Injected at the AST level (not as a source prepend) so
+/// diagnostic line numbers in user code don't shift.
+const PRELUDE: &str = "enum Option<T> { Some(T), None }\nenum Result<T, E> { Ok(T), Err(E) }\nenum AllocError { OutOfMemory }\n";
+
+fn inject_prelude(program: &mut ast::Program) {
+    let prelude_tokens = match lexer::lex(PRELUDE) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let (mut prelude_prog, _diags) = parser::parse(prelude_tokens);
+    // Skip any prelude enum the user has already declared
+    // (by name) so explicit user redeclarations win.
+    let user_enum_names: std::collections::HashSet<String> =
+        program.enums.iter().map(|e| e.name.clone()).collect();
+    prelude_prog.enums.retain(|e| !user_enum_names.contains(&e.name));
+    program.enums.extend(prelude_prog.enums);
+}
+
 pub fn compile(source: &str) -> Result<CheckedProgram, Vec<Diagnostic>> {
     let tokens = lexer::lex(source).map_err(|diagnostic| vec![diagnostic])?;
-    let (program, parse_errors) = parser::parse(tokens);
+    let (mut program, parse_errors) = parser::parse(tokens);
+    inject_prelude(&mut program);
     match checker::check(program) {
         Ok(checked) if parse_errors.is_empty() => Ok(checked),
         Ok(_) => Err(parse_errors),
@@ -19872,6 +19893,56 @@ fn main() -> i64 {
     // `Option.Some(42)` to the mangled monomorphic
     // (`Option__i64.Some(42)`) when exactly one
     // instantiation exists in the program.
+    // Closure #282: prelude auto-imports `Option<T>`,
+    // `Result<T, E>`, and `AllocError`. Users get them
+    // without declaring; explicit user redeclarations
+    // override the prelude versions (deduplicated by name).
+    #[test]
+    fn prelude_provides_option_without_user_declaration() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: Option<i64> = Option.Some(42);
+              return match a {
+                Option.Some(v) then v,
+                Option.None then 0,
+              };
+            }
+        "#;
+        compile_to_c(source).expect("prelude Option<T> available without user decl");
+        compile_to_llvm(source).expect("prelude Option<T> available on LLVM too");
+    }
+
+    #[test]
+    fn prelude_provides_result_without_user_declaration() {
+        let source = r#"
+            fn main() -> i64 {
+              let r: Result<i64, i64> = Result.Ok(7);
+              return match r {
+                Result.Ok(v) then v,
+                Result.Err(_) then -1,
+              };
+            }
+        "#;
+        compile_to_c(source).expect("prelude Result<T, E> available");
+        compile_to_llvm(source).expect("prelude Result<T, E> available on LLVM");
+    }
+
+    #[test]
+    fn user_redeclaration_of_option_overrides_prelude() {
+        let source = r#"
+            enum Option<T> { Some(T), None }
+
+            fn main() -> i64 {
+              let a: Option<i64> = Option.Some(11);
+              return match a {
+                Option.Some(v) then v,
+                Option.None then 0,
+              };
+            }
+        "#;
+        compile(source).expect("user redeclaration must coexist with prelude");
+    }
+
     #[test]
     fn generic_option_with_i64_payload_compiles_both_backends() {
         let source = r#"

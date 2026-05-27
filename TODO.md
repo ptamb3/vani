@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #281 — generic struct/enum decls)
+## ⏳ Resume here (paused 2026-05-27, after closure #282 — prelude auto-imports Option/Result/AllocError)
 
 **Remaining queue items are all L-tier multi-session arcs.** All
 require introducing significant new compiler machinery:
