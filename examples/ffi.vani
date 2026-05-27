@@ -3,12 +3,12 @@
 //   intentc run examples/ffi.vani --backend=c              # C backend, gcc
 //   intentc build examples/ffi.vani -o /tmp/ffi && /tmp/ffi   # native binary
 
-intent "FFI v1 — calling a C-ABI function from vāṇī";
+intent "FFI — calling C-ABI functions from vāṇी";
 
 // `extern "C" fn name(params) -> R;` declares a function whose
 // implementation lives in another translation unit (the C
 // standard library, a Rust staticlib, a C++ object file, …).
-// vāṇī emits a forward declaration (LLVM `declare`, C `extern`)
+// vāṇी emits a forward declaration (LLVM `declare`, C `extern`)
 // against the bare C-ABI symbol and lets the linker bind it at
 // build time. The checker accepts a body-less prototype; the
 // codegen path skips the "must return" rule.
@@ -16,12 +16,40 @@ intent "FFI v1 — calling a C-ABI function from vāṇī";
 // Effects: extern fns are conservatively treated as impure —
 // the SMT engine cannot reason across the FFI boundary, so any
 // `prove`/`assume` involving an extern call must rest on
-// caller-side invariants.
+// caller-side invariants. Pure-fn bodies reject impure extern
+// calls.
+//
+// Pure opt-in: `pure extern "C" fn name(...) -> R;` declares
+// the foreign function as side-effect-free and deterministic,
+// allowing it to be called from `pure fn` bodies. The caller
+// asserts purity — vāṇी can't verify across the FFI boundary.
+//
+// ABI scope (v1): scalars (i8..i64, u8..u64, f32/f64, bool),
+// `Str` (NUL-terminated `i8*`), and any `ref T` / `mut ref T`.
+// Aggregate by value (struct / tuple / array / enum) is
+// rejected with a `ref T` migration hint to prevent silent
+// ABI corruption.
+//
+// Linking external code: `intentc build … --link-with helper.c`
+// hands extra objects/sources to cc; `-l<name>` (e.g. `-lm`,
+// `-lcurl`) forwards a library-link flag.
 
+// libc — links by default, conservatively impure
 extern "C" fn abs(x: i32) -> i32;
+
+// libc — declared as pure (abs is side-effect-free and
+// deterministic, so opt into purity for use from pure fn bodies)
+pure extern "C" fn labs(x: i64) -> i64;
+
+// Pure callers can compose pure externs
+pure fn abs_sum(a: i64, b: i64) -> i64 {
+  return labs(a) + labs(b);
+}
 
 fn main() -> i64 {
   let a: i32 = abs(-7 as i32);
+  let s: i64 = abs_sum(-3 as i64, -4 as i64);
   write "abs(-7) =", a;
+  write "abs_sum(-3, -4) =", s;
   return 0;
 }
