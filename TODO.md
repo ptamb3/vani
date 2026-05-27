@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #275 — parallel-for purity gate fix for reduction RHS)
+## ⏳ Resume here (paused 2026-05-27, after closure #276 — non-Var DynCoerce in let-RHS lands)
 
 Closures landed: #99 bounded generics, #100 affine struct
 fields broadened, #101 user-Drop auto-call, #102 field-borrow

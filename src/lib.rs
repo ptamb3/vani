@@ -19781,6 +19781,72 @@ fn main() -> i64 {
         );
     }
 
+    // Closure #276: `let v: dyn Iface = make_thing(...);` —
+    // non-Var source for a Let-RHS DynCoerce — now compiles
+    // (previously panicked at codegen with "non-Var source is
+    // pending"). The checker hoists the source into a
+    // synthetic let inside a Block-expr; the C backend's
+    // stmt-level Let unfolds the synthetic prelude to the
+    // outer scope so the temp survives the GCC stmt-expr's
+    // lifetime.
+    #[test]
+    fn dyn_coerce_from_call_result_in_let_rhs_compiles() {
+        let source = r#"
+            struct Circle { r: i64 }
+
+            interface Drawable { fn area(self: Circle) -> i64; }
+
+            implement Drawable for Circle {
+              fn area(self: Circle) -> i64 { return self.r * self.r; }
+            }
+
+            fn make_circle(r: i64) -> Circle { return Circle { r: r }; }
+
+            fn main() -> i64 {
+              let d: dyn Drawable = make_circle(5);
+              return d.area();
+            }
+        "#;
+        // Both backends must produce a compiling artifact.
+        compile_to_c(source).expect("non-Var dyn coerce in let-rhs (C) must compile");
+        compile_to_llvm(source).expect("non-Var dyn coerce in let-rhs (LLVM) must compile");
+    }
+
+    #[test]
+    fn dyn_coerce_in_vec_literal_rejects_non_var_with_letbind_hint() {
+        let source = r#"
+            struct Circle { r: i64 }
+            struct Square { side: i64 }
+
+            interface Drawable { fn area(self: Circle) -> i64; }
+
+            implement Drawable for Circle {
+              fn area(self: Circle) -> i64 { return self.r * self.r; }
+            }
+            implement Drawable for Square {
+              fn area(self: Square) -> i64 { return self.side * self.side; }
+            }
+
+            fn make_circle(r: i64) -> Circle { return Circle { r: r }; }
+            fn make_square(s: i64) -> Square { return Square { side: s }; }
+
+            fn main() -> i64 {
+              let shapes: Vec<dyn Drawable> = vec(make_circle(3), make_square(4));
+              return 0;
+            }
+        "#;
+        let errs = compile(source).expect_err("non-Var dyn in vec literal must reject");
+        assert!(
+            errs.iter().any(|d| {
+                let m = &d.message;
+                m.contains("Vec<dyn Drawable>")
+                    && m.contains("let-bound variables")
+            }),
+            "expected let-bind hint diagnostic for Vec<dyn> non-Var elements, got: {:?}",
+            errs
+        );
+    }
+
     #[test]
     fn extern_struct_return_rejected_with_ref_hint() {
         let source = r#"

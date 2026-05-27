@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 989 lib + 50 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 991 lib + 50 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -801,6 +801,48 @@ fn main() returns i64 {
 
    Test totals: 989 lib + 50 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #275.
+
+   **Vtables Phase 3 v1.1 — non-Var DynCoerce in let-RHS done 2026-05-27**:
+   `let v: dyn Iface = make_thing(...);` now compiles
+   (previously panicked at codegen with "non-Var source is
+   pending"). The checker hoists the non-Var source into a
+   synthetic let inside a `TypedExprKind::Block { stmts, tail
+   }`; the C backend's stmt-level Let detects the
+   synthetic shape (Block with DynCoerce tail) and unfolds
+   the prelude stmts to the OUTER scope so the temp's
+   storage survives the GCC stmt-expr's lifetime. LLVM emits
+   the synthetic let through its normal Block emit path
+   (alloca is function-scoped, so no special unfold needed).
+
+   Changes:
+     • Checker — new `make_dyn_coerce` helper that emits a
+       direct `DynCoerce` for Var sources and a
+       `Block { Let __dyn_src_<N> = src; DynCoerce(Var(...)) }`
+       wrapper for non-Var sources. Process-wide
+       `AtomicUsize` counter for synthetic names.
+     • Tree-C — `TypedStmt::Let` detects the synthetic-shape
+       Block-RHS pattern (Block whose tail is DynCoerce) and
+       unfolds the prelude to the outer scope, preserving
+       the temp's lvalue lifetime across the fat pointer's
+       data slot read.
+
+   Limitation: Vec literal elements with non-Var sources are
+   still rejected (because the synthetic Block as a call-arg
+   would die before vec(...) consumes it). The reject now
+   surfaces a clear let-bind hint instead of silently
+   producing wrong results — previously the codegen
+   path-panicked. Fixing Vec-literal would need a higher-
+   level statement-context hoist (deferred).
+
+   2 new lib tests:
+     - `dyn_coerce_from_call_result_in_let_rhs_compiles` —
+       both backends must produce a compiling artifact for
+       the Let-RHS case.
+     - `dyn_coerce_in_vec_literal_rejects_non_var_with_letbind_hint` —
+       Vec-literal still rejects, with the let-bind hint.
+
+   Test totals: 991 lib + 50 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #276.
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

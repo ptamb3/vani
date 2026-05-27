@@ -4213,6 +4213,86 @@ fn literal_const_value(
     }
 }
 
+// Closure #276: synthetic-let hoist for non-Var DynCoerce
+// sources. Both codegen backends require the data slot of a
+// `dyn Iface` fat pointer to be a stable lvalue (`&v_<name>`
+// in C, the binding's alloca in LLVM). For Var sources that
+// holds directly. For non-Var sources (call result, struct
+// literal, etc.) the checker wraps the coercion in a typed
+// Block-expr that first binds the value to a synthetic let
+// and then coerces the freshly-bound Var. The synthetic
+// binding's storage lives for the enclosing block, matching
+// the Var case.
+//
+// Synthetic names use `__dyn_src_<N>` with a process-wide
+// AtomicUsize counter; guaranteed unique without threading
+// state through every caller.
+fn make_dyn_coerce(
+    value: TypedExpr,
+    iface_name: String,
+    from_type_name: String,
+    target_ty: Type,
+    span: Span,
+) -> TypedExpr {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static DYN_SRC_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let from_ty = value.ty.clone();
+    if matches!(&value.kind, TypedExprKind::Var(_)) {
+        return TypedExpr {
+            kind: TypedExprKind::DynCoerce {
+                value: Box::new(value),
+                iface_name,
+                from_type_name,
+                from_ty,
+            },
+            ty: target_ty,
+            constant: None,
+            span,
+            binding_decl_span: None,
+        };
+    }
+    let synth_name = format!(
+        "__dyn_src_{}",
+        DYN_SRC_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let var_ty = value.ty.clone();
+    let value_span = value.span;
+    let let_stmt = TypedStmt::Let {
+        name: synth_name.clone(),
+        ty: var_ty.clone(),
+        expr: value,
+    };
+    let var_expr = TypedExpr {
+        kind: TypedExprKind::Var(synth_name),
+        ty: var_ty,
+        constant: None,
+        span: value_span,
+        binding_decl_span: None,
+    };
+    let coerce = TypedExpr {
+        kind: TypedExprKind::DynCoerce {
+            value: Box::new(var_expr),
+            iface_name,
+            from_type_name,
+            from_ty,
+        },
+        ty: target_ty.clone(),
+        constant: None,
+        span,
+        binding_decl_span: None,
+    };
+    TypedExpr {
+        kind: TypedExprKind::Block {
+            stmts: vec![let_stmt],
+            tail: Box::new(coerce),
+        },
+        ty: target_ty,
+        constant: None,
+        span,
+        binding_decl_span: None,
+    }
+}
+
 // Closure #273: classify whether a type is FFI-safe for an
 // `extern "C" fn` parameter under the v1 ABI. Returns `None`
 // for safe types and a migration hint string for unsafe ones.
@@ -12033,6 +12113,29 @@ fn check_vec_builtin(
                     for (idx, element) in typed.into_iter().enumerate() {
                         let type_name = names[idx].clone();
                         let elem_ty = element.expr.ty.clone();
+                        // Closure #276 v1: Vec literal elements
+                        // need a stable lvalue for the fat
+                        // pointer's data slot. The Let-RHS hoist
+                        // doesn't help here (the Block would land
+                        // as a call argument, where its stmt-expr
+                        // temps die before vec(...) consumes
+                        // them). Reject non-Var sources with a
+                        // clear let-bind hint; user materializes
+                        // the temp themselves.
+                        if !matches!(&element.expr.kind, TypedExprKind::Var(_)) {
+                            diagnostics.push(Diagnostic::new(
+                                args[idx].span,
+                                format!(
+                                    "Vec<dyn {iface}> elements must be let-bound \
+                                     variables (not call results / struct \
+                                     literals) — let-bind the source first: \
+                                     `let tmp = …; vec(tmp, …)`. \
+                                     Reason: the fat pointer's data slot needs \
+                                     a stable lvalue.",
+                                    iface = iface_name
+                                ),
+                            ));
+                        }
                         coerced_args.push(TypedExpr {
                             kind: TypedExprKind::DynCoerce {
                                 value: Box::new(element.expr),
@@ -12543,6 +12646,24 @@ fn coerce_checked(
                         };
                         match elem_type_name {
                             Some(tn) if crate::ast::iface_impl_exists(iface_name, &tn) => {
+                                // Closure #276 v1: same Vec-literal
+                                // restriction as the
+                                // common-iface-inference path above
+                                // (see `check_vec_builtin`). Non-Var
+                                // sources can't be hoisted into a
+                                // call argument without dangling
+                                // the synthetic temp.
+                                if !matches!(&elem.kind, TypedExprKind::Var(_)) {
+                                    diagnostics.push(Diagnostic::new(
+                                        elem.span,
+                                        format!(
+                                            "Vec<dyn {iface}> elements must be \
+                                             let-bound variables — let-bind \
+                                             the source first.",
+                                            iface = iface_name
+                                        ),
+                                    ));
+                                }
                                 new_args.push(TypedExpr {
                                     kind: TypedExprKind::DynCoerce {
                                         value: Box::new(elem.clone()),
@@ -12658,18 +12779,17 @@ fn coerce_checked(
     // shapes still go through the generic Cast lowering.
     if let Type::Object(iface_name) = target {
         if let Type::Struct(type_name) | Type::Enum(type_name) = checked.ty().clone() {
-            let from_ty = checked.ty().clone();
-            return CheckedExpr::new(
-                TypedExprKind::DynCoerce {
-                    value: Box::new(checked.expr),
-                    iface_name: iface_name.clone(),
-                    from_type_name: type_name,
-                    from_ty,
-                },
+            // Closure #276: hoist non-Var sources through a
+            // synthetic let so the data slot resolves to a
+            // stable lvalue at codegen time.
+            let coerce = make_dyn_coerce(
+                checked.expr,
+                iface_name.clone(),
+                type_name,
                 target.clone(),
-                None,
                 span,
             );
+            return CheckedExpr::new(coerce.kind, coerce.ty, coerce.constant, coerce.span);
         }
     }
 

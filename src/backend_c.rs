@@ -1907,6 +1907,33 @@ fn emit_params(function: &TypedFunction, out: &mut String) {
 fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
     match stmt {
         TypedStmt::Let { name, ty, expr } => {
+            // Closure #276: when the Let RHS is the
+            // synthetic-prelude Block emitted by
+            // `make_dyn_coerce` (one or more synthetic-let
+            // stmts followed by a DynCoerce tail), emit the
+            // prelude stmts at the OUTER level so the temps'
+            // storage lives for the enclosing block — not just
+            // the GCC stmt-expr. Without this, `&__dyn_src`
+            // would dangle by the time the fat pointer's data
+            // slot is read. Other Block-RHS shapes still go
+            // through the regular stmt-expr path so existing
+            // closures like #200 don't regress.
+            if let TypedExprKind::Block { stmts, tail } = &expr.kind {
+                if matches!(tail.kind, TypedExprKind::DynCoerce { .. }) {
+                    for s in stmts {
+                        emit_stmt(s, out);
+                    }
+                    emit_stmt(
+                        &TypedStmt::Let {
+                            name: name.clone(),
+                            ty: ty.clone(),
+                            expr: (**tail).clone(),
+                        },
+                        out,
+                    );
+                    return;
+                }
+            }
             out.push_str("  ");
             if let Type::Array { element, length } = ty {
                 if let TypedExprKind::ArrayLit { elements } = &expr.kind {
@@ -3852,12 +3879,12 @@ fn emit_expr(expr: &TypedExpr) -> String {
         TypedExprKind::DynCoerce { value, iface_name, from_type_name, from_ty: _ } => {
             // Vtables Phase 3 (tree-C): materialize the fat
             // pointer literal. The data slot must hold the
-            // address of a stable lvalue, so v1 only supports
-            // Var sources — `&v_<name>` is the binding's stack
-            // address, which lives for the enclosing block.
-            // Non-Var sources would need the IR to hoist them
-            // into a synthetic let first; tracked as Phase 3
-            // follow-up.
+            // address of a stable lvalue. Var sources point at
+            // the binding's stack address (lives for the
+            // enclosing block). Non-Var sources are pre-hoisted
+            // into a synthetic let by the checker pass — by
+            // the time codegen runs, every DynCoerce should
+            // have a Var source. Closure #276.
             match &value.kind {
                 TypedExprKind::Var(name) => {
                     format!(
@@ -3867,13 +3894,11 @@ fn emit_expr(expr: &TypedExpr) -> String {
                         lvalue = local_name(name),
                     )
                 }
-                _ => {
-                    panic!(
-                        "vtables Phase 3: coercion to `dyn {}` from non-Var source is \
-                         pending — let-bind the value before passing it",
-                        iface_name
-                    );
-                }
+                _ => unreachable!(
+                    "DynCoerce non-Var source reached codegen; the checker's \
+                     synthetic-let hoist should have rewritten it. iface={}",
+                    iface_name
+                ),
             }
         }
     }

@@ -4555,14 +4555,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
         }
         TypedExprKind::DynCoerce { value, iface_name, from_type_name, from_ty: _ } => {
             // Vtables Phase 3b: materialize the fat pointer.
-            // v1 restricts the source to a Var so the data
-            // slot can point at the binding's existing alloca
-            // (stable address). Non-Var sources need an IR
-            // hoist (Phase 4 follow-up).
+            // The data slot must be a stable lvalue — so the
+            // value must be a Var binding. Non-Var sources are
+            // pre-hoisted into a synthetic Block-expr by the
+            // checker pass before reaching codegen.
+            // Closure #276.
             let TypedExprKind::Var(var_name) = &value.kind else {
-                panic!(
-                    "vtables Phase 3b: coercion to `dyn {}` from non-Var source is \
-                     pending — let-bind the value before passing it",
+                unreachable!(
+                    "DynCoerce non-Var source reached codegen; the checker's \
+                     synthetic-let hoist should have rewritten it. iface={}",
                     iface_name
                 );
             };
