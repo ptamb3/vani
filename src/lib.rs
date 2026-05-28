@@ -12870,6 +12870,68 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_filter_typechecks_and_compiles() {
+        let source = r#"
+            pure fn is_even(x: i64) -> bool { return (x % 2) == 0; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              let evens: Vec<i64> = vec_filter(ref xs, is_even);
+              return evens[0];
+            }
+        "#;
+        compile_to_c(source).expect("vec_filter must type-check in C");
+        compile_to_llvm(source).expect("vec_filter must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_filter_accepts_inline_anon_predicate() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let ys: Vec<i64> = vec_filter(ref xs, fn(x: i64) -> bool { return x > 1; });
+              return ys[0];
+            }
+        "#;
+        compile_to_c(source).expect("vec_filter + anon predicate in C");
+        compile_to_llvm(source).expect("vec_filter + anon predicate in LLVM");
+    }
+
+    #[test]
+    fn vec_filter_rejects_wrong_predicate_signature() {
+        let source = r#"
+            pure fn bad(x: i64) -> i64 { return x; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let ys: Vec<i64> = vec_filter(ref xs, bad);
+              return len(ys);
+            }
+        "#;
+        let errors = compile(source).expect_err("predicate must return bool");
+        assert!(
+            errors.iter().any(|e| e.message.contains("vec_filter predicate must be")),
+            "expected vec_filter signature diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn vec_filter_emits_helper_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              let ys: Vec<i64> = vec_filter(ref xs, fn(x: i64) -> bool { return x > 0; });
+              return ys[0];
+            }
+        "#;
+        let c = compile_to_c(source).expect("vec_filter program compiles");
+        assert!(
+            c.contains("__filter(") && c.contains("__pred_fn"),
+            "C output must include the __filter helper + typedef; got snippet:\n{}",
+            &c[..c.len().min(800)]
+        );
+    }
+
+    #[test]
     fn vec_map_emits_helper_in_c() {
         let source = r#"
             fn main() -> i64 {

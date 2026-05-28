@@ -183,15 +183,17 @@ pointer (already in the language as of #279 FFI callbacks).
     Combinators are zero-allocation in v1 (loop-fused at
     monomorphization time), so no intermediate Vec materializes
     unless the user calls `.collect()`. Depends on #17.
-    *Phase 1 shipped 2026-05-28 (closure #309) — eager
-    `vec_map` / `vec_fold` on Vec<i64> via fn-ptr args.*
-    `vec_map(ref xs, f) -> Vec<i64>` materializes a fresh Vec;
-    `vec_fold(ref xs, init, g) -> i64` reduces. Both pair with
-    anonymous fn expressions (#308) or top-level fn-refs. 6
-    lib tests + `examples/iter_combinators.vani`. Pending: loop
-    fusion at monomorphization time (so chained
-    `vec_fold(ref vec_map(ref xs, f), 0, g)` doesn't allocate
-    intermediate Vec); `vec_filter`, `vec_take`, `vec_zip`,
+    *Phase 1 shipped 2026-05-28 (closures #309 + #310) — eager
+    `vec_map` / `vec_filter` / `vec_fold` on Vec<i64> via fn-ptr
+    args.* The canonical iterator trio with v1 restrictions:
+    Vec<i64> only; mapper locked to `fn(i64) -> i64` (no type-
+    changing); predicate `fn(i64) -> bool`; combiner
+    `fn(i64, i64) -> i64`. Each stage materializes intermediates
+    (an explicit named let is required between stages — `ref`
+    can't borrow expression results). 10 lib tests +
+    `examples/iter_combinators.vani` covers a map → filter →
+    fold pipeline on both backends. Pending: loop fusion at
+    monomorphization time; `vec_take` / `vec_zip` /
     `.collect()`; non-i64 element types; type-changing map
     (`Vec<i64> -> Vec<Str>`); method-call sugar (`xs.map(f)`).
 19. **Vec.sort_by + Vec.find_by with closures** — ✅ AFFINE.
@@ -530,7 +532,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #309 — Level 3 #2 phase 1: eager iterator combinators on Vec<i64>. `vec_map(ref xs, f: fn(i64) -> i64) -> Vec<i64>` materializes a fresh result Vec; `vec_fold(ref xs, init, g: fn(i64, i64) -> i64) -> i64` reduces with a user-supplied combiner. Both pair naturally with closure #308's anon fn expressions and with top-level fn-refs. Tree-C helpers emit inside the Vec bundle; Tree-LLVM emits matching `define`s on `%intent_vec_i64`. SSA routes through tree backends. 6 lib tests + `examples/iter_combinators.vani`. Next focal area: **closures with captured environment** (Level 3 #1 phase 2) — capture-by-value moves the binding (affine), capture-by-ref produces second-class closures callable only within the captured ref's lifetime. Then Level 3 #2 phase 2: **loop fusion at monomorphization time** so `vec_fold(ref vec_map(ref xs, f), 0, g)` doesn't allocate an intermediate Vec. Then `vec_filter` / `.collect()` / `vec_zip` / `vec_take`; non-i64 element types; type-changing map; method-call sugar (`xs.map(f)`). After Level 3 closes: Level 4 arena-based BST/AVL/B-tree/Trie/graphs + algorithms. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries + iteration via closures, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-28, after closure #310 — Level 3 #2 phase 1 completion: `vec_filter(ref xs, p: fn(i64) -> bool) -> Vec<i64>` closes the canonical iterator trio (map / filter / fold) on Vec<i64>. Two-pass implementation — count matches, then allocate-exact and fill. Pairs with anon fns or top-level fn-refs. 4 new lib tests + extended `examples/iter_combinators.vani` with a map → filter → fold pipeline. Next focal area: **closures with captured environment** (Level 3 #1 phase 2) — capture-by-value moves the binding (affine), capture-by-ref produces second-class closures callable only within the captured ref's lifetime. Then Level 3 #2 phase 2: **loop fusion at monomorphization time** so chained combinators don't allocate intermediate Vecs. Then `vec_take` / `vec_zip` / `.collect()`; non-i64 element types; type-changing map (`Vec<i64> -> Vec<Str>`); method-call sugar (`xs.map(f)`). After Level 3 closes: Level 4 arena-based BST/AVL/B-tree/Trie/graphs + algorithms. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries + iteration via closures, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

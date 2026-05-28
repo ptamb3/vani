@@ -2778,6 +2778,33 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
 \n}}\n",
             sn = struct_name,
         ));
+        // vec_filter (closure #310): two-pass — count matches
+        // first, allocate exactly that many slots, then fill.
+        // Predicate signature is `bool (*)(int64_t)`.
+        out.push_str(&format!(
+            "typedef bool (*{sn}__pred_fn)(int64_t);\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED {sn} {sn}__filter(const {sn}* xs, {sn}__pred_fn p) {{\
+\n    {sn} out;\
+\n    uint64_t hits = 0;\
+\n    for (uint64_t i = 0; i < xs->len; i++) {{\
+\n        if (p(xs->data[i])) {{ hits++; }}\
+\n    }}\
+\n    out.len = hits;\
+\n    out.capacity = hits;\
+\n    if (hits == 0) {{ out.data = (int64_t*)0; return out; }}\
+\n    out.data = (int64_t*)malloc(hits * sizeof(int64_t));\
+\n    if (!out.data) abort();\
+\n    uint64_t w = 0;\
+\n    for (uint64_t i = 0; i < xs->len; i++) {{\
+\n        if (p(xs->data[i])) {{ out.data[w++] = xs->data[i]; }}\
+\n    }}\
+\n    return out;\
+\n}}\n",
+            sn = struct_name,
+        ));
         // dedup: remove consecutive duplicates. Returns the
         // post-dedup length so the caller can verify the work
         // was done. Sort first if you want unique-set behavior.
@@ -5965,6 +5992,19 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                     emit_expr(&args[1])
                 ),
                 _ => unreachable!("vec_map() arg 0 must be ref Vec<i64>"),
+            }
+        }
+        "vec_filter" => {
+            // vec_filter(ref xs: Vec<i64>, p) -> Vec<i64>.
+            // Eager; helper materializes a new Vec. Closure #310.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, {})",
+                    vec_helper(element, "filter"),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1])
+                ),
+                _ => unreachable!("vec_filter() arg 0 must be ref Vec<i64>"),
             }
         }
         "vec_fold" => {

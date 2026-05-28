@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -12216,7 +12216,7 @@ fn check_call(
         "sort" | "sort_by" => {
             return check_sort_builtin(name, args, env, signatures, span, diagnostics);
         }
-        "vec_map" | "vec_fold" => {
+        "vec_map" | "vec_fold" | "vec_filter" => {
             return check_vec_map_fold_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
@@ -14123,12 +14123,15 @@ fn check_sort_builtin(
 }
 
 /// Data-structures roadmap Level 3 — eager iterator combinators
-/// on Vec<i64> (closure #309). Both take fn-pointer args (which
-/// anon fn expressions from closure #308 supply ergonomically).
-/// v1 is eager — `vec_map` materializes a new Vec. Loop fusion
-/// at monomorphization time is queued as a follow-up.
+/// on Vec<i64> (closures #309 + #310). All take fn-pointer args
+/// (which anon fn expressions from closure #308 supply
+/// ergonomically). v1 is eager — `vec_map` / `vec_filter`
+/// materialize fresh Vecs. Loop fusion at monomorphization time
+/// is queued as a follow-up.
 ///
 ///   vec_map(ref xs: Vec<i64>, f: fn(i64) -> i64) -> Vec<i64>
+///   vec_filter(ref xs: Vec<i64>,
+///              p: fn(i64) -> bool) -> Vec<i64>
 ///   vec_fold(ref xs: Vec<i64>, init: i64,
 ///            g: fn(i64, i64) -> i64) -> i64
 fn check_vec_map_fold_builtin(
@@ -14140,13 +14143,13 @@ fn check_vec_map_fold_builtin(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CheckedExpr {
     let want_args: usize = match name {
-        "vec_map" => 2,
+        "vec_map" | "vec_filter" => 2,
         "vec_fold" => 3,
         _ => unreachable!(),
     };
     let ret_ty = || -> Type {
         match name {
-            "vec_map" => Type::Vec(Box::new(Type::I64)),
+            "vec_map" | "vec_filter" => Type::Vec(Box::new(Type::I64)),
             _ => Type::I64,
         }
     };
@@ -14215,6 +14218,20 @@ fn check_vec_map_fold_builtin(
                 ));
             }
             typed_args.push(f.expr);
+        }
+        "vec_filter" => {
+            let p = check_expr(&args[1], env, signatures, diagnostics);
+            let expected = Type::FnPtr(vec![Type::I64], Box::new(Type::Bool));
+            if p.ty() != &expected {
+                diagnostics.push(Diagnostic::new(
+                    args[1].span,
+                    format!(
+                        "vec_filter predicate must be `fn(i64) -> bool`, got {}",
+                        p.ty()
+                    ),
+                ));
+            }
+            typed_args.push(p.expr);
         }
         "vec_fold" => {
             let init_raw = check_expr(&args[1], env, signatures, diagnostics);

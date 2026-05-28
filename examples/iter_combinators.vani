@@ -3,15 +3,18 @@
 //   intentc run examples/iter_combinators.vani --backend=c              # C backend
 //   intentc build examples/iter_combinators.vani -o /tmp/iter && /tmp/iter
 
-intent "Iterator combinators on Vec<i64> — eager .map and .fold via fn-ptr (Level 3 #2)";
+intent "Iterator combinators on Vec<i64> — eager .map / .filter / .fold via fn-ptr (Level 3 #2)";
 
 // v1 design: eager combinators on Vec<i64> taking fn-pointer
-// args. The mapper / combiner can be a top-level fn or an
-// anonymous fn expression (closure #308). Closures with a
-// captured environment land in a follow-up.
+// args. The mapper / predicate / combiner can be a top-level
+// fn or an anonymous fn expression (closure #308). Closures
+// with a captured environment land in a follow-up.
 //
 //   vec_map(ref xs: Vec<i64>, f: fn(i64) -> i64) -> Vec<i64>
 //       eager — allocates a fresh Vec the caller drops.
+//   vec_filter(ref xs: Vec<i64>,
+//              p: fn(i64) -> bool) -> Vec<i64>
+//       eager — two-pass (count, then fill).
 //   vec_fold(ref xs: Vec<i64>, init: i64,
 //            g: fn(i64, i64) -> i64) -> i64
 //       reduces with a user-supplied combiner.
@@ -61,6 +64,26 @@ fn main() -> i64 {
   // Chained: map then fold (sum of squares).
   let sqs: Vec<i64> = vec_map(ref xs, fn(x: i64) -> i64 { return x * x; });
   print "sum of squares:", vec_fold(ref sqs, 0, add);
+
+  // filter with an inline predicate.
+  let evens: Vec<i64> = vec_filter(ref xs, fn(x: i64) -> bool { return (x % 2) == 0; });
+  print "evens len:", len(evens);
+  print "evens[0]:", evens[0];
+
+  // filter that selects nothing — empty Vec.
+  let none: Vec<i64> = vec_filter(ref xs, fn(x: i64) -> bool { return x > 100; });
+  print "none len:", len(none);
+
+  // map -> filter -> fold pipeline. Each stage materializes
+  // an intermediate Vec held in a named let-binding so `ref`
+  // can borrow it (chained `ref vec_map(...)` is rejected —
+  // `ref` only borrows named places in v1). Loop fusion is a
+  // follow-up; until then this is the explicit-intermediates
+  // pattern.
+  let doubled: Vec<i64> = vec_map(ref xs, double);
+  let big_doubled: Vec<i64> = vec_filter(ref doubled, fn(x: i64) -> bool { return x > 5; });
+  print "big_doubled len:", len(big_doubled);
+  print "big_doubled sum:", vec_fold(ref big_doubled, 0, add);
 
   return 0;
 }

@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #309 — Level 3 #2: eager iterator combinators on Vec<i64> taking fn-ptr args — `vec_map(ref xs, f)` materializes a new Vec; `vec_fold(ref xs, init, g)` reduces. Both pair naturally with anonymous fn expressions from closure #308 (`vec_map(ref xs, fn(x) -> i64 { ... })`) and with top-level fn-refs. Loop fusion deferred. New `examples/iter_combinators.vani`; 6 new lib tests.)
-**Test totals:** 1131 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 77 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #310 — Level 3 #2 phase 2: `vec_filter(ref xs, p: fn(i64) -> bool) -> Vec<i64>` completes the canonical eager combinator trio (map/filter/fold) on Vec<i64>. Two-pass implementation — count matches, then allocate-and-fill — so the output Vec has exactly the right size. Extended `examples/iter_combinators.vani` with a map → filter → fold pipeline; 4 new lib tests.)
+**Test totals:** 1135 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 77 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -63,15 +63,18 @@ under *Data structures + algorithms roadmap*.
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
 
-### Data-structures roadmap Level 3 — Iterator combinators on Vec<i64> (shipped 2026-05-28, closure #309)
+### Data-structures roadmap Level 3 — Iterator combinators on Vec<i64> (shipped 2026-05-28, closures #309 + #310)
 
 ✅ AFFINE — fn-ptr args are Copy; the input Vec is borrowed
-read-only (`ref Vec<i64>`); `vec_map` returns an owned Vec the
-caller is responsible for dropping.
+read-only (`ref Vec<i64>`); `vec_map` / `vec_filter` return
+owned Vecs the caller is responsible for dropping.
 
-**API (2 builtins):**
+**API (3 builtins):**
 - `vec_map(ref xs: Vec<i64>, f: fn(i64) -> i64) -> Vec<i64>` —
   eager. Allocates a fresh result Vec.
+- `vec_filter(ref xs: Vec<i64>,
+              p: fn(i64) -> bool) -> Vec<i64>` — eager. Two-
+  pass: count matches, allocate exact, fill. Closure #310.
 - `vec_fold(ref xs: Vec<i64>, init: i64,
            g: fn(i64, i64) -> i64) -> i64` — reduces with the
   user-supplied combiner.
@@ -86,13 +89,16 @@ satisfied by either.
 
 **Codegen:**
 - **Tree-C**: helpers `intent_vec_int64_t__map` /
-  `intent_vec_int64_t__fold` emitted inside the existing Vec
-  bundle for i64. map mallocs a result buffer the size of the
-  input; fold accumulates in a register. Reuses the existing
-  `__cmp_fn` typedef for fold's combiner signature.
-- **Tree-LLVM**: matching `define`s for `__map` / `__fold` on
-  `%intent_vec_i64`. map calls `@malloc`; fold uses an alloca
-  + i-counter loop.
+  `intent_vec_int64_t__filter` / `intent_vec_int64_t__fold`
+  emitted inside the existing Vec bundle for i64. map mallocs
+  a result buffer the size of the input; filter is two-pass
+  (count, allocate, fill); fold accumulates in a register.
+  Reuses the existing `__cmp_fn` typedef for fold's combiner;
+  adds a `__pred_fn` typedef for filter's predicate.
+- **Tree-LLVM**: matching `define`s for `__map` / `__filter` /
+  `__fold` on `%intent_vec_i64`. map / filter call `@malloc`;
+  fold uses an alloca + i-counter loop. filter follows the
+  same two-pass shape as C.
 - **SSA**: routes through tree backends via the
   `ssa_path_supports` reject list.
 
@@ -102,21 +108,24 @@ satisfied by either.
 - Mapper signature locked to `fn(i64) -> i64` (no type-changing
   map yet — would require generic monomorphization over the
   output element type).
-- No loop fusion. A chain `vec_fold(ref vec_map(ref xs, f), 0,
-  g)` materializes an intermediate Vec. Fusion at
-  monomorphization time is queued for a follow-up.
-- `vec_filter`, `vec_take`, `vec_zip`, `.collect()` deferred.
+- No loop fusion. A chain `vec_fold(ref m, 0, g)` where
+  `m = vec_map(ref xs, f)` materializes an intermediate Vec
+  in `m`. The user must introduce a named let between stages —
+  `ref vec_map(...)` is rejected (`ref` borrows named places).
+  Fusion at monomorphization time queued as a follow-up.
+- `vec_take`, `vec_zip`, `.collect()` deferred.
 
-**Tests:** 6 lib tests (basics for both; inline anon-fn use;
-mapper signature mismatch; combiner signature mismatch; `__map`
-helper emitted in C). New `examples/iter_combinators.vani`
+**Tests:** 10 lib tests across closures #309 and #310 — basics
++ LLVM compile for each builtin; inline anon-fn use; signature-
+mismatch rejection per builtin; `__map` / `__filter` helpers
+appear in emitted C. `examples/iter_combinators.vani`
 exercises both backends via the parity runner with top-level
-fn-refs AND inline anon fns.
+fn-refs AND inline anon fns AND a map → filter → fold pipeline.
 
 **Pending follow-ups:** loop fusion at monomorphization time;
-`vec_filter` / `vec_take` / `vec_zip` / `.collect()`; non-i64
-element types; type-changing map (`Vec<i64> -> Vec<Str>`);
-method-call sugar (`xs.map(f)` / `xs.fold(init, g)`).
+`vec_take` / `vec_zip` / `.collect()`; non-i64 element types;
+type-changing map (`Vec<i64> -> Vec<Str>`); method-call sugar
+(`xs.map(f)` / `xs.filter(p)` / `xs.fold(init, g)`).
 
 ### Data-structures roadmap Level 3 — Anonymous fn expressions (shipped 2026-05-28, closure #308)
 

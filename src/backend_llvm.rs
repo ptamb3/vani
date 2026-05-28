@@ -5602,6 +5602,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "heapify"
                     | "vec_map"
                     | "vec_fold"
+                    | "vec_filter"
             ) {
                 let elt = vec_element_of_first_arg(args)
                     .expect("vec builtins take a Vec as the first arg");
@@ -5621,6 +5622,8 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     "map"
                 } else if name == "vec_fold" {
                     "fold"
+                } else if name == "vec_filter" {
+                    "filter"
                 } else {
                     name.as_str()
                 };
@@ -9554,6 +9557,115 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
         ));
         out.push_str(&format!(
             "  ret {sty} %e2\n",
+            sty = s_ty,
+        ));
+        out.push_str("}\n");
+        // vec_filter (closure #310): two-pass. Count matches,
+        // allocate exact, then fill. Predicate has shape
+        // `i1 (i64)*`.
+        let filter_name = format!("@intent_vec_{}__filter", tag);
+        out.push_str(&format!(
+            "define {sty} {sn}({sty}* %xs_p, i1 (i64)* %p) {{\n",
+            sn = filter_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %src = load i64*, i64** %data_p\n");
+        out.push_str("  %n = load i64, i64* %len_p\n");
+        // Pass 1: count matches.
+        out.push_str("  %hits_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %hits_p\n");
+        out.push_str("  %i1_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %i1_p\n");
+        out.push_str("  br label %flt_count\n");
+        out.push_str("flt_count:\n");
+        out.push_str("  %i1_v = load i64, i64* %i1_p\n");
+        out.push_str("  %c1 = icmp slt i64 %i1_v, %n\n");
+        out.push_str("  br i1 %c1, label %flt_count_body, label %flt_alloc\n");
+        out.push_str("flt_count_body:\n");
+        out.push_str("  %src_slot1 = getelementptr i64, i64* %src, i64 %i1_v\n");
+        out.push_str("  %src_v1 = load i64, i64* %src_slot1\n");
+        out.push_str("  %k1 = call i1 %p(i64 %src_v1)\n");
+        out.push_str("  %h_old = load i64, i64* %hits_p\n");
+        out.push_str("  %h_add = zext i1 %k1 to i64\n");
+        out.push_str("  %h_new = add i64 %h_old, %h_add\n");
+        out.push_str("  store i64 %h_new, i64* %hits_p\n");
+        out.push_str("  %i1_n = add i64 %i1_v, 1\n");
+        out.push_str("  store i64 %i1_n, i64* %i1_p\n");
+        out.push_str("  br label %flt_count\n");
+        out.push_str("flt_alloc:\n");
+        out.push_str("  %hits = load i64, i64* %hits_p\n");
+        out.push_str("  %h_empty = icmp eq i64 %hits, 0\n");
+        out.push_str("  br i1 %h_empty, label %flt_empty, label %flt_alloc_buf\n");
+        out.push_str("flt_alloc_buf:\n");
+        out.push_str("  %bytes = mul i64 %hits, 8\n");
+        out.push_str("  %dst_i8 = call i8* @malloc(i64 %bytes)\n");
+        out.push_str("  %dst = bitcast i8* %dst_i8 to i64*\n");
+        // Pass 2: fill.
+        out.push_str("  %i2_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %i2_p\n");
+        out.push_str("  %w_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %w_p\n");
+        out.push_str("  br label %flt_fill\n");
+        out.push_str("flt_fill:\n");
+        out.push_str("  %i2_v = load i64, i64* %i2_p\n");
+        out.push_str("  %c2 = icmp slt i64 %i2_v, %n\n");
+        out.push_str("  br i1 %c2, label %flt_fill_body, label %flt_done\n");
+        out.push_str("flt_fill_body:\n");
+        out.push_str("  %src_slot2 = getelementptr i64, i64* %src, i64 %i2_v\n");
+        out.push_str("  %src_v2 = load i64, i64* %src_slot2\n");
+        out.push_str("  %k2 = call i1 %p(i64 %src_v2)\n");
+        out.push_str("  br i1 %k2, label %flt_store, label %flt_skip\n");
+        out.push_str("flt_store:\n");
+        out.push_str("  %w_v = load i64, i64* %w_p\n");
+        out.push_str("  %dst_slot = getelementptr i64, i64* %dst, i64 %w_v\n");
+        out.push_str("  store i64 %src_v2, i64* %dst_slot\n");
+        out.push_str("  %w_n = add i64 %w_v, 1\n");
+        out.push_str("  store i64 %w_n, i64* %w_p\n");
+        out.push_str("  br label %flt_skip\n");
+        out.push_str("flt_skip:\n");
+        out.push_str("  %i2_n = add i64 %i2_v, 1\n");
+        out.push_str("  store i64 %i2_n, i64* %i2_p\n");
+        out.push_str("  br label %flt_fill\n");
+        out.push_str("flt_done:\n");
+        out.push_str(&format!(
+            "  %fr0 = insertvalue {sty} undef, i64* %dst, 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %fr1 = insertvalue {sty} %fr0, i64 %hits, 1\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %fr2 = insertvalue {sty} %fr1, i64 %hits, 2\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  ret {sty} %fr2\n",
+            sty = s_ty,
+        ));
+        out.push_str("flt_empty:\n");
+        out.push_str(&format!(
+            "  %fe0 = insertvalue {sty} undef, i64* null, 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %fe1 = insertvalue {sty} %fe0, i64 0, 1\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %fe2 = insertvalue {sty} %fe1, i64 0, 2\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  ret {sty} %fe2\n",
             sty = s_ty,
         ));
         out.push_str("}\n");

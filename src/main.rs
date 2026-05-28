@@ -337,7 +337,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "btreemap_new" || name == "btreemap_insert"
                 || name == "btreemap_get" || name == "btreemap_contains_key"
                 || name == "btreemap_remove" || name == "btreemap_len"
-                || name == "vec_map" || name == "vec_fold"
+                || name == "vec_map" || name == "vec_fold" || name == "vec_filter"
             {
                 return false;
             }
