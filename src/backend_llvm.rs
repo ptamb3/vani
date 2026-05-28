@@ -249,6 +249,7 @@ fn llvm_byte_size(ty: &Type) -> u64 {
         }
         Type::Channel(_, _) => 32, // ring buffer header — generous
         Type::Task => 16, // pthread_t + ctx*
+        Type::Condvar => 8, // pointer to heap-allocated cv state
         Type::Object(_) => 16, // fat pointer: vtable + data
         Type::Vec(_) => 24, // {data, len, cap} on 64-bit
         Type::Array { element, length } => llvm_byte_size(element) * length,
@@ -485,6 +486,7 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         out.push_str("declare i32 @SwitchToThread()\n");
         out.push_str("declare i32 @WaitOnAddress(i8*, i8*, i64, i32)\n");
         out.push_str("declare void @WakeByAddressSingle(i8*)\n");
+        out.push_str("declare void @WakeByAddressAll(i8*)\n");
     } else {
         // sched_yield(): POSIX system call that returns the
         // current thread's time slice to the scheduler. Kept
@@ -594,7 +596,11 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // three-state lock: 0=unlocked, 1=locked-no-waiters,
     // 2=locked-waiters-present.
     out.push_str("%intent_mutex_i64 = type { i64, i32 }\n");
-    out.push_str("%intent_guard_i64 = type { %intent_mutex_i64* }\n\n");
+    out.push_str("%intent_guard_i64 = type { %intent_mutex_i64* }\n");
+    // Condvar (stack-by-value, like Mutex/Guard): a single
+    // i32 seq counter accessed atomically. Notify ops bump
+    // seq + futex-wake; wait snapshots seq + futex-waits.
+    out.push_str("%intent_condvar = type { i32 }\n\n");
 
     emit_intent_str_concat_definition(&mut out);
 
@@ -3990,6 +3996,380 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 out.push_str(&format!("  store i64 {}, i64* {}\n", v, value_p));
                 return v;
+            }
+            // Condvar builtins. Stack-by-value `%intent_condvar
+            // = type { i32 }`. The seq field is treated as
+            // atomic. `condvar_new` returns a zero-initialized
+            // struct. `condvar_wait` / `_timeout` snapshot seq,
+            // release the mutex (via the same fetch_sub + wake
+            // pattern as Guard's Drop), park on the seq slot
+            // via `@syscall` / `@WaitOnAddress`, then re-lock
+            // the mutex by inlining the Drepper acquire. The
+            // notify_one / notify_all paths fetch_add seq + wake
+            // n=1 / n=INT_MAX.
+            if name == "condvar_new" {
+                let s = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %intent_condvar undef, i32 0, 0\n",
+                    s
+                ));
+                return s;
+            }
+            if name == "condvar_wait" || name == "condvar_wait_timeout" {
+                let is_timeout = name == "condvar_wait_timeout";
+                let cv_ptr = emit_expr(&args[0], ctx, out);
+                let g_ptr = emit_expr(&args[1], ctx, out);
+                let timeout_ms = if is_timeout {
+                    Some(emit_expr(&args[2], ctx, out))
+                } else {
+                    None
+                };
+                // Snapshot seq.
+                let seq_p = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr %intent_condvar, %intent_condvar* {}, i32 0, i32 0\n",
+                    seq_p, cv_ptr
+                ));
+                let snapshot = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load atomic i32, i32* {} seq_cst, align 4\n",
+                    snapshot, seq_p
+                ));
+                // Read the mutex pointer out of the guard so we
+                // can both unlock and re-lock it. Guard layout
+                // is `{ %intent_mutex_i64* }`.
+                let mp_p = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr %intent_guard_i64, %intent_guard_i64* {}, i32 0, i32 0\n",
+                    mp_p, g_ptr
+                ));
+                let m_ptr = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load %intent_mutex_i64*, %intent_mutex_i64** {}\n",
+                    m_ptr, mp_p
+                ));
+                // Pointer to mutex's `locked` field (index 1).
+                let locked_p = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr %intent_mutex_i64, %intent_mutex_i64* {}, i32 0, i32 1\n",
+                    locked_p, m_ptr
+                ));
+                // Unlock the mutex (mirror of Guard's Drop): if
+                // fetch_sub returns 1 (was-1, no waiters), we're
+                // done; else reset to 0 and wake one waiter.
+                let prev = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = atomicrmw sub i32* {}, i32 1 seq_cst\n",
+                    prev, locked_p
+                ));
+                let had_waiters = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp ne i32 {}, 1\n",
+                    had_waiters, prev
+                ));
+                let cv_unlock_wake = ctx.fresh_label("cv_unlock_wake");
+                let cv_park = ctx.fresh_label("cv_park");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    had_waiters, cv_unlock_wake, cv_park
+                ));
+                out.push_str(&format!("{}:\n", cv_unlock_wake));
+                out.push_str(&format!(
+                    "  store atomic i32 0, i32* {} seq_cst, align 4\n",
+                    locked_p
+                ));
+                if host_uses_win32_threading() {
+                    let addr_i8_u = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = bitcast i32* {} to i8*\n",
+                        addr_i8_u, locked_p
+                    ));
+                    out.push_str(&format!(
+                        "  call void @WakeByAddressSingle(i8* {})\n",
+                        addr_i8_u
+                    ));
+                } else {
+                    let _wake_ret = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = call i64 (i64, ...) @syscall(i64 {}, i32* {}, i32 129, i32 1, i8* null, i8* null, i32 0)\n",
+                        _wake_ret, sys_futex_for_host(), locked_p
+                    ));
+                }
+                out.push_str(&format!("  br label %{}\n", cv_park));
+                // park on the cv seq slot.
+                out.push_str(&format!("{}:\n", cv_park));
+                let notified_p = if is_timeout {
+                    let p = ctx.fresh_tmp();
+                    out.push_str(&format!("  {} = alloca i1\n", p));
+                    out.push_str(&format!("  store i1 false, i1* {}\n", p));
+                    Some(p)
+                } else {
+                    None
+                };
+                if host_uses_win32_threading() {
+                    let cmp_slot = ctx.fresh_tmp();
+                    out.push_str(&format!("  {} = alloca i32\n", cmp_slot));
+                    out.push_str(&format!(
+                        "  store i32 {}, i32* {}\n",
+                        snapshot, cmp_slot
+                    ));
+                    let addr_i8 = ctx.fresh_tmp();
+                    let cmp_i8 = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = bitcast i32* {} to i8*\n",
+                        addr_i8, seq_p
+                    ));
+                    out.push_str(&format!(
+                        "  {} = bitcast i32* {} to i8*\n",
+                        cmp_i8, cmp_slot
+                    ));
+                    let timeout_arg = if is_timeout {
+                        let t = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = trunc i64 {} to i32\n",
+                            t, timeout_ms.as_ref().unwrap()
+                        ));
+                        t
+                    } else {
+                        "-1".to_string()
+                    };
+                    let wait_ret = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = call i32 @WaitOnAddress(i8* {}, i8* {}, i64 4, i32 {})\n",
+                        wait_ret, addr_i8, cmp_i8, timeout_arg
+                    ));
+                    if is_timeout {
+                        // notified if WaitOnAddress returned non-zero
+                        // (i.e., not a timeout). seq advancement is
+                        // additional evidence but WaitOnAddress's
+                        // return code is the canonical signal.
+                        let was_notified = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = icmp ne i32 {}, 0\n",
+                            was_notified, wait_ret
+                        ));
+                        out.push_str(&format!(
+                            "  store i1 {}, i1* {}\n",
+                            was_notified, notified_p.as_ref().unwrap()
+                        ));
+                    }
+                } else {
+                    let _futex_ret = ctx.fresh_tmp();
+                    if is_timeout {
+                        // Build a `struct timespec { i64; i64; }` on
+                        // the stack from timeout_ms. Linux's struct
+                        // timespec is `{ time_t tv_sec; long tv_nsec; }`
+                        // which is `{ i64; i64; }` on x86_64.
+                        let ts_p = ctx.fresh_tmp();
+                        out.push_str(&format!("  {} = alloca [2 x i64]\n", ts_p));
+                        let sec_p = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = getelementptr [2 x i64], [2 x i64]* {}, i32 0, i32 0\n",
+                            sec_p, ts_p
+                        ));
+                        let nsec_p = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = getelementptr [2 x i64], [2 x i64]* {}, i32 0, i32 1\n",
+                            nsec_p, ts_p
+                        ));
+                        let sec = ctx.fresh_tmp();
+                        let nsec_ms = ctx.fresh_tmp();
+                        let nsec = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = sdiv i64 {}, 1000\n",
+                            sec, timeout_ms.as_ref().unwrap()
+                        ));
+                        out.push_str(&format!(
+                            "  {} = srem i64 {}, 1000\n",
+                            nsec_ms, timeout_ms.as_ref().unwrap()
+                        ));
+                        out.push_str(&format!(
+                            "  {} = mul i64 {}, 1000000\n",
+                            nsec, nsec_ms
+                        ));
+                        out.push_str(&format!("  store i64 {}, i64* {}\n", sec, sec_p));
+                        out.push_str(&format!("  store i64 {}, i64* {}\n", nsec, nsec_p));
+                        let ts_i8 = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = bitcast [2 x i64]* {} to i8*\n",
+                            ts_i8, ts_p
+                        ));
+                        out.push_str(&format!(
+                            "  {} = call i64 (i64, ...) @syscall(i64 {}, i32* {}, i32 128, i32 {}, i8* {}, i8* null, i32 0)\n",
+                            _futex_ret, sys_futex_for_host(), seq_p, snapshot, ts_i8
+                        ));
+                        // notified if futex returned 0 (signaled);
+                        // any negative errno (e.g. -ETIMEDOUT)
+                        // means not notified.
+                        let was_notified = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = icmp eq i64 {}, 0\n",
+                            was_notified, _futex_ret
+                        ));
+                        out.push_str(&format!(
+                            "  store i1 {}, i1* {}\n",
+                            was_notified, notified_p.as_ref().unwrap()
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "  {} = call i64 (i64, ...) @syscall(i64 {}, i32* {}, i32 128, i32 {}, i8* null, i8* null, i32 0)\n",
+                            _futex_ret, sys_futex_for_host(), seq_p, snapshot
+                        ));
+                    }
+                }
+                // Re-acquire the mutex. Duplicate Drepper acquire
+                // (fast CAS 0→1, slow path xchg→2 + park loop).
+                let cp = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = alloca i32\n", cp));
+                let cv_relock_slow = ctx.fresh_label("cv_relock_slow");
+                let cv_relock_loop = ctx.fresh_label("cv_relock_loop");
+                let cv_relock_park = ctx.fresh_label("cv_relock_park");
+                let cv_relock_done = ctx.fresh_label("cv_relock_done");
+                let cx0 = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = cmpxchg i32* {}, i32 0, i32 1 seq_cst seq_cst\n",
+                    cx0, locked_p
+                ));
+                let won0 = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = extractvalue {{ i32, i1 }} {}, 1\n",
+                    won0, cx0
+                ));
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    won0, cv_relock_done, cv_relock_slow
+                ));
+                out.push_str(&format!("{}:\n", cv_relock_slow));
+                let c0 = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = extractvalue {{ i32, i1 }} {}, 0\n",
+                    c0, cx0
+                ));
+                let need_mark = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp ne i32 {}, 2\n",
+                    need_mark, c0
+                ));
+                let cv_relock_mark = ctx.fresh_label("cv_relock_mark");
+                let cv_relock_store_init = ctx.fresh_label("cv_relock_store_init");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    need_mark, cv_relock_mark, cv_relock_store_init
+                ));
+                out.push_str(&format!("{}:\n", cv_relock_mark));
+                let c_marked = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = atomicrmw xchg i32* {}, i32 2 seq_cst\n",
+                    c_marked, locked_p
+                ));
+                out.push_str(&format!("  store i32 {}, i32* {}\n", c_marked, cp));
+                out.push_str(&format!("  br label %{}\n", cv_relock_loop));
+                out.push_str(&format!("{}:\n", cv_relock_store_init));
+                out.push_str(&format!("  store i32 {}, i32* {}\n", c0, cp));
+                out.push_str(&format!("  br label %{}\n", cv_relock_loop));
+                out.push_str(&format!("{}:\n", cv_relock_loop));
+                let c = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = load i32, i32* {}\n", c, cp));
+                let still_locked = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp ne i32 {}, 0\n",
+                    still_locked, c
+                ));
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    still_locked, cv_relock_park, cv_relock_done
+                ));
+                out.push_str(&format!("{}:\n", cv_relock_park));
+                if host_uses_win32_threading() {
+                    let cmp_slot = ctx.fresh_tmp();
+                    out.push_str(&format!("  {} = alloca i32\n", cmp_slot));
+                    out.push_str(&format!("  store i32 2, i32* {}\n", cmp_slot));
+                    let addr_i8 = ctx.fresh_tmp();
+                    let cmp_i8 = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = bitcast i32* {} to i8*\n",
+                        addr_i8, locked_p
+                    ));
+                    out.push_str(&format!(
+                        "  {} = bitcast i32* {} to i8*\n",
+                        cmp_i8, cmp_slot
+                    ));
+                    let _wait_ret = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = call i32 @WaitOnAddress(i8* {}, i8* {}, i64 4, i32 -1)\n",
+                        _wait_ret, addr_i8, cmp_i8
+                    ));
+                } else {
+                    let _futex_ret = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = call i64 (i64, ...) @syscall(i64 {}, i32* {}, i32 128, i32 2, i8* null, i8* null, i32 0)\n",
+                        _futex_ret, sys_futex_for_host(), locked_p
+                    ));
+                }
+                let c_after = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = atomicrmw xchg i32* {}, i32 2 seq_cst\n",
+                    c_after, locked_p
+                ));
+                out.push_str(&format!("  store i32 {}, i32* {}\n", c_after, cp));
+                out.push_str(&format!("  br label %{}\n", cv_relock_loop));
+                out.push_str(&format!("{}:\n", cv_relock_done));
+                // Return value: i64 0 for wait, i1 (notified
+                // flag) for wait_timeout.
+                if is_timeout {
+                    let r = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = load i1, i1* {}\n",
+                        r, notified_p.as_ref().unwrap()
+                    ));
+                    return r;
+                } else {
+                    return "0".to_string();
+                }
+            }
+            if name == "condvar_notify_one" || name == "condvar_notify_all" {
+                let wake_n: i64 = if name == "condvar_notify_one" {
+                    1
+                } else {
+                    0x7fffffff
+                };
+                let cv_ptr = emit_expr(&args[0], ctx, out);
+                let seq_p = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr %intent_condvar, %intent_condvar* {}, i32 0, i32 0\n",
+                    seq_p, cv_ptr
+                ));
+                let _bump = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = atomicrmw add i32* {}, i32 1 seq_cst\n",
+                    _bump, seq_p
+                ));
+                if host_uses_win32_threading() {
+                    let addr_i8 = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = bitcast i32* {} to i8*\n",
+                        addr_i8, seq_p
+                    ));
+                    if wake_n == 1 {
+                        out.push_str(&format!(
+                            "  call void @WakeByAddressSingle(i8* {})\n",
+                            addr_i8
+                        ));
+                    } else {
+                        // WakeByAddressAll is the broadcast variant.
+                        out.push_str(&format!(
+                            "  call void @WakeByAddressAll(i8* {})\n",
+                            addr_i8
+                        ));
+                    }
+                } else {
+                    let _wake_ret = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = call i64 (i64, ...) @syscall(i64 {}, i32* {}, i32 129, i32 {}, i8* null, i8* null, i32 0)\n",
+                        _wake_ret, sys_futex_for_host(), seq_p, wake_n
+                    ));
+                }
+                return "0".to_string();
             }
             // `vec(...)` as a sub-expression (e.g. nested
             // `vec(vec(1,2), vec(3))`) — emit the same
@@ -8481,7 +8861,7 @@ fn is_scalar(ty: &Type) -> bool {
         // <ty> <v>, <ty>* …` work uniformly. The builtins
         // (channel_new, mutex_new, mutex_lock) return SSA
         // values of these struct types.
-        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_))
+        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar)
         // Function pointers are pointer-sized scalars. The
         // alloca holds a single value of fn-ptr type (the
         // load returns a function-pointer SSA value the
@@ -8530,6 +8910,7 @@ pub(crate) fn llvm_type(ty: &Type) -> &'static str {
         Type::Channel(_, _) => "%intent_channel_i64_16",
         Type::Mutex(_) => "%intent_mutex_i64",
         Type::Guard(_) => "%intent_guard_i64",
+        Type::Condvar => "%intent_condvar",
         // Enums lower to a 32-bit tag — see `llvm_type_string`
         // for the same. T1.3.
         Type::Enum(_) => "i32",

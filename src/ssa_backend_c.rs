@@ -1930,6 +1930,71 @@ fn emit_instr(
                 .unwrap();
                 return Ok(());
             }
+            // Condvar intrinsics. Shared runtime helpers
+            // `intent_condvar_*` are emitted in the preamble
+            // alongside `intent_mutex_i64_*` (gated by the
+            // `intent_condvar` substring on the body).
+            if name == "condvar_new" {
+                writeln!(
+                    out,
+                    "  v_{} = intent_condvar_new();",
+                    instr.result.0
+                )
+                .unwrap();
+                return Ok(());
+            }
+            if name == "condvar_wait" {
+                let cv = args.get(0).ok_or_else(|| EmitError {
+                    message: "condvar_wait expects 2 args".to_string(),
+                })?;
+                let g = args.get(1).ok_or_else(|| EmitError {
+                    message: "condvar_wait expects 2 args".to_string(),
+                })?;
+                writeln!(
+                    out,
+                    "  v_{} = intent_condvar_wait({}, {});",
+                    instr.result.0,
+                    c_operand(cv),
+                    c_operand(g)
+                )
+                .unwrap();
+                return Ok(());
+            }
+            if name == "condvar_wait_timeout" {
+                let cv = args.get(0).ok_or_else(|| EmitError {
+                    message: "condvar_wait_timeout expects 3 args".to_string(),
+                })?;
+                let g = args.get(1).ok_or_else(|| EmitError {
+                    message: "condvar_wait_timeout expects 3 args".to_string(),
+                })?;
+                let ms = args.get(2).ok_or_else(|| EmitError {
+                    message: "condvar_wait_timeout expects 3 args".to_string(),
+                })?;
+                writeln!(
+                    out,
+                    "  v_{} = intent_condvar_wait_timeout({}, {}, {});",
+                    instr.result.0,
+                    c_operand(cv),
+                    c_operand(g),
+                    c_operand(ms)
+                )
+                .unwrap();
+                return Ok(());
+            }
+            if name == "condvar_notify_one" || name == "condvar_notify_all" {
+                let cv = args.first().ok_or_else(|| EmitError {
+                    message: format!("{} expects 1 arg", name),
+                })?;
+                writeln!(
+                    out,
+                    "  v_{} = intent_{}({});",
+                    instr.result.0,
+                    name,
+                    c_operand(cv)
+                )
+                .unwrap();
+                return Ok(());
+            }
             // Channel intrinsics — dispatch via the per-(T,
             // N) helper names. `channel_new` returns the
             // by-value struct; `channel_send`/`channel_recv`

@@ -829,6 +829,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "bounds_elision.vani",
         "composite_types.vani",
         "concurrency.vani",
+        "condvar.vani",
         "contracts.vani",
         "control_flow.vani",
         "drop_interface.vani",

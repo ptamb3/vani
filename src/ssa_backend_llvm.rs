@@ -3625,6 +3625,26 @@ fn emit_instr(
                 ));
                 return Ok(());
             }
+            // Condvar intrinsics: SSA-LLVM falls back to
+            // tree-LLVM where the full inline IR for
+            // wait/notify lives. Returning EmitError surfaces
+            // the "use tree-LLVM" signal in the dispatcher.
+            // SSA-C has direct support via the C runtime helpers.
+            if matches!(
+                name.as_str(),
+                "condvar_new"
+                    | "condvar_wait"
+                    | "condvar_wait_timeout"
+                    | "condvar_notify_one"
+                    | "condvar_notify_all"
+            ) {
+                return Err(EmitError {
+                    message: format!(
+                        "{} not yet supported in SSA-LLVM; falling back to tree-LLVM",
+                        name
+                    ),
+                });
+            }
             // Channel intrinsics — Vyukov MPSC ring buffer.
             // `channel_new` allocas the per-(T, N) struct and
             // initializes seq[i]=i, head=0, tail=0, buf=zero.

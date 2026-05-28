@@ -11770,6 +11770,114 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn condvar_builtins_typecheck() {
+        // All five condvar builtins compose with Mutex<i64> +
+        // Guard<i64>. notify_one / notify_all are by-ref;
+        // wait takes (ref cv, mut ref guard).
+        let source = r#"
+            fn main() -> i64 {
+              let cv: Condvar = condvar_new();
+              let m: Mutex<i64> = mutex_new(0);
+              let _ = condvar_notify_one(ref cv);
+              let _ = condvar_notify_all(ref cv);
+              {
+                let g: Guard<i64> = mutex_lock(ref m);
+                let _ = condvar_wait(ref cv, mut ref g);
+                let timed: bool = condvar_wait_timeout(ref cv, mut ref g, 5);
+                if timed {
+                  let _ = guard_set(mut ref g, 1);
+                }
+              }
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("condvar builtins must type-check");
+    }
+
+    #[test]
+    fn condvar_wait_rejects_non_guard_second_arg() {
+        // condvar_wait's second argument must be `mut ref
+        // Guard<i64>` — passing a Mutex (or anything else) is
+        // a type error with a clear diagnostic.
+        let source = r#"
+            fn main() -> i64 {
+              let cv: Condvar = condvar_new();
+              let m: Mutex<i64> = mutex_new(0);
+              let _ = condvar_wait(ref cv, mut ref m);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("condvar_wait wrong-arg must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("Guard")),
+            "expected Guard-in-second-arg diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn condvar_notify_rejects_non_condvar_arg() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: Mutex<i64> = mutex_new(0);
+              let _ = condvar_notify_one(ref m);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("notify_one on Mutex must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("Condvar")),
+            "expected Condvar diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn condvar_emits_runtime_helpers_in_c() {
+        // The C backend emits the per-platform helpers when
+        // the program uses Condvar. The substring check pins
+        // the runtime body so downstream changes can't quietly
+        // remove the futex / WaitOnAddress paths.
+        let source = r#"
+            fn main() -> i64 {
+              let cv: Condvar = condvar_new();
+              let _ = condvar_notify_all(ref cv);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("condvar program must compile");
+        assert!(
+            c.contains("intent_condvar_new")
+                && c.contains("intent_condvar_notify_all"),
+            "C output must include condvar runtime helpers; got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn condvar_emits_typedef_in_llvm() {
+        // LLVM backend emits the %intent_condvar typedef when
+        // a program uses Condvar.
+        let source = r#"
+            fn main() -> i64 {
+              let cv: Condvar = condvar_new();
+              let _ = condvar_notify_one(ref cv);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("condvar program must compile to LLVM");
+        assert!(
+            ll.contains("%intent_condvar = type { i32 }"),
+            "LLVM output must declare %intent_condvar typedef; got:\n{}",
+            ll
+        );
+    }
+
+    #[test]
     fn atomic_new_load_store_fetch_add_typecheck_and_compile() {
         // Round-trip through the four builtins. Compiler
         // accepts the program; both backends are exercised by

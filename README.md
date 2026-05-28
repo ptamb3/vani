@@ -54,7 +54,7 @@ orchestration, and testing, but Rust is the better default for a
 compiler that must be fast, memory-safe, deterministic, and close to
 ABI / native code generation.
 
-## Feature set (closures #1–#291)
+## Feature set (closures #1–#292)
 
 vāṇī today is a working systems language with the following shipped
 features. Surface that **reads natural-language** sits on top of a
@@ -100,11 +100,13 @@ semantic model **borrowed from Rust** and a code-generator that
   and CreateThread (Windows) backing. `Atomic<T>` for shared
   counters, `Mutex<T>` + `Guard<T>` for critical sections,
   `Channel<T, N>` for queues.
-- **Queued:** `Condvar` — `condvar_new` / `condvar_wait(ref cv,
-  mut ref g) / notify_one / notify_all` — pairs with `Mutex` +
-  `Guard` for "wait until predicate" patterns. ✅ AFFINE; codegen
-  reuses existing futex / WaitOnAddress / pthread-cond runtime
-  helpers. See [TODO.md](TODO.md) under *Condition variables*.
+- `Condvar` — `condvar_new` / `condvar_wait(ref cv, mut ref g) /
+  condvar_wait_timeout / notify_one / notify_all`. Pairs with
+  `Mutex` + `Guard` for "wait until predicate" patterns. ✅
+  AFFINE (closure #292). Tree-C + SSA-C use shared runtime
+  helpers (futex/WaitOnAddress/spin-yield); tree-LLVM uses
+  inline IR; SSA-LLVM falls back to tree-LLVM. See
+  [examples/condvar.vani](examples/condvar.vani).
 
 **Namespaces + modules:**
 - `module foo { … }` (inline + nested + deep `a::b::c::Item` paths).
@@ -3044,7 +3046,7 @@ roadmap surface and unblocks the items below it.
 | 16 | ✅ **Attribute syntax + `#[bounded(N)]`** | — | medium | done 2026-05-27 (#286, #289, #290). First attribute in the language. New `#` token + parser; tree-LLVM uses thread-local globals + per-Return decrement; SSA-LLVM mirrors the pattern; C emits a thread-local counter with GCC `__attribute__((cleanup))` for the decrement. |
 | 17 | ✅ **Nested arrays `[[T; N]; M]` / `[Vec<T>; N]`** | — | medium | done 2026-05-27 (#291 Phases 1–4). Array-element Copy restriction lifted; `clone_at(ref arr, i)` extended to arrays; per-slot per-field drops including struct-slot field walks; tree-LLVM `len` of a Vec rvalue spills to alloca, GEPs `.len`, loads. |
 | 18 | ⏳ **Data structures + algorithms roadmap (Levels 1–4)** | #14 (for Level 2+) | high (multi-session) | Levels 1–4 sequenced under affine ownership. Level 1: `sort` / `sort_by` / `find` / `binary_search` / `pop` / RNG / Hash interface. Level 2: `HashSet` / `HashMap` (⚠️ AFFINE-TENSION — `get -> Option<ref V>`) / `BTreeSet` / `BTreeMap` / `Deque` / `BinaryHeap`. Level 3: closures + iterator combinators. Level 4: arena-based BST / B-tree / Trie / graphs + algorithms. Full per-item plan in [TODO.md](TODO.md). |
-| 19 | ⏳ **Condition variables (`Condvar`)** | — | medium (single session) | ✅ AFFINE. `condvar_new / wait(ref cv, mut ref g: Guard<T>) / wait_timeout / notify_one / notify_all`. Pairs with `Mutex<T>` + `Guard<T>` for "wait until predicate" patterns; guard stays mut-borrowed across `wait` so the predicate-check loop keeps using it. Codegen reuses Linux futex / Win32 WaitOnAddress / pthread-cond runtime helpers already in tree for `Mutex`. No new dependencies — independent of closures, generics, async. |
+| 19 | ✅ **Condition variables (`Condvar`)** | — | medium (single session) | done 2026-05-28 (closure #292). ✅ AFFINE — new builtin type, stack-by-value. 5 builtins (`condvar_new / wait(ref cv, mut ref g: Guard<i64>) / wait_timeout / notify_one / notify_all`). Tree-C + SSA-C: shared runtime helpers (futex/WaitOnAddress/spin-yield). Tree-LLVM: inline IR per call site (`%intent_condvar = type { i32 }`, atomicrmw + syscall/WakeByAddress). SSA-LLVM: falls back to tree-LLVM. 5 lib tests + `examples/condvar.vani` cross-backend parity. Pending follow-ups: cross-task wait/notify (needs task-capture rule expansion), direct SSA-LLVM support, wider Mutex widths. |
 | 20 | ⏳ **Async / asyncio** (⚠️ AFFINE-TENSION via compiler-lowered state machines; 🛑 NOT Pin / self-references) | Level 3 closures (#18) | high (multi-session) | Each `async fn` lowers to an enum-of-frames in `Vec<StateMachine>`. Single-threaded event-loop driver `intent_async_run`; non-blocking I/O (file / socket / timer) under epoll / kqueue / IOCP; `Channel<T, N>` is the cooperative coordination primitive; `Future<T>` = generic enum w/ `Ready(T)` / `Pending` (uses #281 + #283). NOT shipping: Rust-style `Pin<&mut Self>`, panic-based cancellation, stackful coroutines, async inside `parallel for`. Full design in [TODO.md](TODO.md) under *Async / asyncio*. |
 | 21 | ⏳ **Kosh package manager + Vāṇī-Kosh registry** | #10, #13 | high (multi-session) | `kosh.toml` manifest, resolver + lockfile, `pub(kosh)` enforcement at the boundary, registry CLI (`intentc kosh add`, `kosh publish`), stdlib-as-kosh. Item #10 in [TODO.md](TODO.md). |
 

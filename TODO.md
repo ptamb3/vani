@@ -224,7 +224,25 @@ roadmap names the affine-compatible substitute.
 
 ---
 
-## Condition variables — concurrency primitive (2026-05-27, queued)
+## Condition variables — concurrency primitive (✅ SHIPPED 2026-05-28, closure #292)
+
+**Shipped this closure:** `Condvar` as a new affine builtin type
+(stack-by-value, mirrors Mutex/Guard) + 5 builtins
+(`condvar_new`, `condvar_wait`, `condvar_wait_timeout`,
+`condvar_notify_one`, `condvar_notify_all`) on both backends.
+Tree-C + SSA-C use shared runtime helpers (futex/WaitOnAddress/
+spin-yield). Tree-LLVM uses inline IR; SSA-LLVM falls back to
+tree. `examples/condvar.vani` parity-tested both backends.
+5 new lib tests (1025 → 1030).
+
+**Pending follow-ups** (queued, not blocking):
+- Cross-task wait/notify (needs task-capture rule expansion).
+- Direct SSA-LLVM support (today falls back to tree).
+- Wider `Mutex<T>` widths (today pairs with `Mutex<i64>` only).
+
+Original design notes below (preserved for context):
+
+
 
 User asked to add condition variables to the roadmap. Natural
 pairing with the existing `Mutex<T>` + `Guard<T>` story; fills a
@@ -470,7 +488,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-27, after closure #291 Phase 4 — array-of-struct slot drops; docs sync done — data-structures roadmap above is the next focal area)
+## ⏳ Resume here (paused 2026-05-28, after closure #292 — Condvar primitive on both backends + 5 lib tests + condvar.vani parity example. Next focal area: Level 1 of the data-structures roadmap, starting with Vec.sort + Vec.sort_by.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

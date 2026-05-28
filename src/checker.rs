@@ -437,7 +437,7 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // built-in `Type::Task`, leading to confusing
     // "got Task" errors deep in the pipeline.
     const RESERVED_TYPE_NAMES: &[&str] = &[
-        "Task", "Atomic", "Mutex", "Guard", "Channel", "OwnedStr", "Self",
+        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "OwnedStr", "Self",
     ];
     for decl in &program.structs {
         if RESERVED_TYPE_NAMES.contains(&decl.name.as_str()) {
@@ -11829,6 +11829,13 @@ fn check_call(
         "mutex_new" | "mutex_lock" | "guard_get" | "guard_set" => {
             return check_mutex_builtin(name, args, env, signatures, span, diagnostics);
         }
+        "condvar_new"
+        | "condvar_wait"
+        | "condvar_wait_timeout"
+        | "condvar_notify_one"
+        | "condvar_notify_all" => {
+            return check_condvar_builtin(name, args, env, signatures, span, diagnostics);
+        }
         _ => {}
     }
 
@@ -12871,6 +12878,192 @@ fn is_guard_ref(ty: &Type, element: &Type) -> bool {
         Type::Ref(inner) | Type::RefMut(inner)
             if matches!(inner.as_ref(), Type::Guard(elt) if elt.as_ref() == element)
     )
+}
+
+fn is_condvar_ref(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Ref(inner) | Type::RefMut(inner) if matches!(inner.as_ref(), Type::Condvar)
+    )
+}
+
+fn is_guard_ref_mut(ty: &Type, element: &Type) -> bool {
+    matches!(
+        ty,
+        Type::RefMut(inner) if matches!(inner.as_ref(), Type::Guard(elt) if elt.as_ref() == element)
+    )
+}
+
+/// Type-check the five condvar builtins.
+///
+///   condvar_new() -> Condvar
+///   condvar_wait(cv: &Condvar, g: &mut Guard<i64>) -> i64
+///   condvar_wait_timeout(cv: &Condvar, g: &mut Guard<i64>, ms: i64) -> bool
+///   condvar_notify_one(cv: &Condvar) -> i64
+///   condvar_notify_all(cv: &Condvar) -> i64
+///
+/// `Condvar` is affine — scope-exit drops free the kernel
+/// state. `wait` takes the guard by `mut ref` so the lock stays
+/// logically held; the kernel atomically releases + parks +
+/// re-acquires. v1 pairs with `Mutex<i64>` only (matches the
+/// existing Mutex restriction). Side-channel ops return i64
+/// (status code; non-zero on error) so the call composes with
+/// `let _ = ...`. The wait_timeout call returns bool: `true` on
+/// notify, `false` on timeout.
+fn check_condvar_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let guard_element = Type::I64;
+    match name {
+        "condvar_new" => {
+            if !args.is_empty() {
+                diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("'condvar_new' takes no arguments, got {}", args.len()),
+                ));
+            }
+            CheckedExpr::new(
+                TypedExprKind::Call {
+                    name: "condvar_new".to_string(),
+                    name_span: span,
+                    args: Vec::new(),
+                },
+                Type::Condvar,
+                None,
+                span,
+            )
+        }
+        "condvar_wait" => {
+            if args.len() != 2 {
+                diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "'condvar_wait' takes 2 arguments (&cv, &mut guard), got {}",
+                        args.len()
+                    ),
+                ));
+                return CheckedExpr::fallback(Type::I64, span);
+            }
+            let cv = check_expr(&args[0], env, signatures, diagnostics);
+            if !is_condvar_ref(cv.ty()) {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "'condvar_wait' first argument must be `ref Condvar`, got {}",
+                        cv.ty()
+                    ),
+                ));
+            }
+            let g = check_expr(&args[1], env, signatures, diagnostics);
+            if !is_guard_ref_mut(g.ty(), &guard_element) {
+                diagnostics.push(Diagnostic::new(
+                    args[1].span,
+                    format!(
+                        "'condvar_wait' second argument must be `mut ref Guard<{}>`, got {}",
+                        guard_element,
+                        g.ty()
+                    ),
+                ));
+            }
+            CheckedExpr::new(
+                TypedExprKind::Call {
+                    name: "condvar_wait".to_string(),
+                    name_span: span,
+                    args: vec![cv.expr, g.expr],
+                },
+                Type::I64,
+                None,
+                span,
+            )
+        }
+        "condvar_wait_timeout" => {
+            if args.len() != 3 {
+                diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "'condvar_wait_timeout' takes 3 arguments (&cv, &mut guard, timeout_ms), got {}",
+                        args.len()
+                    ),
+                ));
+                return CheckedExpr::fallback(Type::Bool, span);
+            }
+            let cv = check_expr(&args[0], env, signatures, diagnostics);
+            if !is_condvar_ref(cv.ty()) {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "'condvar_wait_timeout' first argument must be `ref Condvar`, got {}",
+                        cv.ty()
+                    ),
+                ));
+            }
+            let g = check_expr(&args[1], env, signatures, diagnostics);
+            if !is_guard_ref_mut(g.ty(), &guard_element) {
+                diagnostics.push(Diagnostic::new(
+                    args[1].span,
+                    format!(
+                        "'condvar_wait_timeout' second argument must be `mut ref Guard<{}>`, got {}",
+                        guard_element,
+                        g.ty()
+                    ),
+                ));
+            }
+            let ms = check_expr(&args[2], env, signatures, diagnostics);
+            let ms = coerce_checked(
+                ms,
+                &Type::I64,
+                args[2].span,
+                "condvar_wait_timeout timeout argument",
+                diagnostics,
+            );
+            CheckedExpr::new(
+                TypedExprKind::Call {
+                    name: "condvar_wait_timeout".to_string(),
+                    name_span: span,
+                    args: vec![cv.expr, g.expr, ms.expr],
+                },
+                Type::Bool,
+                None,
+                span,
+            )
+        }
+        "condvar_notify_one" | "condvar_notify_all" => {
+            if args.len() != 1 {
+                diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("'{}' takes 1 argument (&cv), got {}", name, args.len()),
+                ));
+                return CheckedExpr::fallback(Type::I64, span);
+            }
+            let cv = check_expr(&args[0], env, signatures, diagnostics);
+            if !is_condvar_ref(cv.ty()) {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "'{}' argument must be `ref Condvar`, got {}",
+                        name,
+                        cv.ty()
+                    ),
+                ));
+            }
+            CheckedExpr::new(
+                TypedExprKind::Call {
+                    name: name.to_string(),
+                    name_span: span,
+                    args: vec![cv.expr],
+                },
+                Type::I64,
+                None,
+                span,
+            )
+        }
+        _ => unreachable!("dispatched only on the five condvar builtin names"),
+    }
 }
 
 /// Type-directed elaboration for `vec()` (zero args). The

@@ -1566,6 +1566,10 @@ impl Parser {
                 self.bump();
                 return Ok(Type::Task);
             }
+            if name == "Condvar" {
+                self.bump();
+                return Ok(Type::Condvar);
+            }
             if name == "Atomic" {
                 self.bump();
                 self.expect_keyword("'<'", |kind| matches!(kind, TokenKind::Less))?;

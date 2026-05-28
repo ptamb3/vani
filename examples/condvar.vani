@@ -1,0 +1,73 @@
+// build & run:
+//   intentc run examples/condvar.vani                          # LLVM backend
+//   intentc run examples/condvar.vani --backend=c              # C backend
+//   intentc build examples/condvar.vani -o /tmp/condvar && /tmp/condvar
+
+intent "Condition variables — Condvar pairs with Mutex<T> + Guard<T> for wait-until-predicate patterns";
+
+// `Condvar` is a signaling primitive. It pairs with a `Mutex`
+// to let a thread wait until a predicate becomes true. The
+// classic pattern is:
+//
+//   while !predicate { condvar_wait(ref cv, mut ref g); }
+//
+// where `g` is a `Guard<T>` over the mutex protecting the
+// predicate's state. `wait` atomically releases the mutex,
+// parks the thread, and re-acquires the mutex on wake.
+//
+// Notify ops are by-ref:
+//   condvar_notify_one(ref cv) — wake exactly one waiter
+//   condvar_notify_all(ref cv) — wake every waiter
+//
+// `condvar_wait_timeout(ref cv, mut ref g, ms)` returns
+// `false` if the wait timed out, `true` if signaled.
+//
+// Implementation: Linux futex / Win32 WaitOnAddress / pthread
+// cond_wait, gated on the host. The runtime helpers live
+// alongside Mutex / Guard.
+//
+// v1: real-thread waiting across tasks is gated by the task-
+// capture rule (Mutex / Condvar are affine — tasks capture
+// Copy-only today). This example exercises the single-thread
+// API surface: notify with no waiters is a well-defined
+// no-op, and wait_timeout returns `false` when no notify
+// arrives in time.
+
+fn main() -> i64 {
+  let cv: Condvar = condvar_new();
+
+  // notify on a fresh cv with no waiters: well-defined no-op
+  // (the seq counter still advances; no thread is parked yet).
+  let _ = condvar_notify_one(ref cv);
+  let _ = condvar_notify_all(ref cv);
+
+  // Multi-step protected update under one lock.
+  let m: Mutex<i64> = mutex_new(7);
+  {
+    let g: Guard<i64> = mutex_lock(ref m);
+    let v0: i64 = guard_get(ref g);
+    let _ = guard_set(mut ref g, v0 + 1);
+    let v1: i64 = guard_get(ref g);
+    print "after increment: ", v1;
+
+    // wait_timeout with no notifier: should return false
+    // (timeout). 10 ms is generous; on a healthy host this
+    // path returns long before that.
+    let signaled: bool = condvar_wait_timeout(ref cv, mut ref g, 10);
+    if signaled {
+      print "unexpected: cv reported signaled";
+    } else {
+      print "wait_timeout returned false (no notifier)";
+    }
+
+    // After wait_timeout returns, the guard is still held —
+    // the kernel re-acquired the mutex for us. Demonstrate by
+    // doing another protected update.
+    let _ = guard_set(mut ref g, 100);
+    let v2: i64 = guard_get(ref g);
+    print "after timeout: ", v2;
+  }
+
+  print "done";
+  return 0;
+}

@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-27 (docs sync — data-structures + algorithms roadmap recorded; closures #269–#291 reflected in feature set and roadmap tables)
-**Test totals:** 1025 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #292 — Condvar primitive on both backends; condvar.vani example + 5 lib tests)
+**Test totals:** 1030 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 64 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -63,29 +63,49 @@ under *Data structures + algorithms roadmap*.
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
 
-### Condition variables — concurrency primitive (queued 2026-05-27)
+### Condition variables — concurrency primitive (shipped 2026-05-28, closure #292)
 
-✅ AFFINE. Pairs with existing `Mutex<T>` + `Guard<T>` to fill the
-"wait until predicate becomes true" gap (today blocking is only
-via `Channel` recv or `Mutex` lock acquire).
+✅ AFFINE — `Condvar` is a new affine builtin type (stack-by-value,
+mirrors `Mutex` / `Guard`). Pairs with existing `Mutex<T>` +
+`Guard<T>` to fill the "wait until predicate becomes true" gap.
 
-API: `condvar_new() -> Condvar`,
-`condvar_wait(ref cv, mut ref g: Guard<T>) -> ()` (atomic
-release + park + re-acquire; guard stays mut-borrowed),
-`condvar_wait_timeout(ref cv, mut ref g, timeout_ms) -> bool`,
-`condvar_notify_one(ref cv) -> ()`,
-`condvar_notify_all(ref cv) -> ()`.
+**API (5 builtins):**
+- `condvar_new() -> Condvar`
+- `condvar_wait(ref cv, mut ref g: Guard<i64>) -> i64` — atomic
+  release + park + re-acquire; guard stays mut-borrowed
+- `condvar_wait_timeout(ref cv, mut ref g, timeout_ms) -> bool`
+  — `false` on timeout, `true` on notify
+- `condvar_notify_one(ref cv) -> i64`
+- `condvar_notify_all(ref cv) -> i64`
 
-Codegen: Linux futex on a seq counter
-(`FUTEX_WAIT` / `FUTEX_WAKE`); Windows `WaitOnAddress` /
-`WakeByAddress*`; pthread `pthread_cond_*` fallback. All runtime
-helpers already exist alongside `Mutex` paths — reuse.
+**Codegen (both backends):**
+- **Tree-C** + **SSA-C**: futex (Linux) / WaitOnAddress (Win) /
+  spin-yield fallback (other Unix). Runtime helpers emitted in
+  the preamble alongside Mutex helpers; substring-gated.
+- **Tree-LLVM**: inline LLVM IR per call site. condvar_wait
+  inlines the unlock + park + Drepper re-acquire sequence;
+  notify ops emit `atomicrmw add` + `@syscall` /
+  `@WakeByAddress*`. `%intent_condvar = type { i32 }` typedef
+  in module preamble.
+- **SSA-LLVM**: surfaces `EmitError` and falls back to tree-LLVM
+  (single-block tree path covers it).
 
-Effort: M (single session, no new dependencies — independent of
-closures, generics, async). Recommended slot: after the
-mixed-payload-enum drop-dispatch follow-up, before Level 1 of
-the data-structures roadmap. Full design + reasoning in
-[TODO.md](TODO.md) under *Condition variables — concurrency primitive*.
+**Tests:** 5 lib tests (basic API typecheck; checker rejects
+non-Guard second arg; checker rejects non-Condvar arg on notify;
+C runtime helpers present; LLVM typedef present). 1 example
+(`examples/condvar.vani`) covering single-thread API surface +
+wait_timeout returning `false`. Cross-backend parity:
+`examples/condvar.vani` produces identical stdout on both
+backends.
+
+**Pending follow-ups:**
+- Cross-task wait/notify pattern requires the affine task-capture
+  rule to admit `mut ref Mutex<T>` / `ref Condvar` (today tasks
+  capture Copy-only). Queued separately as a partial-move
+  expansion item.
+- SSA-LLVM direct support (currently falls back to tree-LLVM).
+- v1 pairs with `Mutex<i64>` only — wider widths wait on the
+  parametric Mutex runtime.
 
 ### Async / asyncio — concurrency arc (queued 2026-05-27)
 

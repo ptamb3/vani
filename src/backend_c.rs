@@ -652,6 +652,7 @@ fn emit_concurrency_runtime_helpers(
     channel_specs: &[(Type, u64)],
 ) {
     let needs_mutex = body.contains("intent_mutex_i64") || body.contains("intent_guard_i64");
+    let needs_condvar = body.contains("intent_condvar");
     let needs_tasks = body.contains("intent_task_handle");
     if needs_tasks {
         // Handle: pthread thread id + ctx pointer (for free
@@ -668,6 +669,98 @@ fn emit_concurrency_runtime_helpers(
     if needs_mutex {
         emit_intent_mutex_helpers_c(out);
     }
+    if needs_condvar {
+        emit_intent_condvar_helpers_c(out);
+    }
+}
+
+/// Closure: condition-variable runtime helpers. The cv state
+/// (a `_Atomic int seq`) lives by-value on the stack — like
+/// `Mutex<i64>` and `Guard<i64>` — so the Drop is a no-op (no
+/// heap to free). All entrypoints take `intent_condvar*` so the
+/// affine handle's `ref cv` parameter shape works uniformly.
+/// `wait` snapshots the seq under the mutex, releases the
+/// mutex, kernel-waits (futex/WaitOnAddress), then re-acquires
+/// the mutex on wake. The seq trick prevents lost notifies: a
+/// notify between release and park advances seq, so the kernel
+/// wait returns immediately.
+pub(crate) fn emit_intent_condvar_helpers_c(out: &mut String) {
+    out.push_str(
+        "/* Condition-variable runtime (stack-by-value, like Mutex). */\n\
+             typedef struct { _Atomic int seq; } intent_condvar;\n\
+             static intent_condvar intent_condvar_new(void) INTENT_UNUSED;\n\
+             static intent_condvar intent_condvar_new(void) {\n\
+             \x20 intent_condvar cv;\n\
+             \x20 atomic_store_explicit(&cv.seq, 0, memory_order_seq_cst);\n\
+             \x20 return cv;\n\
+             }\n\
+             static int64_t intent_condvar_wait(intent_condvar* cv, intent_guard_i64* g) INTENT_UNUSED;\n\
+             static int64_t intent_condvar_wait(intent_condvar* cv, intent_guard_i64* g) {\n\
+             \x20 int snapshot = atomic_load_explicit(&cv->seq, memory_order_seq_cst);\n\
+             \x20 /* Release the mutex while we wait. */\n\
+             \x20 intent_guard_i64_unlock(g);\n\
+             #if defined(__linux__) || defined(_WIN32)\n\
+             \x20 intent_mutex_futex_wait(&cv->seq, snapshot);\n\
+             #else\n\
+             \x20 /* Other platforms: brief spin + yield until the seq\n\
+             \x20    counter advances. Less efficient but correct. */\n\
+             \x20 while (atomic_load_explicit(&cv->seq, memory_order_seq_cst) == snapshot) {\n\
+             \x20   intent_thread_yield();\n\
+             \x20 }\n\
+             #endif\n\
+             \x20 /* Re-acquire the mutex so the caller's guard is valid on\n\
+             \x20    return. We re-lock the SAME underlying mutex. */\n\
+             \x20 intent_guard_i64 reacquired = intent_mutex_i64_lock(g->m);\n\
+             \x20 (void)reacquired;\n\
+             \x20 return 0;\n\
+             }\n\
+             static bool intent_condvar_wait_timeout(intent_condvar* cv, intent_guard_i64* g, int64_t timeout_ms) INTENT_UNUSED;\n\
+             static bool intent_condvar_wait_timeout(intent_condvar* cv, intent_guard_i64* g, int64_t timeout_ms) {\n\
+             \x20 int snapshot = atomic_load_explicit(&cv->seq, memory_order_seq_cst);\n\
+             \x20 intent_guard_i64_unlock(g);\n\
+             \x20 bool notified = false;\n\
+             #if defined(__linux__)\n\
+             \x20 struct timespec ts;\n\
+             \x20 ts.tv_sec = (time_t)(timeout_ms / 1000);\n\
+             \x20 ts.tv_nsec = (long)((timeout_ms % 1000) * 1000000L);\n\
+             \x20 long rc = syscall(SYS_futex, (int*)&cv->seq, FUTEX_WAIT_PRIVATE, snapshot, &ts, (void*)0, 0);\n\
+             \x20 notified = (rc == 0) ||\n\
+             \x20            (atomic_load_explicit(&cv->seq, memory_order_seq_cst) != snapshot);\n\
+             #elif defined(_WIN32)\n\
+             \x20 int compare = snapshot;\n\
+             \x20 BOOL ok = WaitOnAddress((volatile VOID*)&cv->seq, &compare, sizeof(int), (DWORD)timeout_ms);\n\
+             \x20 notified = ok &&\n\
+             \x20            (atomic_load_explicit(&cv->seq, memory_order_seq_cst) != snapshot);\n\
+             #else\n\
+             \x20 /* Other platforms: spin with yield, abort at deadline. */\n\
+             \x20 int64_t spent = 0;\n\
+             \x20 while (atomic_load_explicit(&cv->seq, memory_order_seq_cst) == snapshot && spent < timeout_ms) {\n\
+             \x20   intent_thread_yield();\n\
+             \x20   spent += 1;\n\
+             \x20 }\n\
+             \x20 notified = (atomic_load_explicit(&cv->seq, memory_order_seq_cst) != snapshot);\n\
+             #endif\n\
+             \x20 intent_guard_i64 reacquired = intent_mutex_i64_lock(g->m);\n\
+             \x20 (void)reacquired;\n\
+             \x20 return notified;\n\
+             }\n\
+             static int64_t intent_condvar_notify_one(intent_condvar* cv) INTENT_UNUSED;\n\
+             static int64_t intent_condvar_notify_one(intent_condvar* cv) {\n\
+             \x20 atomic_fetch_add_explicit(&cv->seq, 1, memory_order_seq_cst);\n\
+             #if defined(__linux__) || defined(_WIN32)\n\
+             \x20 intent_mutex_futex_wake(&cv->seq, 1);\n\
+             #endif\n\
+             \x20 return 0;\n\
+             }\n\
+             static int64_t intent_condvar_notify_all(intent_condvar* cv) INTENT_UNUSED;\n\
+             static int64_t intent_condvar_notify_all(intent_condvar* cv) {\n\
+             \x20 atomic_fetch_add_explicit(&cv->seq, 1, memory_order_seq_cst);\n\
+             #if defined(__linux__) || defined(_WIN32)\n\
+             \x20 intent_mutex_futex_wake(&cv->seq, 0x7fffffff);\n\
+             #endif\n\
+             \x20 return 0;\n\
+             }\n\n",
+    );
 }
 
 /// Emit the i64-only `Mutex` / `Guard` runtime helpers
@@ -2335,6 +2428,14 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 out.push_str("  intent_guard_i64_unlock(&");
                 out.push_str(&local_name(name));
                 out.push_str(");\n");
+            }
+            Type::Condvar => {
+                // Stack-by-value (mirrors Mutex): no heap to
+                // free at scope exit. The binding's bits are
+                // reclaimed with the stack frame; pending
+                // waiters (if any) are the user's responsibility
+                // to drain via notify_all before the condvar
+                // goes out of scope.
             }
             Type::Struct(struct_name) => {
                 // Auto-call the user's `Drop` impl when one
@@ -4376,6 +4477,30 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[1])
             );
         }
+        "condvar_new" => {
+            return "intent_condvar_new()".to_string();
+        }
+        "condvar_wait" => {
+            return format!(
+                "intent_condvar_wait({}, {})",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            );
+        }
+        "condvar_wait_timeout" => {
+            return format!(
+                "intent_condvar_wait_timeout({}, {}, {})",
+                emit_expr(&args[0]),
+                emit_expr(&args[1]),
+                emit_expr(&args[2])
+            );
+        }
+        "condvar_notify_one" => {
+            return format!("intent_condvar_notify_one({})", emit_expr(&args[0]));
+        }
+        "condvar_notify_all" => {
+            return format!("intent_condvar_notify_all({})", emit_expr(&args[0]));
+        }
         "try_vec" => {
             // Closure #284: try_vec(n) -> Result<Vec<i64>,
             // AllocError>. Emits a GCC statement-expression
@@ -4904,6 +5029,10 @@ pub(crate) fn c_leaf_type(ty: &Type) -> &'static str {
         // its mutex. The scope-exit drop unlocks. v1: i64
         // payload.
         Type::Guard(_) => "intent_guard_i64",
+        // `Condvar` is a signaling primitive — a heap-allocated
+        // futex / WaitOnAddress seq counter under the hood. The
+        // affine handle is just a pointer to that storage.
+        Type::Condvar => "intent_condvar",
         // `fn(T1, T2) -> R` has no fixed leaf spelling in C —
         // function-pointer types are declarator-shaped
         // (`R (*name)(T1, T2)`). Callers that need to emit a
@@ -5235,7 +5364,7 @@ fn divisor_helper(ty: &Type) -> &'static str {
         Type::U64 => "intent_check_u64_divisor",
         Type::F32 => "intent_check_f32_divisor",
         Type::F64 => "intent_check_f64_divisor",
-        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
+        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
             unreachable!("non-numeric type cannot be a divisor")
         }
     }
@@ -5265,6 +5394,7 @@ fn shift_helper(ty: &Type) -> &'static str {
         | Type::Channel(_, _)
         | Type::Mutex(_)
         | Type::Guard(_)
+        | Type::Condvar
         | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => unreachable!("shift count must be an integer"),
     }
 }
