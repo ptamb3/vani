@@ -160,5 +160,32 @@ fn main() -> i64 {
   let _ = clear(mut ref muts);
   print "after clear len:", len(ref muts) as i64;
 
+  // Array variants. The same builtins (sort / sort_by / reverse
+  // / find / contains / binary_search) accept fixed-size
+  // arrays `[i64; N]`. v1: i64 element only.
+  let arr: [i64; 6] = [3, 1, 4, 1, 5, 9];
+  let _ = sort(mut ref arr);
+  print "array sorted:";
+  let ai: i64 = 0;
+  while ai < 6 {
+    print arr[ai];
+    ai = ai + 1;
+  }
+  let arr_has: bool = contains(ref arr, 5);
+  if arr_has { print "array has 5"; } else { print "array no 5"; }
+  let arr_bs: Option<i64> = binary_search(ref arr, 4);
+  let arr_bs_i: i64 = match arr_bs {
+    Option.Some(i) then i,
+    Option.None then 0 - 1,
+  };
+  print "array bsearch 4:", arr_bs_i;
+  let _ = reverse(mut ref arr);
+  print "array reversed:";
+  let aj: i64 = 0;
+  while aj < 6 {
+    print arr[aj];
+    aj = aj + 1;
+  }
+
   return 0;
 }

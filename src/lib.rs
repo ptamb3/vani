@@ -12228,6 +12228,92 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn array_sort_typechecks_and_compiles() {
+        let source = r#"
+            fn main() -> i64 {
+              let arr: [i64; 5] = [3, 1, 4, 1, 5];
+              let _ = sort(mut ref arr);
+              return arr[0];
+            }
+        "#;
+        compile_to_c(source).expect("array sort must type-check");
+        compile_to_llvm(source).expect("array sort must compile to LLVM");
+    }
+
+    #[test]
+    fn array_reverse_typechecks_and_compiles() {
+        let source = r#"
+            fn main() -> i64 {
+              let arr: [i64; 3] = [1, 2, 3];
+              let _ = reverse(mut ref arr);
+              return arr[0];
+            }
+        "#;
+        compile_to_c(source).expect("array reverse must type-check");
+        compile_to_llvm(source).expect("array reverse must compile to LLVM");
+    }
+
+    #[test]
+    fn array_find_returns_option_i64() {
+        let source = r#"
+            fn main() -> i64 {
+              let arr: [i64; 3] = [10, 20, 30];
+              let r: Option<i64> = find(ref arr, 20);
+              return match r {
+                Option.Some(i) then i,
+                Option.None then 0 - 1,
+              };
+            }
+        "#;
+        compile_to_c(source).expect("array find must type-check");
+        compile_to_llvm(source).expect("array find must compile to LLVM");
+    }
+
+    #[test]
+    fn array_contains_returns_bool() {
+        let source = r#"
+            fn main() -> i64 {
+              let arr: [i64; 3] = [10, 20, 30];
+              let b: bool = contains(ref arr, 20);
+              if b { return 1; } else { return 0; }
+            }
+        "#;
+        compile_to_c(source).expect("array contains must type-check");
+    }
+
+    #[test]
+    fn array_binary_search_returns_option_i64() {
+        let source = r#"
+            fn main() -> i64 {
+              let arr: [i64; 5] = [1, 2, 3, 4, 5];
+              let r: Option<i64> = binary_search(ref arr, 4);
+              return match r {
+                Option.Some(i) then i,
+                Option.None then 0 - 1,
+              };
+            }
+        "#;
+        compile_to_c(source).expect("array binary_search must type-check");
+    }
+
+    #[test]
+    fn array_sort_emits_runtime_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let arr: [i64; 3] = [1, 2, 3];
+              let _ = sort(mut ref arr);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("array sort program must compile");
+        assert!(
+            c.contains("intent_array_int64_t__sort"),
+            "C output must include intent_array_int64_t__sort helper; got:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn reverse_and_dedup_emit_runtime_helpers_in_c() {
         let source = r#"
             fn main() -> i64 {

@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #296 — Vec mutators: swap_remove / insert / clear; sort.vani extended; 6 new lib tests)
-**Test totals:** 1053 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 65 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #297 — Array ops: extend sort/sort_by/reverse/find/contains/binary_search to [i64; N]; sort.vani extended; 6 new lib tests)
+**Test totals:** 1059 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 65 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,41 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 1 — Array ops on `[i64; N]` (shipped 2026-05-28, closure #297)
+
+✅ AFFINE — `sort` / `sort_by` / `reverse` / `find` / `contains` /
+`binary_search` extended to accept `mut ref [i64; N]` (sort /
+sort_by / reverse) or `ref [i64; N]` (find / contains /
+binary_search). Same surface names as the Vec variants;
+dispatch is by argument type. v1: i64 element only.
+
+**Codegen:**
+- **Tree-C**: shared `intent_array_int64_t__<op>(int64_t* a,
+  uint64_t n, ...)` runtime helpers — one set per program,
+  pointer + length signature so a single helper covers every
+  `[i64; N]` shape. Emitted in `body` after enum typedefs so
+  `find` / `binary_search` (returning `Enum_Option__i64`)
+  resolve. Gated on the program actually using `[i64; N]` via
+  `program_uses_i64_array`. find / binary_search additionally
+  gated on `Option__i64` being in the enum-payload registry.
+- **Tree-LLVM**: shared `@intent_array_i64__<op>(i64* %a,
+  i64 %n, ...)` module-level defs. Call-site emits a `getelementptr`
+  to extract the data pointer from the `[N x i64]*` argument
+  then calls the helper with `(data_ptr, N)`. Same Option__i64
+  gating as tree-C.
+- **SSA**: arrays already fall through to tree via the existing
+  `Type::Array` rule in `ssa_type_supported` — no new gate.
+
+**v1 restrictions:**
+- i64 element only.
+- `dedup` / `swap_remove` / `insert` / `clear` stay Vec-only
+  (can't shrink a fixed-size array).
+
+**Tests:** 6 lib tests (array sort + reverse + find +
+contains + binary_search typecheck/compile; runtime helpers
+emitted). `examples/sort.vani` extended with array demos.
+Cross-backend parity green across all sections.
 
 ### Data-structures roadmap Level 1 — Vec mutators (swap_remove + insert + clear) (shipped 2026-05-28, closure #296)
 

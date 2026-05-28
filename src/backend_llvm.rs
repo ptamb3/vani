@@ -774,6 +774,14 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         }
     }
 
+    // Data-structures roadmap: emit shared array helpers for
+    // `[i64; N]`. Single set of helpers (pointer + length) covers
+    // every N. Gated on the program actually using `[i64; N]`
+    // anywhere (avoids dead-code in programs that don't).
+    if crate::backend_c::program_uses_i64_array(program) {
+        emit_intent_array_helpers_i64_llvm(&mut out);
+    }
+
     for function in &program.functions {
         emit_function(function, &assert_idx, &print_idx, &mut out);
         out.push('\n');
@@ -4799,6 +4807,61 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
                 return dest;
             }
+            // Array variants of sort / sort_by / reverse /
+            // find / contains / binary_search dispatch to
+            // `@intent_array_i64__<op>` helpers emitted in
+            // the LLVM preamble. The Vec variants flow through
+            // the per-Vec helpers below.
+            if matches!(
+                name.as_str(),
+                "sort" | "sort_by" | "reverse" | "find" | "contains" | "binary_search"
+            ) && matches!(args[0].ty.deref(), Type::Array { .. }) {
+                let (length, _) = match args[0].ty.deref() {
+                    Type::Array { length, element } => (*length, element.clone()),
+                    _ => unreachable!(),
+                };
+                let arr_ptr = emit_expr(&args[0], ctx, out);
+                // Cast the [N x i64]* to i64* (data pointer).
+                let data_ptr = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr [{} x i64], [{} x i64]* {}, i32 0, i32 0\n",
+                    data_ptr, length, length, arr_ptr
+                ));
+                let dest = ctx.fresh_tmp();
+                let ret_ty_str = llvm_type_string(&expr.ty);
+                match name.as_str() {
+                    "sort" | "reverse" => {
+                        out.push_str(&format!(
+                            "  {} = call i64 @intent_array_i64__{}(i64* {}, i64 {})\n",
+                            dest, name, data_ptr, length
+                        ));
+                    }
+                    "sort_by" => {
+                        let cmp = emit_expr(&args[1], ctx, out);
+                        let cmp_ty = llvm_type_string(&args[1].ty);
+                        out.push_str(&format!(
+                            "  {} = call i64 @intent_array_i64__sort_by(i64* {}, i64 {}, {} {})\n",
+                            dest, data_ptr, length, cmp_ty, cmp
+                        ));
+                    }
+                    "contains" => {
+                        let needle = emit_expr(&args[1], ctx, out);
+                        out.push_str(&format!(
+                            "  {} = call i1 @intent_array_i64__contains(i64* {}, i64 {}, i64 {})\n",
+                            dest, data_ptr, length, needle
+                        ));
+                    }
+                    "find" | "binary_search" => {
+                        let needle = emit_expr(&args[1], ctx, out);
+                        out.push_str(&format!(
+                            "  {} = call {} @intent_array_i64__{}(i64* {}, i64 {}, i64 {})\n",
+                            dest, ret_ty_str, name, data_ptr, length, needle
+                        ));
+                    }
+                    _ => unreachable!(),
+                }
+                return dest;
+            }
             if matches!(
                 name.as_str(),
                 "push"
@@ -6353,6 +6416,205 @@ pub(crate) fn emit_intent_str_concat_definition(out: &mut String) {
 
 /// (matching the affine-ownership convention) and returns the
 /// new Vec value.
+/// Data-structures roadmap: shared array sort/search helpers
+/// for `[i64; N]` (single set per program; pointer + length).
+/// find / binary_search gate on `Option__i64` being in the
+/// LLVM enum payload registry, since they return that type.
+fn emit_intent_array_helpers_i64_llvm(out: &mut String) {
+    // Default ascending comparator + insertion sort core.
+    out.push_str(
+        "define internal i64 @intent_array_i64__cmp_asc(i64 %a, i64 %b) {\n\
+         \x20 %gt = icmp sgt i64 %a, %b\n\
+         \x20 %lt = icmp slt i64 %a, %b\n\
+         \x20 %g = zext i1 %gt to i64\n\
+         \x20 %l = zext i1 %lt to i64\n\
+         \x20 %r = sub i64 %g, %l\n\
+         \x20 ret i64 %r\n\
+         }\n\
+         define i64 @intent_array_i64__sort_with(i64* %a, i64 %n, i64 (i64, i64)* %cmp) {\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 %j_p = alloca i64\n\
+         \x20 %key_p = alloca i64\n\
+         \x20 store i64 1, i64* %i_p\n\
+         \x20 br label %as_outer\n\
+         as_outer:\n\
+         \x20 %i_v = load i64, i64* %i_p\n\
+         \x20 %i_cont = icmp slt i64 %i_v, %n\n\
+         \x20 br i1 %i_cont, label %as_body, label %as_done\n\
+         as_body:\n\
+         \x20 %slot_i = getelementptr i64, i64* %a, i64 %i_v\n\
+         \x20 %key_v = load i64, i64* %slot_i\n\
+         \x20 store i64 %key_v, i64* %key_p\n\
+         \x20 %i_m1 = sub i64 %i_v, 1\n\
+         \x20 store i64 %i_m1, i64* %j_p\n\
+         \x20 br label %as_inner\n\
+         as_inner:\n\
+         \x20 %j_v = load i64, i64* %j_p\n\
+         \x20 %j_ok = icmp sge i64 %j_v, 0\n\
+         \x20 br i1 %j_ok, label %as_inner_cmp, label %as_inner_done\n\
+         as_inner_cmp:\n\
+         \x20 %slot_j = getelementptr i64, i64* %a, i64 %j_v\n\
+         \x20 %slot_jv = load i64, i64* %slot_j\n\
+         \x20 %key_load = load i64, i64* %key_p\n\
+         \x20 %cmp_r = call i64 %cmp(i64 %slot_jv, i64 %key_load)\n\
+         \x20 %cmp_gt = icmp sgt i64 %cmp_r, 0\n\
+         \x20 br i1 %cmp_gt, label %as_shift, label %as_inner_done\n\
+         as_shift:\n\
+         \x20 %jp1 = add i64 %j_v, 1\n\
+         \x20 %slot_jp1 = getelementptr i64, i64* %a, i64 %jp1\n\
+         \x20 store i64 %slot_jv, i64* %slot_jp1\n\
+         \x20 %j_dec = sub i64 %j_v, 1\n\
+         \x20 store i64 %j_dec, i64* %j_p\n\
+         \x20 br label %as_inner\n\
+         as_inner_done:\n\
+         \x20 %j_f = load i64, i64* %j_p\n\
+         \x20 %ins_at = add i64 %j_f, 1\n\
+         \x20 %ins_p = getelementptr i64, i64* %a, i64 %ins_at\n\
+         \x20 %k = load i64, i64* %key_p\n\
+         \x20 store i64 %k, i64* %ins_p\n\
+         \x20 %i_n = add i64 %i_v, 1\n\
+         \x20 store i64 %i_n, i64* %i_p\n\
+         \x20 br label %as_outer\n\
+         as_done:\n\
+         \x20 ret i64 0\n\
+         }\n\
+         define i64 @intent_array_i64__sort(i64* %a, i64 %n) {\n\
+         \x20 %r = call i64 @intent_array_i64__sort_with(i64* %a, i64 %n, i64 (i64, i64)* @intent_array_i64__cmp_asc)\n\
+         \x20 ret i64 %r\n\
+         }\n\
+         define i64 @intent_array_i64__sort_by(i64* %a, i64 %n, i64 (i64, i64)* %cmp) {\n\
+         \x20 %r = call i64 @intent_array_i64__sort_with(i64* %a, i64 %n, i64 (i64, i64)* %cmp)\n\
+         \x20 ret i64 %r\n\
+         }\n\
+         define i64 @intent_array_i64__reverse(i64* %a, i64 %n) {\n\
+         \x20 %small = icmp slt i64 %n, 2\n\
+         \x20 br i1 %small, label %rv_done, label %rv_init\n\
+         rv_init:\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 %j_p = alloca i64\n\
+         \x20 store i64 0, i64* %i_p\n\
+         \x20 %j0 = sub i64 %n, 1\n\
+         \x20 store i64 %j0, i64* %j_p\n\
+         \x20 br label %rv_loop\n\
+         rv_loop:\n\
+         \x20 %i_v = load i64, i64* %i_p\n\
+         \x20 %j_v = load i64, i64* %j_p\n\
+         \x20 %cont = icmp slt i64 %i_v, %j_v\n\
+         \x20 br i1 %cont, label %rv_swap, label %rv_done\n\
+         rv_swap:\n\
+         \x20 %pi = getelementptr i64, i64* %a, i64 %i_v\n\
+         \x20 %pj = getelementptr i64, i64* %a, i64 %j_v\n\
+         \x20 %vi = load i64, i64* %pi\n\
+         \x20 %vj = load i64, i64* %pj\n\
+         \x20 store i64 %vj, i64* %pi\n\
+         \x20 store i64 %vi, i64* %pj\n\
+         \x20 %i_n = add i64 %i_v, 1\n\
+         \x20 %j_n = sub i64 %j_v, 1\n\
+         \x20 store i64 %i_n, i64* %i_p\n\
+         \x20 store i64 %j_n, i64* %j_p\n\
+         \x20 br label %rv_loop\n\
+         rv_done:\n\
+         \x20 ret i64 0\n\
+         }\n\
+         define i1 @intent_array_i64__contains(i64* %a, i64 %n, i64 %needle) {\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 store i64 0, i64* %i_p\n\
+         \x20 br label %cn_loop\n\
+         cn_loop:\n\
+         \x20 %i_v = load i64, i64* %i_p\n\
+         \x20 %cont = icmp slt i64 %i_v, %n\n\
+         \x20 br i1 %cont, label %cn_check, label %cn_no\n\
+         cn_check:\n\
+         \x20 %slot = getelementptr i64, i64* %a, i64 %i_v\n\
+         \x20 %v = load i64, i64* %slot\n\
+         \x20 %eq = icmp eq i64 %v, %needle\n\
+         \x20 br i1 %eq, label %cn_yes, label %cn_next\n\
+         cn_next:\n\
+         \x20 %i_n = add i64 %i_v, 1\n\
+         \x20 store i64 %i_n, i64* %i_p\n\
+         \x20 br label %cn_loop\n\
+         cn_yes:\n\
+         \x20 ret i1 true\n\
+         cn_no:\n\
+         \x20 ret i1 false\n\
+         }\n",
+    );
+    // find / binary_search depend on %Enum_Option__i64.
+    let option_i64_registered = LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
+        r.borrow().contains_key("Option__i64")
+    });
+    if option_i64_registered {
+        out.push_str(
+            "define %Enum_Option__i64 @intent_array_i64__find(i64* %a, i64 %n, i64 %needle) {\n\
+             \x20 %i_p = alloca i64\n\
+             \x20 store i64 0, i64* %i_p\n\
+             \x20 br label %fn_loop\n\
+             fn_loop:\n\
+             \x20 %i_v = load i64, i64* %i_p\n\
+             \x20 %cont = icmp slt i64 %i_v, %n\n\
+             \x20 br i1 %cont, label %fn_check, label %fn_none\n\
+             fn_check:\n\
+             \x20 %slot = getelementptr i64, i64* %a, i64 %i_v\n\
+             \x20 %v = load i64, i64* %slot\n\
+             \x20 %eq = icmp eq i64 %v, %needle\n\
+             \x20 br i1 %eq, label %fn_some, label %fn_next\n\
+             fn_next:\n\
+             \x20 %i_n = add i64 %i_v, 1\n\
+             \x20 store i64 %i_n, i64* %i_p\n\
+             \x20 br label %fn_loop\n\
+             fn_some:\n\
+             \x20 %r1 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %r2 = insertvalue %Enum_Option__i64 %r1, i64 %i_v, 1\n\
+             \x20 ret %Enum_Option__i64 %r2\n\
+             fn_none:\n\
+             \x20 %n1 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %n2 = insertvalue %Enum_Option__i64 %n1, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %n2\n\
+             }\n\
+             define %Enum_Option__i64 @intent_array_i64__binary_search(i64* %a, i64 %n, i64 %needle) {\n\
+             \x20 %lo_p = alloca i64\n\
+             \x20 %hi_p = alloca i64\n\
+             \x20 store i64 0, i64* %lo_p\n\
+             \x20 %hi0 = sub i64 %n, 1\n\
+             \x20 store i64 %hi0, i64* %hi_p\n\
+             \x20 br label %bs_loop\n\
+             bs_loop:\n\
+             \x20 %lo = load i64, i64* %lo_p\n\
+             \x20 %hi = load i64, i64* %hi_p\n\
+             \x20 %cont = icmp sle i64 %lo, %hi\n\
+             \x20 br i1 %cont, label %bs_body, label %bs_none\n\
+             bs_body:\n\
+             \x20 %diff = sub i64 %hi, %lo\n\
+             \x20 %half = sdiv i64 %diff, 2\n\
+             \x20 %mid = add i64 %lo, %half\n\
+             \x20 %slot = getelementptr i64, i64* %a, i64 %mid\n\
+             \x20 %v = load i64, i64* %slot\n\
+             \x20 %eq = icmp eq i64 %v, %needle\n\
+             \x20 br i1 %eq, label %bs_some, label %bs_split\n\
+             bs_split:\n\
+             \x20 %lt = icmp slt i64 %v, %needle\n\
+             \x20 br i1 %lt, label %bs_raise, label %bs_lower\n\
+             bs_raise:\n\
+             \x20 %lo_new = add i64 %mid, 1\n\
+             \x20 store i64 %lo_new, i64* %lo_p\n\
+             \x20 br label %bs_loop\n\
+             bs_lower:\n\
+             \x20 %hi_new = sub i64 %mid, 1\n\
+             \x20 store i64 %hi_new, i64* %hi_p\n\
+             \x20 br label %bs_loop\n\
+             bs_some:\n\
+             \x20 %r1 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %r2 = insertvalue %Enum_Option__i64 %r1, i64 %mid, 1\n\
+             \x20 ret %Enum_Option__i64 %r2\n\
+             bs_none:\n\
+             \x20 %n1 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %n2 = insertvalue %Enum_Option__i64 %n1, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %n2\n\
+             }\n",
+        );
+    }
+}
+
 pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
     let s_ty = vec_struct_name(element);
     // In-buffer value spelling — handles arrays as `[N x T]`

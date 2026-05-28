@@ -507,6 +507,19 @@ pub fn emit_c(program: &TypedProgram) -> String {
     // spliced in after structs are declared.
     emit_dyn_iface_vtable_bodies(&mut body, &used_dyn_ifaces);
 
+    // Data-structures roadmap: emit array sort/find/etc
+    // helpers AFTER all type declarations (enums, structs,
+    // vec bundles) but BEFORE function prototypes, so the
+    // helpers' uses of `Enum_Option__i64` resolve. Gated on
+    // whether the program actually uses `[i64; N]` anywhere
+    // — checked via a quick walk over fn signatures / bodies.
+    if program_uses_i64_array(program) {
+        let has_option_i64 = ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        emit_intent_array_helpers_i64_unconditional(&mut body, has_option_i64);
+    }
+
     for function in &program.functions {
         emit_prototype(function, &mut body);
     }
@@ -559,6 +572,180 @@ pub fn emit_c(program: &TypedProgram) -> String {
     emit_concurrency_runtime_helpers(&mut out, &body, &channel_specs);
     out.push_str(&body);
     out
+}
+
+/// Data-structures roadmap Level 1 — runtime helpers for the
+/// array variants of `sort` / `sort_by` / `reverse` / `find` /
+/// `contains` / `binary_search`. v1: i64 element only. Arrays
+/// are pointer + length so a single set of helpers covers
+/// every `[i64; N]` shape. The unconditional variant always
+/// emits the helpers — the call site is gated by
+/// `program_uses_i64_array`.
+/// Walk the program for any `[i64; N]` type usage. The check
+/// triggers emission of the array-i64 runtime helpers.
+pub(crate) fn program_uses_i64_array(program: &TypedProgram) -> bool {
+    fn ty_uses(ty: &Type) -> bool {
+        match ty {
+            Type::Array { element, .. } if matches!(**element, Type::I64) => true,
+            Type::Array { element, .. } => ty_uses(element),
+            Type::Vec(inner)
+            | Type::Ref(inner)
+            | Type::RefMut(inner)
+            | Type::Atomic(inner)
+            | Type::Mutex(inner)
+            | Type::Guard(inner) => ty_uses(inner),
+            Type::Channel(inner, _) => ty_uses(inner),
+            Type::Tuple(es) => es.iter().any(ty_uses),
+            Type::FnPtr(ps, r) => ps.iter().any(ty_uses) || ty_uses(r),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if ty_uses(&f.return_type) {
+            return true;
+        }
+        for p in &f.params {
+            if ty_uses(&p.ty) {
+                return true;
+            }
+        }
+        if function_body_uses_i64_array(&f.body) {
+            return true;
+        }
+    }
+    for s in &program.structs {
+        for (_, fty) in &s.fields {
+            if ty_uses(fty) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn function_body_uses_i64_array(stmts: &[crate::ir::TypedStmt]) -> bool {
+    use crate::ir::TypedStmt as S;
+    fn ty_uses(ty: &Type) -> bool {
+        matches!(ty, Type::Array { element, .. } if matches!(**element, Type::I64))
+            || match ty {
+                Type::Array { element, .. } => ty_uses(element),
+                Type::Vec(i) | Type::Ref(i) | Type::RefMut(i) => ty_uses(i),
+                _ => false,
+            }
+    }
+    for s in stmts {
+        match s {
+            S::Let { ty, .. } | S::Reassign { ty, .. } | S::Drop { ty, .. } => {
+                if ty_uses(ty) {
+                    return true;
+                }
+            }
+            S::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                if function_body_uses_i64_array(then_body)
+                    || function_body_uses_i64_array(else_body)
+                {
+                    return true;
+                }
+            }
+            S::While { body, .. } | S::For { body, .. } | S::ForIter { body, .. } => {
+                if function_body_uses_i64_array(body) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn emit_intent_array_helpers_i64_unconditional(out: &mut String, has_option_i64: bool) {
+    out.push_str(
+        "typedef int64_t (*intent_array_int64_t__cmp_fn)(int64_t, int64_t);\n\
+         static INTENT_UNUSED int64_t intent_array_int64_t__cmp_ascending(int64_t a, int64_t b) {\n\
+         \x20 return (a > b) - (a < b);\n\
+         }\n\
+         static INTENT_UNUSED void intent_array_int64_t__qsort_impl(int64_t* a, int64_t lo, int64_t hi, intent_array_int64_t__cmp_fn cmp) {\n\
+         \x20 while (lo < hi) {\n\
+         \x20   if (hi - lo < 16) {\n\
+         \x20     for (int64_t i = lo + 1; i <= hi; i++) {\n\
+         \x20       int64_t key = a[i];\n\
+         \x20       int64_t j = i - 1;\n\
+         \x20       while (j >= lo && cmp(a[j], key) > 0) {\n\
+         \x20         a[j + 1] = a[j];\n\
+         \x20         j--;\n\
+         \x20       }\n\
+         \x20       a[j + 1] = key;\n\
+         \x20     }\n\
+         \x20     return;\n\
+         \x20   }\n\
+         \x20   int64_t mid = lo + (hi - lo) / 2;\n\
+         \x20   int64_t pivot = a[mid];\n\
+         \x20   int64_t i = lo - 1;\n\
+         \x20   int64_t j = hi + 1;\n\
+         \x20   for (;;) {\n\
+         \x20     do { i++; } while (cmp(a[i], pivot) < 0);\n\
+         \x20     do { j--; } while (cmp(a[j], pivot) > 0);\n\
+         \x20     if (i >= j) break;\n\
+         \x20     int64_t tmp = a[i]; a[i] = a[j]; a[j] = tmp;\n\
+         \x20   }\n\
+         \x20   if (j - lo < hi - (j + 1)) {\n\
+         \x20     intent_array_int64_t__qsort_impl(a, lo, j, cmp);\n\
+         \x20     lo = j + 1;\n\
+         \x20   } else {\n\
+         \x20     intent_array_int64_t__qsort_impl(a, j + 1, hi, cmp);\n\
+         \x20     hi = j;\n\
+         \x20   }\n\
+         \x20 }\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_array_int64_t__sort(int64_t* a, uint64_t n) {\n\
+         \x20 if (n > 1) intent_array_int64_t__qsort_impl(a, 0, (int64_t)n - 1, intent_array_int64_t__cmp_ascending);\n\
+         \x20 return 0;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_array_int64_t__sort_by(int64_t* a, uint64_t n, intent_array_int64_t__cmp_fn cmp) {\n\
+         \x20 if (n > 1) intent_array_int64_t__qsort_impl(a, 0, (int64_t)n - 1, cmp);\n\
+         \x20 return 0;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_array_int64_t__reverse(int64_t* a, uint64_t n) {\n\
+         \x20 if (n < 2) return 0;\n\
+         \x20 uint64_t i = 0; uint64_t j = n - 1;\n\
+         \x20 while (i < j) {\n\
+         \x20   int64_t tmp = a[i]; a[i] = a[j]; a[j] = tmp;\n\
+         \x20   i++; j--;\n\
+         \x20 }\n\
+         \x20 return 0;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_array_int64_t__contains(const int64_t* a, uint64_t n, int64_t needle) {\n\
+         \x20 for (uint64_t i = 0; i < n; i++) { if (a[i] == needle) return true; }\n\
+         \x20 return false;\n\
+         }\n",
+    );
+    if has_option_i64 {
+        out.push_str(
+            "static INTENT_UNUSED Enum_Option__i64 intent_array_int64_t__find(const int64_t* a, uint64_t n, int64_t needle) {\n\
+             \x20 Enum_Option__i64 r; bool found = false; uint64_t idx = 0;\n\
+             \x20 for (idx = 0; idx < n; idx++) { if (a[idx] == needle) { found = true; break; } }\n\
+             \x20 if (found) { r.tag = 0; r.payload = (int64_t)idx; } else { r.tag = 1; r.payload = 0; }\n\
+             \x20 return r;\n\
+             }\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_array_int64_t__binary_search(const int64_t* a, uint64_t n, int64_t needle) {\n\
+             \x20 Enum_Option__i64 r; int64_t lo = 0; int64_t hi = (int64_t)n - 1; bool found = false; int64_t mid = 0;\n\
+             \x20 while (lo <= hi) {\n\
+             \x20   mid = lo + (hi - lo) / 2;\n\
+             \x20   int64_t v = a[mid];\n\
+             \x20   if (v == needle) { found = true; break; }\n\
+             \x20   else if (v < needle) lo = mid + 1;\n\
+             \x20   else hi = mid - 1;\n\
+             \x20 }\n\
+             \x20 if (found) { r.tag = 0; r.payload = mid; } else { r.tag = 1; r.payload = 0; }\n\
+             \x20 return r;\n\
+             }\n",
+        );
+    }
+    out.push('\n');
 }
 
 /// Emit the runtime helpers for `Channel<i64>` and `Mutex<i64>`
@@ -4839,65 +5026,97 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             )
         }
         "sort" => {
-            // In-place ascending sort. v1: Vec<i64> only.
-            // Lowers to the runtime helper `intent_vec_int64_t__sort`.
-            let element = match args[0].ty.deref() {
-                Type::Vec(element) => element.clone(),
-                _ => unreachable!("sort() arg 0 must be (mut ref) Vec<_>"),
-            };
-            format!("{}({})", vec_helper(&element, "sort"), emit_expr(&args[0]))
+            // In-place ascending sort. v1: i64 element.
+            // Dispatches on Vec vs Array.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({})",
+                    vec_helper(element, "sort"),
+                    emit_expr(&args[0])
+                ),
+                Type::Array { length, .. } => format!(
+                    "intent_array_int64_t__sort((int64_t*)({xs}), (uint64_t){len}LL)",
+                    xs = emit_expr(&args[0]),
+                    len = length,
+                ),
+                _ => unreachable!("sort() arg 0 must be (mut ref) Vec<_> or [T; N]"),
+            }
         }
         "sort_by" => {
             // In-place sort with user comparator
-            // `fn(ref i64, ref i64) -> i64`. v1: Vec<i64> only.
-            let element = match args[0].ty.deref() {
-                Type::Vec(element) => element.clone(),
-                _ => unreachable!("sort_by() arg 0 must be (mut ref) Vec<_>"),
-            };
-            format!(
-                "{}({}, {})",
-                vec_helper(&element, "sort_by"),
-                emit_expr(&args[0]),
-                emit_expr(&args[1])
-            )
+            // `fn(i64, i64) -> i64`. v1: i64 element.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, {})",
+                    vec_helper(element, "sort_by"),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1])
+                ),
+                Type::Array { length, .. } => format!(
+                    "intent_array_int64_t__sort_by((int64_t*)({xs}), (uint64_t){len}LL, {cmp})",
+                    xs = emit_expr(&args[0]),
+                    len = length,
+                    cmp = emit_expr(&args[1]),
+                ),
+                _ => unreachable!("sort_by() arg 0 must be (mut ref) Vec<_> or [T; N]"),
+            }
         }
         "reverse" | "dedup" => {
-            // In-place reverse / dedup over `mut ref Vec<T>`.
-            // Dedup is i64-only in v1.
-            let element = match args[0].ty.deref() {
-                Type::Vec(element) => element.clone(),
+            // reverse: Vec OR Array. dedup: Vec only.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({})",
+                    vec_helper(element, name),
+                    emit_expr(&args[0])
+                ),
+                Type::Array { length, .. } if name == "reverse" => format!(
+                    "intent_array_int64_t__reverse((int64_t*)({xs}), (uint64_t){len}LL)",
+                    xs = emit_expr(&args[0]),
+                    len = length,
+                ),
                 _ => unreachable!("{name}() arg 0 must be (mut ref) Vec<_>"),
-            };
-            format!(
-                "{}({})",
-                vec_helper(&element, name),
-                emit_expr(&args[0])
-            )
+            }
         }
         "contains" => {
-            // Linear scan; returns bool. xs is `ref Vec<i64>`.
-            format!(
-                "({{ const intent_vec_int64_t* __cv = ({xs}); int64_t __cn = ({n}); bool __cr = false; for (uint64_t __ci = 0; __ci < __cv->len; __ci++) {{ if (__cv->data[__ci] == __cn) {{ __cr = true; break; }} }} __cr; }})",
-                xs = emit_expr(&args[0]),
-                n = emit_expr(&args[1]),
-            )
+            // Linear scan; returns bool. xs is `ref Vec<i64>`
+            // or `ref [i64; N]`.
+            match args[0].ty.deref() {
+                Type::Array { length, .. } => format!(
+                    "intent_array_int64_t__contains((const int64_t*)({xs}), (uint64_t){len}LL, ({n}))",
+                    xs = emit_expr(&args[0]),
+                    len = length,
+                    n = emit_expr(&args[1]),
+                ),
+                _ => format!(
+                    "({{ const intent_vec_int64_t* __cv = ({xs}); int64_t __cn = ({n}); bool __cr = false; for (uint64_t __ci = 0; __ci < __cv->len; __ci++) {{ if (__cv->data[__ci] == __cn) {{ __cr = true; break; }} }} __cr; }})",
+                    xs = emit_expr(&args[0]),
+                    n = emit_expr(&args[1]),
+                ),
+            }
         }
         "find" => {
-            // Linear scan; returns Option<i64>. Some(idx) on
-            // first match, None on no match. v1: i64 element.
-            // Option<T>'s C layout is `{ int32_t tag; T
-            // payload; }` (single-payload enum — no union).
+            // Linear scan; returns Option<i64>. v1: i64
+            // element. Option<T>'s C layout is
+            // `{ int32_t tag; T payload; }`.
             let opt_name = match result_ty {
                 Type::Enum(name) => name.clone(),
                 _ => unreachable!("find() must return Type::Enum(Option__i64)"),
             };
             let opt_c = enum_c_name(&opt_name);
-            format!(
-                "({{ const intent_vec_int64_t* __fv = ({xs}); int64_t __fn = ({n}); {opt} __fr; bool __ff = false; uint64_t __fi = 0; for (__fi = 0; __fi < __fv->len; __fi++) {{ if (__fv->data[__fi] == __fn) {{ __ff = true; break; }} }} if (__ff) {{ __fr.tag = 0; __fr.payload = (int64_t)__fi; }} else {{ __fr.tag = 1; __fr.payload = 0; }} __fr; }})",
-                xs = emit_expr(&args[0]),
-                n = emit_expr(&args[1]),
-                opt = opt_c,
-            )
+            match args[0].ty.deref() {
+                Type::Array { length, .. } => format!(
+                    "intent_array_int64_t__find((const int64_t*)({xs}), (uint64_t){len}LL, ({n}))",
+                    xs = emit_expr(&args[0]),
+                    len = length,
+                    n = emit_expr(&args[1]),
+                ),
+                _ => format!(
+                    "({{ const intent_vec_int64_t* __fv = ({xs}); int64_t __fn = ({n}); {opt} __fr; bool __ff = false; uint64_t __fi = 0; for (__fi = 0; __fi < __fv->len; __fi++) {{ if (__fv->data[__fi] == __fn) {{ __ff = true; break; }} }} if (__ff) {{ __fr.tag = 0; __fr.payload = (int64_t)__fi; }} else {{ __fr.tag = 1; __fr.payload = 0; }} __fr; }})",
+                    xs = emit_expr(&args[0]),
+                    n = emit_expr(&args[1]),
+                    opt = opt_c,
+                ),
+            }
         }
         "swap_remove" => {
             // mut ref Vec<T>, i -> T (moves slot out, swaps
@@ -4946,12 +5165,20 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 _ => unreachable!("binary_search() must return Type::Enum(Option__i64)"),
             };
             let opt_c = enum_c_name(&opt_name);
-            format!(
-                "({{ const intent_vec_int64_t* __bv = ({xs}); int64_t __bn = ({n}); {opt} __br; int64_t __blo = 0; int64_t __bhi = (int64_t)__bv->len - 1; bool __bf = false; int64_t __bm = 0; while (__blo <= __bhi) {{ __bm = __blo + (__bhi - __blo) / 2; int64_t __bv0 = __bv->data[__bm]; if (__bv0 == __bn) {{ __bf = true; break; }} else if (__bv0 < __bn) {{ __blo = __bm + 1; }} else {{ __bhi = __bm - 1; }} }} if (__bf) {{ __br.tag = 0; __br.payload = __bm; }} else {{ __br.tag = 1; __br.payload = 0; }} __br; }})",
-                xs = emit_expr(&args[0]),
-                n = emit_expr(&args[1]),
-                opt = opt_c,
-            )
+            match args[0].ty.deref() {
+                Type::Array { length, .. } => format!(
+                    "intent_array_int64_t__binary_search((const int64_t*)({xs}), (uint64_t){len}LL, ({n}))",
+                    xs = emit_expr(&args[0]),
+                    len = length,
+                    n = emit_expr(&args[1]),
+                ),
+                _ => format!(
+                    "({{ const intent_vec_int64_t* __bv = ({xs}); int64_t __bn = ({n}); {opt} __br; int64_t __blo = 0; int64_t __bhi = (int64_t)__bv->len - 1; bool __bf = false; int64_t __bm = 0; while (__blo <= __bhi) {{ __bm = __blo + (__bhi - __blo) / 2; int64_t __bv0 = __bv->data[__bm]; if (__bv0 == __bn) {{ __bf = true; break; }} else if (__bv0 < __bn) {{ __blo = __bm + 1; }} else {{ __bhi = __bm - 1; }} }} if (__bf) {{ __br.tag = 0; __br.payload = __bm; }} else {{ __br.tag = 1; __br.payload = 0; }} __br; }})",
+                    xs = emit_expr(&args[0]),
+                    n = emit_expr(&args[1]),
+                    opt = opt_c,
+                ),
+            }
         }
         "set" => {
             let element = match result_ty {

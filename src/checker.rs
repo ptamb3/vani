@@ -13661,14 +13661,18 @@ fn check_sort_builtin(
         return CheckedExpr::fallback_integer(span);
     }
     let xs = check_expr(&args[0], env, signatures, diagnostics);
-    let element_type = match xs.ty() {
+    // sort / sort_by accept BOTH `mut ref Vec<i64>` AND
+    // `mut ref [i64; N]`. The codegen routes each to its own
+    // runtime helper but the surface call is uniform.
+    let (element_type, is_array) = match xs.ty() {
         Type::RefMut(inner) => match &**inner {
-            Type::Vec(element) => (**element).clone(),
+            Type::Vec(element) => ((**element).clone(), false),
+            Type::Array { element, .. } => ((**element).clone(), true),
             _ => {
                 diagnostics.push(Diagnostic::new(
                     args[0].span,
                     format!(
-                        "{}() requires a `mut ref Vec<i64>` argument, got {}",
+                        "{}() requires a `mut ref Vec<i64>` or `mut ref [i64; N]` argument, got {}",
                         name,
                         xs.ty()
                     ),
@@ -13680,24 +13684,28 @@ fn check_sort_builtin(
             diagnostics.push(Diagnostic::new(
                 args[0].span,
                 format!(
-                    "{}() requires a `mut ref Vec<i64>` argument, got {}",
+                    "{}() requires a `mut ref Vec<i64>` or `mut ref [i64; N]` argument, got {}",
                     name, other
                 ),
             ));
             return CheckedExpr::fallback_integer(span);
         }
     };
-    // v1 restriction: Vec<i64> only. The runtime helper is
-    // monomorphized over i64 element width; wider widths
-    // would need element-typed runtime helpers (i32 / u64 /
-    // etc.) and are queued as a follow-up. Match the Mutex<i64>
-    // v1 scope.
+    let _ = is_array;
+    // v1 restriction: i64 element only. Wider widths would
+    // need element-typed runtime helpers (i32 / u64 / etc.)
+    // and are queued as a follow-up.
     if !matches!(element_type, Type::I64) {
+        let container = if matches!(xs.ty().deref(), Type::Array { .. }) {
+            "[i64; N]"
+        } else {
+            "Vec<i64>"
+        };
         diagnostics.push(Diagnostic::new(
             args[0].span,
             format!(
-                "{}() only supports `Vec<i64>` in v1, got Vec<{}>",
-                name, element_type
+                "{}() only supports `{}` in v1, got element type {}",
+                name, container, element_type
             ),
         ));
         return CheckedExpr::fallback_integer(span);
@@ -13767,15 +13775,25 @@ fn check_reverse_dedup_builtin(
         return CheckedExpr::fallback_integer(span);
     }
     let xs = check_expr(&args[0], env, signatures, diagnostics);
+    // reverse accepts `mut ref Vec<T>` OR `mut ref [T; N]`.
+    // dedup is Vec-only (can't shrink a fixed-size array).
     let element_type = match xs.ty() {
         Type::RefMut(inner) => match &**inner {
             Type::Vec(element) => (**element).clone(),
+            Type::Array { element, .. } if name == "reverse" => {
+                (**element).clone()
+            }
             _ => {
                 diagnostics.push(Diagnostic::new(
                     args[0].span,
                     format!(
-                        "{}() requires a `mut ref Vec<T>` argument, got {}",
+                        "{}() requires a `mut ref Vec<T>`{} argument, got {}",
                         name,
+                        if name == "reverse" {
+                            " or `mut ref [T; N]`"
+                        } else {
+                            ""
+                        },
                         xs.ty()
                     ),
                 ));
@@ -13786,20 +13804,23 @@ fn check_reverse_dedup_builtin(
             diagnostics.push(Diagnostic::new(
                 args[0].span,
                 format!(
-                    "{}() requires a `mut ref Vec<T>` argument, got {}",
-                    name, other
+                    "{}() requires a `mut ref Vec<T>`{} argument, got {}",
+                    name,
+                    if name == "reverse" {
+                        " or `mut ref [T; N]`"
+                    } else {
+                        ""
+                    },
+                    other
                 ),
             ));
             return CheckedExpr::fallback_integer(span);
         }
     };
     // dedup needs `==` on the element type — v1 ships i64 only,
-    // matching sort's scoping. reverse works for any element
-    // type (it just swaps slots) but v1 limits to Copy element
-    // types since affine-handle Vecs (Vec<Mutex<_>>, …) aren't
-    // a meaningful target for reverse and would require careful
-    // handling of the swap semantics. Most practical reverse
-    // calls are on integer / OwnedStr Vecs; keep it tight.
+    // matching sort's scoping. reverse works for any Copy
+    // element type (swap by value); affine handles aren't
+    // a meaningful target.
     if name == "dedup" && !matches!(element_type, Type::I64) {
         diagnostics.push(Diagnostic::new(
             args[0].span,
@@ -13814,7 +13835,7 @@ fn check_reverse_dedup_builtin(
         diagnostics.push(Diagnostic::new(
             args[0].span,
             format!(
-                "reverse() requires a Vec<T> with Copy element type in v1, got Vec<{}>",
+                "reverse() requires a Vec<T> or [T; N] with Copy element type in v1, got element {}",
                 element_type
             ),
         ));
@@ -13872,14 +13893,18 @@ fn check_search_builtin(
         return CheckedExpr::fallback(ret_ty, span);
     }
     let xs = check_expr(&args[0], env, signatures, diagnostics);
+    // find / contains / binary_search accept BOTH
+    // `ref Vec<i64>` AND `ref [i64; N]`. Codegen routes each
+    // to its own runtime helper but the surface is uniform.
     let element_type = match xs.ty() {
         Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
             Type::Vec(element) => (**element).clone(),
+            Type::Array { element, .. } => (**element).clone(),
             _ => {
                 diagnostics.push(Diagnostic::new(
                     args[0].span,
                     format!(
-                        "{}() requires a `ref Vec<i64>` argument, got {}",
+                        "{}() requires a `ref Vec<i64>` or `ref [i64; N]` argument, got {}",
                         name,
                         xs.ty()
                     ),
@@ -13896,7 +13921,7 @@ fn check_search_builtin(
             diagnostics.push(Diagnostic::new(
                 args[0].span,
                 format!(
-                    "{}() requires a `ref Vec<i64>` argument, got {}",
+                    "{}() requires a `ref Vec<i64>` or `ref [i64; N]` argument, got {}",
                     name, other
                 ),
             ));
@@ -13909,11 +13934,16 @@ fn check_search_builtin(
         }
     };
     if !matches!(element_type, Type::I64) {
+        let container = if matches!(xs.ty().deref(), Type::Array { .. }) {
+            "[i64; N]"
+        } else {
+            "Vec<i64>"
+        };
         diagnostics.push(Diagnostic::new(
             args[0].span,
             format!(
-                "{}() only supports `Vec<i64>` in v1, got Vec<{}>",
-                name, element_type
+                "{}() only supports `{}` in v1, got element type {}",
+                name, container, element_type
             ),
         ));
     }
