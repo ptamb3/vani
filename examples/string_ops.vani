@@ -1,0 +1,75 @@
+// build & run:
+//   intentc run examples/string_ops.vani                          # LLVM backend
+//   intentc run examples/string_ops.vani --backend=c              # C backend
+//   intentc build examples/string_ops.vani -o /tmp/string_ops && /tmp/string_ops
+
+intent "String surface — search predicates and Option-returning parsers";
+
+// Five builtins for working with borrowed `Str` values. All
+// are read-only; none allocate. v1 returns `bool` for the
+// boolean predicates and `Option<i64>` / `Option<f64>` for
+// the parsers.
+//
+//   str_contains(s, needle) -> bool
+//   str_starts_with(s, prefix) -> bool
+//   str_ends_with(s, suffix) -> bool
+//   parse_int(s) -> Option<i64>
+//   parse_float(s) -> Option<f64>
+//
+// Lower to libc primitives (strstr / strncmp / strcmp /
+// strtoll / strtod) in both backends. Future heap-allocating
+// string ops (split / trim / replace returning `OwnedStr`)
+// are queued as a follow-up since they need explicit
+// affine-handle wiring for the produced `Vec<OwnedStr>`.
+
+fn main() -> i64 {
+  let s: Str = "hello world";
+
+  let has_world: bool = str_contains(s, "world");
+  if has_world { print "contains world"; } else { print "no world"; }
+  let has_foo: bool = str_contains(s, "foo");
+  if has_foo { print "contains foo"; } else { print "no foo"; }
+
+  let sw_hello: bool = str_starts_with(s, "hello");
+  if sw_hello { print "starts with hello"; } else { print "not hello"; }
+  let sw_world: bool = str_starts_with(s, "world");
+  if sw_world { print "starts with world"; } else { print "not world"; }
+
+  let ew_world: bool = str_ends_with(s, "world");
+  if ew_world { print "ends with world"; } else { print "not world"; }
+  let ew_hello: bool = str_ends_with(s, "hello");
+  if ew_hello { print "ends with hello"; } else { print "not hello"; }
+
+  // parse_int: whole-string consumption; "42" succeeds,
+  // "hello" fails (no digits), empty string fails.
+  let p_ok: Option<i64> = parse_int("42");
+  let p_ok_i: i64 = match p_ok {
+    Option.Some(v) then v,
+    Option.None then 0 - 1,
+  };
+  print "parse 42:", p_ok_i;
+
+  let p_fail: Option<i64> = parse_int("hello");
+  let p_fail_i: i64 = match p_fail {
+    Option.Some(v) then v,
+    Option.None then 0 - 1,
+  };
+  print "parse hello:", p_fail_i;
+
+  // parse_float: same shape over f64.
+  let f_ok: Option<f64> = parse_float("3.14");
+  let f_x: f64 = match f_ok {
+    Option.Some(v) then v,
+    Option.None then 0.0,
+  };
+  print "parse 3.14:", f_x;
+
+  let f_fail: Option<f64> = parse_float("xyz");
+  let f_fail_x: f64 = match f_fail {
+    Option.Some(v) then v,
+    Option.None then 0.0 - 1.0,
+  };
+  print "parse xyz:", f_fail_x;
+
+  return 0;
+}

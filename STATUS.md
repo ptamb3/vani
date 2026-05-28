@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #297 — Array ops: extend sort/sort_by/reverse/find/contains/binary_search to [i64; N]; sort.vani extended; 6 new lib tests)
-**Test totals:** 1059 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 65 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #298 — String ops: str_contains/str_starts_with/str_ends_with + parse_int/parse_float; new string_ops.vani example; 6 new lib tests; multi-instantiation Option pattern resolution fix)
+**Test totals:** 1065 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 66 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,40 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 1 — String ops + parsers (shipped 2026-05-28, closure #298)
+
+✅ AFFINE — all read-only, no heap allocation:
+- `str_contains(s: Str, needle: Str) -> bool` — libc strstr.
+- `str_starts_with(s: Str, prefix: Str) -> bool` — libc strncmp + strlen.
+- `str_ends_with(s: Str, suffix: Str) -> bool` — strlen + strcmp on tail.
+- `parse_int(s: Str) -> Option<i64>` — libc strtoll with whole-string consumption check.
+- `parse_float(s: Str) -> Option<f64>` — libc strtod, same consumption check.
+
+**Multi-instantiation Option fix:** match-arm pattern resolution
+now consults the scrutinee's mangled enum name FIRST (before
+falling back to the unmangled base-name prefix lookup). Lets
+`Option<i64>` and `Option<f64>` coexist in the same program —
+previously the prefix-match returned `None` when both were
+registered, breaking `Option.Some(v)` binding extraction.
+
+**Codegen:** tree-C uses GCC statement-expressions for the
+multi-step builtins (caching `strlen` results, structuring the
+parse result). Tree-LLVM emits inline IR per call site —
+multi-block bodies with phi for the option result. SSA routes
+both through tree.
+
+**Tests:** 6 lib tests (each builtin typecheck + LLVM compile;
+multi-instantiation Option<i64>+Option<f64> coexistence; C
+output references the libc primitives). New
+`examples/string_ops.vani` covers all five builtins; added to
+the parity runner.
+
+**Pending follow-ups (queued):** heap-allocating string ops —
+`str_split(s, sep) -> Vec<OwnedStr>`, `str_trim(s) -> OwnedStr`,
+`str_replace(s, from, to) -> OwnedStr`. These need explicit
+affine wiring for `Vec<OwnedStr>` and per-call OwnedStr Drop
+semantics, hence the separation.
 
 ### Data-structures roadmap Level 1 — Array ops on `[i64; N]` (shipped 2026-05-28, closure #297)
 

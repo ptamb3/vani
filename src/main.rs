@@ -309,6 +309,9 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "binary_search"
                 || name == "swap_remove" || name == "insert"
                 || name == "clear"
+                || name == "str_contains" || name == "str_starts_with"
+                || name == "str_ends_with" || name == "parse_int"
+                || name == "parse_float"
             {
                 return false;
             }

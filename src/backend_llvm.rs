@@ -464,7 +464,11 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare i8* @memcpy(i8*, i8*, i64)\n");
     out.push_str("declare i8* @memmove(i8*, i8*, i64)\n");
     out.push_str("declare i32 @strcmp(i8*, i8*)\n");
+    out.push_str("declare i32 @strncmp(i8*, i8*, i64)\n");
     out.push_str("declare i64 @strlen(i8*)\n");
+    out.push_str("declare i8* @strstr(i8*, i8*)\n");
+    out.push_str("declare i64 @strtoll(i8*, i8**, i32)\n");
+    out.push_str("declare double @strtod(i8*, i8**)\n");
     // Threading primitives: POSIX on Linux/macOS, Win32 on
     // Windows. `intentc` picks the host's flavor at codegen
     // time via `host_uses_win32_threading()`. Cross-
@@ -4805,6 +4809,279 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                         element_ty
                     );
                 }
+                return dest;
+            }
+            // String surface builtins: str_contains /
+            // str_starts_with / str_ends_with / parse_int /
+            // parse_float. Inline calls to libc helpers
+            // declared in the preamble.
+            if name == "str_contains" {
+                let s = emit_expr(&args[0], ctx, out);
+                let n = emit_expr(&args[1], ctx, out);
+                let hit = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i8* @strstr(i8* {}, i8* {})\n",
+                    hit, s, n
+                ));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp ne i8* {}, null\n",
+                    dest, hit
+                ));
+                return dest;
+            }
+            if name == "str_starts_with" {
+                let s = emit_expr(&args[0], ctx, out);
+                let p = emit_expr(&args[1], ctx, out);
+                let pl = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @strlen(i8* {})\n",
+                    pl, p
+                ));
+                let cmp = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i32 @strncmp(i8* {}, i8* {}, i64 {})\n",
+                    cmp, s, p, pl
+                ));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp eq i32 {}, 0\n",
+                    dest, cmp
+                ));
+                return dest;
+            }
+            if name == "str_ends_with" {
+                let s = emit_expr(&args[0], ctx, out);
+                let u = emit_expr(&args[1], ctx, out);
+                let sl = ctx.fresh_tmp();
+                let ul = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @strlen(i8* {})\n",
+                    sl, s
+                ));
+                out.push_str(&format!(
+                    "  {} = call i64 @strlen(i8* {})\n",
+                    ul, u
+                ));
+                // Fast reject if suffix longer than string.
+                let too_long = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp ugt i64 {}, {}\n",
+                    too_long, ul, sl
+                ));
+                let ok_lbl = ctx.fresh_label("ew_ok");
+                let no_lbl = ctx.fresh_label("ew_no");
+                let done = ctx.fresh_label("ew_done");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    too_long, no_lbl, ok_lbl
+                ));
+                out.push_str(&format!("{}:\n", ok_lbl));
+                let off = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = sub i64 {}, {}\n",
+                    off, sl, ul
+                ));
+                let tail = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr i8, i8* {}, i64 {}\n",
+                    tail, s, off
+                ));
+                let cmp = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i32 @strcmp(i8* {}, i8* {})\n",
+                    cmp, tail, u
+                ));
+                let eq = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp eq i32 {}, 0\n",
+                    eq, cmp
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", no_lbl));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", done));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = phi i1 [ {}, %{} ], [ false, %{} ]\n",
+                    dest, eq, ok_lbl, no_lbl
+                ));
+                return dest;
+            }
+            if name == "parse_int" {
+                let s = emit_expr(&args[0], ctx, out);
+                let end_p = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = alloca i8*\n", end_p));
+                let v = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @strtoll(i8* {}, i8** {}, i32 10)\n",
+                    v, s, end_p
+                ));
+                let end_v = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load i8*, i8** {}\n",
+                    end_v, end_p
+                ));
+                let moved = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp ne i8* {}, {}\n",
+                    moved, end_v, s
+                ));
+                let end_ch = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load i8, i8* {}\n",
+                    end_ch, end_v
+                ));
+                let end_nul = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp eq i8 {}, 0\n",
+                    end_nul, end_ch
+                ));
+                let first_ch = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load i8, i8* {}\n",
+                    first_ch, s
+                ));
+                let nonempty = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp ne i8 {}, 0\n",
+                    nonempty, first_ch
+                ));
+                let m_and_n = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = and i1 {}, {}\n",
+                    m_and_n, moved, end_nul
+                ));
+                let ok = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = and i1 {}, {}\n",
+                    ok, m_and_n, nonempty
+                ));
+                let some_lbl = ctx.fresh_label("pi_some");
+                let none_lbl = ctx.fresh_label("pi_none");
+                let done = ctx.fresh_label("pi_done");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    ok, some_lbl, none_lbl
+                ));
+                out.push_str(&format!("{}:\n", some_lbl));
+                let r1s = ctx.fresh_tmp();
+                let r2s = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 undef, i32 0, 0\n",
+                    r1s
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 {}, i64 {}, 1\n",
+                    r2s, r1s, v
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", none_lbl));
+                let r1n = ctx.fresh_tmp();
+                let r2n = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 undef, i32 1, 0\n",
+                    r1n
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 {}, i64 0, 1\n",
+                    r2n, r1n
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", done));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = phi %Enum_Option__i64 [ {}, %{} ], [ {}, %{} ]\n",
+                    dest, r2s, some_lbl, r2n, none_lbl
+                ));
+                return dest;
+            }
+            if name == "parse_float" {
+                let s = emit_expr(&args[0], ctx, out);
+                let end_p = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = alloca i8*\n", end_p));
+                let v = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @strtod(i8* {}, i8** {})\n",
+                    v, s, end_p
+                ));
+                let end_v = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load i8*, i8** {}\n",
+                    end_v, end_p
+                ));
+                let moved = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp ne i8* {}, {}\n",
+                    moved, end_v, s
+                ));
+                let end_ch = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load i8, i8* {}\n",
+                    end_ch, end_v
+                ));
+                let end_nul = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp eq i8 {}, 0\n",
+                    end_nul, end_ch
+                ));
+                let first_ch = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load i8, i8* {}\n",
+                    first_ch, s
+                ));
+                let nonempty = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp ne i8 {}, 0\n",
+                    nonempty, first_ch
+                ));
+                let m_and_n = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = and i1 {}, {}\n",
+                    m_and_n, moved, end_nul
+                ));
+                let ok = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = and i1 {}, {}\n",
+                    ok, m_and_n, nonempty
+                ));
+                let some_lbl = ctx.fresh_label("pf_some");
+                let none_lbl = ctx.fresh_label("pf_none");
+                let done = ctx.fresh_label("pf_done");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    ok, some_lbl, none_lbl
+                ));
+                out.push_str(&format!("{}:\n", some_lbl));
+                let r1s = ctx.fresh_tmp();
+                let r2s = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__f64 undef, i32 0, 0\n",
+                    r1s
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__f64 {}, double {}, 1\n",
+                    r2s, r1s, v
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", none_lbl));
+                let r1n = ctx.fresh_tmp();
+                let r2n = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__f64 undef, i32 1, 0\n",
+                    r1n
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__f64 {}, double 0.0, 1\n",
+                    r2n, r1n
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", done));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = phi %Enum_Option__f64 [ {}, %{} ], [ {}, %{} ]\n",
+                    dest, r2s, some_lbl, r2n, none_lbl
+                ));
                 return dest;
             }
             // Array variants of sort / sort_by / reverse /

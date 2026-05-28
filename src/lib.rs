@@ -12297,6 +12297,109 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_contains_returns_bool() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "hello world";
+              let b: bool = str_contains(s, "world");
+              if b { return 1; } else { return 0; }
+            }
+        "#;
+        compile_to_c(source).expect("str_contains must type-check");
+        compile_to_llvm(source).expect("str_contains must compile to LLVM");
+    }
+
+    #[test]
+    fn str_starts_with_and_ends_with_typecheck() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "vani lang";
+              let sw: bool = str_starts_with(s, "vani");
+              let ew: bool = str_ends_with(s, "lang");
+              if sw { if ew { return 1; } else { return 0; } } else { return 0; }
+            }
+        "#;
+        compile_to_c(source).expect("str_starts_with + str_ends_with must compile");
+        compile_to_llvm(source).expect("LLVM ditto");
+    }
+
+    #[test]
+    fn parse_int_returns_option_i64() {
+        let source = r#"
+            fn main() -> i64 {
+              let r: Option<i64> = parse_int("42");
+              return match r {
+                Option.Some(v) then v,
+                Option.None then 0 - 1,
+              };
+            }
+        "#;
+        compile_to_c(source).expect("parse_int must type-check");
+        compile_to_llvm(source).expect("parse_int must compile to LLVM");
+    }
+
+    #[test]
+    fn parse_float_returns_option_f64() {
+        let source = r#"
+            fn main() -> i64 {
+              let r: Option<f64> = parse_float("3.14");
+              let x: f64 = match r {
+                Option.Some(v) then v,
+                Option.None then 0.0,
+              };
+              return x as i64;
+            }
+        "#;
+        compile_to_c(source).expect("parse_float must type-check");
+        compile_to_llvm(source).expect("parse_float must compile to LLVM");
+    }
+
+    #[test]
+    fn option_i64_and_f64_can_coexist() {
+        // Multi-instantiation regression: writing `Option.Some(v)`
+        // in a match arm must resolve against the scrutinee's
+        // mangled type, not by base-name prefix lookup (which is
+        // ambiguous when Option<i64> + Option<f64> both exist).
+        let source = r#"
+            fn main() -> i64 {
+              let n: Option<i64> = parse_int("5");
+              let f: Option<f64> = parse_float("2.0");
+              let nv: i64 = match n {
+                Option.Some(v) then v,
+                Option.None then 0,
+              };
+              let fv: f64 = match f {
+                Option.Some(v) then v,
+                Option.None then 0.0,
+              };
+              return nv + (fv as i64);
+            }
+        "#;
+        compile_to_c(source).expect("Option<i64> + Option<f64> must coexist");
+        compile_to_llvm(source).expect("LLVM ditto");
+    }
+
+    #[test]
+    fn str_builtins_emit_libc_calls_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "abc";
+              let _: bool = str_contains(s, "b");
+              let _: bool = str_starts_with(s, "a");
+              let _: bool = str_ends_with(s, "c");
+              let _: Option<i64> = parse_int("0");
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("string builtins must compile");
+        assert!(
+            c.contains("strstr(") && c.contains("strncmp(") && c.contains("strtoll("),
+            "C output must call libc primitives; got:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn array_sort_emits_runtime_helpers_in_c() {
         let source = r#"
             fn main() -> i64 {

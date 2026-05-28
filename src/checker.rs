@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -4253,8 +4253,18 @@ fn monomorphize_type_decls_in_program(
         needed_enums: &mut Vec<(String, Vec<Type>)>,
     ) {
         if let ExprKind::Call { name, args, .. } = &expr.kind {
-            if matches!(name.as_str(), "find" | "binary_search") {
-                let key = ("Option".to_string(), vec![Type::I64]);
+            // Builtins that return `Option<T>` for a concrete T
+            // each force the corresponding monomorphic decl
+            // even when the user doesn't write the type
+            // annotation. Closures #295 (find / binary_search)
+            // + #298 (parse_int / parse_float).
+            let needed_arg: Option<Type> = match name.as_str() {
+                "find" | "binary_search" | "parse_int" => Some(Type::I64),
+                "parse_float" => Some(Type::F64),
+                _ => None,
+            };
+            if let Some(t) = needed_arg {
+                let key = ("Option".to_string(), vec![t]);
                 if !needed_enums.iter().any(|(n, a)| n == &key.0 && a == &key.1) {
                     needed_enums.push(key);
                 }
@@ -9907,14 +9917,29 @@ fn check_expr(
                         enum_name: pat_enum,
                         variant: pat_variant,
                         binding,
-                    } => lookup_enum_variant_payload(env, pat_enum, pat_variant)
-                        .map(|ty| {
-                            let view_ty = match ty {
-                                Type::OwnedStr => Type::Str,
-                                other => other,
-                            };
-                            (binding.clone(), view_ty)
-                        }),
+                    } => {
+                        // Look up against the scrutinee's enum
+                        // name first (which is the mangled
+                        // monomorphic name, e.g. `Option__i64`).
+                        // This works even when multiple
+                        // monomorphic instantiations of the same
+                        // generic enum coexist (e.g.
+                        // `Option<i64>` AND `Option<f64>`) —
+                        // resolving by the unmangled base name
+                        // would be ambiguous. Closure #298 fix.
+                        let scrutinee_enum = enum_name_opt.as_deref().unwrap_or(pat_enum);
+                        lookup_enum_variant_payload(env, scrutinee_enum, pat_variant)
+                            .or_else(|| {
+                                lookup_enum_variant_payload(env, pat_enum, pat_variant)
+                            })
+                            .map(|ty| {
+                                let view_ty = match ty {
+                                    Type::OwnedStr => Type::Str,
+                                    other => other,
+                                };
+                                (binding.clone(), view_ty)
+                            })
+                    }
                     _ => None,
                 };
                 // Closure #128 / D3: the binding's exposed type
@@ -11930,6 +11955,15 @@ fn check_call(
         }
         "swap_remove" | "insert" | "clear" => {
             return check_mutator_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
+        "str_contains"
+        | "str_starts_with"
+        | "str_ends_with"
+        | "parse_int"
+        | "parse_float" => {
+            return check_str_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
         }
@@ -13965,6 +13999,91 @@ fn check_search_builtin(
             name: name.to_string(),
             name_span: span,
             args: vec![xs.expr, needle.expr],
+        },
+        ret_ty,
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 1 — string surface builtins.
+///
+///   str_contains(s: Str, needle: Str) -> bool
+///   str_starts_with(s: Str, prefix: Str) -> bool
+///   str_ends_with(s: Str, suffix: Str) -> bool
+///   parse_int(s: Str) -> Option<i64>
+///   parse_float(s: Str) -> Option<f64>
+///
+/// All take Copy `Str` (borrowed view); returns are bool or
+/// Option<scalar>. No heap allocation in any path.
+fn check_str_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args = match name {
+        "parse_int" | "parse_float" => 1,
+        _ => 2,
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}(...) expects {} argument{}, got {}",
+                name,
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        let ret_ty = match name {
+            "parse_int" => {
+                Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+            }
+            "parse_float" => {
+                Type::Enum(mangle_generic_decl("Option", &[Type::F64]))
+            }
+            _ => Type::Bool,
+        };
+        return CheckedExpr::fallback(ret_ty, span);
+    }
+    let s_raw = check_expr(&args[0], env, signatures, diagnostics);
+    let s = coerce_checked(
+        s_raw,
+        &Type::Str,
+        args[0].span,
+        "string argument",
+        diagnostics,
+    );
+    let mut typed_args = vec![s.expr];
+    if want_args == 2 {
+        let needle_raw = check_expr(&args[1], env, signatures, diagnostics);
+        let needle = coerce_checked(
+            needle_raw,
+            &Type::Str,
+            args[1].span,
+            "second string argument",
+            diagnostics,
+        );
+        typed_args.push(needle.expr);
+    }
+    let ret_ty = match name {
+        "parse_int" => {
+            Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+        }
+        "parse_float" => {
+            Type::Enum(mangle_generic_decl("Option", &[Type::F64]))
+        }
+        _ => Type::Bool,
+    };
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
         },
         ret_ty,
         None,

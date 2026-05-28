@@ -5157,6 +5157,56 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[0])
             )
         }
+        "str_contains" => {
+            format!(
+                "(strstr(({s}), ({n})) != NULL)",
+                s = emit_expr(&args[0]),
+                n = emit_expr(&args[1]),
+            )
+        }
+        "str_starts_with" => {
+            // strncmp(s, p, strlen(p)) == 0. Cache the prefix
+            // length so it isn't computed twice.
+            format!(
+                "({{ const char* __sw_s = ({s}); const char* __sw_p = ({p}); size_t __sw_pl = strlen(__sw_p); (strncmp(__sw_s, __sw_p, __sw_pl) == 0); }})",
+                s = emit_expr(&args[0]),
+                p = emit_expr(&args[1]),
+            )
+        }
+        "str_ends_with" => {
+            format!(
+                "({{ const char* __ew_s = ({s}); const char* __ew_u = ({u}); size_t __ew_sl = strlen(__ew_s); size_t __ew_ul = strlen(__ew_u); (__ew_ul <= __ew_sl && strcmp(__ew_s + __ew_sl - __ew_ul, __ew_u) == 0); }})",
+                s = emit_expr(&args[0]),
+                u = emit_expr(&args[1]),
+            )
+        }
+        "parse_int" => {
+            // strtoll converts the prefix; we require the
+            // ENTIRE string to be consumed for a successful
+            // parse. Empty string → None.
+            let opt_name = match result_ty {
+                Type::Enum(name) => name.clone(),
+                _ => unreachable!("parse_int must return Type::Enum(Option__i64)"),
+            };
+            let opt_c = enum_c_name(&opt_name);
+            format!(
+                "({{ const char* __pi_s = ({s}); char* __pi_end = (char*)0; long long __pi_v = strtoll(__pi_s, &__pi_end, 10); {opt} __pi_r; if (__pi_end != __pi_s && *__pi_end == 0 && *__pi_s != 0) {{ __pi_r.tag = 0; __pi_r.payload = (int64_t)__pi_v; }} else {{ __pi_r.tag = 1; __pi_r.payload = 0; }} __pi_r; }})",
+                s = emit_expr(&args[0]),
+                opt = opt_c,
+            )
+        }
+        "parse_float" => {
+            let opt_name = match result_ty {
+                Type::Enum(name) => name.clone(),
+                _ => unreachable!("parse_float must return Type::Enum(Option__f64)"),
+            };
+            let opt_c = enum_c_name(&opt_name);
+            format!(
+                "({{ const char* __pf_s = ({s}); char* __pf_end = (char*)0; double __pf_v = strtod(__pf_s, &__pf_end); {opt} __pf_r; if (__pf_end != __pf_s && *__pf_end == 0 && *__pf_s != 0) {{ __pf_r.tag = 0; __pf_r.payload = __pf_v; }} else {{ __pf_r.tag = 1; __pf_r.payload = 0; }} __pf_r; }})",
+                s = emit_expr(&args[0]),
+                opt = opt_c,
+            )
+        }
         "binary_search" => {
             // Standard binary search; assumes xs is sorted
             // ascending. Returns Option<i64>(index) on match.
