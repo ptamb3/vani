@@ -2743,6 +2743,41 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
 \n}}\n",
             sn = struct_name,
         ));
+        // Data-structures roadmap Level 3 — eager iterator
+        // combinators (closure #309). v1 Vec<i64> only; both
+        // helpers borrow xs and take an explicit fn-ptr.
+        // map allocates a fresh result Vec (caller owns + drops);
+        // fold returns a scalar. The cmp_fn typedef above has
+        // the same signature as fold's combiner so we reuse it.
+        out.push_str(&format!(
+            "typedef int64_t (*{sn}__map_fn)(int64_t);\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED {sn} {sn}__map(const {sn}* xs, {sn}__map_fn f) {{\
+\n    {sn} out;\
+\n    out.len = xs->len;\
+\n    out.capacity = xs->len;\
+\n    if (xs->len == 0) {{ out.data = (int64_t*)0; return out; }}\
+\n    out.data = (int64_t*)malloc(xs->len * sizeof(int64_t));\
+\n    if (!out.data) abort();\
+\n    for (uint64_t i = 0; i < xs->len; i++) {{\
+\n        out.data[i] = f(xs->data[i]);\
+\n    }}\
+\n    return out;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__fold(const {sn}* xs, int64_t init, {sn}__cmp_fn g) {{\
+\n    int64_t acc = init;\
+\n    for (uint64_t i = 0; i < xs->len; i++) {{\
+\n        acc = g(acc, xs->data[i]);\
+\n    }}\
+\n    return acc;\
+\n}}\n",
+            sn = struct_name,
+        ));
         // dedup: remove consecutive duplicates. Returns the
         // post-dedup length so the caller can verify the work
         // was done. Sort first if you want unique-set behavior.
@@ -5917,6 +5952,32 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                     cmp = emit_expr(&args[1]),
                 ),
                 _ => unreachable!("sort_by() arg 0 must be (mut ref) Vec<_> or [T; N]"),
+            }
+        }
+        "vec_map" => {
+            // vec_map(ref xs: Vec<i64>, f) -> Vec<i64>. Eager;
+            // helper materializes a new Vec. Closure #309.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, {})",
+                    vec_helper(element, "map"),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1])
+                ),
+                _ => unreachable!("vec_map() arg 0 must be ref Vec<i64>"),
+            }
+        }
+        "vec_fold" => {
+            // vec_fold(ref xs: Vec<i64>, init, g) -> i64. Closure #309.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, {}, {})",
+                    vec_helper(element, "fold"),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1]),
+                    emit_expr(&args[2])
+                ),
+                _ => unreachable!("vec_fold() arg 0 must be ref Vec<i64>"),
             }
         }
         "reverse" | "dedup" => {

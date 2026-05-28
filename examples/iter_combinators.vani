@@ -1,0 +1,66 @@
+// build & run:
+//   intentc run examples/iter_combinators.vani                          # LLVM backend
+//   intentc run examples/iter_combinators.vani --backend=c              # C backend
+//   intentc build examples/iter_combinators.vani -o /tmp/iter && /tmp/iter
+
+intent "Iterator combinators on Vec<i64> — eager .map and .fold via fn-ptr (Level 3 #2)";
+
+// v1 design: eager combinators on Vec<i64> taking fn-pointer
+// args. The mapper / combiner can be a top-level fn or an
+// anonymous fn expression (closure #308). Closures with a
+// captured environment land in a follow-up.
+//
+//   vec_map(ref xs: Vec<i64>, f: fn(i64) -> i64) -> Vec<i64>
+//       eager — allocates a fresh Vec the caller drops.
+//   vec_fold(ref xs: Vec<i64>, init: i64,
+//            g: fn(i64, i64) -> i64) -> i64
+//       reduces with a user-supplied combiner.
+//
+// Loop fusion at monomorphization time (so a chain
+// `.map.filter.fold` doesn't materialize intermediate Vecs)
+// is queued for a follow-up. v1 materializes per stage.
+
+pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+pure fn mul(a: i64, b: i64) -> i64 { return a * b; }
+pure fn double(x: i64) -> i64 { return x + x; }
+
+fn max_combine(acc: i64, v: i64) -> i64 {
+  if acc > v { return acc; } else { return v; }
+}
+
+fn count_gt2(acc: i64, v: i64) -> i64 {
+  if v > 2 { return acc + 1; } else { return acc; }
+}
+
+fn main() -> i64 {
+  let xs: Vec<i64> = vec(1, 2, 3, 4, 5);
+
+  // map with a top-level fn-ref.
+  let doubled: Vec<i64> = vec_map(ref xs, double);
+  print "doubled[0]:", doubled[0];
+  print "doubled[4]:", doubled[4];
+
+  // map with an inline anonymous fn expression (closure #308).
+  let squared: Vec<i64> = vec_map(ref xs, fn(x: i64) -> i64 { return x * x; });
+  print "squared[0]:", squared[0];
+  print "squared[4]:", squared[4];
+
+  // fold with top-level fn-refs.
+  print "sum:", vec_fold(ref xs, 0, add);
+  print "product:", vec_fold(ref xs, 1, mul);
+
+  // fold with named combiners.
+  print "max:", vec_fold(ref xs, 0 - 1, max_combine);
+  print "count of >2:", vec_fold(ref xs, 0, count_gt2);
+
+  // fold with an inline anonymous combiner.
+  print "min:", vec_fold(ref xs, 1000, fn(acc: i64, v: i64) -> i64 {
+    if acc < v { return acc; } else { return v; }
+  });
+
+  // Chained: map then fold (sum of squares).
+  let sqs: Vec<i64> = vec_map(ref xs, fn(x: i64) -> i64 { return x * x; });
+  print "sum of squares:", vec_fold(ref sqs, 0, add);
+
+  return 0;
+}

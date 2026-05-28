@@ -5600,6 +5600,8 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "heap_pop"
                     | "heap_peek"
                     | "heapify"
+                    | "vec_map"
+                    | "vec_fold"
             ) {
                 let elt = vec_element_of_first_arg(args)
                     .expect("vec builtins take a Vec as the first arg");
@@ -5610,7 +5612,18 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 // Closure #219: `pop` in source maps to
                 // `pop_mut` in the helper namespace (matches
                 // tree-C's `vec_helper(&element, "pop_mut")`).
-                let helper_op = if name == "pop" { "pop_mut" } else { name.as_str() };
+                // Closure #309: `vec_map` / `vec_fold` strip the
+                // `vec_` prefix so the helper namespace is
+                // `__map` / `__fold` like the other ops.
+                let helper_op = if name == "pop" {
+                    "pop_mut"
+                } else if name == "vec_map" {
+                    "map"
+                } else if name == "vec_fold" {
+                    "fold"
+                } else {
+                    name.as_str()
+                };
                 let helper_name =
                     format!("@intent_vec_{}__{}", vec_struct_tag(&elt), helper_op);
                 let arg_strs: Vec<String> = args
@@ -9464,6 +9477,121 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
             sn_with = sort_with_name,
             sty = s_ty,
         ));
+        out.push_str("  ret i64 %r\n");
+        out.push_str("}\n");
+        // ---- vec_map / vec_fold: eager iterator combinators
+        // taking fn-ptr args (closure #309). v1 i64 element only.
+        // map allocates a fresh result Vec via malloc; fold
+        // reduces with the user-supplied combiner.
+        let map_name = format!("@intent_vec_{}__map", tag);
+        let fold_name = format!("@intent_vec_{}__fold", tag);
+        out.push_str(&format!(
+            "define {sty} {sn}({sty}* %xs_p, i64 (i64)* %f) {{\n",
+            sn = map_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %src = load i64*, i64** %data_p\n");
+        out.push_str("  %n = load i64, i64* %len_p\n");
+        out.push_str("  %is_empty = icmp eq i64 %n, 0\n");
+        out.push_str("  br i1 %is_empty, label %map_empty, label %map_alloc\n");
+        out.push_str("map_alloc:\n");
+        out.push_str("  %bytes = mul i64 %n, 8\n");
+        out.push_str("  %dst_i8 = call i8* @malloc(i64 %bytes)\n");
+        out.push_str("  %dst = bitcast i8* %dst_i8 to i64*\n");
+        out.push_str("  %i_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %i_p\n");
+        out.push_str("  br label %map_loop\n");
+        out.push_str("map_loop:\n");
+        out.push_str("  %i = load i64, i64* %i_p\n");
+        out.push_str("  %cont = icmp slt i64 %i, %n\n");
+        out.push_str("  br i1 %cont, label %map_body, label %map_done\n");
+        out.push_str("map_body:\n");
+        out.push_str("  %src_slot = getelementptr i64, i64* %src, i64 %i\n");
+        out.push_str("  %src_v = load i64, i64* %src_slot\n");
+        out.push_str("  %mapped = call i64 %f(i64 %src_v)\n");
+        out.push_str("  %dst_slot = getelementptr i64, i64* %dst, i64 %i\n");
+        out.push_str("  store i64 %mapped, i64* %dst_slot\n");
+        out.push_str("  %i_n = add i64 %i, 1\n");
+        out.push_str("  store i64 %i_n, i64* %i_p\n");
+        out.push_str("  br label %map_loop\n");
+        out.push_str("map_done:\n");
+        out.push_str(&format!(
+            "  %r0 = insertvalue {sty} undef, i64* %dst, 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %r1 = insertvalue {sty} %r0, i64 %n, 1\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %r2 = insertvalue {sty} %r1, i64 %n, 2\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  ret {sty} %r2\n",
+            sty = s_ty,
+        ));
+        out.push_str("map_empty:\n");
+        out.push_str(&format!(
+            "  %e0 = insertvalue {sty} undef, i64* null, 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %e1 = insertvalue {sty} %e0, i64 0, 1\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %e2 = insertvalue {sty} %e1, i64 0, 2\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  ret {sty} %e2\n",
+            sty = s_ty,
+        ));
+        out.push_str("}\n");
+        out.push_str(&format!(
+            "define i64 {sn}({sty}* %xs_p, i64 %init, i64 (i64, i64)* %g) {{\n",
+            sn = fold_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %data = load i64*, i64** %data_p\n");
+        out.push_str("  %n = load i64, i64* %len_p\n");
+        out.push_str("  %acc_p = alloca i64\n");
+        out.push_str("  store i64 %init, i64* %acc_p\n");
+        out.push_str("  %i_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %i_p\n");
+        out.push_str("  br label %fold_loop\n");
+        out.push_str("fold_loop:\n");
+        out.push_str("  %i = load i64, i64* %i_p\n");
+        out.push_str("  %cont = icmp slt i64 %i, %n\n");
+        out.push_str("  br i1 %cont, label %fold_body, label %fold_done\n");
+        out.push_str("fold_body:\n");
+        out.push_str("  %slot = getelementptr i64, i64* %data, i64 %i\n");
+        out.push_str("  %v = load i64, i64* %slot\n");
+        out.push_str("  %acc = load i64, i64* %acc_p\n");
+        out.push_str("  %next = call i64 %g(i64 %acc, i64 %v)\n");
+        out.push_str("  store i64 %next, i64* %acc_p\n");
+        out.push_str("  %i_n = add i64 %i, 1\n");
+        out.push_str("  store i64 %i_n, i64* %i_p\n");
+        out.push_str("  br label %fold_loop\n");
+        out.push_str("fold_done:\n");
+        out.push_str("  %r = load i64, i64* %acc_p\n");
         out.push_str("  ret i64 %r\n");
         out.push_str("}\n");
         // ---- dedup: remove consecutive duplicates. v1: i64

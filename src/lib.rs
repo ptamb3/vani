@@ -12795,6 +12795,98 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_map_typechecks_and_compiles() {
+        let source = r#"
+            pure fn double(x: i64) -> i64 { return x + x; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let ys: Vec<i64> = vec_map(ref xs, double);
+              return ys[2];
+            }
+        "#;
+        compile_to_c(source).expect("vec_map must type-check in C");
+        compile_to_llvm(source).expect("vec_map must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_fold_typechecks_and_compiles() {
+        let source = r#"
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              return vec_fold(ref xs, 0, add);
+            }
+        "#;
+        compile_to_c(source).expect("vec_fold must type-check in C");
+        compile_to_llvm(source).expect("vec_fold must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_map_accepts_inline_anon_fn() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let ys: Vec<i64> = vec_map(ref xs, fn(x: i64) -> i64 { return x * x; });
+              return ys[2];
+            }
+        "#;
+        compile_to_c(source).expect("vec_map + anon fn in C");
+        compile_to_llvm(source).expect("vec_map + anon fn in LLVM");
+    }
+
+    #[test]
+    fn vec_map_rejects_wrong_fn_signature() {
+        let source = r#"
+            pure fn bad(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let ys: Vec<i64> = vec_map(ref xs, bad);
+              return ys[0];
+            }
+        "#;
+        let errors = compile(source).expect_err("mapper arity mismatch must fail");
+        assert!(
+            errors.iter().any(|e| e.message.contains("vec_map mapper must be")),
+            "expected vec_map signature diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn vec_fold_rejects_wrong_combiner_signature() {
+        let source = r#"
+            pure fn bad(a: i64) -> i64 { return a; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              return vec_fold(ref xs, 0, bad);
+            }
+        "#;
+        let errors = compile(source).expect_err("combiner arity mismatch must fail");
+        assert!(
+            errors.iter().any(|e| e.message.contains("vec_fold combiner must be")),
+            "expected vec_fold signature diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn vec_map_emits_helper_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              let ys: Vec<i64> = vec_map(ref xs, fn(x: i64) -> i64 { return x + 1; });
+              return ys[0];
+            }
+        "#;
+        let c = compile_to_c(source).expect("vec_map program compiles");
+        assert!(
+            c.contains("__map(") && c.contains("__map_fn"),
+            "C output must include the __map helper + typedef; got snippet:\n{}",
+            &c[..c.len().min(800)]
+        );
+    }
+
+    #[test]
     fn anon_fn_binds_to_fn_ptr_local() {
         let source = r#"
             fn main() -> i64 {

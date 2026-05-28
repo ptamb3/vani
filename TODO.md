@@ -183,6 +183,17 @@ pointer (already in the language as of #279 FFI callbacks).
     Combinators are zero-allocation in v1 (loop-fused at
     monomorphization time), so no intermediate Vec materializes
     unless the user calls `.collect()`. Depends on #17.
+    *Phase 1 shipped 2026-05-28 (closure #309) — eager
+    `vec_map` / `vec_fold` on Vec<i64> via fn-ptr args.*
+    `vec_map(ref xs, f) -> Vec<i64>` materializes a fresh Vec;
+    `vec_fold(ref xs, init, g) -> i64` reduces. Both pair with
+    anonymous fn expressions (#308) or top-level fn-refs. 6
+    lib tests + `examples/iter_combinators.vani`. Pending: loop
+    fusion at monomorphization time (so chained
+    `vec_fold(ref vec_map(ref xs, f), 0, g)` doesn't allocate
+    intermediate Vec); `vec_filter`, `vec_take`, `vec_zip`,
+    `.collect()`; non-i64 element types; type-changing map
+    (`Vec<i64> -> Vec<Str>`); method-call sugar (`xs.map(f)`).
 19. **Vec.sort_by + Vec.find_by with closures** — ✅ AFFINE.
     Lifts the #1 / #3 `fn` pointer to closure once #17 is in.
 
@@ -519,7 +530,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #308 — Level 3 #1: anonymous fn expressions (lambda literals) without captured environment. New `ExprKind::AnonFn`; parser entry in `parse_primary_expr`; new `lambda_lift_program` pre-pass that hoists each `fn(...) -> R { body }` to a generated top-level `__anon_fn_<N>` and replaces the expression with `Var(name)` — existing fn-pointer infrastructure (FnRef + CallIndirect on both backends) handles indirect calls with zero new codegen. Outer-let references surface as `unknown variable` diagnostics (captures land in the next closure). 6 lib tests + `examples/anon_fn.vani` + parity runner entry. Next focal area: Level 3 #1 phase 2 — **closures with captured environment** (capture-by-value moves; capture-by-ref produces second-class closures). Then Level 3 #2 — `.map(f).filter(p).fold(init, g)` loop-fused iterator combinators. Then Level 3 #3 — sort_by / find_by lifted to closure. After Level 3 closes: Level 4 arena-based BST/AVL/B-tree/Trie/graphs + algorithms. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries + iteration via closures, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-28, after closure #309 — Level 3 #2 phase 1: eager iterator combinators on Vec<i64>. `vec_map(ref xs, f: fn(i64) -> i64) -> Vec<i64>` materializes a fresh result Vec; `vec_fold(ref xs, init, g: fn(i64, i64) -> i64) -> i64` reduces with a user-supplied combiner. Both pair naturally with closure #308's anon fn expressions and with top-level fn-refs. Tree-C helpers emit inside the Vec bundle; Tree-LLVM emits matching `define`s on `%intent_vec_i64`. SSA routes through tree backends. 6 lib tests + `examples/iter_combinators.vani`. Next focal area: **closures with captured environment** (Level 3 #1 phase 2) — capture-by-value moves the binding (affine), capture-by-ref produces second-class closures callable only within the captured ref's lifetime. Then Level 3 #2 phase 2: **loop fusion at monomorphization time** so `vec_fold(ref vec_map(ref xs, f), 0, g)` doesn't allocate an intermediate Vec. Then `vec_filter` / `.collect()` / `vec_zip` / `vec_take`; non-i64 element types; type-changing map; method-call sugar (`xs.map(f)`). After Level 3 closes: Level 4 arena-based BST/AVL/B-tree/Trie/graphs + algorithms. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries + iteration via closures, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

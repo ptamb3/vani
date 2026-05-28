@@ -857,6 +857,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "integers.vani",
         "interfaces.vani",
         "invariants.vani",
+        "iter_combinators.vani",
         "iterate.vani",
         "marathi_keywords.vani",
         "math_ops.vani",
