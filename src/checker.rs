@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -4259,7 +4259,8 @@ fn monomorphize_type_decls_in_program(
             // annotation. Closures #295 (find / binary_search)
             // + #298 (parse_int / parse_float).
             let needed_arg: Option<Type> = match name.as_str() {
-                "find" | "binary_search" | "parse_int" => Some(Type::I64),
+                "find" | "binary_search" | "parse_int"
+                | "heap_pop" | "heap_peek" => Some(Type::I64),
                 "parse_float" => Some(Type::F64),
                 _ => None,
             };
@@ -11982,6 +11983,11 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "heap_push" | "heap_pop" | "heap_peek" | "heapify" => {
+            return check_heap_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "clone" => return check_clone_builtin(args, env, signatures, span, diagnostics),
         "clone_at" => {
             return check_clone_at_builtin(args, env, signatures, span, diagnostics)
@@ -14261,6 +14267,149 @@ fn check_hash_builtin(
             args: typed_args,
         },
         Type::U64,
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 2 — BinaryHeap-on-Vec ops.
+/// v1 design: a `Vec<i64>` used as a min-heap. Dedicated
+/// `BinaryHeap<T>` wrapper type is a v2 ergonomic layer.
+///
+///   heap_push(mut ref xs: Vec<i64>, v: i64) -> i64
+///       — push v + sift-up; returns the new len
+///   heap_pop(mut ref xs: Vec<i64>) -> Option<i64>
+///       — extract min + sift-down (or None on empty)
+///   heap_peek(ref xs: Vec<i64>) -> Option<i64>
+///       — read the min (heap root) without modifying
+///   heapify(mut ref xs: Vec<i64>) -> i64
+///       — transform an arbitrary Vec into a valid min-heap
+///         via Floyd's O(n) bottom-up algorithm
+fn check_heap_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args = match name {
+        "heap_push" => 2,
+        _ => 1,
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}() expects {} argument{}, got {}",
+                name,
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        let ret_ty = if name == "heap_pop" || name == "heap_peek" {
+            Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+        } else {
+            Type::I64
+        };
+        return CheckedExpr::fallback(ret_ty, span);
+    }
+    let xs = check_expr(&args[0], env, signatures, diagnostics);
+    // heap_peek takes ref; the others take mut ref.
+    let element_type = match xs.ty() {
+        Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
+            Type::Vec(element) => (**element).clone(),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "{}() requires a `{}` argument, got {}",
+                        name,
+                        if name == "heap_peek" {
+                            "ref Vec<i64>"
+                        } else {
+                            "mut ref Vec<i64>"
+                        },
+                        xs.ty()
+                    ),
+                ));
+                let ret_ty = if name == "heap_pop" || name == "heap_peek" {
+                    Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+                } else {
+                    Type::I64
+                };
+                return CheckedExpr::fallback(ret_ty, span);
+            }
+        },
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "{}() requires a `{}` argument, got {}",
+                    name,
+                    if name == "heap_peek" {
+                        "ref Vec<i64>"
+                    } else {
+                        "mut ref Vec<i64>"
+                    },
+                    other
+                ),
+            ));
+            let ret_ty = if name == "heap_pop" || name == "heap_peek" {
+                Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+            } else {
+                Type::I64
+            };
+            return CheckedExpr::fallback(ret_ty, span);
+        }
+    };
+    // heap_push / heap_pop / heapify need mut ref; heap_peek
+    // accepts either ref or mut ref.
+    if name != "heap_peek" && !matches!(xs.ty(), Type::RefMut(_)) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() requires a `mut ref Vec<i64>` argument, got {}",
+                name,
+                xs.ty()
+            ),
+        ));
+    }
+    if !matches!(element_type, Type::I64) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() only supports `Vec<i64>` in v1, got Vec<{}>",
+                name, element_type
+            ),
+        ));
+    }
+    let mut typed_args = vec![xs.expr];
+    if name == "heap_push" {
+        let v_raw = check_expr(&args[1], env, signatures, diagnostics);
+        let v = coerce_checked(
+            v_raw,
+            &Type::I64,
+            args[1].span,
+            "heap_push value",
+            diagnostics,
+        );
+        typed_args.push(v.expr);
+    }
+    let ret_ty = match name {
+        "heap_pop" | "heap_peek" => {
+            Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+        }
+        _ => Type::I64,
+    };
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        ret_ty,
         None,
         span,
     )

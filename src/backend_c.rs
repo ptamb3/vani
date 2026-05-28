@@ -2075,6 +2075,82 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
 \n}}\n",
             sn = struct_name,
         ));
+        // Data-structures roadmap Level 2 — BinaryHeap-on-Vec.
+        // Min-heap with sift-up (push) / sift-down (pop) /
+        // Floyd O(n) heapify. v1 i64 element only.
+        // heap_push / sift_up / sift_down / heapify always
+        // emit; heap_pop / heap_peek gated on `Option__i64`
+        // being in the enum registry (forward-references
+        // `Enum_Option__i64` otherwise).
+        out.push_str(&format!(
+            "static INTENT_UNUSED void {sn}__heap_sift_up({sn}* xs, uint64_t i) {{\
+\n    while (i > 0) {{\
+\n        uint64_t p = (i - 1) / 2;\
+\n        if (xs->data[i] >= xs->data[p]) break;\
+\n        int64_t t = xs->data[i]; xs->data[i] = xs->data[p]; xs->data[p] = t;\
+\n        i = p;\
+\n    }}\
+\n}}\n\
+static INTENT_UNUSED void {sn}__heap_sift_down({sn}* xs, uint64_t i) {{\
+\n    uint64_t n = xs->len;\
+\n    while (1) {{\
+\n        uint64_t l = 2 * i + 1;\
+\n        uint64_t r = 2 * i + 2;\
+\n        uint64_t s = i;\
+\n        if (l < n && xs->data[l] < xs->data[s]) s = l;\
+\n        if (r < n && xs->data[r] < xs->data[s]) s = r;\
+\n        if (s == i) break;\
+\n        int64_t t = xs->data[i]; xs->data[i] = xs->data[s]; xs->data[s] = t;\
+\n        i = s;\
+\n    }}\
+\n}}\n\
+static INTENT_UNUSED int64_t {sn}__heap_push({sn}* xs, int64_t v) {{\
+\n    if (xs->len >= xs->capacity) {{\
+\n        xs->capacity = xs->capacity ? xs->capacity * 2 : 1;\
+\n        xs->data = (int64_t*)realloc(xs->data, xs->capacity * sizeof(int64_t));\
+\n        if (!xs->data) abort();\
+\n    }}\
+\n    xs->data[xs->len] = v;\
+\n    xs->len++;\
+\n    {sn}__heap_sift_up(xs, xs->len - 1);\
+\n    return (int64_t)xs->len;\
+\n}}\n\
+static INTENT_UNUSED int64_t {sn}__heapify({sn}* xs) {{\
+\n    if (xs->len < 2) return 0;\
+\n    for (int64_t i = (int64_t)(xs->len / 2) - 1; i >= 0; i--) {{\
+\n        {sn}__heap_sift_down(xs, (uint64_t)i);\
+\n    }}\
+\n    return 0;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        let has_option_i64_heap = ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        if has_option_i64_heap {
+            out.push_str(&format!(
+                "static INTENT_UNUSED {opt_name} {sn}__heap_pop({sn}* xs) {{\
+\n    {opt_name} r;\
+\n    if (xs->len == 0) {{ r.tag = 1; r.payload = 0; return r; }}\
+\n    int64_t top = xs->data[0];\
+\n    xs->len--;\
+\n    if (xs->len > 0) {{\
+\n        xs->data[0] = xs->data[xs->len];\
+\n        {sn}__heap_sift_down(xs, 0);\
+\n    }}\
+\n    r.tag = 0; r.payload = top;\
+\n    return r;\
+\n}}\n\
+static INTENT_UNUSED {opt_name} {sn}__heap_peek(const {sn}* xs) {{\
+\n    {opt_name} r;\
+\n    if (xs->len == 0) {{ r.tag = 1; r.payload = 0; return r; }}\
+\n    r.tag = 0; r.payload = xs->data[0];\
+\n    return r;\
+\n}}\n",
+                sn = struct_name,
+                opt_name = "Enum_Option__i64",
+            ));
+        }
     }
 
     // `__set(xs, i, v)`: store the new value at xs.data[i].
@@ -5261,6 +5337,26 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 s = emit_expr(&args[0]),
                 opt = opt_c,
             )
+        }
+        "heap_push" | "heap_pop" | "heap_peek" | "heapify" => {
+            let element = match args[0].ty.deref() {
+                Type::Vec(element) => element.clone(),
+                _ => unreachable!("heap_* requires Vec argument"),
+            };
+            if name == "heap_push" {
+                format!(
+                    "{}({}, ({}))",
+                    vec_helper(&element, "heap_push"),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1])
+                )
+            } else {
+                format!(
+                    "{}({})",
+                    vec_helper(&element, name),
+                    emit_expr(&args[0])
+                )
+            }
         }
         "hash_i64" => {
             format!("intent_hash_i64(({}))", emit_expr(&args[0]))

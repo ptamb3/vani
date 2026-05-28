@@ -845,6 +845,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "for_loops.vani",
         "generic_functions.vani",
         "hash.vani",
+        "heap.vani",
         "hindi_keywords.vani",
         "inline_call_proofs.vani",
         "integers.vani",

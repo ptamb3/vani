@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #301 — Hash builtins: hash_i64 / hash_str / hash_combine (FNV-1a); new hash.vani; 6 new lib tests. **Level 1 of the data-structures roadmap is now COMPLETE.** Next focal area: Level 2 — HashSet / HashMap / BTreeSet / BTreeMap / Deque / BinaryHeap.)
-**Test totals:** 1083 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 69 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #302 — Level 2 begins: BinaryHeap-on-Vec ops (heap_push / heap_pop / heap_peek / heapify) on Vec<i64>; new heap.vani; 6 new lib tests)
+**Test totals:** 1089 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 70 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,45 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 2 — BinaryHeap on Vec (shipped 2026-05-28, closure #302)
+
+✅ AFFINE — v1 design: a `Vec<i64>` plus four builtins gives a
+min-heap priority queue. A dedicated `BinaryHeap<T>` wrapper
+type stays queued as a v2 ergonomic layer.
+
+**API:**
+- `heap_push(mut ref xs: Vec<i64>, v: i64) -> i64` — sift-up;
+  returns the new length.
+- `heap_pop(mut ref xs: Vec<i64>) -> Option<i64>` — extract
+  min + sift-down (or None on empty).
+- `heap_peek(ref xs: Vec<i64>) -> Option<i64>` — view min
+  without modifying.
+- `heapify(mut ref xs: Vec<i64>) -> i64` — Floyd's O(n)
+  bottom-up algorithm; transforms an arbitrary Vec into a
+  valid min-heap.
+
+**Codegen:**
+- **Tree-C**: helpers emitted in `emit_vec_bundle` alongside
+  sort/dedup (i64-gated). `heap_pop` / `heap_peek` further
+  gated on Option__i64 in the enum-payload registry
+  (forward-reference protection).
+- **Tree-LLVM**: module-level `@intent_vec_i64__heap_*` defs
+  with internal `__heap_sift_up` / `__heap_sift_down` helpers.
+  Same Option__i64 gate.
+- **SSA**: routes through tree via `ssa_path_supports`.
+
+**v1 restrictions:**
+- Min-heap only (max-heap via inversion: push `-v`, pop and
+  negate; or use sort + reverse).
+- i64 element only.
+- Dedicated `BinaryHeap<T>` wrapper type deferred.
+
+**Tests:** 6 lib tests (push + pop + peek typecheck; heapify
+typecheck; rejects non-mut-ref; rejects non-i64 element; C
+emits the heap runtime; LLVM emits the helper defines). New
+`examples/heap.vani` covers push-then-drain, peek, empty pop,
+heapify-then-drain. Cross-backend parity green.
 
 ### Data-structures roadmap Level 1 — Hash builtins (shipped 2026-05-28, closure #301)
 

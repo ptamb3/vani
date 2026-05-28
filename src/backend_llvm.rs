@@ -5283,6 +5283,10 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "swap_remove"
                     | "insert"
                     | "clear"
+                    | "heap_push"
+                    | "heap_pop"
+                    | "heap_peek"
+                    | "heapify"
             ) {
                 let elt = vec_element_of_first_arg(args)
                     .expect("vec builtins take a Vec as the first arg");
@@ -7924,6 +7928,233 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
         out.push_str("dd_done:\n");
         out.push_str("  ret i64 %dd_len\n");
         out.push_str("}\n");
+        // ---- BinaryHeap-on-Vec (closure #302). Min-heap with
+        // sift-up (push), sift-down (pop), Floyd O(n) heapify.
+        // v1 i64 element; heap_pop / heap_peek return
+        // Option<i64> (gated on Option__i64 registry — see
+        // below).
+        let heap_push_name = format!("@intent_vec_{}__heap_push", tag);
+        let heap_peek_name = format!("@intent_vec_{}__heap_peek", tag);
+        let heap_pop_name = format!("@intent_vec_{}__heap_pop", tag);
+        let heapify_name = format!("@intent_vec_{}__heapify", tag);
+        let sift_up = format!("@intent_vec_{}__heap_sift_up", tag);
+        let sift_down = format!("@intent_vec_{}__heap_sift_down", tag);
+        // sift_up(data, i): while i > 0 { p = (i-1)/2; if data[i] >= data[p] break; swap; i=p; }
+        out.push_str(&format!(
+            "define internal void {su}(i64* %data, i64 %i_in) {{\n\
+             \x20 %i_p = alloca i64\n\
+             \x20 store i64 %i_in, i64* %i_p\n\
+             \x20 br label %su_loop\n\
+             su_loop:\n\
+             \x20 %i = load i64, i64* %i_p\n\
+             \x20 %is_root = icmp eq i64 %i, 0\n\
+             \x20 br i1 %is_root, label %su_done, label %su_body\n\
+             su_body:\n\
+             \x20 %i_m1 = sub i64 %i, 1\n\
+             \x20 %p = sdiv i64 %i_m1, 2\n\
+             \x20 %pi = getelementptr i64, i64* %data, i64 %i\n\
+             \x20 %pp = getelementptr i64, i64* %data, i64 %p\n\
+             \x20 %vi = load i64, i64* %pi\n\
+             \x20 %vp = load i64, i64* %pp\n\
+             \x20 %ge = icmp sge i64 %vi, %vp\n\
+             \x20 br i1 %ge, label %su_done, label %su_swap\n\
+             su_swap:\n\
+             \x20 store i64 %vp, i64* %pi\n\
+             \x20 store i64 %vi, i64* %pp\n\
+             \x20 store i64 %p, i64* %i_p\n\
+             \x20 br label %su_loop\n\
+             su_done:\n\
+             \x20 ret void\n\
+             }}\n",
+            su = sift_up,
+        ));
+        // sift_down(data, n, i): standard min-heap sift-down.
+        out.push_str(&format!(
+            "define internal void {sd}(i64* %data, i64 %n, i64 %i_in) {{\n\
+             \x20 %i_p = alloca i64\n\
+             \x20 store i64 %i_in, i64* %i_p\n\
+             \x20 br label %sd_loop\n\
+             sd_loop:\n\
+             \x20 %i = load i64, i64* %i_p\n\
+             \x20 %ix2 = mul i64 %i, 2\n\
+             \x20 %l = add i64 %ix2, 1\n\
+             \x20 %r = add i64 %ix2, 2\n\
+             \x20 %s_p = alloca i64\n\
+             \x20 store i64 %i, i64* %s_p\n\
+             \x20 %l_in = icmp slt i64 %l, %n\n\
+             \x20 br i1 %l_in, label %sd_check_l, label %sd_after_l\n\
+             sd_check_l:\n\
+             \x20 %pl = getelementptr i64, i64* %data, i64 %l\n\
+             \x20 %vl = load i64, i64* %pl\n\
+             \x20 %s_cur1 = load i64, i64* %s_p\n\
+             \x20 %ps1 = getelementptr i64, i64* %data, i64 %s_cur1\n\
+             \x20 %vs1 = load i64, i64* %ps1\n\
+             \x20 %l_lt = icmp slt i64 %vl, %vs1\n\
+             \x20 br i1 %l_lt, label %sd_set_l, label %sd_after_l\n\
+             sd_set_l:\n\
+             \x20 store i64 %l, i64* %s_p\n\
+             \x20 br label %sd_after_l\n\
+             sd_after_l:\n\
+             \x20 %r_in = icmp slt i64 %r, %n\n\
+             \x20 br i1 %r_in, label %sd_check_r, label %sd_after_r\n\
+             sd_check_r:\n\
+             \x20 %pr = getelementptr i64, i64* %data, i64 %r\n\
+             \x20 %vr = load i64, i64* %pr\n\
+             \x20 %s_cur2 = load i64, i64* %s_p\n\
+             \x20 %ps2 = getelementptr i64, i64* %data, i64 %s_cur2\n\
+             \x20 %vs2 = load i64, i64* %ps2\n\
+             \x20 %r_lt = icmp slt i64 %vr, %vs2\n\
+             \x20 br i1 %r_lt, label %sd_set_r, label %sd_after_r\n\
+             sd_set_r:\n\
+             \x20 store i64 %r, i64* %s_p\n\
+             \x20 br label %sd_after_r\n\
+             sd_after_r:\n\
+             \x20 %s_final = load i64, i64* %s_p\n\
+             \x20 %eq = icmp eq i64 %s_final, %i\n\
+             \x20 br i1 %eq, label %sd_done, label %sd_swap\n\
+             sd_swap:\n\
+             \x20 %pi = getelementptr i64, i64* %data, i64 %i\n\
+             \x20 %ps_f = getelementptr i64, i64* %data, i64 %s_final\n\
+             \x20 %vi = load i64, i64* %pi\n\
+             \x20 %vs_f = load i64, i64* %ps_f\n\
+             \x20 store i64 %vs_f, i64* %pi\n\
+             \x20 store i64 %vi, i64* %ps_f\n\
+             \x20 store i64 %s_final, i64* %i_p\n\
+             \x20 br label %sd_loop\n\
+             sd_done:\n\
+             \x20 ret void\n\
+             }}\n",
+            sd = sift_down,
+        ));
+        // heap_push(xs_p, v): grow if needed, append, sift_up.
+        out.push_str(&format!(
+            "define i64 {hp}({sty}* %xs_p, i64 %v) {{\n\
+             \x20 %data_pp = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n\
+             \x20 %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n\
+             \x20 %cap_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 2\n\
+             \x20 %len = load i64, i64* %len_p\n\
+             \x20 %cap = load i64, i64* %cap_p\n\
+             \x20 %need = icmp uge i64 %len, %cap\n\
+             \x20 br i1 %need, label %hp_grow, label %hp_store\n\
+             hp_grow:\n\
+             \x20 %cap_doubled = mul i64 %cap, 2\n\
+             \x20 %cap_zero = icmp eq i64 %cap, 0\n\
+             \x20 %new_cap = select i1 %cap_zero, i64 1, i64 %cap_doubled\n\
+             \x20 %new_bytes = mul i64 %new_cap, 8\n\
+             \x20 %old_data = load i64*, i64** %data_pp\n\
+             \x20 %old_i8 = bitcast i64* %old_data to i8*\n\
+             \x20 %new_i8 = call i8* @realloc(i8* %old_i8, i64 %new_bytes)\n\
+             \x20 %new_data = bitcast i8* %new_i8 to i64*\n\
+             \x20 store i64* %new_data, i64** %data_pp\n\
+             \x20 store i64 %new_cap, i64* %cap_p\n\
+             \x20 br label %hp_store\n\
+             hp_store:\n\
+             \x20 %data = load i64*, i64** %data_pp\n\
+             \x20 %slot = getelementptr i64, i64* %data, i64 %len\n\
+             \x20 store i64 %v, i64* %slot\n\
+             \x20 %new_len = add i64 %len, 1\n\
+             \x20 store i64 %new_len, i64* %len_p\n\
+             \x20 call void {su}(i64* %data, i64 %len)\n\
+             \x20 ret i64 %new_len\n\
+             }}\n",
+            hp = heap_push_name,
+            sty = s_ty,
+            su = sift_up,
+        ));
+        // heap_pop / heap_peek depend on %Enum_Option__i64.
+        // Gate on registry presence (mirror find/binary_search).
+        let option_i64_registered2 = LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        if option_i64_registered2 {
+            // heap_peek(xs_p) -> Option<i64>: read xs->data[0] or None.
+            out.push_str(&format!(
+                "define %Enum_Option__i64 {hpk}({sty}* %xs_p) {{\n\
+                 \x20 %data_pp = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n\
+                 \x20 %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n\
+                 \x20 %len = load i64, i64* %len_p\n\
+                 \x20 %empty = icmp eq i64 %len, 0\n\
+                 \x20 br i1 %empty, label %hpk_none, label %hpk_some\n\
+                 hpk_some:\n\
+                 \x20 %data = load i64*, i64** %data_pp\n\
+                 \x20 %top = load i64, i64* %data\n\
+                 \x20 %r1 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+                 \x20 %r2 = insertvalue %Enum_Option__i64 %r1, i64 %top, 1\n\
+                 \x20 ret %Enum_Option__i64 %r2\n\
+                 hpk_none:\n\
+                 \x20 %n1 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+                 \x20 %n2 = insertvalue %Enum_Option__i64 %n1, i64 0, 1\n\
+                 \x20 ret %Enum_Option__i64 %n2\n\
+                 }}\n",
+                hpk = heap_peek_name,
+                sty = s_ty,
+            ));
+            // heap_pop(xs_p) -> Option<i64>: extract min, sift down.
+            out.push_str(&format!(
+                "define %Enum_Option__i64 {hpop}({sty}* %xs_p) {{\n\
+                 \x20 %data_pp = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n\
+                 \x20 %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n\
+                 \x20 %len = load i64, i64* %len_p\n\
+                 \x20 %empty = icmp eq i64 %len, 0\n\
+                 \x20 br i1 %empty, label %hpop_none, label %hpop_some\n\
+                 hpop_some:\n\
+                 \x20 %data = load i64*, i64** %data_pp\n\
+                 \x20 %top = load i64, i64* %data\n\
+                 \x20 %new_len = sub i64 %len, 1\n\
+                 \x20 store i64 %new_len, i64* %len_p\n\
+                 \x20 %need_sift = icmp ne i64 %new_len, 0\n\
+                 \x20 br i1 %need_sift, label %hpop_sift, label %hpop_build\n\
+                 hpop_sift:\n\
+                 \x20 %tail = getelementptr i64, i64* %data, i64 %new_len\n\
+                 \x20 %tail_v = load i64, i64* %tail\n\
+                 \x20 store i64 %tail_v, i64* %data\n\
+                 \x20 call void {sd}(i64* %data, i64 %new_len, i64 0)\n\
+                 \x20 br label %hpop_build\n\
+                 hpop_build:\n\
+                 \x20 %r1 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+                 \x20 %r2 = insertvalue %Enum_Option__i64 %r1, i64 %top, 1\n\
+                 \x20 ret %Enum_Option__i64 %r2\n\
+                 hpop_none:\n\
+                 \x20 %n1 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+                 \x20 %n2 = insertvalue %Enum_Option__i64 %n1, i64 0, 1\n\
+                 \x20 ret %Enum_Option__i64 %n2\n\
+                 }}\n",
+                hpop = heap_pop_name,
+                sty = s_ty,
+                sd = sift_down,
+            ));
+        }
+        // heapify(xs_p): Floyd's O(n) — sift_down each internal node from len/2-1 down to 0.
+        out.push_str(&format!(
+            "define i64 {hf}({sty}* %xs_p) {{\n\
+             \x20 %data_pp = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n\
+             \x20 %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n\
+             \x20 %len = load i64, i64* %len_p\n\
+             \x20 %small = icmp slt i64 %len, 2\n\
+             \x20 br i1 %small, label %hf_done, label %hf_init\n\
+             hf_init:\n\
+             \x20 %data = load i64*, i64** %data_pp\n\
+             \x20 %half = sdiv i64 %len, 2\n\
+             \x20 %i0 = sub i64 %half, 1\n\
+             \x20 %i_p = alloca i64\n\
+             \x20 store i64 %i0, i64* %i_p\n\
+             \x20 br label %hf_loop\n\
+             hf_loop:\n\
+             \x20 %i = load i64, i64* %i_p\n\
+             \x20 %ge0 = icmp sge i64 %i, 0\n\
+             \x20 br i1 %ge0, label %hf_body, label %hf_done\n\
+             hf_body:\n\
+             \x20 call void {sd}(i64* %data, i64 %len, i64 %i)\n\
+             \x20 %i_dec = sub i64 %i, 1\n\
+             \x20 store i64 %i_dec, i64* %i_p\n\
+             \x20 br label %hf_loop\n\
+             hf_done:\n\
+             \x20 ret i64 0\n\
+             }}\n",
+            hf = heapify_name,
+            sty = s_ty,
+            sd = sift_down,
+        ));
         // ---- find / contains / binary_search. All read-only;
         // first arg is `intent_vec_i64*` (from `ref Vec<i64>`).
         // find / binary_search return `%Enum_Option__i64`

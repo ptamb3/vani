@@ -319,6 +319,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_str"
                 || name == "hash_combine"
+                || name == "heap_push" || name == "heap_pop"
+                || name == "heap_peek" || name == "heapify"
             {
                 return false;
             }

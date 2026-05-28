@@ -12482,6 +12482,124 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn heap_push_pop_peek_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let h: Vec<i64> = vec();
+              let _ = heap_push(mut ref h, 5);
+              let _ = heap_push(mut ref h, 1);
+              let _ = heap_push(mut ref h, 3);
+              let p: Option<i64> = heap_peek(ref h);
+              let _ = p;
+              let r: Option<i64> = heap_pop(mut ref h);
+              return match r {
+                Option.Some(v) then v,
+                Option.None then 0 - 1,
+              };
+            }
+        "#;
+        compile_to_c(source).expect("heap builtins must type-check");
+        compile_to_llvm(source).expect("heap builtins must compile to LLVM");
+    }
+
+    #[test]
+    fn heapify_typechecks_and_compiles() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(9, 4, 7, 1, 5);
+              let _ = heapify(mut ref xs);
+              return match heap_pop(mut ref xs) {
+                Option.Some(v) then v,
+                Option.None then 0 - 1,
+              };
+            }
+        "#;
+        compile_to_c(source).expect("heapify must type-check");
+        compile_to_llvm(source).expect("heapify must compile to LLVM");
+    }
+
+    #[test]
+    fn heap_push_rejects_non_mut_ref() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              let _ = heap_push(xs, 3);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("heap_push by-value must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref Vec<i64>")),
+            "expected mut-ref-Vec diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn heap_pop_rejects_non_i64_vec() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i32> = vec(1 as i32, 2 as i32);
+              let _: Option<i64> = heap_pop(mut ref xs);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("heap_pop on Vec<i32> must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("only supports `Vec<i64>` in v1")),
+            "expected v1-restriction diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn heap_emits_runtime_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let h: Vec<i64> = vec();
+              let _ = heap_push(mut ref h, 1);
+              let _: Option<i64> = heap_pop(mut ref h);
+              let _ = heapify(mut ref h);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("heap program compiles");
+        assert!(
+            c.contains("__heap_push")
+                && c.contains("__heap_pop")
+                && c.contains("__heap_sift_up")
+                && c.contains("__heap_sift_down")
+                && c.contains("__heapify"),
+            "C output must include the BinaryHeap runtime; got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn heap_emits_helpers_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let h: Vec<i64> = vec();
+              let _ = heap_push(mut ref h, 1);
+              let _: Option<i64> = heap_pop(mut ref h);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("heap LLVM compile");
+        assert!(
+            ll.contains("@intent_vec_i64__heap_push")
+                && ll.contains("@intent_vec_i64__heap_pop")
+                && ll.contains("@intent_vec_i64__heap_sift_up"),
+            "LLVM output must include the BinaryHeap defines; got snippet:\n{}",
+            &ll[..ll.len().min(800)]
+        );
+    }
+
+    #[test]
     fn hash_builtins_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {
