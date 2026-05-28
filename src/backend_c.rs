@@ -2484,8 +2484,42 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                     }
                 }
             }
+            Type::Array { element, length } => {
+                // Closure #291 Phase 3: arrays of non-Copy
+                // elements need per-slot drop at scope exit.
+                // For Copy element types nothing to do (no
+                // heap behind any slot).
+                if element.is_copy() {
+                    return;
+                }
+                let local = local_name(name);
+                for i in 0..*length {
+                    match element.as_ref() {
+                        Type::Vec(inner) => {
+                            out.push_str(&format!(
+                                "  {}({}[{}]);\n",
+                                vec_helper(inner, "free"),
+                                local, i
+                            ));
+                        }
+                        Type::OwnedStr => {
+                            out.push_str(&format!(
+                                "  free((void*){}[{}]);\n",
+                                local, i
+                            ));
+                        }
+                        _ => {
+                            // Future: struct / nested-array
+                            // slots need per-slot field walks.
+                            // For v1 we punt; the checker
+                            // accepts these but the codegen
+                            // leaks them. Track as Phase 4.
+                        }
+                    }
+                }
+            }
             _ => {
-                // Other affine types (Array, Task, Atomic,
+                // Other affine types (Task, Atomic,
                 // Channel, Mutex — all stack-allocated structs
                 // without heap-owned buffers) emit no runtime
                 // drop.

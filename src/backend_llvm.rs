@@ -4759,6 +4759,31 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     return v;
                 }
             }
+            // Closure #291 Phase 3: `len()` on a Vec
+            // rvalue (e.g. from `clone_at(ref xs, i)` where
+            // xs is `[Vec<T>; N]`). Spill the Vec value to
+            // an alloca, GEP to `.len`, load. Without this
+            // path, tree-LLVM fell through to the static
+            // `length` baked into Len { length } which is 0
+            // for Vec.
+            if let Type::Vec(element) = array.ty.deref() {
+                let s_ty = vec_struct_name(element);
+                let v = emit_expr(array, ctx, out);
+                let spill = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = alloca {}\n", spill, s_ty));
+                out.push_str(&format!(
+                    "  store {} {}, {}* {}\n",
+                    s_ty, v, s_ty, spill
+                ));
+                let p = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr {}, {}* {}, i64 0, i32 1\n",
+                    p, s_ty, s_ty, spill
+                ));
+                let r = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = load i64, i64* {}\n", r, p));
+                return r;
+            }
             format!("{}", length)
         }
         TypedExprKind::Ref { name } | TypedExprKind::RefMut { name } => {

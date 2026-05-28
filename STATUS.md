@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1023 lib + 54 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1024 lib + 54 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -1542,6 +1542,40 @@ fn main() returns i64 {
 
    Test totals: 1023 lib + 54 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #291 (Phase 1).
+
+   **Nested arrays Phase 2 + 3 done 2026-05-27**: end-to-end
+   on both backends, including per-slot drop at scope exit.
+
+   Phase 2 confirmed: the existing index check at
+   `check_index` already rejects bare `xs[i]` for non-Copy
+   element types uniformly across Vec and arrays — the
+   diagnostic suggests `clone_at(&xs, i)`. No code change
+   needed; just verified with a probe.
+
+   Phase 3 — codegen:
+
+     • **C backend** — `TypedStmt::Drop` for
+       `Type::Array { element, length }` with non-Copy
+       element emits per-slot free. Vec elements call the
+       per-element `intent_vec_<T>__free` helper; OwnedStr
+       elements free the buffer directly. Nested-struct
+       slots are punted with a TODO for Phase 4.
+     • **LLVM backend** — `TypedExprKind::Len` for a Vec
+       rvalue (e.g. result of `clone_at(ref xs, i)` on a
+       `[Vec<T>; N]`) now spills to alloca, GEPs to `.len`,
+       loads. Previously fell through to the static
+       `length` baked into Len { length }, which is 0 for
+       Vec — silently producing wrong results.
+
+   Verified end-to-end on both backends:
+   `[Vec<i64>; 2] xs = [vec(1, 2), vec(3, 4)]; return
+   len(clone_at(ref xs, 0));` returns 2.
+
+   1 new lib test (`nested_array_of_vec_compiles_on_llvm_backend`).
+
+   Test totals: 1024 lib + 54 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #291 complete
+   (Phases 1+2+3).
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

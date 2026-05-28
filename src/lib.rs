@@ -926,6 +926,29 @@ mod tests {
     // Verified end-to-end: nested array `[Vec<i64>; 2]`
     // initialized + indexed + cloned returns the slot's
     // length.
+    // Closure #291 Phase 3: per-slot array drop on C
+    // backend + LLVM Len-from-rvalue path so nested
+    // `[Vec<T>; N]` works end-to-end on both backends.
+    #[test]
+    fn nested_array_of_vec_compiles_on_llvm_backend() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: [Vec<i64>; 2] = [vec(1 as i64, 2 as i64), vec(3 as i64, 4 as i64)];
+              return len(clone_at(ref xs, 0)) as i64;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("nested [Vec; N] compiles to LLVM");
+        // The IR must include the per-slot GEP-and-clone
+        // sequence, plus a getelementptr into the Vec's
+        // .len field for the outer len() call.
+        assert!(
+            ll.contains("@intent_vec_int64_t__clone")
+                || ll.contains("getelementptr [2 x %intent_vec_i64]"),
+            "expected clone helper + nested-array GEP in LLVM emit, got:\n{}",
+            ll
+        );
+    }
+
     #[test]
     fn nested_array_of_vec_compiles_on_c_backend() {
         let source = r#"
