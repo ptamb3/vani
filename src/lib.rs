@@ -12870,6 +12870,75 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_method_sugar_map() {
+        let source = r#"
+            pure fn double(x: i64) -> i64 { return x + x; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let ys: Vec<i64> = xs.map(double);
+              return ys[2];
+            }
+        "#;
+        compile_to_c(source).expect("xs.map(f) sugar in C");
+        compile_to_llvm(source).expect("xs.map(f) sugar in LLVM");
+    }
+
+    #[test]
+    fn vec_method_sugar_filter() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              let ys: Vec<i64> = xs.filter(fn(x: i64) -> bool { return x > 1; });
+              return ys[0];
+            }
+        "#;
+        compile_to_c(source).expect("xs.filter(p) sugar in C");
+        compile_to_llvm(source).expect("xs.filter(p) sugar in LLVM");
+    }
+
+    #[test]
+    fn vec_method_sugar_fold() {
+        let source = r#"
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              return xs.fold(0, add);
+            }
+        "#;
+        compile_to_c(source).expect("xs.fold(init, g) sugar in C");
+        compile_to_llvm(source).expect("xs.fold(init, g) sugar in LLVM");
+    }
+
+    #[test]
+    fn vec_method_sugar_sort_by_uses_mut_ref() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(3, 1, 2);
+              xs.sort_by(fn(a: i64, b: i64) -> i64 { return a - b; });
+              return xs[0];
+            }
+        "#;
+        compile_to_c(source).expect("xs.sort_by(cmp) sugar in C");
+        compile_to_llvm(source).expect("xs.sort_by(cmp) sugar in LLVM");
+    }
+
+    #[test]
+    fn vec_method_sugar_chains_via_named_intermediates() {
+        let source = r#"
+            pure fn double(x: i64) -> i64 { return x + x; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4, 5);
+              let m: Vec<i64> = xs.map(double);
+              let f: Vec<i64> = m.filter(fn(x: i64) -> bool { return x > 4; });
+              return f.fold(0, add);
+            }
+        "#;
+        compile_to_c(source).expect("chained method sugar in C");
+        compile_to_llvm(source).expect("chained method sugar in LLVM");
+    }
+
+    #[test]
     fn vec_filter_typechecks_and_compiles() {
         let source = r#"
             pure fn is_even(x: i64) -> bool { return (x % 2) == 0; }

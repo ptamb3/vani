@@ -85,5 +85,23 @@ fn main() -> i64 {
   print "big_doubled len:", len(big_doubled);
   print "big_doubled sum:", vec_fold(ref big_doubled, 0, add);
 
+  // Method-call sugar (closure #311) — `xs.map(f)` rewrites
+  // to `vec_map(ref xs, f)`, etc. Same restriction as `ref`:
+  // receiver must be a named binding.
+  let ys: Vec<i64> = vec(10, 20, 30, 40);
+  let trd: Vec<i64> = ys.map(fn(x: i64) -> i64 { return x * 3; });
+  print "trd[0]:", trd[0];
+  print "trd[3]:", trd[3];
+  let big_y: Vec<i64> = ys.filter(fn(x: i64) -> bool { return x > 15; });
+  print "ys.filter(>15) len:", len(big_y);
+  print "ys.fold(0, add):", ys.fold(0, add);
+
+  // sort_by sugar — `ys.sort_by(cmp)` becomes
+  // `sort_by(mut ref ys, cmp)`.
+  let zs: Vec<i64> = vec(5, 2, 8, 1, 9, 3);
+  zs.sort_by(fn(a: i64, b: i64) -> i64 { return a - b; });
+  print "zs sorted[0]:", zs[0];
+  print "zs sorted[5]:", zs[5];
+
   return 0;
 }

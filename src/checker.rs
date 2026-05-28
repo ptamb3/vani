@@ -9255,6 +9255,71 @@ fn check_expr(
                     }
                 }
             }
+            // Closure #311 — Vec method-call sugar. `xs.map(f)`
+            // where `xs: Vec<T>` rewrites to `vec_map(ref xs, f)`;
+            // `xs.sort_by(cmp)` to `sort_by(mut ref xs, cmp)`,
+            // etc. The receiver must be a simple `Var` binding
+            // whose type (after stripping `ref` / `mut ref`) is
+            // `Vec<T>`. Non-Var receivers (`f().map(...)`) need
+            // an explicit named intermediate in v1 — same rule
+            // as `ref` borrowing only named places. Falls
+            // through to the generic method-dispatch logic
+            // when the method name isn't a Vec builtin.
+            if let ExprKind::Var(recv_name) = &receiver.kind {
+                let recv_ty_opt = env.lookup(recv_name).map(|i| i.ty.clone());
+                let is_vec = recv_ty_opt
+                    .as_ref()
+                    .map(|t| match t {
+                        Type::Vec(_) => true,
+                        Type::Ref(inner) | Type::RefMut(inner) => {
+                            matches!(**inner, Type::Vec(_))
+                        }
+                        _ => false,
+                    })
+                    .unwrap_or(false);
+                if is_vec {
+                    let (builtin_name, want_mut_ref): (&str, bool) =
+                        match method.as_str() {
+                            "map" => ("vec_map", false),
+                            "filter" => ("vec_filter", false),
+                            "fold" => ("vec_fold", false),
+                            "sort" => ("sort", true),
+                            "sort_by" => ("sort_by", true),
+                            _ => ("", false),
+                        };
+                    if !builtin_name.is_empty() {
+                        let recv_clone = (**receiver).clone();
+                        let borrow_kind = if want_mut_ref {
+                            ExprKind::RefMut {
+                                inner: Box::new(recv_clone),
+                            }
+                        } else {
+                            ExprKind::Ref {
+                                inner: Box::new(recv_clone),
+                            }
+                        };
+                        let receiver_borrow = Expr {
+                            kind: borrow_kind,
+                            span: receiver.span,
+                        };
+                        let mut new_args: Vec<Expr> = Vec::with_capacity(args.len() + 1);
+                        new_args.push(receiver_borrow);
+                        for a in args {
+                            new_args.push(a.clone());
+                        }
+                        return check_call(
+                            builtin_name,
+                            *method_span,
+                            &new_args,
+                            env,
+                            signatures,
+                            expr.span,
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+
             // Type-associated function call: `Type.fn(args)`
             // where `Type` is a declared struct/enum AND
             // `<Type>_<fn>` is in scope. This is the

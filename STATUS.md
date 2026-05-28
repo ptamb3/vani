@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #310 — Level 3 #2 phase 2: `vec_filter(ref xs, p: fn(i64) -> bool) -> Vec<i64>` completes the canonical eager combinator trio (map/filter/fold) on Vec<i64>. Two-pass implementation — count matches, then allocate-and-fill — so the output Vec has exactly the right size. Extended `examples/iter_combinators.vani` with a map → filter → fold pipeline; 4 new lib tests.)
-**Test totals:** 1135 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 77 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #311 — Level 3 method-call sugar for Vec combinators. `xs.map(f)` / `xs.filter(p)` / `xs.fold(init, g)` desugar to the existing `vec_map(ref xs, f)` / `vec_filter(ref xs, p)` / `vec_fold(ref xs, init, g)` builtins; `xs.sort_by(cmp)` and `xs.sort()` to the mut-ref variants. Pure checker-side desugar — zero backend changes. Receiver must be a named `Var` of `Vec<T>` (or `ref/mut ref Vec<T>`); non-Var receivers fall through to the existing user-method lookup. 5 new lib tests.)
+**Test totals:** 1140 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 77 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,52 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 3 — Vec method-call sugar (shipped 2026-05-28, closure #311)
+
+✅ AFFINE — pure surface-level desugar; no new runtime cost.
+
+A checker-only desugar pass converts method-call syntax on
+`Vec<T>` receivers to the equivalent builtin call:
+
+| Source                       | Desugared form                       |
+|------------------------------|--------------------------------------|
+| `xs.map(f)`                  | `vec_map(ref xs, f)`                 |
+| `xs.filter(p)`               | `vec_filter(ref xs, p)`              |
+| `xs.fold(init, g)`           | `vec_fold(ref xs, init, g)`          |
+| `xs.sort()`                  | `sort(mut ref xs)`                   |
+| `xs.sort_by(cmp)`            | `sort_by(mut ref xs, cmp)`           |
+
+**Restrictions:** the receiver must be a simple `Var` binding;
+a non-Var receiver (`f().map(...)`) keeps falling through to
+the existing user-method-dispatch path. The receiver's
+declared type must be `Vec<T>` (or borrowed `ref` / `mut ref`).
+Method-name matches fail-soft — if `xs.foo(...)` doesn't match
+any Vec builtin, the existing dispatch continues looking for a
+user-declared `methods on Vec` method (which, in v1, doesn't
+exist for Vec; the user gets the standard "no such method"
+diagnostic).
+
+**Implementation:** new arm in `check_expr`'s `MethodCall`
+handler that synthesizes a `Call` expression with a leading
+`ref` / `mut ref` of the receiver and re-enters `check_call`,
+where the existing builtin validators handle everything from
+arity to signature checking to codegen.
+
+**Codegen:** none — the desugared call goes through the existing
+builtin pipeline. Both backends emit identically to direct
+calls.
+
+**Tests:** 5 lib tests (map / filter / fold / sort_by / chained
+through named intermediates). `examples/iter_combinators.vani`
+extended to demonstrate the sugared API alongside the existing
+direct-call examples.
+
+**Pending follow-ups:** method-call sugar for other Vec
+builtins (push / pop / reverse / dedup / find / contains /
+binary_search); non-Var receivers via implicit temporary
+binding; method-call sugar for the affine container types
+(HashMap, BTreeMap, etc.); loop fusion across chains.
 
 ### Data-structures roadmap Level 3 — Iterator combinators on Vec<i64> (shipped 2026-05-28, closures #309 + #310)
 
