@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #303 — Level 2 #2: Deque<i64> new affine type — ring buffer with 8 builtins; new deque.vani; 7 new lib tests)
-**Test totals:** 1096 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 71 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #304 — Level 2 #3: HashSet<i64> open-addressing hash set with 4 builtins; new hashset.vani; 5 new lib tests)
+**Test totals:** 1101 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 72 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,55 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 2 — HashSet<i64> (shipped 2026-05-28, closure #304)
+
+✅ AFFINE — new affine handle type `HashSet<T>` (v1 i64 only).
+Heap-backed open-addressing hash set with linear probing.
+
+**Layout:** `{ keys: i64*, occ: u8*, len: u64, capacity: u64 }`.
+Empty(0) / occupied(1) slot tags via parallel u8 array. Grow
+doubles capacity at 50% load factor and rehashes. Hash via
+inlined FNV-1a (matches the `hash_i64` builtin's algorithm so
+external `hash_i64(k)` and internal bucket selection see the
+same values).
+
+**API (4 builtins):**
+- `hashset_new() -> HashSet<i64>` — empty
+- `hashset_insert(mut ref s, v: i64) -> bool` — true if newly
+  inserted, false if already present
+- `hashset_contains(ref s, v: i64) -> bool`
+- `hashset_len(ref s) -> i64`
+
+**Codegen:**
+- **Tree-C**: `intent_hashset_i64` struct + 7 helpers (inc.
+  internal `__hash_key`, `__insert_into`, `__grow`). Emitted
+  in body via the new `program_uses_i64_hashset` walker.
+- **Tree-LLVM**: `%intent_hashset_i64 = type { i64*, i8*, i64,
+  i64 }` typedef + module-level `define`s. Linear probing via
+  alloca-based index + capacity mask (capacity is always a
+  power of two from the grow doubling).
+- **SSA**: routes through tree.
+- **Drop**: both backends call `intent_hashset_i64_drop` at
+  scope exit, freeing both the keys and occ buffers.
+
+**v1 restrictions:**
+- i64 element only.
+- `hashset_remove` deferred (needs tombstone-and-rebuild or
+  backshift-deletion logic; queued as a follow-up).
+- No iteration builtin yet — will arrive with Level 3 closures.
+
+**Tests:** 5 lib tests (basics + LLVM compile; rejects non-mut-
+ref insert; `HashSet` name reserved against user structs; C
+runtime emitted; LLVM typedef + helpers emitted).
+`examples/hashset.vani` covers insert/contains/len, duplicate
+rejection, bulk insert triggering grow + rehash, and
+duplicate counting across overlapping ranges. Cross-backend
+parity green.
+
+**Pending follow-ups:** `hashset_remove`; wider element widths
+(`HashSet<Str>` next, then arbitrary `Hash + Eq` user types);
+iteration via Level 3 closures.
 
 ### Data-structures roadmap Level 2 — Deque<i64> (shipped 2026-05-28, closure #303)
 

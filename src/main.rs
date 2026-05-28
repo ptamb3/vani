@@ -326,6 +326,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "deque_pop_back" || name == "deque_pop_front"
                 || name == "deque_peek_back" || name == "deque_peek_front"
                 || name == "deque_len"
+                || name == "hashset_new" || name == "hashset_insert"
+                || name == "hashset_contains" || name == "hashset_len"
             {
                 return false;
             }

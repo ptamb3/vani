@@ -528,6 +528,12 @@ pub fn emit_c(program: &TypedProgram) -> String {
         });
         emit_intent_deque_helpers_c_body(&mut body, has_option_i64);
     }
+    // HashSet<i64> helpers: same body-position rationale as
+    // deque (no Option in v1, so no enum-typedef dependency,
+    // but keep alongside deque for consistency).
+    if program_uses_i64_hashset(program) {
+        emit_intent_hashset_helpers_c_body(&mut body);
+    }
 
     for function in &program.functions {
         emit_prototype(function, &mut body);
@@ -756,6 +762,133 @@ fn emit_intent_deque_helpers_c_body(out: &mut String, has_option_i64: bool) {
              }\n\n",
         );
     }
+}
+
+/// Walk the program for any `HashSet<i64>` type usage.
+pub(crate) fn program_uses_i64_hashset(program: &TypedProgram) -> bool {
+    fn ty_uses(ty: &Type) -> bool {
+        match ty {
+            Type::HashSet(element) if matches!(**element, Type::I64) => true,
+            Type::Vec(inner) | Type::Ref(inner) | Type::RefMut(inner) => ty_uses(inner),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if ty_uses(&f.return_type) {
+            return true;
+        }
+        for p in &f.params {
+            if ty_uses(&p.ty) {
+                return true;
+            }
+        }
+        for s in &f.body {
+            if stmt_uses_i64_hashset(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn stmt_uses_i64_hashset(stmt: &crate::ir::TypedStmt) -> bool {
+    use crate::ir::TypedStmt as S;
+    fn ty_uses(ty: &Type) -> bool {
+        matches!(ty, Type::HashSet(element) if matches!(**element, Type::I64))
+            || matches!(ty,
+                Type::Vec(i) | Type::Ref(i) | Type::RefMut(i) if ty_uses(i))
+    }
+    match stmt {
+        S::Let { ty, .. } | S::Reassign { ty, .. } | S::Drop { ty, .. } => ty_uses(ty),
+        S::If { then_body, else_body, .. } => {
+            then_body.iter().any(stmt_uses_i64_hashset)
+                || else_body.iter().any(stmt_uses_i64_hashset)
+        }
+        S::While { body, .. } | S::For { body, .. } | S::ForIter { body, .. } => {
+            body.iter().any(stmt_uses_i64_hashset)
+        }
+        _ => false,
+    }
+}
+
+/// Data-structures roadmap Level 2 — HashSet<i64> runtime
+/// helpers. Open-addressing linear probing with empty(0) /
+/// occupied(1) slot tags. Grow doubles capacity when load
+/// >= 50%. Hash via the existing intent_hash_i64. v1 i64
+/// only; hashset_remove deferred.
+fn emit_intent_hashset_helpers_c_body(out: &mut String) {
+    out.push_str(
+        "typedef struct { int64_t* keys; uint8_t* occ; uint64_t len; uint64_t capacity; } intent_hashset_i64;\n\
+         static INTENT_UNUSED uint64_t intent_hashset_i64__hash_key(int64_t k);\n\
+         static INTENT_UNUSED intent_hashset_i64 intent_hashset_i64_new(void) {\n\
+         \x20 intent_hashset_i64 s; s.keys = (int64_t*)0; s.occ = (uint8_t*)0; s.len = 0; s.capacity = 0; return s;\n\
+         }\n\
+         static INTENT_UNUSED void intent_hashset_i64_drop(intent_hashset_i64* s) {\n\
+         \x20 if (s->keys) free(s->keys);\n\
+         \x20 if (s->occ) free(s->occ);\n\
+         \x20 s->keys = (int64_t*)0; s->occ = (uint8_t*)0; s->len = 0; s->capacity = 0;\n\
+         }\n\
+         /* FNV-1a over the 8 bytes of an i64 — inline so we\n\
+         \x20  don't require intent_hash_i64 to be emitted. */\n\
+         static INTENT_UNUSED uint64_t intent_hashset_i64__hash_key(int64_t k) {\n\
+         \x20 uint64_t h = 0xcbf29ce484222325ULL;\n\
+         \x20 uint64_t u = (uint64_t)k;\n\
+         \x20 for (int i = 0; i < 8; i++) {\n\
+         \x20   h ^= (u >> (i * 8)) & 0xffULL;\n\
+         \x20   h *= 0x100000001b3ULL;\n\
+         \x20 }\n\
+         \x20 return h;\n\
+         }\n\
+         static INTENT_UNUSED void intent_hashset_i64__insert_into(intent_hashset_i64* s, int64_t k) {\n\
+         \x20 uint64_t mask = s->capacity - 1;\n\
+         \x20 uint64_t i = intent_hashset_i64__hash_key(k) & mask;\n\
+         \x20 while (s->occ[i] != 0) {\n\
+         \x20   if (s->keys[i] == k) return;\n\
+         \x20   i = (i + 1) & mask;\n\
+         \x20 }\n\
+         \x20 s->keys[i] = k; s->occ[i] = 1; s->len++;\n\
+         }\n\
+         static INTENT_UNUSED void intent_hashset_i64__grow(intent_hashset_i64* s) {\n\
+         \x20 uint64_t old_cap = s->capacity;\n\
+         \x20 int64_t* old_keys = s->keys;\n\
+         \x20 uint8_t* old_occ = s->occ;\n\
+         \x20 uint64_t new_cap = old_cap == 0 ? 8 : old_cap * 2;\n\
+         \x20 s->keys = (int64_t*)malloc(new_cap * sizeof(int64_t));\n\
+         \x20 s->occ = (uint8_t*)calloc(new_cap, 1);\n\
+         \x20 if (!s->keys || !s->occ) abort();\n\
+         \x20 s->len = 0;\n\
+         \x20 s->capacity = new_cap;\n\
+         \x20 for (uint64_t i = 0; i < old_cap; i++) {\n\
+         \x20   if (old_occ[i] == 1) intent_hashset_i64__insert_into(s, old_keys[i]);\n\
+         \x20 }\n\
+         \x20 if (old_keys) free(old_keys);\n\
+         \x20 if (old_occ) free(old_occ);\n\
+         }\n\
+         static INTENT_UNUSED bool intent_hashset_i64_insert(intent_hashset_i64* s, int64_t k) {\n\
+         \x20 if (s->capacity == 0 || (s->len * 2) >= s->capacity) intent_hashset_i64__grow(s);\n\
+         \x20 uint64_t mask = s->capacity - 1;\n\
+         \x20 uint64_t i = intent_hashset_i64__hash_key(k) & mask;\n\
+         \x20 while (s->occ[i] != 0) {\n\
+         \x20   if (s->keys[i] == k) return false; /* already present */\n\
+         \x20   i = (i + 1) & mask;\n\
+         \x20 }\n\
+         \x20 s->keys[i] = k; s->occ[i] = 1; s->len++;\n\
+         \x20 return true;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_hashset_i64_contains(const intent_hashset_i64* s, int64_t k) {\n\
+         \x20 if (s->capacity == 0) return false;\n\
+         \x20 uint64_t mask = s->capacity - 1;\n\
+         \x20 uint64_t i = intent_hashset_i64__hash_key(k) & mask;\n\
+         \x20 while (s->occ[i] != 0) {\n\
+         \x20   if (s->keys[i] == k) return true;\n\
+         \x20   i = (i + 1) & mask;\n\
+         \x20 }\n\
+         \x20 return false;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_hashset_i64_len(const intent_hashset_i64* s) {\n\
+         \x20 return (int64_t)s->len;\n\
+         }\n\n",
+    );
 }
 
 /// Data-structures roadmap Level 1 — FNV-1a hash helpers.
@@ -3106,6 +3239,11 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 // stack-allocated; only `data` lives on the
                 // heap.
                 out.push_str("  intent_deque_i64_drop(&");
+                out.push_str(&local_name(name));
+                out.push_str(");\n");
+            }
+            Type::HashSet(_) => {
+                out.push_str("  intent_hashset_i64_drop(&");
                 out.push_str(&local_name(name));
                 out.push_str(");\n");
             }
@@ -5490,6 +5628,21 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 opt = opt_c,
             )
         }
+        "hashset_new" => "intent_hashset_i64_new()".to_string(),
+        "hashset_insert" => format!(
+            "intent_hashset_i64_insert({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "hashset_contains" => format!(
+            "intent_hashset_i64_contains({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "hashset_len" => format!(
+            "intent_hashset_i64_len({})",
+            emit_expr(&args[0])
+        ),
         "deque_new" => "intent_deque_i64_new()".to_string(),
         "deque_push_back" => format!(
             "intent_deque_i64_push_back({}, ({}))",
@@ -6007,6 +6160,8 @@ pub(crate) fn c_leaf_type(ty: &Type) -> &'static str {
         // only; the type spelling is fixed at the i64 form
         // since c_leaf_type can't synthesize per-T strings.
         Type::Deque(_) => "intent_deque_i64",
+        // `HashSet<T>` — open-addressing hash set. v1 i64 only.
+        Type::HashSet(_) => "intent_hashset_i64",
         // `fn(T1, T2) -> R` has no fixed leaf spelling in C —
         // function-pointer types are declarator-shaped
         // (`R (*name)(T1, T2)`). Callers that need to emit a
@@ -6338,7 +6493,7 @@ fn divisor_helper(ty: &Type) -> &'static str {
         Type::U64 => "intent_check_u64_divisor",
         Type::F32 => "intent_check_f32_divisor",
         Type::F64 => "intent_check_f64_divisor",
-        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
+        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
             unreachable!("non-numeric type cannot be a divisor")
         }
     }
@@ -6370,6 +6525,7 @@ fn shift_helper(ty: &Type) -> &'static str {
         | Type::Guard(_)
         | Type::Condvar
         | Type::Deque(_)
+        | Type::HashSet(_)
         | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => unreachable!("shift count must be an integer"),
     }
 }

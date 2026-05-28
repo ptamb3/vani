@@ -1,0 +1,61 @@
+// build & run:
+//   intentc run examples/hashset.vani                          # LLVM backend
+//   intentc run examples/hashset.vani --backend=c              # C backend
+//   intentc build examples/hashset.vani -o /tmp/hashset && /tmp/hashset
+
+intent "HashSet<i64> — open-addressing hash set (Level 2 #3)";
+
+// v1 design: open-addressing linear probing with empty/occupied
+// slot tags. Grow doubles capacity at 50% load factor. The
+// hash function is FNV-1a (matching the hash_i64 builtin).
+// v1: T = i64 only; hashset_remove deferred (queued as a
+// follow-up since it needs tombstone-or-rebuild logic).
+//
+//   hashset_new() -> HashSet<i64>             empty
+//   hashset_insert(mut ref s, v) -> bool      true if newly inserted
+//   hashset_contains(ref s, v) -> bool
+//   hashset_len(ref s) -> i64
+//
+// Scope-exit Drop frees the keys + occupancy arrays.
+
+fn main() -> i64 {
+  let s: HashSet<i64> = hashset_new();
+
+  // Insert: first occurrence returns true, duplicates false.
+  let a: bool = hashset_insert(mut ref s, 5);
+  let b: bool = hashset_insert(mut ref s, 5);
+  let c: bool = hashset_insert(mut ref s, 7);
+  if a { print "5 inserted first time"; }
+  if !b { print "5 already there second time"; }
+  if c { print "7 inserted first time"; }
+
+  // Membership queries.
+  print "contains 5:", hashset_contains(ref s, 5);
+  print "contains 6:", hashset_contains(ref s, 6);
+  print "contains 7:", hashset_contains(ref s, 7);
+  print "len so far:", hashset_len(ref s);
+
+  // Bulk insert triggers grow + rehash.
+  let i: i64 = 0;
+  while i < 100 {
+    let _ = hashset_insert(mut ref s, i * 3);
+    i = i + 1;
+  }
+  print "after bulk insert len:", hashset_len(ref s);
+  print "contains 42 (= 14*3):", hashset_contains(ref s, 42);
+  print "contains 43:", hashset_contains(ref s, 43);
+  print "contains 297 (= 99*3):", hashset_contains(ref s, 297);
+
+  // Duplicates over a range that overlaps.
+  let dup_count: i64 = 0;
+  let j: i64 = 0;
+  while j < 30 {
+    if !hashset_insert(mut ref s, j) {
+      dup_count = dup_count + 1;
+    }
+    j = j + 1;
+  }
+  print "duplicates rejected when re-inserting 0..30:", dup_count;
+
+  return 0;
+}

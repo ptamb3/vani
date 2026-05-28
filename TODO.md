@@ -488,7 +488,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #303 — Level 2 #2: Deque<i64> new affine type (ring buffer) with 8 builtins + scope-exit Drop + 7 lib tests + new deque.vani parity example. Next focal area: Level 2 #3+ — HashSet<i64>, HashMap<i64, i64> (⚠️ AFFINE-TENSION when V is non-Copy — v1 Copy-only), BTreeSet, BTreeMap. SipHash, hash_f64, Hash interface (user struct keys), heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type all deferred.)
+## ⏳ Resume here (paused 2026-05-28, after closure #304 — Level 2 #3: HashSet<i64> open-addressing hash set with 4 builtins (new / insert / contains / len) + scope-exit Drop + 5 lib tests + new hashset.vani parity example. Next focal area: Level 2 #4+ — HashMap<i64, i64> (⚠️ AFFINE-TENSION when V is non-Copy — v1 Copy-only), BTreeSet<i64>, BTreeMap<i64, i64>. hashset_remove, SipHash, hash_f64, Hash interface (user struct keys), heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type all deferred.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

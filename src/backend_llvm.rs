@@ -251,6 +251,7 @@ fn llvm_byte_size(ty: &Type) -> u64 {
         Type::Task => 16, // pthread_t + ctx*
         Type::Condvar => 8, // pointer to heap-allocated cv state
         Type::Deque(_) => 32, // {data ptr, front, len, capacity}
+        Type::HashSet(_) => 32, // {keys ptr, occupied ptr, len, capacity}
         Type::Object(_) => 16, // fat pointer: vtable + data
         Type::Vec(_) => 24, // {data, len, cap} on 64-bit
         Type::Array { element, length } => llvm_byte_size(element) * length,
@@ -460,6 +461,7 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare i32 @putchar(i32)\n");
     out.push_str("declare void @abort() noreturn\n");
     out.push_str("declare i8* @malloc(i64)\n");
+    out.push_str("declare i8* @calloc(i64, i64)\n");
     out.push_str("declare void @free(i8*)\n");
     out.push_str("declare i8* @realloc(i8*, i64)\n");
     out.push_str("declare i8* @memcpy(i8*, i8*, i64)\n");
@@ -619,7 +621,9 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // seq + futex-wake; wait snapshots seq + futex-waits.
     out.push_str("%intent_condvar = type { i32 }\n");
     // Deque<i64> (closure #303): { data*, front, len, cap }.
-    out.push_str("%intent_deque_i64 = type { i64*, i64, i64, i64 }\n\n");
+    out.push_str("%intent_deque_i64 = type { i64*, i64, i64, i64 }\n");
+    // HashSet<i64> (closure #304): { keys*, occ*, len, cap }.
+    out.push_str("%intent_hashset_i64 = type { i64*, i8*, i64, i64 }\n\n");
 
     emit_intent_str_concat_definition(&mut out);
 
@@ -819,6 +823,11 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
             r.borrow().contains_key("Option__i64")
         });
         emit_intent_deque_i64_helpers_llvm(&mut out, has_option_i64);
+    }
+
+    // HashSet<i64> helpers (closure #304). Gated on actual use.
+    if crate::backend_c::program_uses_i64_hashset(program) {
+        emit_intent_hashset_i64_helpers_llvm(&mut out);
     }
 
     for function in &program.functions {
@@ -1497,6 +1506,15 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 if let Some((_, addr)) = ctx.locals.get(name).cloned() {
                     out.push_str(&format!(
                         "  call void @intent_deque_i64_drop(%intent_deque_i64* {})\n",
+                        addr
+                    ));
+                }
+                return;
+            }
+            if matches!(ty, Type::HashSet(_)) {
+                if let Some((_, addr)) = ctx.locals.get(name).cloned() {
+                    out.push_str(&format!(
+                        "  call void @intent_hashset_i64_drop(%intent_hashset_i64* {})\n",
                         addr
                     ));
                 }
@@ -4857,6 +4875,36 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
                 return dest;
             }
+            // HashSet<i64> builtins (closure #304). Call
+            // outlined helpers emitted at module scope.
+            if name == "hashset_new" {
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_hashset_i64 @intent_hashset_i64_new()\n",
+                    dest
+                ));
+                return dest;
+            }
+            if name == "hashset_insert" || name == "hashset_contains" {
+                let s = emit_expr(&args[0], ctx, out);
+                let v = emit_expr(&args[1], ctx, out);
+                let op = name.strip_prefix("hashset_").unwrap();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i1 @intent_hashset_i64_{}(%intent_hashset_i64* {}, i64 {})\n",
+                    dest, op, s, v
+                ));
+                return dest;
+            }
+            if name == "hashset_len" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hashset_i64_len(%intent_hashset_i64* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
             // Deque<i64> builtins (closure #303). Call
             // outlined helpers emitted at module scope.
             if name == "deque_new" {
@@ -7162,6 +7210,264 @@ fn emit_intent_hash_helpers_llvm(out: &mut String) {
          \x20 %sum2 = add i64 %sum, %sh_r\n\
          \x20 %r = xor i64 %a, %sum2\n\
          \x20 ret i64 %r\n\
+         }\n\n",
+    );
+}
+
+/// Data-structures roadmap Level 2 — HashSet<i64> runtime
+/// helpers. Open-addressing linear probing with empty(0) /
+/// occupied(1) tags. Grow doubles capacity at 50% load.
+/// v1 i64 only; hashset_remove deferred.
+fn emit_intent_hashset_i64_helpers_llvm(out: &mut String) {
+    out.push_str(
+        "define %intent_hashset_i64 @intent_hashset_i64_new() {\n\
+         \x20 %r0 = insertvalue %intent_hashset_i64 undef, i64* null, 0\n\
+         \x20 %r1 = insertvalue %intent_hashset_i64 %r0, i8* null, 1\n\
+         \x20 %r2 = insertvalue %intent_hashset_i64 %r1, i64 0, 2\n\
+         \x20 %r3 = insertvalue %intent_hashset_i64 %r2, i64 0, 3\n\
+         \x20 ret %intent_hashset_i64 %r3\n\
+         }\n\
+         define void @intent_hashset_i64_drop(%intent_hashset_i64* %s) {\n\
+         \x20 %kpp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 0\n\
+         \x20 %opp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 1\n\
+         \x20 %keys = load i64*, i64** %kpp\n\
+         \x20 %occ = load i8*, i8** %opp\n\
+         \x20 %k_null = icmp eq i64* %keys, null\n\
+         \x20 br i1 %k_null, label %drop_check_occ, label %drop_free_k\n\
+         drop_free_k:\n\
+         \x20 %k_i8 = bitcast i64* %keys to i8*\n\
+         \x20 call void @free(i8* %k_i8)\n\
+         \x20 br label %drop_check_occ\n\
+         drop_check_occ:\n\
+         \x20 %o_null = icmp eq i8* %occ, null\n\
+         \x20 br i1 %o_null, label %drop_done, label %drop_free_o\n\
+         drop_free_o:\n\
+         \x20 call void @free(i8* %occ)\n\
+         \x20 br label %drop_done\n\
+         drop_done:\n\
+         \x20 store i64* null, i64** %kpp\n\
+         \x20 store i8* null, i8** %opp\n\
+         \x20 %lp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 2\n\
+         \x20 store i64 0, i64* %lp\n\
+         \x20 %cp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 3\n\
+         \x20 store i64 0, i64* %cp\n\
+         \x20 ret void\n\
+         }\n\
+         define internal i64 @intent_hashset_i64__hash_key(i64 %k) {\n\
+         \x20 %h_p = alloca i64\n\
+         \x20 store i64 -3750763034362895579, i64* %h_p\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 store i64 0, i64* %i_p\n\
+         \x20 br label %hk_loop\n\
+         hk_loop:\n\
+         \x20 %i = load i64, i64* %i_p\n\
+         \x20 %cont = icmp slt i64 %i, 8\n\
+         \x20 br i1 %cont, label %hk_body, label %hk_done\n\
+         hk_body:\n\
+         \x20 %sh = mul i64 %i, 8\n\
+         \x20 %shifted = lshr i64 %k, %sh\n\
+         \x20 %b = and i64 %shifted, 255\n\
+         \x20 %h = load i64, i64* %h_p\n\
+         \x20 %hx = xor i64 %h, %b\n\
+         \x20 %hp = mul i64 %hx, 1099511628211\n\
+         \x20 store i64 %hp, i64* %h_p\n\
+         \x20 %i_n = add i64 %i, 1\n\
+         \x20 store i64 %i_n, i64* %i_p\n\
+         \x20 br label %hk_loop\n\
+         hk_done:\n\
+         \x20 %final = load i64, i64* %h_p\n\
+         \x20 ret i64 %final\n\
+         }\n\
+         define internal void @intent_hashset_i64__insert_raw(%intent_hashset_i64* %s, i64 %k) {\n\
+         \x20 %kpp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 0\n\
+         \x20 %opp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 1\n\
+         \x20 %lp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 2\n\
+         \x20 %cp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 3\n\
+         \x20 %keys = load i64*, i64** %kpp\n\
+         \x20 %occ = load i8*, i8** %opp\n\
+         \x20 %cap = load i64, i64* %cp\n\
+         \x20 %mask = sub i64 %cap, 1\n\
+         \x20 %h = call i64 @intent_hashset_i64__hash_key(i64 %k)\n\
+         \x20 %i0 = and i64 %h, %mask\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 store i64 %i0, i64* %i_p\n\
+         \x20 br label %ir_loop\n\
+         ir_loop:\n\
+         \x20 %i = load i64, i64* %i_p\n\
+         \x20 %ocell = getelementptr i8, i8* %occ, i64 %i\n\
+         \x20 %oval = load i8, i8* %ocell\n\
+         \x20 %is_empty = icmp eq i8 %oval, 0\n\
+         \x20 br i1 %is_empty, label %ir_store, label %ir_check_eq\n\
+         ir_check_eq:\n\
+         \x20 %kcell = getelementptr i64, i64* %keys, i64 %i\n\
+         \x20 %kv = load i64, i64* %kcell\n\
+         \x20 %eq = icmp eq i64 %kv, %k\n\
+         \x20 br i1 %eq, label %ir_done, label %ir_next\n\
+         ir_next:\n\
+         \x20 %i_p1 = add i64 %i, 1\n\
+         \x20 %i_n = and i64 %i_p1, %mask\n\
+         \x20 store i64 %i_n, i64* %i_p\n\
+         \x20 br label %ir_loop\n\
+         ir_store:\n\
+         \x20 %kcell2 = getelementptr i64, i64* %keys, i64 %i\n\
+         \x20 store i64 %k, i64* %kcell2\n\
+         \x20 store i8 1, i8* %ocell\n\
+         \x20 %len = load i64, i64* %lp\n\
+         \x20 %new_len = add i64 %len, 1\n\
+         \x20 store i64 %new_len, i64* %lp\n\
+         \x20 br label %ir_done\n\
+         ir_done:\n\
+         \x20 ret void\n\
+         }\n\
+         define internal void @intent_hashset_i64__grow(%intent_hashset_i64* %s) {\n\
+         \x20 %kpp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 0\n\
+         \x20 %opp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 1\n\
+         \x20 %lp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 2\n\
+         \x20 %cp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 3\n\
+         \x20 %old_keys = load i64*, i64** %kpp\n\
+         \x20 %old_occ = load i8*, i8** %opp\n\
+         \x20 %old_cap = load i64, i64* %cp\n\
+         \x20 %cap_zero = icmp eq i64 %old_cap, 0\n\
+         \x20 %cap_doubled = mul i64 %old_cap, 2\n\
+         \x20 %new_cap = select i1 %cap_zero, i64 8, i64 %cap_doubled\n\
+         \x20 %nbytes_k = mul i64 %new_cap, 8\n\
+         \x20 %nk_i8 = call i8* @malloc(i64 %nbytes_k)\n\
+         \x20 %new_keys = bitcast i8* %nk_i8 to i64*\n\
+         \x20 %new_occ = call i8* @calloc(i64 %new_cap, i64 1)\n\
+         \x20 store i64* %new_keys, i64** %kpp\n\
+         \x20 store i8* %new_occ, i8** %opp\n\
+         \x20 store i64 0, i64* %lp\n\
+         \x20 store i64 %new_cap, i64* %cp\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 store i64 0, i64* %i_p\n\
+         \x20 br label %g_loop\n\
+         g_loop:\n\
+         \x20 %i = load i64, i64* %i_p\n\
+         \x20 %cont = icmp slt i64 %i, %old_cap\n\
+         \x20 br i1 %cont, label %g_body, label %g_done\n\
+         g_body:\n\
+         \x20 %ocell = getelementptr i8, i8* %old_occ, i64 %i\n\
+         \x20 %oval = load i8, i8* %ocell\n\
+         \x20 %is_occ = icmp eq i8 %oval, 1\n\
+         \x20 br i1 %is_occ, label %g_reinsert, label %g_next\n\
+         g_reinsert:\n\
+         \x20 %kcell = getelementptr i64, i64* %old_keys, i64 %i\n\
+         \x20 %kv = load i64, i64* %kcell\n\
+         \x20 call void @intent_hashset_i64__insert_raw(%intent_hashset_i64* %s, i64 %kv)\n\
+         \x20 br label %g_next\n\
+         g_next:\n\
+         \x20 %i_n = add i64 %i, 1\n\
+         \x20 store i64 %i_n, i64* %i_p\n\
+         \x20 br label %g_loop\n\
+         g_done:\n\
+         \x20 %ok_null = icmp eq i64* %old_keys, null\n\
+         \x20 br i1 %ok_null, label %g_free_occ, label %g_free_keys\n\
+         g_free_keys:\n\
+         \x20 %ok_i8 = bitcast i64* %old_keys to i8*\n\
+         \x20 call void @free(i8* %ok_i8)\n\
+         \x20 br label %g_free_occ\n\
+         g_free_occ:\n\
+         \x20 %oo_null = icmp eq i8* %old_occ, null\n\
+         \x20 br i1 %oo_null, label %g_ret, label %g_free_o\n\
+         g_free_o:\n\
+         \x20 call void @free(i8* %old_occ)\n\
+         \x20 br label %g_ret\n\
+         g_ret:\n\
+         \x20 ret void\n\
+         }\n\
+         define i1 @intent_hashset_i64_insert(%intent_hashset_i64* %s, i64 %k) {\n\
+         \x20 %cp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 3\n\
+         \x20 %lp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 2\n\
+         \x20 %cap = load i64, i64* %cp\n\
+         \x20 %len = load i64, i64* %lp\n\
+         \x20 %cap_zero = icmp eq i64 %cap, 0\n\
+         \x20 %len2 = mul i64 %len, 2\n\
+         \x20 %need_grow_load = icmp uge i64 %len2, %cap\n\
+         \x20 %need = or i1 %cap_zero, %need_grow_load\n\
+         \x20 br i1 %need, label %ins_grow, label %ins_probe\n\
+         ins_grow:\n\
+         \x20 call void @intent_hashset_i64__grow(%intent_hashset_i64* %s)\n\
+         \x20 br label %ins_probe\n\
+         ins_probe:\n\
+         \x20 %kpp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 0\n\
+         \x20 %opp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 1\n\
+         \x20 %cap2 = load i64, i64* %cp\n\
+         \x20 %mask = sub i64 %cap2, 1\n\
+         \x20 %keys = load i64*, i64** %kpp\n\
+         \x20 %occ = load i8*, i8** %opp\n\
+         \x20 %h = call i64 @intent_hashset_i64__hash_key(i64 %k)\n\
+         \x20 %i0 = and i64 %h, %mask\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 store i64 %i0, i64* %i_p\n\
+         \x20 br label %ins_loop\n\
+         ins_loop:\n\
+         \x20 %i = load i64, i64* %i_p\n\
+         \x20 %ocell = getelementptr i8, i8* %occ, i64 %i\n\
+         \x20 %oval = load i8, i8* %ocell\n\
+         \x20 %is_empty = icmp eq i8 %oval, 0\n\
+         \x20 br i1 %is_empty, label %ins_store, label %ins_check_eq\n\
+         ins_check_eq:\n\
+         \x20 %kcell = getelementptr i64, i64* %keys, i64 %i\n\
+         \x20 %kv = load i64, i64* %kcell\n\
+         \x20 %eq = icmp eq i64 %kv, %k\n\
+         \x20 br i1 %eq, label %ins_exists, label %ins_next\n\
+         ins_next:\n\
+         \x20 %i_p1 = add i64 %i, 1\n\
+         \x20 %i_n = and i64 %i_p1, %mask\n\
+         \x20 store i64 %i_n, i64* %i_p\n\
+         \x20 br label %ins_loop\n\
+         ins_store:\n\
+         \x20 %kcell2 = getelementptr i64, i64* %keys, i64 %i\n\
+         \x20 store i64 %k, i64* %kcell2\n\
+         \x20 store i8 1, i8* %ocell\n\
+         \x20 %old_len = load i64, i64* %lp\n\
+         \x20 %nl = add i64 %old_len, 1\n\
+         \x20 store i64 %nl, i64* %lp\n\
+         \x20 ret i1 true\n\
+         ins_exists:\n\
+         \x20 ret i1 false\n\
+         }\n\
+         define i1 @intent_hashset_i64_contains(%intent_hashset_i64* %s, i64 %k) {\n\
+         \x20 %cp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 3\n\
+         \x20 %cap = load i64, i64* %cp\n\
+         \x20 %is_zero = icmp eq i64 %cap, 0\n\
+         \x20 br i1 %is_zero, label %c_no, label %c_probe\n\
+         c_probe:\n\
+         \x20 %kpp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 0\n\
+         \x20 %opp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 1\n\
+         \x20 %mask = sub i64 %cap, 1\n\
+         \x20 %keys = load i64*, i64** %kpp\n\
+         \x20 %occ = load i8*, i8** %opp\n\
+         \x20 %h = call i64 @intent_hashset_i64__hash_key(i64 %k)\n\
+         \x20 %i0 = and i64 %h, %mask\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 store i64 %i0, i64* %i_p\n\
+         \x20 br label %c_loop\n\
+         c_loop:\n\
+         \x20 %i = load i64, i64* %i_p\n\
+         \x20 %ocell = getelementptr i8, i8* %occ, i64 %i\n\
+         \x20 %oval = load i8, i8* %ocell\n\
+         \x20 %empty = icmp eq i8 %oval, 0\n\
+         \x20 br i1 %empty, label %c_no, label %c_check\n\
+         c_check:\n\
+         \x20 %kcell = getelementptr i64, i64* %keys, i64 %i\n\
+         \x20 %kv = load i64, i64* %kcell\n\
+         \x20 %eq = icmp eq i64 %kv, %k\n\
+         \x20 br i1 %eq, label %c_yes, label %c_next\n\
+         c_next:\n\
+         \x20 %i_p1 = add i64 %i, 1\n\
+         \x20 %i_n = and i64 %i_p1, %mask\n\
+         \x20 store i64 %i_n, i64* %i_p\n\
+         \x20 br label %c_loop\n\
+         c_yes:\n\
+         \x20 ret i1 true\n\
+         c_no:\n\
+         \x20 ret i1 false\n\
+         }\n\
+         define i64 @intent_hashset_i64_len(%intent_hashset_i64* %s) {\n\
+         \x20 %lp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 2\n\
+         \x20 %len = load i64, i64* %lp\n\
+         \x20 ret i64 %len\n\
          }\n\n",
     );
 }
@@ -11027,7 +11333,7 @@ fn is_scalar(ty: &Type) -> bool {
         // <ty> <v>, <ty>* …` work uniformly. The builtins
         // (channel_new, mutex_new, mutex_lock) return SSA
         // values of these struct types.
-        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_))
+        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_))
         // Function pointers are pointer-sized scalars. The
         // alloca holds a single value of fn-ptr type (the
         // load returns a function-pointer SSA value the
@@ -11078,6 +11384,7 @@ pub(crate) fn llvm_type(ty: &Type) -> &'static str {
         Type::Guard(_) => "%intent_guard_i64",
         Type::Condvar => "%intent_condvar",
         Type::Deque(_) => "%intent_deque_i64",
+        Type::HashSet(_) => "%intent_hashset_i64",
         // Enums lower to a 32-bit tag — see `llvm_type_string`
         // for the same. T1.3.
         Type::Enum(_) => "i32",
