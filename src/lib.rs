@@ -12956,6 +12956,69 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_map_fold_typechecks_and_compiles() {
+        let source = r#"
+            pure fn sq(x: i64) -> i64 { return x * x; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              return vec_map_fold(ref xs, 0, sq, add);
+            }
+        "#;
+        compile_to_c(source).expect("vec_map_fold in C");
+        compile_to_llvm(source).expect("vec_map_fold in LLVM");
+    }
+
+    #[test]
+    fn vec_map_fold_method_sugar() {
+        let source = r#"
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              return xs.map_fold(0, fn(x: i64) -> i64 { return x * x; }, add);
+            }
+        "#;
+        compile_to_c(source).expect("xs.map_fold sugar in C");
+        compile_to_llvm(source).expect("xs.map_fold sugar in LLVM");
+    }
+
+    #[test]
+    fn vec_map_fold_rejects_wrong_mapper_signature() {
+        let source = r#"
+            pure fn bad(a: i64, b: i64) -> i64 { return a + b; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              return vec_map_fold(ref xs, 0, bad, add);
+            }
+        "#;
+        let errors = compile(source).expect_err("mapper arity mismatch must fail");
+        assert!(
+            errors.iter().any(|e| e.message.contains("vec_map_fold mapper must be")),
+            "expected vec_map_fold signature diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn vec_map_fold_emits_helper_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              return vec_map_fold(ref xs, 0,
+                fn(x: i64) -> i64 { return x; },
+                fn(a: i64, b: i64) -> i64 { return a + b; });
+            }
+        "#;
+        let c = compile_to_c(source).expect("vec_map_fold program compiles");
+        assert!(
+            c.contains("__map_fold("),
+            "C output must include the __map_fold helper; got snippet:\n{}",
+            &c[..c.len().min(800)]
+        );
+    }
+
+    #[test]
     fn vec_take_typechecks_and_compiles() {
         let source = r#"
             fn main() -> i64 {

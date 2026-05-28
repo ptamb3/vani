@@ -2778,6 +2778,20 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
 \n}}\n",
             sn = struct_name,
         ));
+        // vec_map_fold (closure #316): fused map-then-fold,
+        // single pass, no intermediate Vec allocation.
+        // Signature `int64_t (*)(int64_t)` for the mapper +
+        // existing `__cmp_fn` for the combiner.
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__map_fold(const {sn}* xs, int64_t init, {sn}__map_fn f, {sn}__cmp_fn g) {{\
+\n    int64_t acc = init;\
+\n    for (uint64_t i = 0; i < xs->len; i++) {{\
+\n        acc = g(acc, f(xs->data[i]));\
+\n    }}\
+\n    return acc;\
+\n}}\n",
+            sn = struct_name,
+        ));
         // vec_take / vec_drop (closure #313): eager slicing.
         // take returns the first min(n, len) elements; drop
         // returns the rest. Negative n clamps to 0. The result
@@ -6053,6 +6067,21 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                     emit_expr(&args[1])
                 ),
                 _ => unreachable!("{}() arg 0 must be ref Vec<i64>", name),
+            }
+        }
+        "vec_map_fold" => {
+            // vec_map_fold (closure #316): fused map+fold,
+            // no intermediate Vec. args = ref xs, init, f, g.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, ({}), {}, {})",
+                    vec_helper(element, "map_fold"),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1]),
+                    emit_expr(&args[2]),
+                    emit_expr(&args[3])
+                ),
+                _ => unreachable!("vec_map_fold() arg 0 must be ref Vec<i64>"),
             }
         }
         "vec_fold" => {

@@ -338,7 +338,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "btreemap_get" || name == "btreemap_contains_key"
                 || name == "btreemap_remove" || name == "btreemap_len"
                 || name == "vec_map" || name == "vec_fold" || name == "vec_filter"
-                || name == "vec_take" || name == "vec_drop"
+                || name == "vec_take" || name == "vec_drop" || name == "vec_map_fold"
             {
                 return false;
             }

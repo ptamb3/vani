@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #315 — Level 3 #1 phase 2 follow-up: nested closures inside `if`/`while`/`for`/`ForIter`/`TaskSpawn` bodies. The lambda-lift pre-pass now recurses through nested block statements looking for `let f = fn(...) -> R { ... }` patterns. The closure-handle map propagates down into nested scopes, so a closure declared in an outer scope is callable from an inner scope; captures of outer-let bindings work the same way. The pre-pass also tracks loop-vars (`for j from 0 to N { ... }`) as i64 bindings visible to closures declared inside the loop body. 3 new lib tests + extended `examples/closures.vani`. The `Let-of-AnonFn pattern is only recognized at the function's top-level statement list` restriction noted in #314 is closed.)
-**Test totals:** 1158 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #316 — Level 3 loop-fusion: `vec_map_fold(ref xs, init, f, g) -> i64` ships as a fused single-pass combinator on Vec<i64>. Iterates input once: `acc = g(acc, f(xs[i]))` — no intermediate Vec materializes, zero heap traffic between map and fold. Method sugar: `xs.map_fold(init, f, g)`. Opt-in (user explicitly invokes the fused name); auto-detection of `vec_fold(ref vec_map(...))` chains is a follow-up. 4 new lib tests + extended `examples/iter_combinators.vani` with sum-of-squares + max-of-doubled patterns.)
+**Test totals:** 1162 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -147,6 +147,55 @@ ref second-class closures; passing closures across function
 boundaries (needs closure-as-value type — likely a struct
 holding the env + fn-ptr pair); reassigning a closure
 binding; nested closure declarations.
+
+### Data-structures roadmap Level 3 — Fused map+fold combinator (shipped 2026-05-28, closure #316)
+
+✅ AFFINE — input borrowed read-only; mapper + combiner are Copy
+fn-ptr args. Returns i64 (the accumulator).
+
+The opt-in fused form for the common pattern
+`vec_fold(ref vec_map(ref xs, f), init, g)`:
+
+```vani
+let total = xs.map_fold(0,
+                        fn(x: i64) -> i64 { return x * x; },
+                        fn(a: i64, b: i64) -> i64 { return a + b; });
+// equivalent to:
+//   let m = xs.map(fn(x: i64) -> i64 { return x * x; });
+//   let total = m.fold(0, add);
+// but no intermediate Vec materializes.
+```
+
+**API:**
+- `vec_map_fold(ref xs: Vec<i64>, init: i64,
+                f: fn(i64) -> i64,
+                g: fn(i64, i64) -> i64) -> i64`
+- Method sugar: `xs.map_fold(init, f, g)`.
+
+**Codegen:**
+- **Tree-C**: `intent_vec_int64_t__map_fold` helper emitted inside
+  the existing Vec bundle alongside `__map` / `__fold` / `__filter`.
+  Single tight loop: `acc = g(acc, f(xs->data[i]))`.
+- **Tree-LLVM**: matching `define` on `%intent_vec_i64` —
+  alloca for `acc` initialized to `init`; loop loads element,
+  calls `%f(v)`, calls `%g(acc, mapped)`, stores back.
+- **SSA**: routes through tree backends.
+
+**v1 restrictions:** Vec<i64> only; mapper signature locked to
+`fn(i64) -> i64` (no type-changing); combiner returns i64.
+Auto-detection of `vec_fold(ref vec_map(...))` chains in user
+source (so the fusion happens without the user opting in) is
+queued — needs a peephole IR pass with use-count analysis.
+
+**Tests:** 4 lib tests (basics + LLVM compile; method sugar;
+mapper signature mismatch; `__map_fold` helper appears in
+emitted C). `examples/iter_combinators.vani` extended with
+sum-of-squares and max-of-doubled patterns.
+
+**Pending follow-ups:** `vec_filter_fold`, `vec_map_filter`,
+`vec_map_filter_fold` — the rest of the fused combinator
+family; type-changing fused map+fold (`Vec<i64> -> R`);
+auto-detection of fold-of-map / fold-of-filter chains.
 
 ### Data-structures roadmap Level 3 — Eager slicing combinators + `.len()` (shipped 2026-05-28, closure #313)
 

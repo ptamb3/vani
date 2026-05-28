@@ -103,6 +103,15 @@ fn main() -> i64 {
   print "zs sorted[0]:", zs[0];
   print "zs sorted[5]:", zs[5];
 
+  // Fused map+fold (closure #316). Single pass — no intermediate
+  // Vec materializes. Equivalent to `let m = xs.map(f);
+  // m.fold(init, g)` but with zero heap traffic for `m`.
+  print "sum of squares (fused):", xs.map_fold(0, fn(x: i64) -> i64 { return x * x; }, add);
+  print "max of doubled (fused):", xs.map_fold(0, fn(x: i64) -> i64 { return x + x; },
+    fn(acc: i64, v: i64) -> i64 {
+      if acc > v { return acc; } else { return v; }
+    });
+
   // take / drop / .len() — eager slicing combinators (closure #313).
   // `xs.len()` desugars to the `len(xs)` builtin directly;
   // take / drop materialize fresh Vecs.

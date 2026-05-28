@@ -5605,6 +5605,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "vec_filter"
                     | "vec_take"
                     | "vec_drop"
+                    | "vec_map_fold"
             ) {
                 let elt = vec_element_of_first_arg(args)
                     .expect("vec builtins take a Vec as the first arg");
@@ -5630,6 +5631,8 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     "take"
                 } else if name == "vec_drop" {
                     "drop"
+                } else if name == "vec_map_fold" {
+                    "map_fold"
                 } else {
                     name.as_str()
                 };
@@ -9565,6 +9568,49 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
             "  ret {sty} %e2\n",
             sty = s_ty,
         ));
+        out.push_str("}\n");
+        // vec_map_fold (closure #316): fused map-then-fold,
+        // single pass, no intermediate Vec allocation. Signature
+        // `i64 (i64)*` for the mapper + `i64 (i64, i64)*` for
+        // the combiner.
+        let map_fold_name = format!("@intent_vec_{}__map_fold", tag);
+        out.push_str(&format!(
+            "define i64 {sn}({sty}* %xs_p, i64 %init, i64 (i64)* %f, i64 (i64, i64)* %g) {{\n",
+            sn = map_fold_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %data = load i64*, i64** %data_p\n");
+        out.push_str("  %n = load i64, i64* %len_p\n");
+        out.push_str("  %acc_p = alloca i64\n");
+        out.push_str("  store i64 %init, i64* %acc_p\n");
+        out.push_str("  %i_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %i_p\n");
+        out.push_str("  br label %mf_loop\n");
+        out.push_str("mf_loop:\n");
+        out.push_str("  %i = load i64, i64* %i_p\n");
+        out.push_str("  %cont = icmp slt i64 %i, %n\n");
+        out.push_str("  br i1 %cont, label %mf_body, label %mf_done\n");
+        out.push_str("mf_body:\n");
+        out.push_str("  %slot = getelementptr i64, i64* %data, i64 %i\n");
+        out.push_str("  %v = load i64, i64* %slot\n");
+        out.push_str("  %mapped = call i64 %f(i64 %v)\n");
+        out.push_str("  %acc = load i64, i64* %acc_p\n");
+        out.push_str("  %next = call i64 %g(i64 %acc, i64 %mapped)\n");
+        out.push_str("  store i64 %next, i64* %acc_p\n");
+        out.push_str("  %i_n = add i64 %i, 1\n");
+        out.push_str("  store i64 %i_n, i64* %i_p\n");
+        out.push_str("  br label %mf_loop\n");
+        out.push_str("mf_done:\n");
+        out.push_str("  %r = load i64, i64* %acc_p\n");
+        out.push_str("  ret i64 %r\n");
         out.push_str("}\n");
         // vec_take / vec_drop (closure #313): eager slicing.
         // Negative n clamps to 0; n > len clamps to len. Result

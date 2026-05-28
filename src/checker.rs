@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -10044,6 +10044,7 @@ fn check_expr(
                             "map" => ("vec_map", false),
                             "filter" => ("vec_filter", false),
                             "fold" => ("vec_fold", false),
+                            "map_fold" => ("vec_map_fold", false),
                             "take" => ("vec_take", false),
                             "drop" => ("vec_drop", false),
                             "sort" => ("sort", true),
@@ -13144,6 +13145,11 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "vec_map_fold" => {
+            return check_vec_map_fold_fused_builtin(
+                args, env, signatures, span, diagnostics,
+            );
+        }
         "reverse" | "dedup" => {
             return check_reverse_dedup_builtin(
                 name, args, env, signatures, span, diagnostics,
@@ -15279,6 +15285,111 @@ fn check_vec_take_drop_builtin(
             args: vec![xs.expr, n.expr],
         },
         Type::Vec(Box::new(Type::I64)),
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 3 — fused map-then-fold
+/// combinator (closure #316). Single-pass: `acc = g(acc, f(xs[i]))`
+/// for each element; no intermediate Vec allocation. The opt-in
+/// fused form for the common `vec_fold(ref vec_map(ref xs, f),
+/// init, g)` chain — equivalent results but zero heap traffic
+/// for the intermediate.
+///
+///   vec_map_fold(ref xs: Vec<i64>, init: i64,
+///                f: fn(i64) -> i64,
+///                g: fn(i64, i64) -> i64) -> i64
+fn check_vec_map_fold_fused_builtin(
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    if args.len() != 4 {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "vec_map_fold() expects 4 arguments (ref xs, init, f, g), got {}",
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback_integer(span);
+    }
+    let xs = check_expr(&args[0], env, signatures, diagnostics);
+    let element_type = match xs.ty() {
+        Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
+            Type::Vec(element) => (**element).clone(),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "vec_map_fold() requires a `ref Vec<i64>` argument, got {}",
+                        xs.ty()
+                    ),
+                ));
+                return CheckedExpr::fallback_integer(span);
+            }
+        },
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "vec_map_fold() requires a `ref Vec<i64>` argument, got {}",
+                    other
+                ),
+            ));
+            return CheckedExpr::fallback_integer(span);
+        }
+    };
+    if !matches!(element_type, Type::I64) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "vec_map_fold() only supports `Vec<i64>` in v1, got element type {}",
+                element_type
+            ),
+        ));
+        return CheckedExpr::fallback_integer(span);
+    }
+    let init_raw = check_expr(&args[1], env, signatures, diagnostics);
+    let init = coerce_checked(
+        init_raw,
+        &Type::I64,
+        args[1].span,
+        "vec_map_fold initial accumulator",
+        diagnostics,
+    );
+    let f = check_expr(&args[2], env, signatures, diagnostics);
+    let want_f = Type::FnPtr(vec![Type::I64], Box::new(Type::I64));
+    if f.ty() != &want_f {
+        diagnostics.push(Diagnostic::new(
+            args[2].span,
+            format!(
+                "vec_map_fold mapper must be `fn(i64) -> i64`, got {}",
+                f.ty()
+            ),
+        ));
+    }
+    let g = check_expr(&args[3], env, signatures, diagnostics);
+    let want_g = Type::FnPtr(vec![Type::I64, Type::I64], Box::new(Type::I64));
+    if g.ty() != &want_g {
+        diagnostics.push(Diagnostic::new(
+            args[3].span,
+            format!(
+                "vec_map_fold combiner must be `fn(i64, i64) -> i64`, got {}",
+                g.ty()
+            ),
+        ));
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: "vec_map_fold".to_string(),
+            name_span: span,
+            args: vec![xs.expr, init.expr, f.expr, g.expr],
+        },
+        Type::I64,
         None,
         span,
     )
