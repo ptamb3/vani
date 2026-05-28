@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -9278,11 +9278,28 @@ fn check_expr(
                     })
                     .unwrap_or(false);
                 if is_vec {
+                    // `xs.len()` is the only Vec-method sugar that
+                    // doesn't lower to a regular builtin Call — it
+                    // produces `ExprKind::Len { array: xs }` directly,
+                    // matching the surface `len(xs)` builtin. Handle
+                    // before the table-driven Call synthesis.
+                    if method == "len" && args.is_empty() {
+                        let recv_clone = (**receiver).clone();
+                        let len_expr = Expr {
+                            kind: ExprKind::Len {
+                                array: Box::new(recv_clone),
+                            },
+                            span: expr.span,
+                        };
+                        return check_expr(&len_expr, env, signatures, diagnostics);
+                    }
                     let (builtin_name, want_mut_ref): (&str, bool) =
                         match method.as_str() {
                             "map" => ("vec_map", false),
                             "filter" => ("vec_filter", false),
                             "fold" => ("vec_fold", false),
+                            "take" => ("vec_take", false),
+                            "drop" => ("vec_drop", false),
                             "sort" => ("sort", true),
                             "sort_by" => ("sort_by", true),
                             _ => ("", false),
@@ -12376,6 +12393,11 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "vec_take" | "vec_drop" => {
+            return check_vec_take_drop_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "reverse" | "dedup" => {
             return check_reverse_dedup_builtin(
                 name, args, env, signatures, span, diagnostics,
@@ -14431,6 +14453,91 @@ fn check_vec_map_fold_builtin(
 /// Data-structures roadmap Level 1 — `reverse(mut ref xs)` /
 /// `dedup(mut ref xs)`.
 ///
+/// Data-structures roadmap Level 3 — eager slicing combinators
+/// on Vec<i64> (closure #313). Both borrow the input read-only
+/// and materialize a fresh Vec the caller owns + drops.
+///
+///   vec_take(ref xs: Vec<i64>, n: i64) -> Vec<i64>
+///       first min(n, len) elements. Negative n clamps to 0.
+///   vec_drop(ref xs: Vec<i64>, n: i64) -> Vec<i64>
+///       all elements after the first min(n, len). Negative n
+///       clamps to 0 (returns the whole Vec).
+fn check_vec_take_drop_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    if args.len() != 2 {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}() expects 2 arguments (ref xs, n), got {}",
+                name,
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback(Type::Vec(Box::new(Type::I64)), span);
+    }
+    let xs = check_expr(&args[0], env, signatures, diagnostics);
+    let element_type = match xs.ty() {
+        Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
+            Type::Vec(element) => (**element).clone(),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "{}() requires a `ref Vec<i64>` argument, got {}",
+                        name,
+                        xs.ty()
+                    ),
+                ));
+                return CheckedExpr::fallback(Type::Vec(Box::new(Type::I64)), span);
+            }
+        },
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "{}() requires a `ref Vec<i64>` argument, got {}",
+                    name, other
+                ),
+            ));
+            return CheckedExpr::fallback(Type::Vec(Box::new(Type::I64)), span);
+        }
+    };
+    if !matches!(element_type, Type::I64) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() only supports `Vec<i64>` in v1, got element type {}",
+                name, element_type
+            ),
+        ));
+        return CheckedExpr::fallback(Type::Vec(Box::new(Type::I64)), span);
+    }
+    let n_raw = check_expr(&args[1], env, signatures, diagnostics);
+    let n = coerce_checked(
+        n_raw,
+        &Type::I64,
+        args[1].span,
+        &format!("{} count", name),
+        diagnostics,
+    );
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: vec![xs.expr, n.expr],
+        },
+        Type::Vec(Box::new(Type::I64)),
+        None,
+        span,
+    )
+}
+
 ///   reverse(mut ref xs: Vec<T>) -> i64
 ///       — in-place reverse, any element type. Returns 0.
 ///   dedup(mut ref xs: Vec<i64>) -> i64

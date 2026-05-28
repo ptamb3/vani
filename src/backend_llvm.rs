@@ -5603,6 +5603,8 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "vec_map"
                     | "vec_fold"
                     | "vec_filter"
+                    | "vec_take"
+                    | "vec_drop"
             ) {
                 let elt = vec_element_of_first_arg(args)
                     .expect("vec builtins take a Vec as the first arg");
@@ -5624,6 +5626,10 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     "fold"
                 } else if name == "vec_filter" {
                     "filter"
+                } else if name == "vec_take" {
+                    "take"
+                } else if name == "vec_drop" {
+                    "drop"
                 } else {
                     name.as_str()
                 };
@@ -9559,6 +9565,129 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
             "  ret {sty} %e2\n",
             sty = s_ty,
         ));
+        out.push_str("}\n");
+        // vec_take / vec_drop (closure #313): eager slicing.
+        // Negative n clamps to 0; n > len clamps to len. Result
+        // Vec is freshly allocated via malloc; caller owns + drops.
+        let take_name = format!("@intent_vec_{}__take", tag);
+        let drop_name = format!("@intent_vec_{}__drop", tag);
+        // take: returns first min(n, len) elements.
+        out.push_str(&format!(
+            "define {sty} {sn}({sty}* %xs_p, i64 %n) {{\n",
+            sn = take_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %src = load i64*, i64** %data_p\n");
+        out.push_str("  %len = load i64, i64* %len_p\n");
+        out.push_str("  %n_pos = icmp slt i64 %n, 0\n");
+        out.push_str("  %n_clamped_lo = select i1 %n_pos, i64 0, i64 %n\n");
+        out.push_str("  %n_too_big = icmp sgt i64 %n_clamped_lo, %len\n");
+        out.push_str("  %take = select i1 %n_too_big, i64 %len, i64 %n_clamped_lo\n");
+        out.push_str("  %empty = icmp eq i64 %take, 0\n");
+        out.push_str("  br i1 %empty, label %tk_empty, label %tk_alloc\n");
+        out.push_str("tk_alloc:\n");
+        out.push_str("  %bytes = mul i64 %take, 8\n");
+        out.push_str("  %dst_i8 = call i8* @malloc(i64 %bytes)\n");
+        out.push_str("  %dst = bitcast i8* %dst_i8 to i64*\n");
+        out.push_str("  %src_i8 = bitcast i64* %src to i8*\n");
+        out.push_str(
+            "  call i8* @memmove(i8* %dst_i8, i8* %src_i8, i64 %bytes)\n",
+        );
+        out.push_str(&format!(
+            "  %tr0 = insertvalue {sty} undef, i64* %dst, 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %tr1 = insertvalue {sty} %tr0, i64 %take, 1\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %tr2 = insertvalue {sty} %tr1, i64 %take, 2\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!("  ret {sty} %tr2\n", sty = s_ty));
+        out.push_str("tk_empty:\n");
+        out.push_str(&format!(
+            "  %te0 = insertvalue {sty} undef, i64* null, 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %te1 = insertvalue {sty} %te0, i64 0, 1\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %te2 = insertvalue {sty} %te1, i64 0, 2\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!("  ret {sty} %te2\n", sty = s_ty));
+        out.push_str("}\n");
+        // drop: returns elements after the first min(n, len).
+        out.push_str(&format!(
+            "define {sty} {sn}({sty}* %xs_p, i64 %n) {{\n",
+            sn = drop_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %src = load i64*, i64** %data_p\n");
+        out.push_str("  %len = load i64, i64* %len_p\n");
+        out.push_str("  %n_pos = icmp slt i64 %n, 0\n");
+        out.push_str("  %n_clamped_lo = select i1 %n_pos, i64 0, i64 %n\n");
+        out.push_str("  %n_too_big = icmp sgt i64 %n_clamped_lo, %len\n");
+        out.push_str("  %skip = select i1 %n_too_big, i64 %len, i64 %n_clamped_lo\n");
+        out.push_str("  %kept = sub i64 %len, %skip\n");
+        out.push_str("  %empty = icmp eq i64 %kept, 0\n");
+        out.push_str("  br i1 %empty, label %dr_empty, label %dr_alloc\n");
+        out.push_str("dr_alloc:\n");
+        out.push_str("  %bytes = mul i64 %kept, 8\n");
+        out.push_str("  %dst_i8 = call i8* @malloc(i64 %bytes)\n");
+        out.push_str("  %dst = bitcast i8* %dst_i8 to i64*\n");
+        out.push_str("  %src_off = getelementptr i64, i64* %src, i64 %skip\n");
+        out.push_str("  %src_i8 = bitcast i64* %src_off to i8*\n");
+        out.push_str(
+            "  call i8* @memmove(i8* %dst_i8, i8* %src_i8, i64 %bytes)\n",
+        );
+        out.push_str(&format!(
+            "  %dr0 = insertvalue {sty} undef, i64* %dst, 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %dr1 = insertvalue {sty} %dr0, i64 %kept, 1\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %dr2 = insertvalue {sty} %dr1, i64 %kept, 2\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!("  ret {sty} %dr2\n", sty = s_ty));
+        out.push_str("dr_empty:\n");
+        out.push_str(&format!(
+            "  %de0 = insertvalue {sty} undef, i64* null, 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %de1 = insertvalue {sty} %de0, i64 0, 1\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %de2 = insertvalue {sty} %de1, i64 0, 2\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!("  ret {sty} %de2\n", sty = s_ty));
         out.push_str("}\n");
         // vec_filter (closure #310): two-pass. Count matches,
         // allocate exact, then fill. Predicate has shape

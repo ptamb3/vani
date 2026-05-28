@@ -103,5 +103,19 @@ fn main() -> i64 {
   print "zs sorted[0]:", zs[0];
   print "zs sorted[5]:", zs[5];
 
+  // take / drop / .len() — eager slicing combinators (closure #313).
+  // `xs.len()` desugars to the `len(xs)` builtin directly;
+  // take / drop materialize fresh Vecs.
+  let big: Vec<i64> = vec(10, 20, 30, 40, 50);
+  print "big.len():", big.len();
+  let head: Vec<i64> = big.take(2);
+  print "big.take(2).len():", head.len();
+  print "head[0]:", head[0];
+  print "head[1]:", head[1];
+  let tail: Vec<i64> = big.drop(3);
+  print "big.drop(3).len():", tail.len();
+  print "tail[0]:", tail[0];
+  print "tail[1]:", tail[1];
+
   return 0;
 }

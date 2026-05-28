@@ -2795,8 +2795,8 @@ real use cases:
 | BTreeSet | `BTreeSet<i64>` ordered set on sorted-Vec backing w/ 5 builtins (new / insert / contains / remove / len) (closure #306) | ✅ AFFINE |
 | BTreeMap | `BTreeMap<i64, i64>` ordered key/value map on parallel-sorted-Vec backing w/ 6 builtins (new / insert / get / contains_key / remove / len) (closure #307) | ✅ AFFINE under v1 Copy-V; ⚠️ AFFINE-TENSION when V goes non-Copy |
 | Anon fn | `fn(p: T) -> R { body }` in value position; lambda-lifted to `__anon_fn_<N>` (closure #308). v1: no captured environment | ✅ AFFINE |
-| Iter combinators | Eager `vec_map(ref xs, f) -> Vec<i64>` + `vec_filter(ref xs, p) -> Vec<i64>` + `vec_fold(ref xs, init, g) -> i64` on Vec<i64> (closures #309 + #310). Pair with anon fns or top-level fn-refs | ✅ AFFINE |
-| Method-call sugar | `xs.map(f)` / `xs.filter(p)` / `xs.fold(init, g)` / `xs.sort_by(cmp)` / `xs.sort()` on `Vec<T>` receivers desugar to the builtins (closure #311); `m.get(k)` / `m.insert(k, v)` / `s.contains(v)` / `d.push_back(v)` / `.len()` etc. on HashMap / HashSet / BTreeMap / BTreeSet / Deque (closure #312) | ✅ AFFINE |
+| Iter combinators | Eager `vec_map(ref xs, f) -> Vec<i64>` + `vec_filter(ref xs, p) -> Vec<i64>` + `vec_fold(ref xs, init, g) -> i64` on Vec<i64> (closures #309 + #310); slicing `vec_take(ref xs, n)` / `vec_drop(ref xs, n)` (closure #313). Pair with anon fns or top-level fn-refs | ✅ AFFINE |
+| Method-call sugar | `xs.map(f)` / `xs.filter(p)` / `xs.fold(init, g)` / `xs.sort_by(cmp)` / `xs.sort()` on `Vec<T>` receivers desugar to the builtins (closure #311); `m.get(k)` / `m.insert(k, v)` / `s.contains(v)` / `d.push_back(v)` / `.len()` etc. on HashMap / HashSet / BTreeMap / BTreeSet / Deque (closure #312); `xs.take(n)` / `xs.drop(n)` / uniform `xs.len()` on Vec (closure #313) | ✅ AFFINE |
 | Queue (concurrent) | `Channel<T, N>` MPSC ring buffer w/ futex blocking | ✅ AFFINE |
 | Wait / signal | `Condvar` w/ `wait` / `wait_timeout` / `notify_one` / `notify_all` (closure #292) | ✅ AFFINE |
 | Array (fixed) | `[T; N]` w/ nested-array support (closure #291) | ✅ AFFINE |

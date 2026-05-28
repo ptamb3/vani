@@ -2778,6 +2778,41 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
 \n}}\n",
             sn = struct_name,
         ));
+        // vec_take / vec_drop (closure #313): eager slicing.
+        // take returns the first min(n, len) elements; drop
+        // returns the rest. Negative n clamps to 0. The result
+        // Vec is freshly allocated and the caller owns it.
+        out.push_str(&format!(
+            "static INTENT_UNUSED {sn} {sn}__take(const {sn}* xs, int64_t n) {{\
+\n    {sn} out;\
+\n    int64_t take = n < 0 ? 0 : n;\
+\n    if ((uint64_t)take > xs->len) take = (int64_t)xs->len;\
+\n    out.len = (uint64_t)take;\
+\n    out.capacity = (uint64_t)take;\
+\n    if (take == 0) {{ out.data = (int64_t*)0; return out; }}\
+\n    out.data = (int64_t*)malloc((uint64_t)take * sizeof(int64_t));\
+\n    if (!out.data) abort();\
+\n    memcpy(out.data, xs->data, (uint64_t)take * sizeof(int64_t));\
+\n    return out;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED {sn} {sn}__drop(const {sn}* xs, int64_t n) {{\
+\n    {sn} out;\
+\n    int64_t drop = n < 0 ? 0 : n;\
+\n    if ((uint64_t)drop > xs->len) drop = (int64_t)xs->len;\
+\n    uint64_t kept = xs->len - (uint64_t)drop;\
+\n    out.len = kept;\
+\n    out.capacity = kept;\
+\n    if (kept == 0) {{ out.data = (int64_t*)0; return out; }}\
+\n    out.data = (int64_t*)malloc(kept * sizeof(int64_t));\
+\n    if (!out.data) abort();\
+\n    memcpy(out.data, xs->data + drop, kept * sizeof(int64_t));\
+\n    return out;\
+\n}}\n",
+            sn = struct_name,
+        ));
         // vec_filter (closure #310): two-pass — count matches
         // first, allocate exactly that many slots, then fill.
         // Predicate signature is `bool (*)(int64_t)`.
@@ -6005,6 +6040,19 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                     emit_expr(&args[1])
                 ),
                 _ => unreachable!("vec_filter() arg 0 must be ref Vec<i64>"),
+            }
+        }
+        "vec_take" | "vec_drop" => {
+            // vec_take / vec_drop (closure #313): eager slicing.
+            let op = name.strip_prefix("vec_").unwrap();
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, ({}))",
+                    vec_helper(element, op),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1])
+                ),
+                _ => unreachable!("{}() arg 0 must be ref Vec<i64>", name),
             }
         }
         "vec_fold" => {

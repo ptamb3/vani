@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #312 — Level 3 method-call sugar extended to the affine containers (HashMap / HashSet / BTreeMap / BTreeSet / Deque). `m.get(k)` / `m.insert(k, v)` / `m.contains_key(k)` / `m.remove(k)` / `m.len()` / `s.contains(v)` / `d.push_back(v)` / `d.pop_front()` etc. all desugar to the existing `<container>_<method>` builtins. Parser extended to accept the `len` keyword as a method name after `.`. **Bug fix bundled:** SSA-LLVM emit now clears the `LLVM_ENUM_PAYLOAD_REGISTRY` (and the variant-payload / tag registries) at the start — a stale leak from a previous tree-LLVM compile in the same process was causing `intent_vec_i64__heap_peek` to emit references to `%Enum_Option__i64` without the corresponding typedef when programs were batched. New `examples/container_method_sugar.vani`; 6 new lib tests.)
-**Test totals:** 1146 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 78 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #313 — Level 3 eager slicing combinators on Vec<i64> + `.len()` method sugar. `vec_take(ref xs, n)` returns the first min(n, len) elements; `vec_drop(ref xs, n)` returns the rest. Negative n clamps to 0; n > len clamps to len. Method sugar adds `xs.take(n)` / `xs.drop(n)` (Call synthesis like #311/#312) and `xs.len()` (lowers to `ExprKind::Len` directly, matching the bare `len(xs)` builtin form). 5 new lib tests.)
+**Test totals:** 1151 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 78 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,52 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 3 — Eager slicing combinators + `.len()` (shipped 2026-05-28, closure #313)
+
+✅ AFFINE — input Vec borrowed read-only; output Vec is a fresh
+heap allocation the caller owns and drops.
+
+**API (2 builtins + 3 method-sugar entries):**
+- `vec_take(ref xs: Vec<i64>, n: i64) -> Vec<i64>` — first
+  `min(n, len)` elements. Negative `n` clamps to 0.
+- `vec_drop(ref xs: Vec<i64>, n: i64) -> Vec<i64>` — elements
+  after the first `min(n, len)`. Negative `n` clamps to 0
+  (returns the whole Vec).
+- Method-call sugar: `xs.take(n)` → `vec_take(ref xs, n)`;
+  `xs.drop(n)` → `vec_drop(ref xs, n)`; `xs.len()` → lowers to
+  `ExprKind::Len { array: xs }` (the surface `len(xs)` builtin).
+
+The `.len()` method sugar is a special case in the Vec
+method-sugar arm — instead of synthesizing a Call to a
+`vec_len` builtin (which doesn't exist), it produces
+`ExprKind::Len` directly so the existing `Len` codegen
+handles it. Net effect: a uniform `obj.len()` syntax across
+Vec / HashMap / HashSet / BTreeMap / BTreeSet / Deque.
+
+**Codegen:**
+- **Tree-C**: `intent_vec_int64_t__take` / `__drop` helpers
+  emitted inside the Vec bundle. Each does a malloc + memcpy
+  of the slice; empty result returns `data=null, len=0,
+  capacity=0`.
+- **Tree-LLVM**: matching `define`s on `%intent_vec_i64`.
+  Negative-n clamping via `icmp slt` + `select`; result
+  Vec built via `insertvalue` triplet. memmove for the copy.
+- **SSA**: routes through tree backends.
+
+**v1 restrictions:** Vec<i64> only (per the rest of the
+combinator family). No method sugar for `.take(n)` /
+`.drop(n)` on other types yet.
+
+**Tests:** 5 lib tests (vec_take + vec_drop type-check on
+both backends; method sugar for take/drop; `xs.len()` sugar;
+wrong-count-type rejection). `examples/iter_combinators.vani`
+extended to demonstrate the new sugared forms.
+
+**Pending follow-ups:** non-i64 element types; `vec_zip` (needs
+`Vec<(i64, i64)>` — tuple Vec element); `.collect()` (only
+makes sense once lazy iterators land alongside loop fusion);
+`.len()` sugar for `[T; N]` arrays.
 
 ### Data-structures roadmap Level 3 — Affine container method-call sugar (shipped 2026-05-28, closure #312)
 

@@ -12956,6 +12956,72 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_take_typechecks_and_compiles() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4, 5);
+              let ys: Vec<i64> = vec_take(ref xs, 2);
+              return ys[1];
+            }
+        "#;
+        compile_to_c(source).expect("vec_take in C");
+        compile_to_llvm(source).expect("vec_take in LLVM");
+    }
+
+    #[test]
+    fn vec_drop_typechecks_and_compiles() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20, 30, 40);
+              let ys: Vec<i64> = vec_drop(ref xs, 2);
+              return ys[0];
+            }
+        "#;
+        compile_to_c(source).expect("vec_drop in C");
+        compile_to_llvm(source).expect("vec_drop in LLVM");
+    }
+
+    #[test]
+    fn vec_take_drop_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              let t: Vec<i64> = xs.take(2);
+              let d: Vec<i64> = xs.drop(1);
+              return t[0] + d[0];
+            }
+        "#;
+        compile_to_c(source).expect("xs.take(n) / xs.drop(n) sugar in C");
+        compile_to_llvm(source).expect("xs.take(n) / xs.drop(n) sugar in LLVM");
+    }
+
+    #[test]
+    fn vec_len_method_sugar_lowers_to_len_builtin() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let n: u64 = xs.len();
+              if n == 3 { return 1; } else { return 0; }
+            }
+        "#;
+        compile_to_c(source).expect("xs.len() sugar in C");
+        compile_to_llvm(source).expect("xs.len() sugar in LLVM");
+    }
+
+    #[test]
+    fn vec_take_rejects_wrong_count_type() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let ys: Vec<i64> = vec_take(ref xs, true);
+              return ys[0];
+            }
+        "#;
+        let errors = compile(source).expect_err("bool count must fail");
+        assert!(!errors.is_empty(), "expected at least one diagnostic");
+    }
+
+    #[test]
     fn vec_method_sugar_map() {
         let source = r#"
             pure fn double(x: i64) -> i64 { return x + x; }
