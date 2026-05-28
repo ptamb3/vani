@@ -331,6 +331,9 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "hashmap_new" || name == "hashmap_insert"
                 || name == "hashmap_get" || name == "hashmap_contains_key"
                 || name == "hashmap_len"
+                || name == "btreeset_new" || name == "btreeset_insert"
+                || name == "btreeset_contains" || name == "btreeset_remove"
+                || name == "btreeset_len"
             {
                 return false;
             }

@@ -12680,6 +12680,121 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn btreeset_basics_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: BTreeSet<i64> = btreeset_new();
+              let inserted: bool = btreeset_insert(mut ref s, 42);
+              let has: bool = btreeset_contains(ref s, 42);
+              let removed: bool = btreeset_remove(mut ref s, 42);
+              let n: i64 = btreeset_len(ref s);
+              if inserted { if has { if removed { return n; } else { return 1; } } else { return 2; } } else { return 3; }
+            }
+        "#;
+        compile_to_c(source).expect("btreeset basics must type-check");
+        compile_to_llvm(source).expect("btreeset basics must compile to LLVM");
+    }
+
+    #[test]
+    fn btreeset_insert_rejects_non_mut_ref() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: BTreeSet<i64> = btreeset_new();
+              let _: bool = btreeset_insert(ref s, 1);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("by-ref insert must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref BTreeSet<i64>")),
+            "expected mut-ref-BTreeSet diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn btreeset_remove_rejects_non_mut_ref() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: BTreeSet<i64> = btreeset_new();
+              let _: bool = btreeset_insert(mut ref s, 1);
+              let _: bool = btreeset_remove(ref s, 1);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("by-ref remove must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref BTreeSet<i64>")),
+            "expected mut-ref-BTreeSet diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn btreeset_reserves_name_against_user_struct() {
+        let source = r#"
+            struct BTreeSet { x: i64 }
+            fn main() -> i64 { return 0; }
+        "#;
+        let errors = compile(source).expect_err("`struct BTreeSet` must collide");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("built-in") || e.message.contains("reserved")),
+            "expected reserved-name diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn btreeset_emits_runtime_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: BTreeSet<i64> = btreeset_new();
+              let _: bool = btreeset_insert(mut ref s, 1);
+              let _: bool = btreeset_contains(ref s, 1);
+              let _: bool = btreeset_remove(mut ref s, 1);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("btreeset program compiles");
+        assert!(
+            c.contains("intent_btreeset_i64")
+                && c.contains("intent_btreeset_i64_insert")
+                && c.contains("intent_btreeset_i64_contains")
+                && c.contains("intent_btreeset_i64_remove")
+                && c.contains("intent_btreeset_i64_drop"),
+            "C output must include the btreeset runtime; got snippet:\n{}",
+            &c[..c.len().min(800)]
+        );
+    }
+
+    #[test]
+    fn btreeset_emits_helpers_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: BTreeSet<i64> = btreeset_new();
+              let _: bool = btreeset_insert(mut ref s, 1);
+              let _: bool = btreeset_remove(mut ref s, 1);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("btreeset LLVM compile");
+        assert!(
+            ll.contains("%intent_btreeset_i64 = type")
+                && ll.contains("define i1 @intent_btreeset_i64_insert")
+                && ll.contains("define i1 @intent_btreeset_i64_remove")
+                && ll.contains("define i1 @intent_btreeset_i64_contains"),
+            "LLVM output must include the btreeset typedef + helpers; got snippet:\n{}",
+            &ll[..ll.len().min(800)]
+        );
+    }
+
+    #[test]
     fn deque_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

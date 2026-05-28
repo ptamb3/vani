@@ -253,6 +253,7 @@ fn llvm_byte_size(ty: &Type) -> u64 {
         Type::Deque(_) => 32, // {data ptr, front, len, capacity}
         Type::HashSet(_) => 32, // {keys ptr, occupied ptr, len, capacity}
         Type::HashMap(_, _) => 40, // {keys ptr, values ptr, occ ptr, len, capacity}
+        Type::BTreeSet(_) => 24, // {keys ptr, len, capacity}
         Type::Object(_) => 16, // fat pointer: vtable + data
         Type::Vec(_) => 24, // {data, len, cap} on 64-bit
         Type::Array { element, length } => llvm_byte_size(element) * length,
@@ -626,7 +627,9 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // HashSet<i64> (closure #304): { keys*, occ*, len, cap }.
     out.push_str("%intent_hashset_i64 = type { i64*, i8*, i64, i64 }\n");
     // HashMap<i64, i64> (closure #305): { keys*, values*, occ*, len, cap }.
-    out.push_str("%intent_hashmap_i64_i64 = type { i64*, i64*, i8*, i64, i64 }\n\n");
+    out.push_str("%intent_hashmap_i64_i64 = type { i64*, i64*, i8*, i64, i64 }\n");
+    // BTreeSet<i64> (closure #306): { keys*, len, cap } — sorted-Vec backed.
+    out.push_str("%intent_btreeset_i64 = type { i64*, i64, i64 }\n\n");
 
     emit_intent_str_concat_definition(&mut out);
 
@@ -839,6 +842,11 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
             r.borrow().contains_key("Option__i64")
         });
         emit_intent_hashmap_i64_i64_helpers_llvm(&mut out, has_option_i64);
+    }
+
+    // BTreeSet<i64> helpers (closure #306).
+    if crate::backend_c::program_uses_i64_btreeset(program) {
+        emit_intent_btreeset_i64_helpers_llvm(&mut out);
     }
 
     for function in &program.functions {
@@ -1535,6 +1543,15 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 if let Some((_, addr)) = ctx.locals.get(name).cloned() {
                     out.push_str(&format!(
                         "  call void @intent_hashmap_i64_i64_drop(%intent_hashmap_i64_i64* {})\n",
+                        addr
+                    ));
+                }
+                return;
+            }
+            if matches!(ty, Type::BTreeSet(_)) {
+                if let Some((_, addr)) = ctx.locals.get(name).cloned() {
+                    out.push_str(&format!(
+                        "  call void @intent_btreeset_i64_drop(%intent_btreeset_i64* {})\n",
                         addr
                     ));
                 }
@@ -4895,6 +4912,38 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
                 return dest;
             }
+            // BTreeSet<i64> builtins (closure #306).
+            if name == "btreeset_new" {
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_btreeset_i64 @intent_btreeset_i64_new()\n",
+                    dest
+                ));
+                return dest;
+            }
+            if matches!(
+                name.as_str(),
+                "btreeset_insert" | "btreeset_contains" | "btreeset_remove"
+            ) {
+                let s = emit_expr(&args[0], ctx, out);
+                let v = emit_expr(&args[1], ctx, out);
+                let op = name.strip_prefix("btreeset_").unwrap();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i1 @intent_btreeset_i64_{}(%intent_btreeset_i64* {}, i64 {})\n",
+                    dest, op, s, v
+                ));
+                return dest;
+            }
+            if name == "btreeset_len" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_btreeset_i64_len(%intent_btreeset_i64* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
             // HashMap<i64, i64> builtins (closure #305).
             if name == "hashmap_new" {
                 let dest = ctx.fresh_tmp();
@@ -7279,6 +7328,184 @@ fn emit_intent_hash_helpers_llvm(out: &mut String) {
          \x20 %sum2 = add i64 %sum, %sh_r\n\
          \x20 %r = xor i64 %a, %sum2\n\
          \x20 ret i64 %r\n\
+         }\n\n",
+    );
+}
+
+/// Data-structures roadmap Level 2 — BTreeSet<i64> runtime
+/// helpers. v1 backed by a sorted Vec<i64>: binary_search
+/// for lookup (O(log n)), memmove shift for insert / remove
+/// (O(n)).
+fn emit_intent_btreeset_i64_helpers_llvm(out: &mut String) {
+    out.push_str(
+        "define %intent_btreeset_i64 @intent_btreeset_i64_new() {\n\
+         \x20 %r0 = insertvalue %intent_btreeset_i64 undef, i64* null, 0\n\
+         \x20 %r1 = insertvalue %intent_btreeset_i64 %r0, i64 0, 1\n\
+         \x20 %r2 = insertvalue %intent_btreeset_i64 %r1, i64 0, 2\n\
+         \x20 ret %intent_btreeset_i64 %r2\n\
+         }\n\
+         define void @intent_btreeset_i64_drop(%intent_btreeset_i64* %s) {\n\
+         \x20 %kpp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 0\n\
+         \x20 %keys = load i64*, i64** %kpp\n\
+         \x20 %is_null = icmp eq i64* %keys, null\n\
+         \x20 br i1 %is_null, label %d_done, label %d_free\n\
+         d_free:\n\
+         \x20 %k_i8 = bitcast i64* %keys to i8*\n\
+         \x20 call void @free(i8* %k_i8)\n\
+         \x20 br label %d_done\n\
+         d_done:\n\
+         \x20 store i64* null, i64** %kpp\n\
+         \x20 %lp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 1\n\
+         \x20 store i64 0, i64* %lp\n\
+         \x20 %cp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 2\n\
+         \x20 store i64 0, i64* %cp\n\
+         \x20 ret void\n\
+         }\n\
+         ; lower_bound: returns the index where k lives or\n\
+         ; would be inserted to keep keys[] sorted ascending.\n\
+         define internal i64 @intent_btreeset_i64__lower_bound(%intent_btreeset_i64* %s, i64 %k) {\n\
+         \x20 %kpp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 0\n\
+         \x20 %lp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 1\n\
+         \x20 %keys = load i64*, i64** %kpp\n\
+         \x20 %len = load i64, i64* %lp\n\
+         \x20 %lo_p = alloca i64\n\
+         \x20 %hi_p = alloca i64\n\
+         \x20 store i64 0, i64* %lo_p\n\
+         \x20 store i64 %len, i64* %hi_p\n\
+         \x20 br label %lb_loop\n\
+         lb_loop:\n\
+         \x20 %lo = load i64, i64* %lo_p\n\
+         \x20 %hi = load i64, i64* %hi_p\n\
+         \x20 %cont = icmp ult i64 %lo, %hi\n\
+         \x20 br i1 %cont, label %lb_body, label %lb_done\n\
+         lb_body:\n\
+         \x20 %diff = sub i64 %hi, %lo\n\
+         \x20 %half = lshr i64 %diff, 1\n\
+         \x20 %mid = add i64 %lo, %half\n\
+         \x20 %slot = getelementptr i64, i64* %keys, i64 %mid\n\
+         \x20 %v = load i64, i64* %slot\n\
+         \x20 %lt = icmp slt i64 %v, %k\n\
+         \x20 br i1 %lt, label %lb_raise, label %lb_lower\n\
+         lb_raise:\n\
+         \x20 %lo_n = add i64 %mid, 1\n\
+         \x20 store i64 %lo_n, i64* %lo_p\n\
+         \x20 br label %lb_loop\n\
+         lb_lower:\n\
+         \x20 store i64 %mid, i64* %hi_p\n\
+         \x20 br label %lb_loop\n\
+         lb_done:\n\
+         \x20 %ret = load i64, i64* %lo_p\n\
+         \x20 ret i64 %ret\n\
+         }\n\
+         define i1 @intent_btreeset_i64_contains(%intent_btreeset_i64* %s, i64 %k) {\n\
+         \x20 %kpp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 0\n\
+         \x20 %lp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 1\n\
+         \x20 %i = call i64 @intent_btreeset_i64__lower_bound(%intent_btreeset_i64* %s, i64 %k)\n\
+         \x20 %len = load i64, i64* %lp\n\
+         \x20 %ge = icmp uge i64 %i, %len\n\
+         \x20 br i1 %ge, label %c_no, label %c_check\n\
+         c_check:\n\
+         \x20 %keys = load i64*, i64** %kpp\n\
+         \x20 %slot = getelementptr i64, i64* %keys, i64 %i\n\
+         \x20 %v = load i64, i64* %slot\n\
+         \x20 %eq = icmp eq i64 %v, %k\n\
+         \x20 br i1 %eq, label %c_yes, label %c_no\n\
+         c_yes:\n\
+         \x20 ret i1 true\n\
+         c_no:\n\
+         \x20 ret i1 false\n\
+         }\n\
+         define i64 @intent_btreeset_i64_len(%intent_btreeset_i64* %s) {\n\
+         \x20 %lp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 1\n\
+         \x20 %len = load i64, i64* %lp\n\
+         \x20 ret i64 %len\n\
+         }\n\
+         define i1 @intent_btreeset_i64_insert(%intent_btreeset_i64* %s, i64 %k) {\n\
+         \x20 %kpp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 0\n\
+         \x20 %lp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 1\n\
+         \x20 %cp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 2\n\
+         \x20 %i = call i64 @intent_btreeset_i64__lower_bound(%intent_btreeset_i64* %s, i64 %k)\n\
+         \x20 %len_pre = load i64, i64* %lp\n\
+         \x20 %inbounds = icmp ult i64 %i, %len_pre\n\
+         \x20 br i1 %inbounds, label %ins_check_eq, label %ins_grow_chk\n\
+         ins_check_eq:\n\
+         \x20 %keys_pre = load i64*, i64** %kpp\n\
+         \x20 %slot_pre = getelementptr i64, i64* %keys_pre, i64 %i\n\
+         \x20 %vpre = load i64, i64* %slot_pre\n\
+         \x20 %eq = icmp eq i64 %vpre, %k\n\
+         \x20 br i1 %eq, label %ins_dup, label %ins_grow_chk\n\
+         ins_grow_chk:\n\
+         \x20 %cap_pre = load i64, i64* %cp\n\
+         \x20 %need_grow = icmp uge i64 %len_pre, %cap_pre\n\
+         \x20 br i1 %need_grow, label %ins_grow, label %ins_shift\n\
+         ins_grow:\n\
+         \x20 %cap_zero = icmp eq i64 %cap_pre, 0\n\
+         \x20 %cap_d = mul i64 %cap_pre, 2\n\
+         \x20 %new_cap = select i1 %cap_zero, i64 4, i64 %cap_d\n\
+         \x20 %new_bytes = mul i64 %new_cap, 8\n\
+         \x20 %old_keys = load i64*, i64** %kpp\n\
+         \x20 %old_i8 = bitcast i64* %old_keys to i8*\n\
+         \x20 %new_i8 = call i8* @realloc(i8* %old_i8, i64 %new_bytes)\n\
+         \x20 %new_keys = bitcast i8* %new_i8 to i64*\n\
+         \x20 store i64* %new_keys, i64** %kpp\n\
+         \x20 store i64 %new_cap, i64* %cp\n\
+         \x20 br label %ins_shift\n\
+         ins_shift:\n\
+         \x20 %need_shift = icmp ult i64 %i, %len_pre\n\
+         \x20 br i1 %need_shift, label %ins_memmove, label %ins_store\n\
+         ins_memmove:\n\
+         \x20 %keys2 = load i64*, i64** %kpp\n\
+         \x20 %src = getelementptr i64, i64* %keys2, i64 %i\n\
+         \x20 %dst_idx = add i64 %i, 1\n\
+         \x20 %dst = getelementptr i64, i64* %keys2, i64 %dst_idx\n\
+         \x20 %tail_n = sub i64 %len_pre, %i\n\
+         \x20 %tail_bytes = mul i64 %tail_n, 8\n\
+         \x20 %src_i8 = bitcast i64* %src to i8*\n\
+         \x20 %dst_i8 = bitcast i64* %dst to i8*\n\
+         \x20 call i8* @memmove(i8* %dst_i8, i8* %src_i8, i64 %tail_bytes)\n\
+         \x20 br label %ins_store\n\
+         ins_store:\n\
+         \x20 %keys3 = load i64*, i64** %kpp\n\
+         \x20 %slot = getelementptr i64, i64* %keys3, i64 %i\n\
+         \x20 store i64 %k, i64* %slot\n\
+         \x20 %new_len = add i64 %len_pre, 1\n\
+         \x20 store i64 %new_len, i64* %lp\n\
+         \x20 ret i1 true\n\
+         ins_dup:\n\
+         \x20 ret i1 false\n\
+         }\n\
+         define i1 @intent_btreeset_i64_remove(%intent_btreeset_i64* %s, i64 %k) {\n\
+         \x20 %kpp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 0\n\
+         \x20 %lp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 1\n\
+         \x20 %i = call i64 @intent_btreeset_i64__lower_bound(%intent_btreeset_i64* %s, i64 %k)\n\
+         \x20 %len = load i64, i64* %lp\n\
+         \x20 %oob = icmp uge i64 %i, %len\n\
+         \x20 br i1 %oob, label %rm_no, label %rm_check\n\
+         rm_check:\n\
+         \x20 %keys = load i64*, i64** %kpp\n\
+         \x20 %slot = getelementptr i64, i64* %keys, i64 %i\n\
+         \x20 %v = load i64, i64* %slot\n\
+         \x20 %eq = icmp eq i64 %v, %k\n\
+         \x20 br i1 %eq, label %rm_do, label %rm_no\n\
+         rm_do:\n\
+         \x20 %i_p1 = add i64 %i, 1\n\
+         \x20 %has_tail = icmp ult i64 %i_p1, %len\n\
+         \x20 br i1 %has_tail, label %rm_memmove, label %rm_dec\n\
+         rm_memmove:\n\
+         \x20 %src = getelementptr i64, i64* %keys, i64 %i_p1\n\
+         \x20 %dst = getelementptr i64, i64* %keys, i64 %i\n\
+         \x20 %tail_n = sub i64 %len, %i_p1\n\
+         \x20 %tail_bytes = mul i64 %tail_n, 8\n\
+         \x20 %src_i8 = bitcast i64* %src to i8*\n\
+         \x20 %dst_i8 = bitcast i64* %dst to i8*\n\
+         \x20 call i8* @memmove(i8* %dst_i8, i8* %src_i8, i64 %tail_bytes)\n\
+         \x20 br label %rm_dec\n\
+         rm_dec:\n\
+         \x20 %new_len = sub i64 %len, 1\n\
+         \x20 store i64 %new_len, i64* %lp\n\
+         \x20 ret i1 true\n\
+         rm_no:\n\
+         \x20 ret i1 false\n\
          }\n\n",
     );
 }
@@ -11752,7 +11979,7 @@ fn is_scalar(ty: &Type) -> bool {
         // <ty> <v>, <ty>* …` work uniformly. The builtins
         // (channel_new, mutex_new, mutex_lock) return SSA
         // values of these struct types.
-        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _))
+        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_))
         // Function pointers are pointer-sized scalars. The
         // alloca holds a single value of fn-ptr type (the
         // load returns a function-pointer SSA value the
@@ -11805,6 +12032,7 @@ pub(crate) fn llvm_type(ty: &Type) -> &'static str {
         Type::Deque(_) => "%intent_deque_i64",
         Type::HashSet(_) => "%intent_hashset_i64",
         Type::HashMap(_, _) => "%intent_hashmap_i64_i64",
+        Type::BTreeSet(_) => "%intent_btreeset_i64",
         // Enums lower to a 32-bit tag — see `llvm_type_string`
         // for the same. T1.3.
         Type::Enum(_) => "i32",

@@ -1593,6 +1593,13 @@ impl Parser {
                 self.expect_close_angle()?;
                 return Ok(Type::HashMap(Box::new(k), Box::new(v)));
             }
+            if name == "BTreeSet" {
+                self.bump();
+                self.expect_keyword("'<'", |kind| matches!(kind, TokenKind::Less))?;
+                let element = self.parse_type()?;
+                self.expect_close_angle()?;
+                return Ok(Type::BTreeSet(Box::new(element)));
+            }
             if name == "Atomic" {
                 self.bump();
                 self.expect_keyword("'<'", |kind| matches!(kind, TokenKind::Less))?;

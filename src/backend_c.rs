@@ -540,6 +540,9 @@ pub fn emit_c(program: &TypedProgram) -> String {
         });
         emit_intent_hashmap_helpers_c_body(&mut body, has_option_i64);
     }
+    if program_uses_i64_btreeset(program) {
+        emit_intent_btreeset_helpers_c_body(&mut body);
+    }
 
     for function in &program.functions {
         emit_prototype(function, &mut body);
@@ -1053,6 +1056,108 @@ fn emit_intent_hashmap_helpers_c_body(out: &mut String, has_option_i64: bool) {
              }\n\n",
         );
     }
+}
+
+/// Walk the program for any `BTreeSet<i64>` type usage.
+pub(crate) fn program_uses_i64_btreeset(program: &TypedProgram) -> bool {
+    fn ty_uses(ty: &Type) -> bool {
+        match ty {
+            Type::BTreeSet(element) if matches!(**element, Type::I64) => true,
+            Type::Vec(inner) | Type::Ref(inner) | Type::RefMut(inner) => ty_uses(inner),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if ty_uses(&f.return_type) {
+            return true;
+        }
+        for p in &f.params {
+            if ty_uses(&p.ty) {
+                return true;
+            }
+        }
+        for s in &f.body {
+            if stmt_uses_i64_btreeset(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn stmt_uses_i64_btreeset(stmt: &crate::ir::TypedStmt) -> bool {
+    use crate::ir::TypedStmt as S;
+    fn ty_uses(ty: &Type) -> bool {
+        matches!(ty, Type::BTreeSet(element) if matches!(**element, Type::I64))
+            || matches!(ty,
+                Type::Vec(i) | Type::Ref(i) | Type::RefMut(i) if ty_uses(i))
+    }
+    match stmt {
+        S::Let { ty, .. } | S::Reassign { ty, .. } | S::Drop { ty, .. } => ty_uses(ty),
+        S::If { then_body, else_body, .. } => {
+            then_body.iter().any(stmt_uses_i64_btreeset)
+                || else_body.iter().any(stmt_uses_i64_btreeset)
+        }
+        S::While { body, .. } | S::For { body, .. } | S::ForIter { body, .. } => {
+            body.iter().any(stmt_uses_i64_btreeset)
+        }
+        _ => false,
+    }
+}
+
+/// Data-structures roadmap Level 2 — BTreeSet<i64> runtime
+/// helpers. v1 backed by sorted Vec<i64>: binary_search for
+/// lookup (O(log n)), memmove shift for insert / remove
+/// (O(n)). Naturally sorted iteration order. Real B-tree
+/// arena variant queued for Level 4.
+fn emit_intent_btreeset_helpers_c_body(out: &mut String) {
+    out.push_str(
+        "typedef struct { int64_t* keys; uint64_t len; uint64_t capacity; } intent_btreeset_i64;\n\
+         static INTENT_UNUSED intent_btreeset_i64 intent_btreeset_i64_new(void) {\n\
+         \x20 intent_btreeset_i64 s; s.keys = (int64_t*)0; s.len = 0; s.capacity = 0; return s;\n\
+         }\n\
+         static INTENT_UNUSED void intent_btreeset_i64_drop(intent_btreeset_i64* s) {\n\
+         \x20 if (s->keys) free(s->keys);\n\
+         \x20 s->keys = (int64_t*)0; s->len = 0; s->capacity = 0;\n\
+         }\n\
+         /* Returns the slot index where `k` lives or would be\n\
+         \x20  inserted to keep the array sorted ascending. */\n\
+         static INTENT_UNUSED uint64_t intent_btreeset_i64__lower_bound(const intent_btreeset_i64* s, int64_t k) {\n\
+         \x20 uint64_t lo = 0; uint64_t hi = s->len;\n\
+         \x20 while (lo < hi) {\n\
+         \x20   uint64_t mid = lo + (hi - lo) / 2;\n\
+         \x20   if (s->keys[mid] < k) lo = mid + 1; else hi = mid;\n\
+         \x20 }\n\
+         \x20 return lo;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_btreeset_i64_contains(const intent_btreeset_i64* s, int64_t k) {\n\
+         \x20 uint64_t i = intent_btreeset_i64__lower_bound(s, k);\n\
+         \x20 return i < s->len && s->keys[i] == k;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_btreeset_i64_len(const intent_btreeset_i64* s) {\n\
+         \x20 return (int64_t)s->len;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_btreeset_i64_insert(intent_btreeset_i64* s, int64_t k) {\n\
+         \x20 uint64_t i = intent_btreeset_i64__lower_bound(s, k);\n\
+         \x20 if (i < s->len && s->keys[i] == k) return false;\n\
+         \x20 if (s->len >= s->capacity) {\n\
+         \x20   s->capacity = s->capacity ? s->capacity * 2 : 4;\n\
+         \x20   s->keys = (int64_t*)realloc(s->keys, s->capacity * sizeof(int64_t));\n\
+         \x20   if (!s->keys) abort();\n\
+         \x20 }\n\
+         \x20 if (i < s->len) memmove(s->keys + i + 1, s->keys + i, (s->len - i) * sizeof(int64_t));\n\
+         \x20 s->keys[i] = k;\n\
+         \x20 s->len++;\n\
+         \x20 return true;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_btreeset_i64_remove(intent_btreeset_i64* s, int64_t k) {\n\
+         \x20 uint64_t i = intent_btreeset_i64__lower_bound(s, k);\n\
+         \x20 if (i >= s->len || s->keys[i] != k) return false;\n\
+         \x20 if (i + 1 < s->len) memmove(s->keys + i, s->keys + i + 1, (s->len - i - 1) * sizeof(int64_t));\n\
+         \x20 s->len--;\n\
+         \x20 return true;\n\
+         }\n\n",
+    );
 }
 
 /// Data-structures roadmap Level 1 — FNV-1a hash helpers.
@@ -3413,6 +3518,11 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
             }
             Type::HashMap(_, _) => {
                 out.push_str("  intent_hashmap_i64_i64_drop(&");
+                out.push_str(&local_name(name));
+                out.push_str(");\n");
+            }
+            Type::BTreeSet(_) => {
+                out.push_str("  intent_btreeset_i64_drop(&");
                 out.push_str(&local_name(name));
                 out.push_str(");\n");
             }
@@ -5797,6 +5907,26 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 opt = opt_c,
             )
         }
+        "btreeset_new" => "intent_btreeset_i64_new()".to_string(),
+        "btreeset_insert" => format!(
+            "intent_btreeset_i64_insert({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "btreeset_contains" => format!(
+            "intent_btreeset_i64_contains({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "btreeset_remove" => format!(
+            "intent_btreeset_i64_remove({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "btreeset_len" => format!(
+            "intent_btreeset_i64_len({})",
+            emit_expr(&args[0])
+        ),
         "hashmap_new" => "intent_hashmap_i64_i64_new()".to_string(),
         "hashmap_insert" => format!(
             "intent_hashmap_i64_i64_insert({}, ({}), ({}))",
@@ -6354,6 +6484,8 @@ pub(crate) fn c_leaf_type(ty: &Type) -> &'static str {
         Type::HashSet(_) => "intent_hashset_i64",
         // `HashMap<K, V>` — open-addressing. v1 (i64, i64) only.
         Type::HashMap(_, _) => "intent_hashmap_i64_i64",
+        // `BTreeSet<T>` — sorted-Vec backed. v1 i64 only.
+        Type::BTreeSet(_) => "intent_btreeset_i64",
         // `fn(T1, T2) -> R` has no fixed leaf spelling in C —
         // function-pointer types are declarator-shaped
         // (`R (*name)(T1, T2)`). Callers that need to emit a
@@ -6685,7 +6817,7 @@ fn divisor_helper(ty: &Type) -> &'static str {
         Type::U64 => "intent_check_u64_divisor",
         Type::F32 => "intent_check_f32_divisor",
         Type::F64 => "intent_check_f64_divisor",
-        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
+        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
             unreachable!("non-numeric type cannot be a divisor")
         }
     }
@@ -6719,6 +6851,7 @@ fn shift_helper(ty: &Type) -> &'static str {
         | Type::Deque(_)
         | Type::HashSet(_)
         | Type::HashMap(_, _)
+        | Type::BTreeSet(_)
         | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => unreachable!("shift count must be an integer"),
     }
 }

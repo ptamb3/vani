@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #305 — Level 2 #4: HashMap<i64, i64> open-addressing key/value map with 5 builtins; new hashmap.vani; 6 new lib tests. **The headline AFFINE-TENSION container ships under its v1 Copy-V scoping.**)
-**Test totals:** 1107 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 73 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #306 — Level 2 #5: BTreeSet<i64> ordered set on a sorted-Vec backing with 5 builtins (new / insert / contains / remove / len); new btreeset.vani; 6 new lib tests. Sorted-Vec is the v1 simplification — a node-arena B-tree is queued for Level 4.)
+**Test totals:** 1113 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 74 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,60 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 2 — BTreeSet<i64> (shipped 2026-05-28, closure #306)
+
+✅ AFFINE — new affine handle type `BTreeSet<T>` (v1 i64 only).
+Ordered set backed by a sorted heap-allocated `i64*` buffer; v1
+keeps the API minimal so we can layer in arena-backed B-tree
+nodes at Level 4 without re-touching call sites.
+
+**Layout:** `{ keys: i64*, len: u64, capacity: u64 }`. Keys held
+in ascending order; binary-search `lower_bound` finds the slot;
+inserts memmove the tail right; removes memmove the tail left.
+Grow doubles capacity (start 4) via `realloc`.
+
+**API (5 builtins):**
+- `btreeset_new() -> BTreeSet<i64>` — empty
+- `btreeset_insert(mut ref s, k) -> bool` — true iff newly
+  inserted; duplicates return false
+- `btreeset_contains(ref s, k) -> bool`
+- `btreeset_remove(mut ref s, k) -> bool` — true iff was present
+- `btreeset_len(ref s) -> i64`
+
+**Codegen:**
+- **Tree-C**: `intent_btreeset_i64` struct + helpers in body via
+  `program_uses_i64_btreeset` walker. C-level `lower_bound` is
+  a static inline using `<` on i64.
+- **Tree-LLVM**: `%intent_btreeset_i64 = type { i64*, i64, i64 }`
+  preamble typedef + module-level `define`s for new / drop /
+  __lower_bound (internal) / contains / len / insert / remove.
+  Insert path: lower_bound → equal-key short-circuit → grow if
+  full → memmove tail → store. Remove path: lower_bound →
+  equal-key check → memmove tail → decrement len.
+- **SSA**: routes through tree backends via the `ssa_path_supports`
+  reject list.
+- **Drop**: both backends free `keys` at scope exit.
+
+**v1 restrictions:**
+- T = i64 only. Wider widths (`BTreeSet<Str>`,
+  `BTreeSet<MyEnum>` via a user `Ord` trait) deferred.
+- Sorted-Vec backing (O(log n) lookup, O(n) insert/remove).
+  Real B-tree node arena queued for Level 4.
+- No range / iteration builtin yet (lands with Level 3 closures
+  alongside `for k in btreeset` and `btreeset_range`).
+
+**Tests:** 6 lib tests (basics + LLVM compile; insert rejects
+ref (non-mut); remove rejects ref (non-mut); `BTreeSet` name
+reserved against user structs; C runtime emitted; LLVM typedef
++ helpers emitted). `examples/btreeset.vani` covers first-time
+inserts vs duplicates, contains hit/miss, bulk insert triggering
+grow, remove of present-vs-absent keys, and a drain loop.
+Cross-backend parity green.
+
+**Pending follow-ups:** node-arena B-tree (Level 4); range
+queries; non-i64 keys via user `Ord`; iteration via closures
+(Level 3).
 
 ### Data-structures roadmap Level 2 — HashMap<i64, i64> (shipped 2026-05-28, closure #305)
 

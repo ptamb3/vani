@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -437,7 +437,7 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // built-in `Type::Task`, leading to confusing
     // "got Task" errors deep in the pipeline.
     const RESERVED_TYPE_NAMES: &[&str] = &[
-        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "HashSet", "HashMap", "OwnedStr", "Self",
+        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "HashSet", "HashMap", "BTreeSet", "OwnedStr", "Self",
     ];
     for decl in &program.structs {
         if RESERVED_TYPE_NAMES.contains(&decl.name.as_str()) {
@@ -12017,6 +12017,15 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "btreeset_new"
+        | "btreeset_insert"
+        | "btreeset_contains"
+        | "btreeset_remove"
+        | "btreeset_len" => {
+            return check_btreeset_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "clone" => return check_clone_builtin(args, env, signatures, span, diagnostics),
         "clone_at" => {
             return check_clone_at_builtin(args, env, signatures, span, diagnostics)
@@ -14908,6 +14917,141 @@ fn check_hashmap_builtin(
             Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
         }
         "hashmap_contains_key" => Type::Bool,
+        _ => Type::I64,
+    };
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        ret_ty,
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 2 — BTreeSet<i64> builtins.
+/// v1 backed by a sorted Vec<i64>: binary_search for lookup,
+/// memmove shift for insert/remove. Sorted iteration order.
+fn check_btreeset_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args = match name {
+        "btreeset_new" => 0,
+        "btreeset_len" => 1,
+        _ => 2,
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}() expects {} argument{}, got {}",
+                name,
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        let ret_ty = match name {
+            "btreeset_new" => Type::BTreeSet(Box::new(Type::I64)),
+            "btreeset_insert" | "btreeset_contains" | "btreeset_remove" => Type::Bool,
+            _ => Type::I64,
+        };
+        return CheckedExpr::fallback(ret_ty, span);
+    }
+    if name == "btreeset_new" {
+        return CheckedExpr::new(
+            TypedExprKind::Call {
+                name: "btreeset_new".to_string(),
+                name_span: span,
+                args: Vec::new(),
+            },
+            Type::BTreeSet(Box::new(Type::I64)),
+            None,
+            span,
+        );
+    }
+    let s = check_expr(&args[0], env, signatures, diagnostics);
+    let is_mut_op = matches!(name, "btreeset_insert" | "btreeset_remove");
+    let element_type = match s.ty() {
+        Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
+            Type::BTreeSet(element) => (**element).clone(),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "{}() requires a `{}BTreeSet<i64>` argument, got {}",
+                        name,
+                        if is_mut_op { "mut ref " } else { "ref " },
+                        s.ty()
+                    ),
+                ));
+                let ret_ty = match name {
+                    "btreeset_insert" | "btreeset_contains" | "btreeset_remove" => Type::Bool,
+                    _ => Type::I64,
+                };
+                return CheckedExpr::fallback(ret_ty, span);
+            }
+        },
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "{}() requires a `{}BTreeSet<i64>` argument, got {}",
+                    name,
+                    if is_mut_op { "mut ref " } else { "ref " },
+                    other
+                ),
+            ));
+            let ret_ty = match name {
+                "btreeset_insert" | "btreeset_contains" | "btreeset_remove" => Type::Bool,
+                _ => Type::I64,
+            };
+            return CheckedExpr::fallback(ret_ty, span);
+        }
+    };
+    if is_mut_op && !matches!(s.ty(), Type::RefMut(_)) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() requires a `mut ref BTreeSet<i64>` argument, got {}",
+                name,
+                s.ty()
+            ),
+        ));
+    }
+    if !matches!(element_type, Type::I64) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() only supports `BTreeSet<i64>` in v1, got BTreeSet<{}>",
+                name, element_type
+            ),
+        ));
+    }
+    let mut typed_args = vec![s.expr];
+    if matches!(
+        name,
+        "btreeset_insert" | "btreeset_contains" | "btreeset_remove"
+    ) {
+        let v_raw = check_expr(&args[1], env, signatures, diagnostics);
+        let v = coerce_checked(
+            v_raw,
+            &Type::I64,
+            args[1].span,
+            "btreeset value",
+            diagnostics,
+        );
+        typed_args.push(v.expr);
+    }
+    let ret_ty = match name {
+        "btreeset_insert" | "btreeset_contains" | "btreeset_remove" => Type::Bool,
         _ => Type::I64,
     };
     CheckedExpr::new(

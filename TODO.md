@@ -128,6 +128,14 @@ pointer (already in the language as of #279 FFI callbacks).
     `Vec<u32>` indices into a node arena, NOT child pointers) so
     every node owns its subtree linearly. Same drop walk as
     Level-1 Vec.
+    *Shipped 2026-05-28 (closure #306) for v1 T = i64* — sorted
+    `i64*` backing with binary-search `lower_bound`; memmove for
+    insert/remove. Real B-tree node arena queued for Level 4.
+    API: `btreeset_new / insert / contains / remove / len`. Drop
+    frees keys at scope exit. 6 lib tests + parity example
+    `examples/btreeset.vani`. Cross-backend parity green. Pending
+    follow-ups: range queries; non-i64 keys via user Ord;
+    iteration via Level 3 closures.
 14. **BTreeMap\<K, V\>** — ⚠️ AFFINE-TENSION (same contract as #12).
 15. **Deque\<T\> (VecDeque)** — ✅ AFFINE.
     Ring buffer over `Vec<T>` with `front_idx` / `len`.
@@ -488,7 +496,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #305 — Level 2 #4: HashMap<i64, i64> open-addressing key/value map with 5 builtins (new / insert / get / contains_key / len) + scope-exit Drop + 6 lib tests + new hashmap.vani parity example. **The headline AFFINE-TENSION container is now shipped under its v1 Copy-V scoping.** Next focal area: Level 2 #5+ — BTreeSet<i64> + BTreeMap<i64, i64> (ordered variants). After Level 2 closes: Level 3 closures + iterator combinators; Level 4 arenas. Deferred: hashmap_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, hashset_remove, SipHash, hash_f64, Hash interface for user structs, heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-28, after closure #306 — Level 2 #5: BTreeSet<i64> ordered set on a sorted-Vec backing with 5 builtins (new / insert / contains / remove / len) + scope-exit Drop + 6 lib tests + new btreeset.vani parity example. Sorted-Vec is the v1 simplification — a node-arena B-tree is queued for Level 4. Next focal area: Level 2 #6 — BTreeMap<i64, i64> (final Level 2 item, same sorted-Vec pattern with parallel keys + values arrays). After Level 2 closes: Level 3 closures + iterator combinators; Level 4 arenas. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset range queries + iteration via closures, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

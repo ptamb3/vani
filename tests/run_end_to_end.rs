@@ -827,6 +827,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "borrows.vani",
         "bounded_generics.vani",
         "bounds_elision.vani",
+        "btreeset.vani",
         "composite_types.vani",
         "concurrency.vani",
         "condvar.vani",
