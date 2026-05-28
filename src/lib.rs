@@ -12133,6 +12133,101 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn swap_remove_typechecks_and_returns_element_type() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20, 30);
+              let r: i64 = swap_remove(mut ref xs, 1 as u64);
+              return r;
+            }
+        "#;
+        compile_to_c(source).expect("swap_remove must type-check");
+        compile_to_llvm(source).expect("swap_remove must compile to LLVM");
+    }
+
+    #[test]
+    fn insert_typechecks_and_returns_new_len() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let n: i64 = insert(mut ref xs, 0 as u64, 99);
+              return n;
+            }
+        "#;
+        compile_to_c(source).expect("insert must type-check");
+        compile_to_llvm(source).expect("insert must compile to LLVM");
+    }
+
+    #[test]
+    fn clear_typechecks_and_returns_zero() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let _ = clear(mut ref xs);
+              return len(ref xs) as i64;
+            }
+        "#;
+        compile_to_c(source).expect("clear must type-check");
+        compile_to_llvm(source).expect("clear must compile to LLVM");
+    }
+
+    #[test]
+    fn mutators_reject_non_mut_ref_arg() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              let _ = swap_remove(xs, 0 as u64);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("swap_remove with by-value Vec must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref Vec<T>")),
+            "expected mut-ref-Vec diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn insert_rejects_wrong_value_type() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              let _ = insert(mut ref xs, 0 as u64, true);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("insert with bool value must fail");
+        assert!(
+            !errors.is_empty(),
+            "insert with wrong value type must produce a diagnostic"
+        );
+    }
+
+    #[test]
+    fn mutators_emit_runtime_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let _ = swap_remove(mut ref xs, 0 as u64);
+              let _ = insert(mut ref xs, 0 as u64, 99);
+              let _ = clear(mut ref xs);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("mutators program must compile");
+        assert!(
+            c.contains("__swap_remove")
+                && c.contains("__insert")
+                && c.contains("__clear"),
+            "C output must include all three mutator runtime helpers; got:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn reverse_and_dedup_emit_runtime_helpers_in_c() {
         let source = r#"
             fn main() -> i64 {

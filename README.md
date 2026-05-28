@@ -54,7 +54,7 @@ orchestration, and testing, but Rust is the better default for a
 compiler that must be fast, memory-safe, deterministic, and close to
 ABI / native code generation.
 
-## Feature set (closures #1–#295)
+## Feature set (closures #1–#296)
 
 vāṇī today is a working systems language with the following shipped
 features. Surface that **reads natural-language** sits on top of a
@@ -2782,6 +2782,7 @@ real use cases:
 | Sort (in-place) | `sort(mut ref xs)` / `sort_by(mut ref xs, cmp: fn(i64, i64) -> i64)` on `Vec<i64>` (closure #293) | ✅ AFFINE |
 | Reverse / dedup | `reverse(mut ref xs)` (any Copy element) / `dedup(mut ref xs)` (Vec<i64>) (closure #294) | ✅ AFFINE |
 | Search | `find(ref xs, needle) -> Option<i64>` / `contains(ref xs, needle) -> bool` / `binary_search(ref xs, needle) -> Option<i64>` on `Vec<i64>` (closure #295) | ✅ AFFINE |
+| Mutators | `swap_remove(mut ref xs, i) -> T` / `insert(mut ref xs, i, v) -> i64` / `clear(mut ref xs) -> i64` (any non-array element) (closure #296) | ✅ AFFINE |
 | Queue (concurrent) | `Channel<T, N>` MPSC ring buffer w/ futex blocking | ✅ AFFINE |
 | Wait / signal | `Condvar` w/ `wait` / `wait_timeout` / `notify_one` / `notify_all` (closure #292) | ✅ AFFINE |
 | Array (fixed) | `[T; N]` w/ nested-array support (closure #291) | ✅ AFFINE |
@@ -2798,7 +2799,7 @@ plan and affine contract) lives in [TODO.md](TODO.md) under the
 
 | Level | Items | Affine flag |
 |-------|-------|-------------|
-| **1 — Operations on existing primitives** | ✅ `Vec.sort` / `sort_by(fn)` (#293) · ✅ `Vec.reverse` / `Vec.dedup` (#294) · ✅ `Vec.find` / `contains` / `binary_search` (#295) · ⏳ `Vec.swap_remove` / `insert` / `clear`, `Array.sort` / `find` (Copy only), `String.split` / `contains` / `starts_with` / `ends_with` / `trim` / `replace`, `String.parse_int` / `parse_float`, math (`pow`, `abs`, `sqrt`, `sin` / `cos` / `tan`, `floor` / `ceil`, fn-form `min` / `max`), RNG (`seed_rng`, `rand_i64`, `rand_in_range`), `Hash` interface + FNV-1a / SipHash builtin (`Vec.pop` shipped via closure #219) | ✅ AFFINE |
+| **1 — Operations on existing primitives** | ✅ `Vec.sort` / `sort_by(fn)` (#293) · ✅ `Vec.reverse` / `Vec.dedup` (#294) · ✅ `Vec.find` / `contains` / `binary_search` (#295) · ✅ `Vec.swap_remove` / `insert` / `clear` (#296) · ⏳ `Array.sort` / `find` (Copy only), `String.split` / `contains` / `starts_with` / `ends_with` / `trim` / `replace`, `String.parse_int` / `parse_float`, math (`pow`, `abs`, `sqrt`, `sin` / `cos` / `tan`, `floor` / `ceil`, fn-form `min` / `max`), RNG (`seed_rng`, `rand_i64`, `rand_in_range`), `Hash` interface + FNV-1a / SipHash builtin (`Vec.pop` shipped via closure #219) | ✅ AFFINE |
 | **2 — Generic containers** (deps: Level 1, generic decls #281) | `HashSet<T>` (✅ Copy / ⚠️ owning), `HashMap<K, V>` (⚠️ — `get -> Option<ref V>`, `insert` consumes, `remove` moves), `BTreeSet<T>` (✅ Copy / ⚠️ owning), `BTreeMap<K, V>` (⚠️ same contract), `Deque<T>` ring buffer (✅), `BinaryHeap<T>` (✅) | ✅ / ⚠️ AFFINE-TENSION |
 | **3 — Closures + iterators** | Closures w/ captured state (⚠️ capture-by-value moves; capture-by-ref produces a second-class closure), `.map(f).filter(p).fold(init, g)` loop-fused (✅), `sort_by` / `find_by` lifted to closure (✅) | ✅ / ⚠️ AFFINE-TENSION |
 | **4 — Advanced / domain-specific** | BST / AVL / red-black via node arena + `i32` child indices (✅), B-tree arena (✅), Trie arena (✅), graphs as `Vec<Node>` + `Vec<Vec<u32>>` adjacency (✅), graph algorithms BFS / DFS / Dijkstra / A* / topo / Kruskal / Prim (✅), Union-Find (✅), skip list (✅), Bloom filter (✅) | ✅ AFFINE |

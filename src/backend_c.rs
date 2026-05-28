@@ -1633,6 +1633,68 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
         ));
     }
 
+    // Data-structures roadmap Level 1 mutators:
+    // swap_remove / insert / clear. Skipped for array elements
+    // (matches pop's gate; the checker also rejects them).
+    if !element_is_array {
+        // swap_remove(i): tmp = xs->data[i]; xs->data[i] =
+        // xs->data[len-1]; len--; return tmp. O(1) — order
+        // NOT preserved.
+        out.push_str(&format!(
+            "static INTENT_UNUSED {ct} {sn}__swap_remove({sn}* xs, uint64_t i) {{\
+\n    if (i >= xs->len) {{ fprintf(stderr, \"swap_remove: index out of bounds\\n\"); abort(); }}\
+\n    {ct} tmp = xs->data[i];\
+\n    xs->len--;\
+\n    if (i < xs->len) {{ xs->data[i] = xs->data[xs->len]; }}\
+\n    return tmp;\
+\n}}\n",
+            sn = struct_name,
+            ct = c_element,
+        ));
+        // insert(i, v): grow if needed; memmove slots i.. right
+        // by one; place v at slot i. v is consumed (single-
+        // owner transfer into the slot).
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__insert({sn}* xs, uint64_t i, {ct} v) {{\
+\n    if (i > xs->len) {{ fprintf(stderr, \"insert: index out of bounds\\n\"); abort(); }}\
+\n    if (xs->len >= xs->capacity) {{\
+\n        xs->capacity = xs->capacity ? xs->capacity * 2 : 1;\
+\n        xs->data = ({ct}*)realloc(xs->data, xs->capacity * sizeof({ct}));\
+\n        if (!xs->data) abort();\
+\n    }}\
+\n    if (i < xs->len) {{ memmove(xs->data + i + 1, xs->data + i, (xs->len - i) * sizeof({ct})); }}\
+\n    xs->data[i] = v;\
+\n    xs->len++;\
+\n    return (int64_t)xs->len;\
+\n}}\n",
+            sn = struct_name,
+            ct = c_element,
+        ));
+        // clear: walk each live slot, drop its owning content
+        // (when non-Copy), set len=0. Buffer + capacity stay.
+        let elem_drop_walk = if element_is_copy {
+            String::new()
+        } else {
+            // Reuse the same per-element drop spelling the
+            // __free helper uses, but loop only over live
+            // slots and skip the final free(xs->data).
+            let one = c_element_drop_old("xs->data[__ci]", element);
+            format!(
+                "    for (uint64_t __ci = 0; __ci < xs->len; __ci++) {{\
+\n{}\n    }}\n",
+                one,
+            )
+        };
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__clear({sn}* xs) {{\
+\n{drop}    xs->len = 0;\
+\n    return 0;\
+\n}}\n",
+            sn = struct_name,
+            drop = elem_drop_walk,
+        ));
+    }
+
     // Data-structures roadmap Level 1: `reverse(mut ref xs)`.
     // Two-pointer in-place swap; works for any Copy element
     // type. Array-element slots use memcpy through a scratch
@@ -4835,6 +4897,45 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 xs = emit_expr(&args[0]),
                 n = emit_expr(&args[1]),
                 opt = opt_c,
+            )
+        }
+        "swap_remove" => {
+            // mut ref Vec<T>, i -> T (moves slot out, swaps
+            // with last). v1 rejects array element types in
+            // the checker.
+            let element = match args[0].ty.deref() {
+                Type::Vec(element) => element.clone(),
+                _ => unreachable!("swap_remove() arg 0 must be (mut ref) Vec<_>"),
+            };
+            format!(
+                "{}({}, (uint64_t)({}))",
+                vec_helper(&element, "swap_remove"),
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
+        "insert" => {
+            let element = match args[0].ty.deref() {
+                Type::Vec(element) => element.clone(),
+                _ => unreachable!("insert() arg 0 must be (mut ref) Vec<_>"),
+            };
+            format!(
+                "{}({}, (uint64_t)({}), {})",
+                vec_helper(&element, "insert"),
+                emit_expr(&args[0]),
+                emit_expr(&args[1]),
+                emit_expr(&args[2])
+            )
+        }
+        "clear" => {
+            let element = match args[0].ty.deref() {
+                Type::Vec(element) => element.clone(),
+                _ => unreachable!("clear() arg 0 must be (mut ref) Vec<_>"),
+            };
+            format!(
+                "{}({})",
+                vec_helper(&element, "clear"),
+                emit_expr(&args[0])
             )
         }
         "binary_search" => {

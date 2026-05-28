@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #295 — Vec search: find / contains / binary_search; sort.vani extended; 6 new lib tests)
-**Test totals:** 1047 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 65 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #296 — Vec mutators: swap_remove / insert / clear; sort.vani extended; 6 new lib tests)
+**Test totals:** 1053 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 65 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,52 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 1 — Vec mutators (swap_remove + insert + clear) (shipped 2026-05-28, closure #296)
+
+✅ AFFINE — all three are in-place over `mut ref Vec<T>`.
+
+**API:**
+- `swap_remove(mut ref xs, i) -> T` — O(1) remove by swapping
+  slot `i` with the last slot and decrementing len. Order NOT
+  preserved. Returns the removed element (by-move for non-Copy
+  T). Works for any non-array element.
+- `insert(mut ref xs, i, v) -> i64` — shift slots `i..` right
+  by one (memmove), place `v` at slot `i`, return the new
+  length. Consumes `v`. Works for any non-array element.
+- `clear(mut ref xs) -> i64` — drop each element (when non-Copy)
+  and reset `len = 0`. Capacity preserved (no realloc).
+
+**Codegen:**
+- **Tree-C**: `intent_vec_<T>__swap_remove` / `__insert` /
+  `__clear` runtime helpers emitted in `emit_vec_bundle`
+  alongside push_mut / pop_mut. insert uses `memmove` for the
+  shift; clear's drop walk reuses the per-element drop spell
+  from `c_element_drop_old` (the same helper the existing
+  `__set` and `__free` paths use).
+- **Tree-LLVM**: module-level `@intent_vec_<T>__swap_remove`
+  / `__insert` / `__clear` defs emitted in `emit_vec_helpers`
+  alongside push_mut / pop_mut. `@memmove` now declared in
+  both LLVM preambles (tree + SSA). insert grows capacity if
+  needed and reloads the data pointer post-realloc; clear's
+  drop walk emits per-element type dispatch (Vec<U> →
+  `__free`, OwnedStr → `@free`; other non-Copy shapes deferred
+  to a follow-up).
+- **SSA-C / SSA-LLVM**: route through tree via
+  `ssa_path_supports` gate (same pattern as push_mut / pop).
+
+**v1 restrictions:**
+- Array element types (`Vec<[T; N]>`) rejected by the checker
+  for all three (matches `pop`'s existing gate).
+- clear of `Vec<Struct{owning_field}>` and `Vec<Enum{payload}>`
+  doesn't drop per-element owning fields yet (just sets
+  len=0); leaks queued as a follow-up.
+
+**Tests:** 6 lib tests (typecheck for all three; rejects
+by-value Vec; rejects wrong value type for insert; runtime
+helpers emitted in C). `examples/sort.vani` extended with
+mutator demos. Cross-backend parity green across all
+sections.
 
 ### Data-structures roadmap Level 1 — Vec.find + Vec.contains + Vec.binary_search (shipped 2026-05-28, closure #295)
 

@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -11928,6 +11928,11 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "swap_remove" | "insert" | "clear" => {
+            return check_mutator_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "clone" => return check_clone_builtin(args, env, signatures, span, diagnostics),
         "clone_at" => {
             return check_clone_at_builtin(args, env, signatures, span, diagnostics)
@@ -13932,6 +13937,127 @@ fn check_search_builtin(
             args: vec![xs.expr, needle.expr],
         },
         ret_ty,
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 1 — in-place Vec mutators.
+///
+///   swap_remove(mut ref xs: Vec<T>, i: i64) -> T
+///       — O(1) remove at index i; slot's value moves to the
+///         caller. Implementation swaps slot i with the last
+///         slot, then decrements len. Order NOT preserved.
+///   insert(mut ref xs: Vec<T>, i: i64, v: T) -> i64
+///       — shift slots i.. right by one; place v at slot i.
+///         Returns the new len. Consumes v.
+///   clear(mut ref xs: Vec<T>) -> i64
+///       — drop every element (when non-Copy) and set len=0.
+///         Capacity is preserved (no realloc). Returns 0.
+///
+/// v1 element-type scope: any non-array element. Array elements
+/// (`Vec<[T; N]>`) skip these helpers in the C/LLVM emit (same
+/// rule as `pop`).
+fn check_mutator_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args = match name {
+        "swap_remove" => 2,
+        "insert" => 3,
+        "clear" => 1,
+        _ => unreachable!(),
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}(...) expects {} arguments, got {}",
+                name,
+                want_args,
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback_integer(span);
+    }
+    let xs = check_expr(&args[0], env, signatures, diagnostics);
+    let element_type = match xs.ty() {
+        Type::RefMut(inner) => match &**inner {
+            Type::Vec(element) => (**element).clone(),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "{}() requires a `mut ref Vec<T>` argument, got {}",
+                        name,
+                        xs.ty()
+                    ),
+                ));
+                return CheckedExpr::fallback_integer(span);
+            }
+        },
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "{}() requires a `mut ref Vec<T>` argument, got {}",
+                    name, other
+                ),
+            ));
+            return CheckedExpr::fallback_integer(span);
+        }
+    };
+    if matches!(element_type, Type::Array { .. }) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() does not support Vec<[T; N]> in v1; defer to a follow-up",
+                name
+            ),
+        ));
+        return CheckedExpr::fallback_integer(span);
+    }
+    let result_ty = match name {
+        "swap_remove" => element_type.clone(),
+        _ => Type::I64,
+    };
+    let mut typed_args = vec![xs.expr];
+    if name == "swap_remove" || name == "insert" {
+        let i_raw = check_expr(&args[1], env, signatures, diagnostics);
+        let i_checked = coerce_checked(
+            i_raw,
+            &Type::U64,
+            args[1].span,
+            "index argument",
+            diagnostics,
+        );
+        typed_args.push(i_checked.expr);
+    }
+    if name == "insert" {
+        let v_raw = check_expr(&args[2], env, signatures, diagnostics);
+        let v_checked = coerce_checked(
+            v_raw,
+            &element_type,
+            args[2].span,
+            "insert value",
+            diagnostics,
+        );
+        // For non-Copy element types, the value moves into the
+        // slot. Mark the source binding as moved.
+        consume_if_moved_var(&args[2], &v_checked, env);
+        typed_args.push(v_checked.expr);
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        result_ty,
         None,
         span,
     )

@@ -307,6 +307,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "reverse" || name == "dedup"
                 || name == "find" || name == "contains"
                 || name == "binary_search"
+                || name == "swap_remove" || name == "insert"
+                || name == "clear"
             {
                 return false;
             }

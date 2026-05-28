@@ -148,6 +148,7 @@ pub fn emit(module: &Module) -> Result<String, EmitError> {
     out.push_str("declare i8* @realloc(i8*, i64)\n");
     out.push_str("declare void @free(i8*)\n");
     out.push_str("declare i8* @memcpy(i8*, i8*, i64)\n");
+    out.push_str("declare i8* @memmove(i8*, i8*, i64)\n");
     out.push_str("declare i32 @strcmp(i8*, i8*)\n");
     out.push_str("declare i64 @strlen(i8*)\n");
     // Empty string global used by the per-element Vec

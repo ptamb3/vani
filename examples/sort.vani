@@ -137,5 +137,28 @@ fn main() -> i64 {
   };
   print "binary_search 35:", bs_miss_idx;
 
+  // Mutators: swap_remove / insert / clear.
+  let muts: Vec<i64> = vec(11, 22, 33, 44, 55);
+  let removed: i64 = swap_remove(mut ref muts, 1 as u64);
+  print "swap_remove(1):", removed;
+  print "after swap_remove len:", len(ref muts) as i64;
+  let mi: i64 = 0;
+  while mi < (len(ref muts) as i64) {
+    print muts[mi];
+    mi = mi + 1;
+  }
+
+  let _ = insert(mut ref muts, 0 as u64, 99);
+  let _ = insert(mut ref muts, 2 as u64, 77);
+  print "after insert:";
+  let ii: i64 = 0;
+  while ii < (len(ref muts) as i64) {
+    print muts[ii];
+    ii = ii + 1;
+  }
+
+  let _ = clear(mut ref muts);
+  print "after clear len:", len(ref muts) as i64;
+
   return 0;
 }

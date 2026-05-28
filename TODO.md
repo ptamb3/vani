@@ -488,7 +488,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #295 — Vec.find / Vec.contains / Vec.binary_search lumped into one commit + auto-monomorphization of Option<i64> via Call-expr walker in the monomorphize pass + 6 lib tests + sort.vani extended. Next focal area: Level 1 items #4–#10 — swap_remove/insert/clear (in-place mutators), Array.sort, String ops, parse_int/parse_float, math + RNG + Hash interface.)
+## ⏳ Resume here (paused 2026-05-28, after closure #296 — Vec mutators swap_remove / insert / clear lumped into one commit + 6 lib tests + sort.vani extended. Next focal area: Level 1 items #5–#10 — Array.sort / Array.find (Copy only), String surface (split / contains / starts_with / ends_with / trim / replace / parse_int / parse_float), math, RNG, Hash interface.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)
