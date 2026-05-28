@@ -543,6 +543,12 @@ pub fn emit_c(program: &TypedProgram) -> String {
     if program_uses_i64_btreeset(program) {
         emit_intent_btreeset_helpers_c_body(&mut body);
     }
+    if program_uses_i64_i64_btreemap(program) {
+        let has_option_i64 = ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        emit_intent_btreemap_helpers_c_body(&mut body, has_option_i64);
+    }
 
     for function in &program.functions {
         emit_prototype(function, &mut body);
@@ -1158,6 +1164,141 @@ fn emit_intent_btreeset_helpers_c_body(out: &mut String) {
          \x20 return true;\n\
          }\n\n",
     );
+}
+
+/// Walk the program for any `BTreeMap<i64, i64>` type usage.
+pub(crate) fn program_uses_i64_i64_btreemap(program: &TypedProgram) -> bool {
+    fn ty_uses(ty: &Type) -> bool {
+        match ty {
+            Type::BTreeMap(k, v)
+                if matches!(**k, Type::I64) && matches!(**v, Type::I64) =>
+            {
+                true
+            }
+            Type::Vec(inner) | Type::Ref(inner) | Type::RefMut(inner) => ty_uses(inner),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if ty_uses(&f.return_type) {
+            return true;
+        }
+        for p in &f.params {
+            if ty_uses(&p.ty) {
+                return true;
+            }
+        }
+        for s in &f.body {
+            if stmt_uses_i64_i64_btreemap(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn stmt_uses_i64_i64_btreemap(stmt: &crate::ir::TypedStmt) -> bool {
+    use crate::ir::TypedStmt as S;
+    fn ty_uses(ty: &Type) -> bool {
+        matches!(ty, Type::BTreeMap(k, v)
+            if matches!(**k, Type::I64) && matches!(**v, Type::I64))
+            || matches!(ty,
+                Type::Vec(i) | Type::Ref(i) | Type::RefMut(i) if ty_uses(i))
+    }
+    match stmt {
+        S::Let { ty, .. } | S::Reassign { ty, .. } | S::Drop { ty, .. } => ty_uses(ty),
+        S::If { then_body, else_body, .. } => {
+            then_body.iter().any(stmt_uses_i64_i64_btreemap)
+                || else_body.iter().any(stmt_uses_i64_i64_btreemap)
+        }
+        S::While { body, .. } | S::For { body, .. } | S::ForIter { body, .. } => {
+            body.iter().any(stmt_uses_i64_i64_btreemap)
+        }
+        _ => false,
+    }
+}
+
+/// Data-structures roadmap Level 2 — BTreeMap<i64, i64> runtime
+/// helpers (closure #307). v1 backed by parallel sorted `keys`
+/// + `values` Vecs. Binary-search lower_bound for lookup (O(log
+/// n)), memmove shift for insert / remove (O(n)). Naturally
+/// sorted iteration order. `btreemap_get` / `btreemap_insert`
+/// / `btreemap_remove` return `Option<i64>` and so are gated on
+/// the Option__i64 enum being registered. `_contains_key` /
+/// `_len` are always emitted.
+fn emit_intent_btreemap_helpers_c_body(out: &mut String, has_option_i64: bool) {
+    out.push_str(
+        "typedef struct { int64_t* keys; int64_t* values; uint64_t len; uint64_t capacity; } intent_btreemap_i64_i64;\n\
+         static INTENT_UNUSED intent_btreemap_i64_i64 intent_btreemap_i64_i64_new(void) {\n\
+         \x20 intent_btreemap_i64_i64 m;\n\
+         \x20 m.keys = (int64_t*)0; m.values = (int64_t*)0; m.len = 0; m.capacity = 0;\n\
+         \x20 return m;\n\
+         }\n\
+         static INTENT_UNUSED void intent_btreemap_i64_i64_drop(intent_btreemap_i64_i64* m) {\n\
+         \x20 if (m->keys) free(m->keys);\n\
+         \x20 if (m->values) free(m->values);\n\
+         \x20 m->keys = (int64_t*)0; m->values = (int64_t*)0; m->len = 0; m->capacity = 0;\n\
+         }\n\
+         static INTENT_UNUSED uint64_t intent_btreemap_i64_i64__lower_bound(const intent_btreemap_i64_i64* m, int64_t k) {\n\
+         \x20 uint64_t lo = 0; uint64_t hi = m->len;\n\
+         \x20 while (lo < hi) {\n\
+         \x20   uint64_t mid = lo + (hi - lo) / 2;\n\
+         \x20   if (m->keys[mid] < k) lo = mid + 1; else hi = mid;\n\
+         \x20 }\n\
+         \x20 return lo;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_btreemap_i64_i64_contains_key(const intent_btreemap_i64_i64* m, int64_t k) {\n\
+         \x20 uint64_t i = intent_btreemap_i64_i64__lower_bound(m, k);\n\
+         \x20 return i < m->len && m->keys[i] == k;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_btreemap_i64_i64_len(const intent_btreemap_i64_i64* m) {\n\
+         \x20 return (int64_t)m->len;\n\
+         }\n",
+    );
+    if has_option_i64 {
+        out.push_str(
+            "static INTENT_UNUSED Enum_Option__i64 intent_btreemap_i64_i64_get(const intent_btreemap_i64_i64* m, int64_t k) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 uint64_t i = intent_btreemap_i64_i64__lower_bound(m, k);\n\
+             \x20 if (i < m->len && m->keys[i] == k) { r.tag = 0; r.payload = m->values[i]; return r; }\n\
+             \x20 r.tag = 1; r.payload = 0; return r;\n\
+             }\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_btreemap_i64_i64_insert(intent_btreemap_i64_i64* m, int64_t k, int64_t v) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 uint64_t i = intent_btreemap_i64_i64__lower_bound(m, k);\n\
+             \x20 if (i < m->len && m->keys[i] == k) {\n\
+             \x20   r.tag = 0; r.payload = m->values[i];\n\
+             \x20   m->values[i] = v;\n\
+             \x20   return r;\n\
+             \x20 }\n\
+             \x20 if (m->len >= m->capacity) {\n\
+             \x20   m->capacity = m->capacity ? m->capacity * 2 : 4;\n\
+             \x20   m->keys = (int64_t*)realloc(m->keys, m->capacity * sizeof(int64_t));\n\
+             \x20   m->values = (int64_t*)realloc(m->values, m->capacity * sizeof(int64_t));\n\
+             \x20   if (!m->keys || !m->values) abort();\n\
+             \x20 }\n\
+             \x20 if (i < m->len) {\n\
+             \x20   memmove(m->keys + i + 1, m->keys + i, (m->len - i) * sizeof(int64_t));\n\
+             \x20   memmove(m->values + i + 1, m->values + i, (m->len - i) * sizeof(int64_t));\n\
+             \x20 }\n\
+             \x20 m->keys[i] = k; m->values[i] = v;\n\
+             \x20 m->len++;\n\
+             \x20 r.tag = 1; r.payload = 0; return r;\n\
+             }\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_btreemap_i64_i64_remove(intent_btreemap_i64_i64* m, int64_t k) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 uint64_t i = intent_btreemap_i64_i64__lower_bound(m, k);\n\
+             \x20 if (i >= m->len || m->keys[i] != k) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 r.tag = 0; r.payload = m->values[i];\n\
+             \x20 if (i + 1 < m->len) {\n\
+             \x20   memmove(m->keys + i, m->keys + i + 1, (m->len - i - 1) * sizeof(int64_t));\n\
+             \x20   memmove(m->values + i, m->values + i + 1, (m->len - i - 1) * sizeof(int64_t));\n\
+             \x20 }\n\
+             \x20 m->len--;\n\
+             \x20 return r;\n\
+             }\n\n",
+        );
+    }
 }
 
 /// Data-structures roadmap Level 1 — FNV-1a hash helpers.
@@ -3523,6 +3664,11 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
             }
             Type::BTreeSet(_) => {
                 out.push_str("  intent_btreeset_i64_drop(&");
+                out.push_str(&local_name(name));
+                out.push_str(");\n");
+            }
+            Type::BTreeMap(_, _) => {
+                out.push_str("  intent_btreemap_i64_i64_drop(&");
                 out.push_str(&local_name(name));
                 out.push_str(");\n");
             }
@@ -5927,6 +6073,32 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_btreeset_i64_len({})",
             emit_expr(&args[0])
         ),
+        "btreemap_new" => "intent_btreemap_i64_i64_new()".to_string(),
+        "btreemap_insert" => format!(
+            "intent_btreemap_i64_i64_insert({}, ({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
+        "btreemap_get" => format!(
+            "intent_btreemap_i64_i64_get({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "btreemap_contains_key" => format!(
+            "intent_btreemap_i64_i64_contains_key({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "btreemap_remove" => format!(
+            "intent_btreemap_i64_i64_remove({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "btreemap_len" => format!(
+            "intent_btreemap_i64_i64_len({})",
+            emit_expr(&args[0])
+        ),
         "hashmap_new" => "intent_hashmap_i64_i64_new()".to_string(),
         "hashmap_insert" => format!(
             "intent_hashmap_i64_i64_insert({}, ({}), ({}))",
@@ -6486,6 +6658,8 @@ pub(crate) fn c_leaf_type(ty: &Type) -> &'static str {
         Type::HashMap(_, _) => "intent_hashmap_i64_i64",
         // `BTreeSet<T>` — sorted-Vec backed. v1 i64 only.
         Type::BTreeSet(_) => "intent_btreeset_i64",
+        // `BTreeMap<K, V>` — sorted-Vec backed parallel arrays. v1 (i64, i64) only.
+        Type::BTreeMap(_, _) => "intent_btreemap_i64_i64",
         // `fn(T1, T2) -> R` has no fixed leaf spelling in C —
         // function-pointer types are declarator-shaped
         // (`R (*name)(T1, T2)`). Callers that need to emit a
@@ -6817,7 +6991,7 @@ fn divisor_helper(ty: &Type) -> &'static str {
         Type::U64 => "intent_check_u64_divisor",
         Type::F32 => "intent_check_f32_divisor",
         Type::F64 => "intent_check_f64_divisor",
-        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
+        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
             unreachable!("non-numeric type cannot be a divisor")
         }
     }
@@ -6852,6 +7026,7 @@ fn shift_helper(ty: &Type) -> &'static str {
         | Type::HashSet(_)
         | Type::HashMap(_, _)
         | Type::BTreeSet(_)
+        | Type::BTreeMap(_, _)
         | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => unreachable!("shift count must be an integer"),
     }
 }

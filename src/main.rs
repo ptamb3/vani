@@ -334,6 +334,9 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "btreeset_new" || name == "btreeset_insert"
                 || name == "btreeset_contains" || name == "btreeset_remove"
                 || name == "btreeset_len"
+                || name == "btreemap_new" || name == "btreemap_insert"
+                || name == "btreemap_get" || name == "btreemap_contains_key"
+                || name == "btreemap_remove" || name == "btreemap_len"
             {
                 return false;
             }

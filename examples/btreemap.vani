@@ -1,0 +1,90 @@
+// build & run:
+//   intentc run examples/btreemap.vani                          # LLVM backend
+//   intentc run examples/btreemap.vani --backend=c              # C backend
+//   intentc build examples/btreemap.vani -o /tmp/btreemap && /tmp/btreemap
+
+intent "BTreeMap<i64, i64> — ordered key/value map on sorted-Vec backing (Level 2 #6)";
+
+// v1 design: parallel sorted `keys` + `values` Vec<i64>;
+// binary-search lower_bound for O(log n) lookup; memmove
+// shift for O(n) insert / remove. Naturally sorted iteration
+// order (when iteration lands at Level 3). Real B-tree node
+// arena queued for Level 4.
+//
+//   btreemap_new() -> BTreeMap<i64, i64>
+//   btreemap_insert(mut ref m, k, v) -> Option<i64>
+//       returns the previous value at k (Some), or None
+//   btreemap_get(ref m, k) -> Option<i64>
+//   btreemap_contains_key(ref m, k) -> bool
+//   btreemap_remove(mut ref m, k) -> Option<i64>
+//       returns previous value if present, or None
+//   btreemap_len(ref m) -> i64
+//
+// AFFINE-TENSION note: for Copy V (i64 in v1), `get` returns
+// `Option<V>` by-value safely. Non-Copy V (Vec / OwnedStr)
+// would require `Option<ref V>` so the map keeps ownership —
+// that's a v2+ extension. v1 contract: V is Copy; get / insert
+// / remove all return fresh Copy values.
+
+fn unwrap_or(o: Option<i64>, def: i64) -> i64 {
+  return match o {
+    Option.Some(v) then v,
+    Option.None then def,
+  };
+}
+
+fn main() -> i64 {
+  let m: BTreeMap<i64, i64> = btreemap_new();
+
+  // Insert returns previous value (or None on first insert).
+  let p1: Option<i64> = btreemap_insert(mut ref m, 5, 50);
+  let p2: Option<i64> = btreemap_insert(mut ref m, 3, 30);
+  let p3: Option<i64> = btreemap_insert(mut ref m, 7, 70);
+  let p4: Option<i64> = btreemap_insert(mut ref m, 5, 555);
+  print "insert k=5 prev (None):", unwrap_or(p1, 0 - 1);
+  print "insert k=3 prev (None):", unwrap_or(p2, 0 - 1);
+  print "insert k=7 prev (None):", unwrap_or(p3, 0 - 1);
+  print "overwrite k=5 prev (50):", unwrap_or(p4, 0 - 1);
+
+  // Get returns Some(v) on match, None on miss.
+  print "get k=3 (30):", unwrap_or(btreemap_get(ref m, 3), 0 - 1);
+  print "get k=4 (none):", unwrap_or(btreemap_get(ref m, 4), 0 - 1);
+  print "get k=7 (70):", unwrap_or(btreemap_get(ref m, 7), 0 - 1);
+
+  print "contains 5:", btreemap_contains_key(ref m, 5);
+  print "contains 4:", btreemap_contains_key(ref m, 4);
+  print "len:", btreemap_len(ref m);
+
+  // Bulk insert triggers grow.
+  let i: i64 = 0;
+  while i < 50 {
+    let _ = btreemap_insert(mut ref m, i * 2, i * 10);
+    i = i + 1;
+  }
+  print "after bulk insert len:", btreemap_len(ref m);
+  print "get k=20 (100):", unwrap_or(btreemap_get(ref m, 20), 0 - 1);
+  print "get k=98 (490):", unwrap_or(btreemap_get(ref m, 98), 0 - 1);
+  print "get k=99 (none):", unwrap_or(btreemap_get(ref m, 99), 0 - 1);
+
+  // Remove returns previous value, or None.
+  print "remove k=20 prev (100):", unwrap_or(btreemap_remove(mut ref m, 20), 0 - 1);
+  print "remove k=999 prev (none):", unwrap_or(btreemap_remove(mut ref m, 999), 0 - 1);
+  print "contains 20 after remove:", btreemap_contains_key(ref m, 20);
+  print "len after remove:", btreemap_len(ref m);
+
+  // Drain a chunk via remove; existing keys contribute 1.
+  let drained: i64 = 0;
+  let j: i64 = 0;
+  while j < 10 {
+    let hit: i64 = match btreemap_remove(mut ref m, j * 2) {
+      Option.Some(_) then 1,
+      Option.None then 0,
+    };
+    drained = drained + hit;
+    j = j + 1;
+  }
+  print "drained from 0..20 step 2:", drained;
+  print "final len:", btreemap_len(ref m);
+
+  return 0;
+}

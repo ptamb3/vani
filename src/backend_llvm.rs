@@ -254,6 +254,7 @@ fn llvm_byte_size(ty: &Type) -> u64 {
         Type::HashSet(_) => 32, // {keys ptr, occupied ptr, len, capacity}
         Type::HashMap(_, _) => 40, // {keys ptr, values ptr, occ ptr, len, capacity}
         Type::BTreeSet(_) => 24, // {keys ptr, len, capacity}
+        Type::BTreeMap(_, _) => 32, // {keys ptr, values ptr, len, capacity}
         Type::Object(_) => 16, // fat pointer: vtable + data
         Type::Vec(_) => 24, // {data, len, cap} on 64-bit
         Type::Array { element, length } => llvm_byte_size(element) * length,
@@ -629,7 +630,9 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // HashMap<i64, i64> (closure #305): { keys*, values*, occ*, len, cap }.
     out.push_str("%intent_hashmap_i64_i64 = type { i64*, i64*, i8*, i64, i64 }\n");
     // BTreeSet<i64> (closure #306): { keys*, len, cap } — sorted-Vec backed.
-    out.push_str("%intent_btreeset_i64 = type { i64*, i64, i64 }\n\n");
+    out.push_str("%intent_btreeset_i64 = type { i64*, i64, i64 }\n");
+    // BTreeMap<i64, i64> (closure #307): { keys*, values*, len, cap } — sorted-Vec backed.
+    out.push_str("%intent_btreemap_i64_i64 = type { i64*, i64*, i64, i64 }\n\n");
 
     emit_intent_str_concat_definition(&mut out);
 
@@ -847,6 +850,15 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // BTreeSet<i64> helpers (closure #306).
     if crate::backend_c::program_uses_i64_btreeset(program) {
         emit_intent_btreeset_i64_helpers_llvm(&mut out);
+    }
+
+    // BTreeMap<i64, i64> helpers (closure #307). Gates Option-
+    // returning get/insert/remove on Option__i64 being registered.
+    if crate::backend_c::program_uses_i64_i64_btreemap(program) {
+        let has_option_i64 = LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        emit_intent_btreemap_i64_i64_helpers_llvm(&mut out, has_option_i64);
     }
 
     for function in &program.functions {
@@ -1552,6 +1564,15 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 if let Some((_, addr)) = ctx.locals.get(name).cloned() {
                     out.push_str(&format!(
                         "  call void @intent_btreeset_i64_drop(%intent_btreeset_i64* {})\n",
+                        addr
+                    ));
+                }
+                return;
+            }
+            if matches!(ty, Type::BTreeMap(_, _)) {
+                if let Some((_, addr)) = ctx.locals.get(name).cloned() {
+                    out.push_str(&format!(
+                        "  call void @intent_btreemap_i64_i64_drop(%intent_btreemap_i64_i64* {})\n",
                         addr
                     ));
                 }
@@ -4993,6 +5014,65 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // BTreeMap<i64, i64> builtins (closure #307).
+            if name == "btreemap_new" {
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_btreemap_i64_i64 @intent_btreemap_i64_i64_new()\n",
+                    dest
+                ));
+                return dest;
+            }
+            if name == "btreemap_insert" {
+                let m = emit_expr(&args[0], ctx, out);
+                let k = emit_expr(&args[1], ctx, out);
+                let v = emit_expr(&args[2], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %Enum_Option__i64 @intent_btreemap_i64_i64_insert(%intent_btreemap_i64_i64* {}, i64 {}, i64 {})\n",
+                    dest, m, k, v
+                ));
+                return dest;
+            }
+            if name == "btreemap_get" {
+                let m = emit_expr(&args[0], ctx, out);
+                let k = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %Enum_Option__i64 @intent_btreemap_i64_i64_get(%intent_btreemap_i64_i64* {}, i64 {})\n",
+                    dest, m, k
+                ));
+                return dest;
+            }
+            if name == "btreemap_remove" {
+                let m = emit_expr(&args[0], ctx, out);
+                let k = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %Enum_Option__i64 @intent_btreemap_i64_i64_remove(%intent_btreemap_i64_i64* {}, i64 {})\n",
+                    dest, m, k
+                ));
+                return dest;
+            }
+            if name == "btreemap_contains_key" {
+                let m = emit_expr(&args[0], ctx, out);
+                let k = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i1 @intent_btreemap_i64_i64_contains_key(%intent_btreemap_i64_i64* {}, i64 {})\n",
+                    dest, m, k
+                ));
+                return dest;
+            }
+            if name == "btreemap_len" {
+                let m = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_btreemap_i64_i64_len(%intent_btreemap_i64_i64* {})\n",
+                    dest, m
+                ));
+                return dest;
+            }
             // HashSet<i64> builtins (closure #304). Call
             // outlined helpers emitted at module scope.
             if name == "hashset_new" {
@@ -7855,6 +7935,263 @@ fn emit_intent_hashmap_i64_i64_helpers_llvm(out: &mut String, has_option_i64: bo
              \x20 %n1 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
              \x20 %n2 = insertvalue %Enum_Option__i64 %n1, i64 0, 1\n\
              \x20 ret %Enum_Option__i64 %n2\n\
+             }\n\n",
+        );
+    }
+}
+
+/// Data-structures roadmap Level 2 — BTreeMap<i64, i64>
+/// runtime helpers (closure #307). v1 backed by parallel
+/// sorted `keys` + `values` Vecs. Binary-search lower_bound
+/// for lookup (O(log n)), memmove shift for insert / remove
+/// (O(n)). `get` / `insert` / `remove` return `%Enum_Option__i64`
+/// and so are gated on Option__i64 being registered.
+fn emit_intent_btreemap_i64_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
+    out.push_str(
+        "define %intent_btreemap_i64_i64 @intent_btreemap_i64_i64_new() {\n\
+         \x20 %r0 = insertvalue %intent_btreemap_i64_i64 undef, i64* null, 0\n\
+         \x20 %r1 = insertvalue %intent_btreemap_i64_i64 %r0, i64* null, 1\n\
+         \x20 %r2 = insertvalue %intent_btreemap_i64_i64 %r1, i64 0, 2\n\
+         \x20 %r3 = insertvalue %intent_btreemap_i64_i64 %r2, i64 0, 3\n\
+         \x20 ret %intent_btreemap_i64_i64 %r3\n\
+         }\n\
+         define void @intent_btreemap_i64_i64_drop(%intent_btreemap_i64_i64* %m) {\n\
+         \x20 %kpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 0\n\
+         \x20 %vpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 1\n\
+         \x20 %keys = load i64*, i64** %kpp\n\
+         \x20 %vals = load i64*, i64** %vpp\n\
+         \x20 %k_null = icmp eq i64* %keys, null\n\
+         \x20 br i1 %k_null, label %d_v, label %d_fk\n\
+         d_fk:\n\
+         \x20 %k_i8 = bitcast i64* %keys to i8*\n\
+         \x20 call void @free(i8* %k_i8)\n\
+         \x20 br label %d_v\n\
+         d_v:\n\
+         \x20 %v_null = icmp eq i64* %vals, null\n\
+         \x20 br i1 %v_null, label %d_done, label %d_fv\n\
+         d_fv:\n\
+         \x20 %v_i8 = bitcast i64* %vals to i8*\n\
+         \x20 call void @free(i8* %v_i8)\n\
+         \x20 br label %d_done\n\
+         d_done:\n\
+         \x20 store i64* null, i64** %kpp\n\
+         \x20 store i64* null, i64** %vpp\n\
+         \x20 %lp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 2\n\
+         \x20 store i64 0, i64* %lp\n\
+         \x20 %cp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 3\n\
+         \x20 store i64 0, i64* %cp\n\
+         \x20 ret void\n\
+         }\n\
+         ; lower_bound: returns the index where k lives or\n\
+         ; would be inserted to keep keys[] sorted ascending.\n\
+         define internal i64 @intent_btreemap_i64_i64__lower_bound(%intent_btreemap_i64_i64* %m, i64 %k) {\n\
+         \x20 %kpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 0\n\
+         \x20 %lp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 2\n\
+         \x20 %keys = load i64*, i64** %kpp\n\
+         \x20 %len = load i64, i64* %lp\n\
+         \x20 %lo_p = alloca i64\n\
+         \x20 %hi_p = alloca i64\n\
+         \x20 store i64 0, i64* %lo_p\n\
+         \x20 store i64 %len, i64* %hi_p\n\
+         \x20 br label %lb_loop\n\
+         lb_loop:\n\
+         \x20 %lo = load i64, i64* %lo_p\n\
+         \x20 %hi = load i64, i64* %hi_p\n\
+         \x20 %cont = icmp ult i64 %lo, %hi\n\
+         \x20 br i1 %cont, label %lb_body, label %lb_done\n\
+         lb_body:\n\
+         \x20 %diff = sub i64 %hi, %lo\n\
+         \x20 %half = lshr i64 %diff, 1\n\
+         \x20 %mid = add i64 %lo, %half\n\
+         \x20 %slot = getelementptr i64, i64* %keys, i64 %mid\n\
+         \x20 %v = load i64, i64* %slot\n\
+         \x20 %lt = icmp slt i64 %v, %k\n\
+         \x20 br i1 %lt, label %lb_raise, label %lb_lower\n\
+         lb_raise:\n\
+         \x20 %lo_n = add i64 %mid, 1\n\
+         \x20 store i64 %lo_n, i64* %lo_p\n\
+         \x20 br label %lb_loop\n\
+         lb_lower:\n\
+         \x20 store i64 %mid, i64* %hi_p\n\
+         \x20 br label %lb_loop\n\
+         lb_done:\n\
+         \x20 %ret = load i64, i64* %lo_p\n\
+         \x20 ret i64 %ret\n\
+         }\n\
+         define i1 @intent_btreemap_i64_i64_contains_key(%intent_btreemap_i64_i64* %m, i64 %k) {\n\
+         \x20 %kpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 0\n\
+         \x20 %lp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 2\n\
+         \x20 %i = call i64 @intent_btreemap_i64_i64__lower_bound(%intent_btreemap_i64_i64* %m, i64 %k)\n\
+         \x20 %len = load i64, i64* %lp\n\
+         \x20 %ge = icmp uge i64 %i, %len\n\
+         \x20 br i1 %ge, label %c_no, label %c_check\n\
+         c_check:\n\
+         \x20 %keys = load i64*, i64** %kpp\n\
+         \x20 %slot = getelementptr i64, i64* %keys, i64 %i\n\
+         \x20 %v = load i64, i64* %slot\n\
+         \x20 %eq = icmp eq i64 %v, %k\n\
+         \x20 br i1 %eq, label %c_yes, label %c_no\n\
+         c_yes:\n\
+         \x20 ret i1 true\n\
+         c_no:\n\
+         \x20 ret i1 false\n\
+         }\n\
+         define i64 @intent_btreemap_i64_i64_len(%intent_btreemap_i64_i64* %m) {\n\
+         \x20 %lp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 2\n\
+         \x20 %len = load i64, i64* %lp\n\
+         \x20 ret i64 %len\n\
+         }\n",
+    );
+    if has_option_i64 {
+        out.push_str(
+            "define %Enum_Option__i64 @intent_btreemap_i64_i64_get(%intent_btreemap_i64_i64* %m, i64 %k) {\n\
+             \x20 %kpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 0\n\
+             \x20 %vpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 1\n\
+             \x20 %lp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 2\n\
+             \x20 %i = call i64 @intent_btreemap_i64_i64__lower_bound(%intent_btreemap_i64_i64* %m, i64 %k)\n\
+             \x20 %len = load i64, i64* %lp\n\
+             \x20 %ge = icmp uge i64 %i, %len\n\
+             \x20 br i1 %ge, label %g_none, label %g_check\n\
+             g_check:\n\
+             \x20 %keys = load i64*, i64** %kpp\n\
+             \x20 %slot = getelementptr i64, i64* %keys, i64 %i\n\
+             \x20 %v = load i64, i64* %slot\n\
+             \x20 %eq = icmp eq i64 %v, %k\n\
+             \x20 br i1 %eq, label %g_some, label %g_none\n\
+             g_some:\n\
+             \x20 %vals = load i64*, i64** %vpp\n\
+             \x20 %vslot = getelementptr i64, i64* %vals, i64 %i\n\
+             \x20 %val = load i64, i64* %vslot\n\
+             \x20 %s0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %s1 = insertvalue %Enum_Option__i64 %s0, i64 %val, 1\n\
+             \x20 ret %Enum_Option__i64 %s1\n\
+             g_none:\n\
+             \x20 %n0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %n1 = insertvalue %Enum_Option__i64 %n0, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %n1\n\
+             }\n\
+             define %Enum_Option__i64 @intent_btreemap_i64_i64_insert(%intent_btreemap_i64_i64* %m, i64 %k, i64 %v) {\n\
+             \x20 %kpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 0\n\
+             \x20 %vpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 1\n\
+             \x20 %lp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 2\n\
+             \x20 %cp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 3\n\
+             \x20 %i = call i64 @intent_btreemap_i64_i64__lower_bound(%intent_btreemap_i64_i64* %m, i64 %k)\n\
+             \x20 %len_pre = load i64, i64* %lp\n\
+             \x20 %inbounds = icmp ult i64 %i, %len_pre\n\
+             \x20 br i1 %inbounds, label %ins_check_eq, label %ins_grow_chk\n\
+             ins_check_eq:\n\
+             \x20 %keys_pre = load i64*, i64** %kpp\n\
+             \x20 %slot_pre = getelementptr i64, i64* %keys_pre, i64 %i\n\
+             \x20 %kpre = load i64, i64* %slot_pre\n\
+             \x20 %eq = icmp eq i64 %kpre, %k\n\
+             \x20 br i1 %eq, label %ins_update, label %ins_grow_chk\n\
+             ins_update:\n\
+             \x20 %vals_u = load i64*, i64** %vpp\n\
+             \x20 %vslot_u = getelementptr i64, i64* %vals_u, i64 %i\n\
+             \x20 %vold = load i64, i64* %vslot_u\n\
+             \x20 store i64 %v, i64* %vslot_u\n\
+             \x20 %u0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %u1 = insertvalue %Enum_Option__i64 %u0, i64 %vold, 1\n\
+             \x20 ret %Enum_Option__i64 %u1\n\
+             ins_grow_chk:\n\
+             \x20 %cap_pre = load i64, i64* %cp\n\
+             \x20 %need_grow = icmp uge i64 %len_pre, %cap_pre\n\
+             \x20 br i1 %need_grow, label %ins_grow, label %ins_shift\n\
+             ins_grow:\n\
+             \x20 %cap_zero = icmp eq i64 %cap_pre, 0\n\
+             \x20 %cap_d = mul i64 %cap_pre, 2\n\
+             \x20 %new_cap = select i1 %cap_zero, i64 4, i64 %cap_d\n\
+             \x20 %new_bytes = mul i64 %new_cap, 8\n\
+             \x20 %old_keys = load i64*, i64** %kpp\n\
+             \x20 %old_vals = load i64*, i64** %vpp\n\
+             \x20 %ok_i8 = bitcast i64* %old_keys to i8*\n\
+             \x20 %ov_i8 = bitcast i64* %old_vals to i8*\n\
+             \x20 %nk_i8 = call i8* @realloc(i8* %ok_i8, i64 %new_bytes)\n\
+             \x20 %nv_i8 = call i8* @realloc(i8* %ov_i8, i64 %new_bytes)\n\
+             \x20 %nk = bitcast i8* %nk_i8 to i64*\n\
+             \x20 %nv = bitcast i8* %nv_i8 to i64*\n\
+             \x20 store i64* %nk, i64** %kpp\n\
+             \x20 store i64* %nv, i64** %vpp\n\
+             \x20 store i64 %new_cap, i64* %cp\n\
+             \x20 br label %ins_shift\n\
+             ins_shift:\n\
+             \x20 %need_shift = icmp ult i64 %i, %len_pre\n\
+             \x20 br i1 %need_shift, label %ins_memmove, label %ins_store\n\
+             ins_memmove:\n\
+             \x20 %keys2 = load i64*, i64** %kpp\n\
+             \x20 %vals2 = load i64*, i64** %vpp\n\
+             \x20 %ksrc = getelementptr i64, i64* %keys2, i64 %i\n\
+             \x20 %vsrc = getelementptr i64, i64* %vals2, i64 %i\n\
+             \x20 %dst_idx = add i64 %i, 1\n\
+             \x20 %kdst = getelementptr i64, i64* %keys2, i64 %dst_idx\n\
+             \x20 %vdst = getelementptr i64, i64* %vals2, i64 %dst_idx\n\
+             \x20 %tail_n = sub i64 %len_pre, %i\n\
+             \x20 %tail_bytes = mul i64 %tail_n, 8\n\
+             \x20 %ksrc_i8 = bitcast i64* %ksrc to i8*\n\
+             \x20 %kdst_i8 = bitcast i64* %kdst to i8*\n\
+             \x20 %vsrc_i8 = bitcast i64* %vsrc to i8*\n\
+             \x20 %vdst_i8 = bitcast i64* %vdst to i8*\n\
+             \x20 call i8* @memmove(i8* %kdst_i8, i8* %ksrc_i8, i64 %tail_bytes)\n\
+             \x20 call i8* @memmove(i8* %vdst_i8, i8* %vsrc_i8, i64 %tail_bytes)\n\
+             \x20 br label %ins_store\n\
+             ins_store:\n\
+             \x20 %keys3 = load i64*, i64** %kpp\n\
+             \x20 %vals3 = load i64*, i64** %vpp\n\
+             \x20 %kslot = getelementptr i64, i64* %keys3, i64 %i\n\
+             \x20 %vslot = getelementptr i64, i64* %vals3, i64 %i\n\
+             \x20 store i64 %k, i64* %kslot\n\
+             \x20 store i64 %v, i64* %vslot\n\
+             \x20 %new_len = add i64 %len_pre, 1\n\
+             \x20 store i64 %new_len, i64* %lp\n\
+             \x20 %n0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %n1 = insertvalue %Enum_Option__i64 %n0, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %n1\n\
+             }\n\
+             define %Enum_Option__i64 @intent_btreemap_i64_i64_remove(%intent_btreemap_i64_i64* %m, i64 %k) {\n\
+             \x20 %kpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 0\n\
+             \x20 %vpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 1\n\
+             \x20 %lp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 2\n\
+             \x20 %i = call i64 @intent_btreemap_i64_i64__lower_bound(%intent_btreemap_i64_i64* %m, i64 %k)\n\
+             \x20 %len = load i64, i64* %lp\n\
+             \x20 %oob = icmp uge i64 %i, %len\n\
+             \x20 br i1 %oob, label %rm_no, label %rm_check\n\
+             rm_check:\n\
+             \x20 %keys = load i64*, i64** %kpp\n\
+             \x20 %slot = getelementptr i64, i64* %keys, i64 %i\n\
+             \x20 %v = load i64, i64* %slot\n\
+             \x20 %eq = icmp eq i64 %v, %k\n\
+             \x20 br i1 %eq, label %rm_do, label %rm_no\n\
+             rm_do:\n\
+             \x20 %vals = load i64*, i64** %vpp\n\
+             \x20 %vslot = getelementptr i64, i64* %vals, i64 %i\n\
+             \x20 %vold = load i64, i64* %vslot\n\
+             \x20 %i_p1 = add i64 %i, 1\n\
+             \x20 %has_tail = icmp ult i64 %i_p1, %len\n\
+             \x20 br i1 %has_tail, label %rm_memmove, label %rm_dec\n\
+             rm_memmove:\n\
+             \x20 %ksrc = getelementptr i64, i64* %keys, i64 %i_p1\n\
+             \x20 %vsrc = getelementptr i64, i64* %vals, i64 %i_p1\n\
+             \x20 %kdst = getelementptr i64, i64* %keys, i64 %i\n\
+             \x20 %vdst = getelementptr i64, i64* %vals, i64 %i\n\
+             \x20 %tail_n = sub i64 %len, %i_p1\n\
+             \x20 %tail_bytes = mul i64 %tail_n, 8\n\
+             \x20 %ksrc_i8 = bitcast i64* %ksrc to i8*\n\
+             \x20 %kdst_i8 = bitcast i64* %kdst to i8*\n\
+             \x20 %vsrc_i8 = bitcast i64* %vsrc to i8*\n\
+             \x20 %vdst_i8 = bitcast i64* %vdst to i8*\n\
+             \x20 call i8* @memmove(i8* %kdst_i8, i8* %ksrc_i8, i64 %tail_bytes)\n\
+             \x20 call i8* @memmove(i8* %vdst_i8, i8* %vsrc_i8, i64 %tail_bytes)\n\
+             \x20 br label %rm_dec\n\
+             rm_dec:\n\
+             \x20 %new_len = sub i64 %len, 1\n\
+             \x20 store i64 %new_len, i64* %lp\n\
+             \x20 %s0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %s1 = insertvalue %Enum_Option__i64 %s0, i64 %vold, 1\n\
+             \x20 ret %Enum_Option__i64 %s1\n\
+             rm_no:\n\
+             \x20 %n0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %n1 = insertvalue %Enum_Option__i64 %n0, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %n1\n\
              }\n\n",
         );
     }
@@ -11979,7 +12316,7 @@ fn is_scalar(ty: &Type) -> bool {
         // <ty> <v>, <ty>* …` work uniformly. The builtins
         // (channel_new, mutex_new, mutex_lock) return SSA
         // values of these struct types.
-        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_))
+        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _))
         // Function pointers are pointer-sized scalars. The
         // alloca holds a single value of fn-ptr type (the
         // load returns a function-pointer SSA value the
@@ -12033,6 +12370,7 @@ pub(crate) fn llvm_type(ty: &Type) -> &'static str {
         Type::HashSet(_) => "%intent_hashset_i64",
         Type::HashMap(_, _) => "%intent_hashmap_i64_i64",
         Type::BTreeSet(_) => "%intent_btreeset_i64",
+        Type::BTreeMap(_, _) => "%intent_btreemap_i64_i64",
         // Enums lower to a 32-bit tag — see `llvm_type_string`
         // for the same. T1.3.
         Type::Enum(_) => "i32",

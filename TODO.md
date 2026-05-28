@@ -137,6 +137,17 @@ pointer (already in the language as of #279 FFI callbacks).
     follow-ups: range queries; non-i64 keys via user Ord;
     iteration via Level 3 closures.
 14. **BTreeMap\<K, V\>** — ⚠️ AFFINE-TENSION (same contract as #12).
+    *Shipped 2026-05-28 (closure #307) for v1 (K, V) = (i64, i64)*
+    — parallel sorted `keys` + `values` Vec backing; binary-search
+    `lower_bound`; memmove for insert/remove (both arrays in
+    lockstep). API: `btreemap_new / insert / get / contains_key /
+    remove / len`. insert / get / remove return `Option<i64>` by
+    Copy-V; non-Copy V will shift to `Option<ref V>` (the
+    AFFINE-TENSION expansion). Drop frees keys + values at scope
+    exit. 6 lib tests + parity example `examples/btreemap.vani`.
+    Cross-backend parity green. **Level 2 of the roadmap is now
+    closed.** Pending: node-arena B-tree (Level 4); range queries
+    + iteration (Level 3); non-Copy V; wider K widths.
 15. **Deque\<T\> (VecDeque)** — ✅ AFFINE.
     Ring buffer over `Vec<T>` with `front_idx` / `len`.
     `push_back` / `push_front` / `pop_back` / `pop_front` all
@@ -496,7 +507,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #306 — Level 2 #5: BTreeSet<i64> ordered set on a sorted-Vec backing with 5 builtins (new / insert / contains / remove / len) + scope-exit Drop + 6 lib tests + new btreeset.vani parity example. Sorted-Vec is the v1 simplification — a node-arena B-tree is queued for Level 4. Next focal area: Level 2 #6 — BTreeMap<i64, i64> (final Level 2 item, same sorted-Vec pattern with parallel keys + values arrays). After Level 2 closes: Level 3 closures + iterator combinators; Level 4 arenas. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset range queries + iteration via closures, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-28, after closure #307 — Level 2 #6: BTreeMap<i64, i64> ordered key/value map on a parallel-sorted-Vec backing with 6 builtins (new / insert / get / contains_key / remove / len) + scope-exit Drop + 6 lib tests + new btreemap.vani parity example. **Level 2 of the data-structures roadmap is now closed**: BinaryHeap-on-Vec (#302) · Deque (#303) · HashSet (#304) · HashMap (#305) · BTreeSet (#306) · BTreeMap (#307) all shipped under their v1 affine contracts. Next focal area: Level 3 — closures with captured state (multi-session — lexer/parser/checker/monomorphization/both backends); then `.map(f).filter(p).fold(init, g)` loop-fused iterator combinators; then sort_by / find_by lifted to closure. After Level 3 closes: Level 4 arena-based BST/AVL/B-tree/Trie/graphs + algorithms. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries + iteration via closures, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

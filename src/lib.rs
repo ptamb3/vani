@@ -12680,6 +12680,121 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn btreemap_basics_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: BTreeMap<i64, i64> = btreemap_new();
+              let _: Option<i64> = btreemap_insert(mut ref m, 5, 50);
+              let _: Option<i64> = btreemap_get(ref m, 5);
+              let has: bool = btreemap_contains_key(ref m, 5);
+              let _: Option<i64> = btreemap_remove(mut ref m, 5);
+              let n: i64 = btreemap_len(ref m);
+              if has { return n; } else { return 0; }
+            }
+        "#;
+        compile_to_c(source).expect("btreemap basics must type-check");
+        compile_to_llvm(source).expect("btreemap basics must compile to LLVM");
+    }
+
+    #[test]
+    fn btreemap_insert_returns_previous_via_option_i64() {
+        let source = r#"
+            fn unwrap_or(o: Option<i64>, def: i64) -> i64 {
+              return match o {
+                Option.Some(v) then v,
+                Option.None then def,
+              };
+            }
+            fn main() -> i64 {
+              let m: BTreeMap<i64, i64> = btreemap_new();
+              let p1: Option<i64> = btreemap_insert(mut ref m, 1, 100);
+              let p2: Option<i64> = btreemap_insert(mut ref m, 1, 200);
+              return unwrap_or(p1, 0 - 1) + unwrap_or(p2, 0 - 1);
+            }
+        "#;
+        compile_to_c(source).expect("btreemap insert -> Option<i64>");
+        compile_to_llvm(source).expect("btreemap insert -> Option<i64> in LLVM");
+    }
+
+    #[test]
+    fn btreemap_insert_rejects_non_mut_ref() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: BTreeMap<i64, i64> = btreemap_new();
+              let _: Option<i64> = btreemap_insert(ref m, 1, 100);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("by-ref insert must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref BTreeMap<K, V>")),
+            "expected mut-ref-BTreeMap diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn btreemap_reserves_name_against_user_struct() {
+        let source = r#"
+            struct BTreeMap { x: i64 }
+            fn main() -> i64 { return 0; }
+        "#;
+        let errors = compile(source).expect_err("`struct BTreeMap` must collide");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("built-in") || e.message.contains("reserved")),
+            "expected reserved-name diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn btreemap_emits_runtime_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: BTreeMap<i64, i64> = btreemap_new();
+              let _: Option<i64> = btreemap_insert(mut ref m, 1, 100);
+              let _: Option<i64> = btreemap_get(ref m, 1);
+              let _: Option<i64> = btreemap_remove(mut ref m, 1);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("btreemap program compiles");
+        assert!(
+            c.contains("intent_btreemap_i64_i64")
+                && c.contains("intent_btreemap_i64_i64_insert")
+                && c.contains("intent_btreemap_i64_i64_get")
+                && c.contains("intent_btreemap_i64_i64_remove")
+                && c.contains("intent_btreemap_i64_i64_drop"),
+            "C output must include the btreemap runtime; got snippet:\n{}",
+            &c[..c.len().min(800)]
+        );
+    }
+
+    #[test]
+    fn btreemap_emits_helpers_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: BTreeMap<i64, i64> = btreemap_new();
+              let _: Option<i64> = btreemap_insert(mut ref m, 1, 100);
+              let _: Option<i64> = btreemap_remove(mut ref m, 1);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("btreemap LLVM compile");
+        assert!(
+            ll.contains("%intent_btreemap_i64_i64 = type")
+                && ll.contains("define %Enum_Option__i64 @intent_btreemap_i64_i64_insert")
+                && ll.contains("define %Enum_Option__i64 @intent_btreemap_i64_i64_remove"),
+            "LLVM output must include the btreemap typedef + insert/remove defines; got snippet:\n{}",
+            &ll[..ll.len().min(800)]
+        );
+    }
+
+    #[test]
     fn btreeset_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

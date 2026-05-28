@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -437,7 +437,7 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // built-in `Type::Task`, leading to confusing
     // "got Task" errors deep in the pipeline.
     const RESERVED_TYPE_NAMES: &[&str] = &[
-        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "HashSet", "HashMap", "BTreeSet", "OwnedStr", "Self",
+        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "HashSet", "HashMap", "BTreeSet", "BTreeMap", "OwnedStr", "Self",
     ];
     for decl in &program.structs {
         if RESERVED_TYPE_NAMES.contains(&decl.name.as_str()) {
@@ -4263,7 +4263,8 @@ fn monomorphize_type_decls_in_program(
                 | "heap_pop" | "heap_peek"
                 | "deque_pop_back" | "deque_pop_front"
                 | "deque_peek_back" | "deque_peek_front"
-                | "hashmap_get" | "hashmap_insert" => Some(Type::I64),
+                | "hashmap_get" | "hashmap_insert"
+                | "btreemap_get" | "btreemap_insert" | "btreemap_remove" => Some(Type::I64),
                 "parse_float" => Some(Type::F64),
                 _ => None,
             };
@@ -12026,6 +12027,16 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "btreemap_new"
+        | "btreemap_insert"
+        | "btreemap_get"
+        | "btreemap_contains_key"
+        | "btreemap_remove"
+        | "btreemap_len" => {
+            return check_btreemap_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "clone" => return check_clone_builtin(args, env, signatures, span, diagnostics),
         "clone_at" => {
             return check_clone_at_builtin(args, env, signatures, span, diagnostics)
@@ -15052,6 +15063,181 @@ fn check_btreeset_builtin(
     }
     let ret_ty = match name {
         "btreeset_insert" | "btreeset_contains" | "btreeset_remove" => Type::Bool,
+        _ => Type::I64,
+    };
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        ret_ty,
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 2 — BTreeMap<i64, i64>
+/// builtins (closure #307). v1 backed by parallel sorted
+/// `keys` + `values` Vecs; binary_search lower_bound for
+/// lookup, memmove shift for insert/remove. Sorted iteration
+/// order (when iteration lands).
+///
+///   btreemap_new() -> BTreeMap<i64, i64>
+///   btreemap_insert(mut ref m, k, v) -> Option<i64>
+///       previous value, or None
+///   btreemap_get(ref m, k) -> Option<i64>
+///       v1 returns by-value Copy. AFFINE-TENSION variant
+///       `Option<ref V>` arrives when V can be non-Copy.
+///   btreemap_contains_key(ref m, k) -> bool
+///   btreemap_remove(mut ref m, k) -> Option<i64>
+///       previous value if was present, or None
+///   btreemap_len(ref m) -> i64
+fn check_btreemap_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args = match name {
+        "btreemap_new" => 0,
+        "btreemap_len" => 1,
+        "btreemap_get" | "btreemap_contains_key" | "btreemap_remove" => 2,
+        "btreemap_insert" => 3,
+        _ => unreachable!(),
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}() expects {} argument{}, got {}",
+                name,
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        let ret_ty = match name {
+            "btreemap_new" => {
+                Type::BTreeMap(Box::new(Type::I64), Box::new(Type::I64))
+            }
+            "btreemap_insert" | "btreemap_get" | "btreemap_remove" => {
+                Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+            }
+            "btreemap_contains_key" => Type::Bool,
+            _ => Type::I64,
+        };
+        return CheckedExpr::fallback(ret_ty, span);
+    }
+    if name == "btreemap_new" {
+        return CheckedExpr::new(
+            TypedExprKind::Call {
+                name: "btreemap_new".to_string(),
+                name_span: span,
+                args: Vec::new(),
+            },
+            Type::BTreeMap(Box::new(Type::I64), Box::new(Type::I64)),
+            None,
+            span,
+        );
+    }
+    let m = check_expr(&args[0], env, signatures, diagnostics);
+    let is_mut_op = matches!(name, "btreemap_insert" | "btreemap_remove");
+    let (k_ty, v_ty) = match m.ty() {
+        Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
+            Type::BTreeMap(k, v) => ((**k).clone(), (**v).clone()),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "{}() requires a `{}BTreeMap<K, V>` argument, got {}",
+                        name,
+                        if is_mut_op { "mut ref " } else { "ref " },
+                        m.ty()
+                    ),
+                ));
+                let ret_ty = match name {
+                    "btreemap_insert" | "btreemap_get" | "btreemap_remove" => {
+                        Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+                    }
+                    "btreemap_contains_key" => Type::Bool,
+                    _ => Type::I64,
+                };
+                return CheckedExpr::fallback(ret_ty, span);
+            }
+        },
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "{}() requires a `{}BTreeMap<K, V>` argument, got {}",
+                    name,
+                    if is_mut_op { "mut ref " } else { "ref " },
+                    other
+                ),
+            ));
+            let ret_ty = match name {
+                "btreemap_insert" | "btreemap_get" | "btreemap_remove" => {
+                    Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+                }
+                "btreemap_contains_key" => Type::Bool,
+                _ => Type::I64,
+            };
+            return CheckedExpr::fallback(ret_ty, span);
+        }
+    };
+    if is_mut_op && !matches!(m.ty(), Type::RefMut(_)) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() requires a `mut ref BTreeMap<K, V>` argument, got {}",
+                name,
+                m.ty()
+            ),
+        ));
+    }
+    if !matches!(k_ty, Type::I64) || !matches!(v_ty, Type::I64) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() only supports `BTreeMap<i64, i64>` in v1, got BTreeMap<{}, {}>",
+                name, k_ty, v_ty
+            ),
+        ));
+    }
+    let mut typed_args = vec![m.expr];
+    if matches!(
+        name,
+        "btreemap_insert" | "btreemap_get" | "btreemap_contains_key" | "btreemap_remove"
+    ) {
+        let k_raw = check_expr(&args[1], env, signatures, diagnostics);
+        let k = coerce_checked(
+            k_raw,
+            &Type::I64,
+            args[1].span,
+            "btreemap key",
+            diagnostics,
+        );
+        typed_args.push(k.expr);
+    }
+    if name == "btreemap_insert" {
+        let v_raw = check_expr(&args[2], env, signatures, diagnostics);
+        let v = coerce_checked(
+            v_raw,
+            &Type::I64,
+            args[2].span,
+            "btreemap value",
+            diagnostics,
+        );
+        typed_args.push(v.expr);
+    }
+    let ret_ty = match name {
+        "btreemap_insert" | "btreemap_get" | "btreemap_remove" => {
+            Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+        }
+        "btreemap_contains_key" => Type::Bool,
         _ => Type::I64,
     };
     CheckedExpr::new(

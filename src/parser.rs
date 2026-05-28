@@ -1600,6 +1600,15 @@ impl Parser {
                 self.expect_close_angle()?;
                 return Ok(Type::BTreeSet(Box::new(element)));
             }
+            if name == "BTreeMap" {
+                self.bump();
+                self.expect_keyword("'<'", |kind| matches!(kind, TokenKind::Less))?;
+                let k = self.parse_type()?;
+                self.expect_keyword("','", |kind| matches!(kind, TokenKind::Comma))?;
+                let v = self.parse_type()?;
+                self.expect_close_angle()?;
+                return Ok(Type::BTreeMap(Box::new(k), Box::new(v)));
+            }
             if name == "Atomic" {
                 self.bump();
                 self.expect_keyword("'<'", |kind| matches!(kind, TokenKind::Less))?;

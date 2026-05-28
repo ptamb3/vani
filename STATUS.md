@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #306 — Level 2 #5: BTreeSet<i64> ordered set on a sorted-Vec backing with 5 builtins (new / insert / contains / remove / len); new btreeset.vani; 6 new lib tests. Sorted-Vec is the v1 simplification — a node-arena B-tree is queued for Level 4.)
-**Test totals:** 1113 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 74 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #307 — Level 2 #6: BTreeMap<i64, i64> ordered key/value map on parallel-sorted-Vec backing with 6 builtins (new / insert / get / contains_key / remove / len); new btreemap.vani; 6 new lib tests. **Level 2 of the data-structures roadmap is now complete** — all six generic containers (BinaryHeap-on-Vec, Deque, HashSet, HashMap, BTreeSet, BTreeMap) shipped under their v1 affine contracts.)
+**Test totals:** 1119 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 75 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,68 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 2 — BTreeMap<i64, i64> (shipped 2026-05-28, closure #307)
+
+✅ AFFINE under v1 Copy-V scoping. ⚠️ AFFINE-TENSION when V
+goes non-Copy — `get` shifts from `Option<V>` (by-value Copy)
+to `Option<ref V>` (borrowed view). v1 closes the Level 2
+ladder; node-arena B-tree lands at Level 4.
+
+**Layout:** `{ keys: i64*, values: i64*, len: u64, capacity:
+u64 }`. Parallel sorted arrays; binary-search `lower_bound`
+finds the slot. Insert/remove memmove both keys + values
+tails in lockstep. Grow doubles capacity (start 4) via
+`realloc`.
+
+**API (6 builtins):**
+- `btreemap_new() -> BTreeMap<i64, i64>`
+- `btreemap_insert(mut ref m, k, v) -> Option<i64>` — Some(prev)
+  on overwrite, None on first insert
+- `btreemap_get(ref m, k) -> Option<i64>` — Some(v) on hit, None
+  on miss
+- `btreemap_contains_key(ref m, k) -> bool`
+- `btreemap_remove(mut ref m, k) -> Option<i64>` — Some(prev)
+  on removal, None when key was absent
+- `btreemap_len(ref m) -> i64`
+
+**Codegen:**
+- **Tree-C**: `intent_btreemap_i64_i64` struct + helpers in
+  body via `program_uses_i64_i64_btreemap` walker. get /
+  insert / remove gated on Option__i64 registry. memmove
+  shifts keys + values in lockstep.
+- **Tree-LLVM**: `%intent_btreemap_i64_i64 = type { i64*, i64*,
+  i64, i64 }` preamble typedef. Module-level `define`s for
+  new / drop / __lower_bound (internal) / contains_key / len /
+  get / insert / remove. Insert path: lower_bound → equal-key
+  update short-circuit → grow if full (realloc keys + values)
+  → memmove tails → store.
+- **SSA**: routes through tree backends via the
+  `ssa_path_supports` reject list.
+- **Drop**: both backends free `keys` and `values` at scope
+  exit.
+
+**v1 restrictions:**
+- (K, V) = (i64, i64) only. Wider K/V (`BTreeMap<Str, V>`,
+  `BTreeMap<i64, OwnedStr>`) deferred.
+- Sorted-Vec backing (O(log n) lookup, O(n) insert/remove).
+  Real B-tree node arena queued for Level 4.
+- No range / iteration builtin yet (lands with Level 3
+  closures; will reuse the natural sorted order).
+
+**Tests:** 6 lib tests (basics + LLVM compile; insert returns
+prev via Option<i64>; insert rejects ref (non-mut); `BTreeMap`
+name reserved against user structs; C runtime emitted; LLVM
+typedef + insert/remove defines emitted). `examples/btreemap.vani`
+covers insert returning prev (None then Some on overwrite),
+get hit/miss, contains_key, bulk insert triggering grow,
+remove of present-vs-absent keys, and a drain loop.
+Cross-backend parity green.
+
+**Pending follow-ups:** node-arena B-tree (Level 4); range
+queries via Level 3 closures; non-i64 K/V via user `Ord` /
+non-Copy V via `Option<ref V>` (the AFFINE-TENSION shift);
+iteration via closures.
 
 ### Data-structures roadmap Level 2 — BTreeSet<i64> (shipped 2026-05-28, closure #306)
 
