@@ -926,6 +926,35 @@ mod tests {
     // Verified end-to-end: nested array `[Vec<i64>; 2]`
     // initialized + indexed + cloned returns the slot's
     // length.
+    // Closure #291 Phase 4: arrays of structs whose fields
+    // own heap (OwnedStr / Vec) get per-slot per-field
+    // drops at scope exit. Validates the C emit walks each
+    // array slot and frees each owning field.
+    #[test]
+    fn array_of_struct_with_owning_fields_drops_each_slot_on_c() {
+        let source = r#"
+            struct Bag { name: OwnedStr, count: i64 }
+
+            fn main() -> i64 {
+              let bags: [Bag; 2] = [
+                Bag { name: "first" + "", count: 1 },
+                Bag { name: "second" + "", count: 2 },
+              ];
+              let _b: Bag = clone_at(ref bags, 0);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("array of struct with owning fields compiles");
+        // Both slots' owning `name` fields must be freed at
+        // scope exit.
+        assert!(
+            c.contains("free((void*)v_bags[0].name)")
+                && c.contains("free((void*)v_bags[1].name)"),
+            "expected per-slot OwnedStr free for v_bags, got:\n{}",
+            c
+        );
+    }
+
     // Closure #291 Phase 3: per-slot array drop on C
     // backend + LLVM Len-from-rvalue path so nested
     // `[Vec<T>; N]` works end-to-end on both backends.

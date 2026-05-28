@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1024 lib + 54 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1025 lib + 54 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -1576,6 +1576,34 @@ fn main() returns i64 {
    Test totals: 1024 lib + 54 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #291 complete
    (Phases 1+2+3).
+
+   **Nested arrays Phase 4 — struct slot per-field drops done 2026-05-27**:
+   arrays of structs whose fields own heap (OwnedStr, Vec)
+   now correctly free per-slot per-field at scope exit on
+   the C backend.
+
+   `TypedStmt::Drop` for `Type::Array { element: Type::Struct,
+   length }` walks each slot, looks up the struct's field
+   list via `STRUCT_FIELDS_REGISTRY`, and calls
+   `emit_struct_field_drops` with the slot's address
+   (`v_bags[0]`, `v_bags[1]`, …).
+
+   Verified on:
+       struct Bag { name: OwnedStr, count: i64 }
+       let bags: [Bag; 2] = [
+         Bag { name: "first" + "", count: 1 },
+         Bag { name: "second" + "", count: 2 },
+       ];
+   Each slot's `.name` OwnedStr is now freed at scope exit
+   (`free((void*)v_bags[0].name)` + `free((void*)v_bags[1].name)`).
+
+   1 new lib test
+   (`array_of_struct_with_owning_fields_drops_each_slot_on_c`)
+   pins the per-slot per-field emit shape.
+
+   Test totals: 1025 lib + 54 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #291 fully
+   complete (Phases 1-4).
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

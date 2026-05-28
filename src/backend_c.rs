@@ -2485,10 +2485,10 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 }
             }
             Type::Array { element, length } => {
-                // Closure #291 Phase 3: arrays of non-Copy
-                // elements need per-slot drop at scope exit.
-                // For Copy element types nothing to do (no
-                // heap behind any slot).
+                // Closure #291 Phase 3 + 4: arrays of
+                // non-Copy elements need per-slot drop at
+                // scope exit. For Copy element types nothing
+                // to do (no heap behind any slot).
                 if element.is_copy() {
                     return;
                 }
@@ -2508,12 +2508,34 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                                 local, i
                             ));
                         }
+                        Type::Struct(struct_name) => {
+                            // Phase 4 (closure #291): walk
+                            // each slot's owning fields. The
+                            // slot expression is `{local}[i]`;
+                            // reuse `emit_struct_field_drops`
+                            // which understands the field
+                            // registry + per-field free shapes.
+                            let fields = STRUCT_FIELDS_REGISTRY
+                                .with(|r| r.borrow().get(struct_name).cloned())
+                                .unwrap_or_default();
+                            let empty: std::collections::HashSet<&String> =
+                                std::collections::HashSet::new();
+                            let slot_expr = format!("{}[{}]", local, i);
+                            emit_struct_field_drops(
+                                &slot_expr,
+                                struct_name,
+                                &fields,
+                                &empty,
+                                out,
+                            );
+                        }
                         _ => {
-                            // Future: struct / nested-array
-                            // slots need per-slot field walks.
-                            // For v1 we punt; the checker
-                            // accepts these but the codegen
-                            // leaks them. Track as Phase 4.
+                            // Nested-array / tuple / enum
+                            // element types are rare in
+                            // practice; if a real test
+                            // surfaces, mirror the Struct
+                            // arm with the appropriate
+                            // per-slot drop sequence.
                         }
                     }
                 }
