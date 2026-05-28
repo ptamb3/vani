@@ -24,12 +24,472 @@ Full long-form discussion lives in README.md's "Design Philosophy
   Linked list / tree → index-based, NOT pointer-based (fights
   affine ownership). Adding a new built-in container needs to
   clear a high bar: no composition gets close to optimal.
+- **Affine ownership is the standing language decision.** Every
+  proposed container, algorithm, or API in this file MUST be
+  flagged for affine compliance. If a shape fights single-owner
+  semantics (doubly-linked list with prev/next, shared-pointer
+  graphs, iterators that return owned elements, etc.), the
+  entry must spell out the deviation AND the affine-compatible
+  alternative chosen instead. See the
+  *Data structures + algorithms roadmap* section below — each
+  item carries an explicit ✅ AFFINE / ⚠️ AFFINE-TENSION /
+  🛑 NON-COMPLIANT flag.
 - **Block-expr stmt vocabulary is intentionally small** (Let +
   Print only). Extending it to admit Reassign / control flow is
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #291 Phase 4 — array-of-struct slot drops)
+## Data structures + algorithms roadmap (2026-05-27)
+
+User-asked scope: *"I want all operations on data structures
+available in language including but not limited to sorting
+algorithms, search, etc."* Affine ownership is the standing
+decision — every item is flagged.
+
+**Affine compliance legend:**
+- ✅ **AFFINE** — Single-owner model holds end-to-end. Element
+  access via `ref T` / `mut ref T`; consuming operations move.
+- ⚠️ **AFFINE-TENSION** — Compiles under affine rules but the
+  API needs a careful contract (e.g. `get` returns `Option<ref V>`
+  not `V`, `remove() -> Option<V>` is the move-out path,
+  `insert(k, v)` consumes both). Documented in the entry.
+- 🛑 **NON-COMPLIANT** — Cannot ship as designed. Affine-friendly
+  alternative is named.
+
+Sequenced by dependency. Each level depends on the previous.
+
+### Level 1 — Operations on existing primitives (no new types)
+
+Lifts the most-requested algorithms onto Vec / Array / Str
+without introducing new container shapes. Closure-free where
+possible; `sort_by` uses an `fn(ref T, ref T) -> i64` function
+pointer (already in the language as of #279 FFI callbacks).
+
+1. **Vec.sort + Vec.sort_by(cmp)** — ✅ AFFINE.
+   In-place sort. Default for Copy element types uses `<`;
+   `sort_by` takes `fn(ref T, ref T) -> i64`. Touches both
+   backends; quicksort with insertion-sort small-N cutoff is
+   the v1 algorithm.
+2. **Vec.reverse, Vec.dedup** — ✅ AFFINE. In-place; dedup
+   uses `==` for Copy, or a user `Eq` impl for structs.
+3. **Vec.find, Vec.contains, Vec.binary_search** — ✅ AFFINE.
+   Return `Option<i64>` (index) not `Option<T>` so no element
+   move is forced. `find_by(pred: fn(ref T) -> bool)` variant.
+4. **Vec.pop, Vec.swap_remove, Vec.insert(i, v), Vec.clear** —
+   ✅ AFFINE. `pop` returns `Option<T>` (move out is the
+   intent); `clear` drops every element via the same path as
+   scope-exit Drop (closure #127).
+5. **Array.sort / Array.find** — ✅ AFFINE (Copy element only).
+   Restriction matches existing array Copy-element rule until
+   nested-array drops mature (closure #291 landed slot drops).
+6. **String ops** — ✅ AFFINE.
+   `split(sep) -> Vec<OwnedStr>`, `contains(sub) -> bool`,
+   `starts_with` / `ends_with`, `trim`, `replace(from, to)`.
+   Each fresh-OwnedStr return follows the existing
+   `is_fresh_owned_str` Drop discipline (#140).
+7. **String parse** — ✅ AFFINE.
+   `parse_int(s: Str) -> Option<i64>`, `parse_float -> Option<f64>`.
+8. **Math** — ✅ AFFINE (scalars are Copy).
+   `pow`, `abs`, `sqrt`, `sin` / `cos` / `tan`, `floor` / `ceil`,
+   `min` / `max` (function form; reduction form already ships).
+9. **Random number generation** — ✅ AFFINE.
+   `seed_rng(u64)` + `rand_i64()` + `rand_in_range(lo, hi)`.
+   Wraps libc `rand` / `srand` initially; replace with PCG / xoshiro
+   later. No globals at the source level; thread-local internally.
+10. **Hash interface + FNV-1a / SipHash builtin** — ✅ AFFINE.
+    Prerequisite for HashMap. Trait-shaped `Hash` interface with
+    `fn hash(self: ref T, seed: u64) -> u64` so the hasher itself
+    is by-ref (does not consume the key).
+
+### Level 2 — Generic containers (depends on Level 1 + generic decls #281)
+
+11. **HashSet\<T\> where T: Hash + Eq** — ✅ AFFINE for Copy T;
+    ⚠️ AFFINE-TENSION for owning T.
+    `insert(s, v) -> bool` consumes `v`; `contains(s, ref v) -> bool`
+    borrows; `remove(s, ref v) -> Option<T>` is the move-out path.
+12. **HashMap\<K, V\>** — ⚠️ AFFINE-TENSION (documented).
+    *Why tension:* the natural `get -> Option<V>` would move V
+    out on every lookup. Affine-compatible API:
+    - `get(m, ref k) -> Option<ref V>` (borrowed view; does NOT
+      consume the entry).
+    - `get_mut(m, ref k) -> Option<mut ref V>` (mutable borrow).
+    - `insert(m, k, v) -> Option<V>` (consumes both; returns the
+      previous entry's value to the caller, who must consume it).
+    - `remove(m, ref k) -> Option<V>` (the move-out path).
+    - `contains_key(m, ref k) -> bool`.
+    - Iteration via index visitor: `for_each(m, fn(ref K, ref V))`
+      — by-ref so element ownership stays inside the map.
+    *Open-addressing table* (Robin Hood) is the v1 layout — keeps
+    everything in a single `Vec<Entry<K, V>>` so affine drops
+    walk one buffer.
+13. **BTreeSet\<T\>** — ✅ AFFINE for Copy T;
+    ⚠️ AFFINE-TENSION for owning T.
+    Implementation note: index-based B-tree (children stored as
+    `Vec<u32>` indices into a node arena, NOT child pointers) so
+    every node owns its subtree linearly. Same drop walk as
+    Level-1 Vec.
+14. **BTreeMap\<K, V\>** — ⚠️ AFFINE-TENSION (same contract as #12).
+15. **Deque\<T\> (VecDeque)** — ✅ AFFINE.
+    Ring buffer over `Vec<T>` with `front_idx` / `len`.
+    `push_back` / `push_front` / `pop_back` / `pop_front` all
+    affine. Replaces the "front-shift on Vec" stop-gap noted in
+    the current Basic data structures table.
+16. **BinaryHeap\<T\>** — ✅ AFFINE.
+    Binary heap over `Vec<T>`. `push(h, v)` consumes; `peek(ref h)
+    -> Option<ref T>` borrows; `pop(h) -> Option<T>` moves.
+
+### Level 3 — Closures + iterator combinators (multi-session)
+
+17. **Closures with captured state** — ⚠️ AFFINE-TENSION.
+    Capture-by-value moves the captured binding (affine);
+    capture-by-ref produces a second-class closure (callable
+    only within the captured ref's lifetime). The captured
+    environment is itself an affine struct under the hood.
+    Files: full pipeline — lexer / parser / checker /
+    monomorphization / both backends.
+18. **Iterator combinators** — ✅ AFFINE.
+    `.map(f).filter(p).fold(init, g)` over Vec / Array.
+    Combinators are zero-allocation in v1 (loop-fused at
+    monomorphization time), so no intermediate Vec materializes
+    unless the user calls `.collect()`. Depends on #17.
+19. **Vec.sort_by + Vec.find_by with closures** — ✅ AFFINE.
+    Lifts the #1 / #3 `fn` pointer to closure once #17 is in.
+
+### Level 4 — Advanced / domain-specific (mostly index-based)
+
+20. **Binary search tree / AVL / Red-black** — ✅ AFFINE.
+    *Affine-compatible shape:* node arena (`Vec<Node>`) with
+    `left: i32 / right: i32 / parent: i32` indices (`-1` = none).
+    Rotations swap indices, never move whole nodes. Every node
+    is owned by exactly one slot in the arena.
+21. **B-tree (disk-friendly variant)** — ✅ AFFINE.
+    Same arena pattern as #20.
+22. **Trie (prefix tree)** — ✅ AFFINE.
+    Arena with child-index map per node
+    (`Vec<(u8 or char, u32)>` or `[i32; 26]`). Same drop walk
+    as Vec-of-struct.
+23. **Graph (general)** — ✅ AFFINE.
+    `Vec<Node>` for vertex data + `Vec<Vec<u32>>` adjacency
+    list. Indices not pointers. Cycles are fine — the cycle
+    is in the *indices*, not in the ownership graph.
+    Algorithms: BFS, DFS, Dijkstra (needs BinaryHeap from #16),
+    A*, topological sort, Kruskal / Prim (needs Union-Find,
+    queued below).
+24. **Union-Find / Disjoint-Set** — ✅ AFFINE.
+    `Vec<u32>` parent + `Vec<u32>` rank. Path compression
+    works under affine because mutation goes through
+    `mut ref parent` only.
+25. **Skip list** — ✅ AFFINE.
+    Arena-based; forward-link levels stored as `Vec<u32>`
+    per node.
+26. **Bloom filter** — ✅ AFFINE.
+    Bit-vector over `Vec<u64>` + multi-hash via the #10
+    Hash interface.
+
+### Deferred / non-compliant (flagged with reasoning)
+
+These items DO NOT ship in the affine model as-designed. The
+roadmap names the affine-compatible substitute.
+
+- 🛑 **Doubly-linked list with raw prev/next pointers.**
+  *Why non-compliant:* two pointers into the same node violates
+  single-owner. *Substitute:* index-based Deque (#15) covers
+  O(1) push/pop both ends; index-based binary tree (#20)
+  covers O(log n) ordered ops. Cite this entry if a user
+  expects `std::list`-style behavior.
+- 🛑 **Rc / Arc reference-counted shared ownership.**
+  *Why non-compliant:* affine is a v1 design decision; Rc
+  cycles defeat the cycle-free Drop story. *Substitute:*
+  index-based graphs (#23) for shared references;
+  `Channel<T, N>` for shared ownership across tasks;
+  `Mutex<T>` + `Guard<T>` for shared mutable state.
+  Long-term: a *contiguous-arena* Rc-equivalent is the only
+  variant under consideration; cycle-only Rc is parked.
+- 🛑 **Iterators that yield `T` (owned).**
+  *Why non-compliant:* iterating a Vec yielding `T` would
+  move every element out; the Vec's tail Drop would then
+  double-free. *Substitute:* `for x in xs` already iterates
+  by Copy-value for Copy T and by-ref for non-Copy T;
+  the Level-3 combinator chain (#18) is by-ref or
+  consume-the-whole-Vec only (terminated by `.fold` or
+  `.collect`).
+- 🛑 **Self-referential structs (Pin / pinning).**
+  *Why non-compliant:* affine moves invalidate self-pointers.
+  *Substitute:* the index-based arena pattern (#20–#23)
+  covers every shape Pin would unlock.
+- 🛑 **Garbage collector (any flavor).**
+  *Why non-compliant:* affine model already gives deterministic
+  free at scope exit; GC would duplicate the work and defeat the
+  no-runtime promise.
+
+---
+
+## Condition variables — concurrency primitive (2026-05-27, queued)
+
+User asked to add condition variables to the roadmap. Natural
+pairing with the existing `Mutex<T>` + `Guard<T>` story; fills a
+known gap (today the only blocking primitives are `Channel<T, N>`
+recv and `Mutex` lock acquire — there's no "wait until predicate
+becomes true" path).
+
+**Affine flag: ✅ AFFINE.** Clean fit — the guard stays
+mut-borrowed across `wait` (atomically released + re-acquired by
+the kernel), so the predicate-check loop keeps using it.
+
+**Surface:**
+
+```vani
+let m: Mutex<i64> = mutex_new(0);
+let cv: Condvar = condvar_new();
+{
+  let g: Guard<i64> = mutex_lock(m);
+  while guard_get(ref g) < 10 {
+    condvar_wait(ref cv, mut ref g);  // atomic release+wait+re-acquire
+  }
+  // predicate true here; g still owns the lock
+}
+
+// from another thread:
+{
+  let g: Guard<i64> = mutex_lock(m);
+  guard_set(mut ref g, 10);
+  condvar_notify_one(ref cv);  // wake one waiter
+}
+```
+
+**API (under affine):**
+
+- `condvar_new() -> Condvar` — fresh affine handle, owns kernel
+  waiter state.
+- `condvar_wait(ref cv: Condvar, mut ref g: Guard<T>) -> ()` —
+  atomically release the mutex behind `g`, park the caller, wake
+  on notify, re-acquire the mutex, return. `g` stays mut-borrowed
+  throughout — does NOT consume the guard. Caller MUST re-check
+  the predicate (spurious wakeups are real).
+- `condvar_wait_timeout(ref cv, mut ref g, timeout_ms: i64)
+  -> bool` — same as `wait` but returns `false` on timeout, `true`
+  on notify.
+- `condvar_notify_one(ref cv: Condvar) -> ()` — wake exactly one
+  waiter (FIFO not guaranteed; matches pthread / futex
+  semantics).
+- `condvar_notify_all(ref cv: Condvar) -> ()` — wake every
+  waiter.
+
+**Affine analysis (why this works):**
+
+- `Condvar` itself is affine — only one binding owns it; copies
+  are rejected; scope-exit Drop frees the kernel handle. Mirrors
+  `Mutex<T>` exactly.
+- `wait` takes the guard by `mut ref`, not by-value, so the
+  guard's affine lifetime extends through the wait. This is the
+  key difference from a "consume the guard, return a new one"
+  shape — that would force the user to re-bind the guard on
+  every loop iteration, which fights the natural `while
+  !pred { cv.wait(&mut g) }` pattern.
+- The kernel atomically releases + parks; from vāṇी's checker
+  perspective, the guard's `locked` state never changes (the
+  release-and-re-acquire is invisible). Lock-graph analysis sees
+  the guard as held continuously.
+- Cross-fn waiting works the same way `mut ref g: Guard<T>` flows
+  through any other fn today — second-class ref, params-only.
+
+**Codegen (per backend):**
+
+- **Linux** — futex on `cv.seq` counter:
+  - `wait`: read seq, release mutex, `FUTEX_WAIT(addr=&cv.seq,
+    val=seq_observed)`, re-acquire mutex on wake, loop.
+  - `notify_one`: `cv.seq++; FUTEX_WAKE(addr=&cv.seq, n=1);`.
+  - `notify_all`: `cv.seq++; FUTEX_WAKE(addr=&cv.seq, n=INT_MAX);`.
+- **Windows** — `WaitOnAddress` / `WakeByAddressSingle` /
+  `WakeByAddressAll` on the seq counter. Wrappers already exist
+  for `Mutex`; reuse.
+- **Fallback (other Unix)** — pthread `pthread_cond_t` +
+  `cond_wait` / `cond_signal` / `cond_broadcast`. Wrappers
+  already declared in the C runtime; reuse.
+- The C / LLVM-IR runtime helper functions go alongside
+  `intent_mutex_lock` / `intent_mutex_unlock` in both backends'
+  thread-runtime emit paths.
+
+**Verifier considerations:**
+
+- **Lock-graph analysis** already tracks `Mutex` acquisition order
+  cross-fn (closures earlier this year). Condvar `wait` does NOT
+  change the lock graph — the guard is still held — so no new
+  cycles to detect.
+- **Race-freedom in `parallel for`** is unaffected: parallel-for
+  bodies don't lock mutexes (the verifier rejects that anyway).
+  Condvar is for the explicit `task` + `join` model.
+
+**Verifier additions (small):**
+
+- `condvar_wait` requires `g` is a live `Guard<T>` matching the
+  mutex the condvar was conceptually paired with. We do NOT
+  statically tie a condvar to a specific mutex (matches pthread);
+  the user is responsible. Diagnostic: "condition variable
+  `wait` requires `mut ref Guard<T>`".
+- Predicate-loop hint: the formatter could suggest `while
+  !pred { condvar_wait(...) }` over a plain `if`, since
+  spurious wakeups are real. Not required for v1.
+
+**Effort:** M (single-session). All the runtime pieces already
+exist for `Mutex` (futex helpers, WaitOnAddress wrappers, pthread
+fallback). New work:
+1. Lexer / parser — `condvar_new`, `condvar_wait`,
+   `condvar_notify_one`, `condvar_notify_all`,
+   `condvar_wait_timeout` builtins.
+2. Type system — `Condvar` as a new affine builtin type (mirrors
+   `Mutex`-without-payload shape).
+3. Checker — signature pinning for the four builtins; affine
+   tracking; lock-graph annotation (no-op for guard state).
+4. Tree-C + tree-LLVM codegen — emit the futex /
+   WaitOnAddress / pthread-cond paths.
+5. SSA-C + SSA-LLVM — mirror.
+6. Tests — 2–3 lib tests (producer-consumer w/ bounded buffer,
+   barrier-via-condvar).
+7. Example — `examples/condvar_producer_consumer.vani`.
+8. Cross-backend parity.
+
+**Why now:** the user explicitly asked. Sits well alongside the
+existing concurrency primitives, low dependency surface (does
+not need closures, generics, or async to land), useful as a
+building block for the async event-loop runtime down the line.
+
+**Dependency:** none. Can ship before the data-structures roadmap
+or in parallel with it. Recommended slot: **immediately after**
+the mixed-payload-enum drop-dispatch follow-up, **before** Level
+1 of the data-structures roadmap.
+
+---
+
+## Async / asyncio — concurrency arc (2026-05-27, queued)
+
+User asked for async / asyncio on the roadmap. The current
+concurrency story is **real-thread `task` + `join`** plus shared
+state via `Atomic` / `Mutex` / `Channel`. The README under *Memory
+& runtime model* still says "No async / await / coroutines"; that
+becomes "**queued — see TODO.md**" with this entry.
+
+**Affine flag: ⚠️ AFFINE-TENSION (compiler-lowered state machines)
+/ 🛑 NON-COMPLIANT (Rust-style async with Pin / self-references).**
+
+*Why tension:* a stackless coroutine across `await` points needs
+to capture its locals into a heap-allocated state machine that
+persists between polls. Rust solves this with `Pin` + self-
+referential structs — but vāṇी's standing decision rules out
+`Pin` (see [[project-affine-standing]] and the
+NON-COMPLIANT block above). So async **cannot ship as Rust
+async/await ships**. The viable shape is:
+
+**Affine-compatible async (the design we'll target):**
+
+- **No user-visible `Pin`.** The compiler lowers each `async fn`
+  body to an enum-of-frames where each frame is an **owned affine
+  struct** stored in an arena (`Vec<StateMachine>`). Frames never
+  hold raw pointers into other frames; cross-frame data flows by
+  index or by move on suspension/resumption.
+- **No user-visible self-references.** If the async body would
+  naturally borrow a local across an `await` point, the compiler
+  rewrites the borrow to an index-into-the-frame or to a clone of
+  the value back into the next frame. Same affine substitute
+  pattern used everywhere else in the roadmap.
+- **Single-threaded event loop driver** — `intent_async_run(task)`
+  polls the root state machine until completion. Threadsafe
+  variants (multi-threaded executors) wait on closures + the rest
+  of the runtime work; v1 is single-thread cooperative.
+- **`await` is statement-or-expression sugar for "yield to the
+  loop, then resume at next frame."** Inside an `async fn`, an
+  `.await` on a suspended I/O handle marks the suspend point;
+  the compiler emits the state-machine transition.
+- **I/O primitives** — non-blocking versions of file / socket /
+  timer ops, each producing a `Future<T>` (which itself is just
+  a user-visible enum with `Ready(T)` / `Pending` shape). The
+  event loop wires them to epoll / kqueue / IOCP under the hood.
+- **Channels stay first-class.** `Channel<T, N>` becomes the
+  preferred async coordination primitive — async tasks `recv` /
+  `send` against it; the event loop parks on channel-state
+  changes. No new async-channel type needed.
+
+**What does NOT ship:**
+
+- 🛑 **Rust-style `Pin<&mut Self>` self-references** —
+  non-compliant per [[project-affine-standing]]. The
+  compiler-lowered state-machine substitute above covers the
+  same use cases.
+- 🛑 **`async` cancellation via panic / unwind** — vāṇी has no
+  exceptions. Cancellation is explicit via a `CancelToken`
+  passed by-ref into `await`-able futures.
+- 🛑 **Stackful coroutines / fibers** (saving the full machine
+  stack and restoring it later). Defeats single-binary
+  no-runtime story and forces a custom stack allocator. The
+  stackless state-machine lowering is sufficient.
+- 🛑 **`async` in `parallel for` body** — parallel-for already
+  proves race-freedom; mixing it with cooperative yields would
+  fragment the model. Use `task` + `join` for parallelism;
+  async-of-tasks if you need both.
+
+**Dependency chain (this is an L-tier multi-session arc):**
+
+1. **Closures with captured state (Level 3 #17 in the
+   data-structures roadmap)** — prerequisite. Async needs the
+   capture / frame infrastructure that closures introduce.
+2. **`Future<T>` generic enum + `Poll` interface** — uses generic
+   decls (#281) and the mixed-payload enum lift (#283). Probably
+   ships as part of prelude alongside Option / Result.
+3. **`async fn` parser + checker** — new keyword, transforms fn
+   body into a state machine at check time; the IR holds the
+   per-state frame structs.
+4. **State-machine codegen** — both backends emit the
+   frame-arena + `poll(state) -> Poll<T>` dispatch.
+5. **Event loop runtime** — small C runtime (epoll / kqueue /
+   IOCP wrappers) linked in like the existing thread / futex
+   runtime. Hidden from user source.
+6. **Non-blocking I/O primitives** — file open / read / write,
+   TCP listen / accept / read / write, timer / sleep — each as
+   `async fn` in stdlib.
+7. **`await` as statement-or-expression** — sugar that the
+   checker rewrites at the state-machine boundary.
+8. **Cancellation** — `CancelToken` passed by-ref; async
+   primitives check it at every suspend point.
+9. **Example program** — `examples/async_io.vani` — at minimum a
+   timer-based fan-out + a tiny TCP echo server. Cross-backend
+   parity covered like everything else.
+
+**Effort:** L-tier multi-session arc. Comparable in scope to the
+namespaces / modules arc (#10) or the dyn dispatch arc (#220–#228)
+— touches parser, checker, IR, both backends, runtime, stdlib,
+examples, parity runner.
+
+**Why now:** the user explicitly asked for async / asyncio on the
+roadmap. Even though execution sits after closures (Level 3),
+recording the design now keeps the affine compliance story
+coherent — future sessions know which async features are off the
+table (Pin / self-references / stackful) and which are the
+canonical path (compiler-lowered state machines on an arena).
+
+---
+
+
+
+## ⏳ Resume here (paused 2026-05-27, after closure #291 Phase 4 — array-of-struct slot drops; docs sync done — data-structures roadmap above is the next focal area)
+
+**Session updates synced to docs 2026-05-27:**
+closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)
+→ #271 (extern fn call-site checker) → #272 (extern fn codegen) →
+#273 (FFI struct-by-value rejection with `ref T` hint) → #274
+(linker-discovery polish) → #275 (parallel-for purity hole in
+reduction RHS) → #276 (DynCoerce non-Var hoist via synthetic Block)
+→ #277 (let-discard of fresh struct value) → #278 (match on f64) →
+#279 (FFI callbacks / `Type::FnPtr`) → #280 (vani.toml manifest v1)
+→ #281 (generic struct/enum declarations + `Type::Apply`) → #282
+(prelude injection at AST level) → #283 (mixed-payload enum lift,
+both backends) → #284 (try_vec builtin) → #285 (FFI param/return
+struct rejection hints) → #286 (`#[bounded(N)]` attribute syntax)
+→ #287 (vani.toml [deps] inline-table) → #288 (System V x86-64
+small-struct lowering for FFI return) → #289 (#[bounded] LLVM
+emit) → #290 (tree-LLVM #[bounded] decrement) → #291 (nested
+arrays + array-of-struct slot drops, Phases 1–4).
+
+
 
 **Next pickup chain (each closure unblocks the next):**
 

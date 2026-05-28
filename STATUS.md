@@ -10,8 +10,138 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-27
-**Test totals:** 1025 lib + 54 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-27 (docs sync — data-structures + algorithms roadmap recorded; closures #269–#291 reflected in feature set and roadmap tables)
+**Test totals:** 1025 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+
+**Standing language decisions (carry across sessions):**
+- **Affine ownership** is the v1 model. Every container, algorithm,
+  or API proposed in [TODO.md](TODO.md) must be flagged for affine
+  compliance — ✅ AFFINE / ⚠️ AFFINE-TENSION / 🛑 NON-COMPLIANT.
+  Non-compliant items name their affine-friendly substitute.
+- **Affine-friendly substitute patterns** (used throughout the
+  data-structures roadmap):
+  - Linked structures → **index-based arenas** (`Vec<Node>` +
+    `i32` child indices, `-1` = none).
+  - Shared ownership → `Channel<T, N>` (cross-task) or `Mutex<T>` /
+    `Atomic<T>` (cross-thread shared state).
+  - Map / set lookup → `get(m, ref k) -> Option<ref V>` (borrowed
+    view); `remove(m, ref k) -> Option<V>` is the move-out path;
+    `insert(k, v)` consumes both.
+  - Iteration → `for x in xs` (by Copy-value for Copy T; by-ref for
+    non-Copy T); combinators are by-ref or consume-whole-Vec via
+    `.fold` / `.collect`.
+
+### Data structures + algorithms roadmap (added 2026-05-27)
+
+Levels 1–4 sequenced by dependency, all flagged for affine
+compliance. Full plan + per-item contracts in [TODO.md](TODO.md)
+under *Data structures + algorithms roadmap*.
+
+- **Level 1** (no closures, no new types — ✅ AFFINE):
+  Vec.sort / sort_by(fn), reverse / dedup, find / contains /
+  binary_search, pop / swap_remove / insert / clear, Array.sort,
+  String split / contains / trim / replace, parse_int / parse_float,
+  math (pow / abs / sqrt / sin / cos / tan / floor / ceil),
+  RNG (seed_rng / rand_i64), Hash interface + FNV-1a / SipHash.
+- **Level 2** (depends on generic decls #281 — ✅ Copy /
+  ⚠️ AFFINE-TENSION owning): HashSet, **HashMap (⚠️ —
+  `get -> Option<ref V>`, `insert` consumes, `remove` moves)**,
+  BTreeSet, BTreeMap, Deque (ring buffer), BinaryHeap.
+- **Level 3** (closures multi-session — ✅ / ⚠️): closures with
+  captured state, `.map / .filter / .fold` loop-fused, sort_by /
+  find_by lifted to closure.
+- **Level 4** (advanced, mostly arena-based — ✅ AFFINE): BST /
+  AVL / red-black via node arena, B-tree, Trie, graphs as
+  `Vec<Node>` + `Vec<Vec<u32>>` adjacency + algorithms (BFS, DFS,
+  Dijkstra, A*, topo, Kruskal, Prim), Union-Find, skip list,
+  Bloom filter.
+- **Deferred / 🛑 NON-COMPLIANT** (flagged with reasoning +
+  substitute): doubly-linked list with raw prev / next pointers
+  (substitute: Deque + index-based BST); Rc / Arc shared ownership
+  (substitute: index-based graphs + Channel + Mutex); iterators
+  yielding owned T (substitute: by-ref iteration / `.fold` /
+  `.collect`); Pin / self-referential structs (substitute: arena
+  pattern); GC (any flavor — defeats no-runtime promise).
+
+### Condition variables — concurrency primitive (queued 2026-05-27)
+
+✅ AFFINE. Pairs with existing `Mutex<T>` + `Guard<T>` to fill the
+"wait until predicate becomes true" gap (today blocking is only
+via `Channel` recv or `Mutex` lock acquire).
+
+API: `condvar_new() -> Condvar`,
+`condvar_wait(ref cv, mut ref g: Guard<T>) -> ()` (atomic
+release + park + re-acquire; guard stays mut-borrowed),
+`condvar_wait_timeout(ref cv, mut ref g, timeout_ms) -> bool`,
+`condvar_notify_one(ref cv) -> ()`,
+`condvar_notify_all(ref cv) -> ()`.
+
+Codegen: Linux futex on a seq counter
+(`FUTEX_WAIT` / `FUTEX_WAKE`); Windows `WaitOnAddress` /
+`WakeByAddress*`; pthread `pthread_cond_*` fallback. All runtime
+helpers already exist alongside `Mutex` paths — reuse.
+
+Effort: M (single session, no new dependencies — independent of
+closures, generics, async). Recommended slot: after the
+mixed-payload-enum drop-dispatch follow-up, before Level 1 of
+the data-structures roadmap. Full design + reasoning in
+[TODO.md](TODO.md) under *Condition variables — concurrency primitive*.
+
+### Async / asyncio — concurrency arc (queued 2026-05-27)
+
+⚠️ AFFINE-TENSION (compiler-lowered state machines on an arena)
+/ 🛑 NON-COMPLIANT (Rust-style `Pin<&mut Self>` self-references).
+
+Canonical path: the compiler lowers each `async fn` body to an
+enum-of-frames stored in `Vec<StateMachine>`; frames never hold
+raw pointers into other frames. Single-threaded event-loop driver
+(`intent_async_run`) polls until completion; non-blocking I/O
+primitives (file / socket / timer) under epoll / kqueue / IOCP;
+`Channel<T, N>` is the cooperative coordination primitive.
+
+Dependency chain (L-tier multi-session arc): closures w/ captured
+state (Level 3 #17) → `Future<T>` generic enum (uses #281 generic
+decls + #283 mixed-payload lift) → `async fn` parser + checker →
+state-machine codegen on both backends → event-loop C runtime →
+non-blocking I/O stdlib → `await` sugar → cancellation
+(`CancelToken` by-ref) → `examples/async_io.vani` parity.
+
+NOT shipping: Rust-style `Pin` self-references, panic-based
+cancellation, stackful coroutines / fibers, async inside
+`parallel for` bodies. Full design + reasoning in [TODO.md](TODO.md)
+under *Async / asyncio — concurrency arc*.
+
+### Session updates 2026-05-26 → 2026-05-27 (closures #269–#291)
+
+- **FFI v1–v8** — `extern "C" fn` declarations (#269), `--link-with`
+  / `-l<name>` flags (#270), call-site checker (#271), codegen with
+  mangled symbols (#272), struct-by-value rejection w/ `ref T` hint
+  (#273), linker-discovery polish (#274), FFI callbacks via
+  `Type::FnPtr` (#279), System V x86-64 small-struct return lowering
+  (#288). Net: `qsort`-style callbacks + libc string / math interop.
+- **vani.toml manifest** — v1 (#280) + v2 `[deps]` inline-table
+  (#287).
+- **Generic struct + enum declarations** — `enum Result<T, E>` etc.,
+  `Type::Apply { name, args }`, mangled names like
+  `Result__Vec_I64___AllocError` (#281). Prelude injected at AST
+  level — `Option<T>`, `Result<T, E>`, `AllocError` (#282).
+- **Mixed-payload enums** — C tagged-union, LLVM `[N x i8]` + bitcast
+  (#283).
+- **`try_vec(n) -> Result<Vec<i64>, AllocError>`** — fallible alloc
+  builtin (#284).
+- **FFI param/return rejection hints** (#285).
+- **Attribute syntax + `#[bounded(N)]`** — first attribute in the
+  language; `#` token; LLVM thread-local + per-Return decrement
+  (#286, #289, #290); C uses GCC `__attribute__((cleanup))`.
+- **Nested arrays** — `[[T; N]; M]` / `[Vec<T>; N]` end-to-end,
+  including per-slot per-field drops for arrays of structs (#291
+  Phases 1–4).
+- **Other closures** — match on f64 (#278); `let _ = make()`
+  discard of fresh struct value frees heap fields (#277); DynCoerce
+  non-Var hoist via synthetic Block (#276); parallel-for purity
+  hole in reduction RHS (#275).
+
+
 
 ---
 

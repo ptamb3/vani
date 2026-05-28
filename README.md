@@ -54,7 +54,7 @@ orchestration, and testing, but Rust is the better default for a
 compiler that must be fast, memory-safe, deterministic, and close to
 ABI / native code generation.
 
-## Feature set (closures #1–#258)
+## Feature set (closures #1–#291)
 
 vāṇī today is a working systems language with the following shipped
 features. Surface that **reads natural-language** sits on top of a
@@ -100,6 +100,11 @@ semantic model **borrowed from Rust** and a code-generator that
   and CreateThread (Windows) backing. `Atomic<T>` for shared
   counters, `Mutex<T>` + `Guard<T>` for critical sections,
   `Channel<T, N>` for queues.
+- **Queued:** `Condvar` — `condvar_new` / `condvar_wait(ref cv,
+  mut ref g) / notify_one / notify_all` — pairs with `Mutex` +
+  `Guard` for "wait until predicate" patterns. ✅ AFFINE; codegen
+  reuses existing futex / WaitOnAddress / pthread-cond runtime
+  helpers. See [TODO.md](TODO.md) under *Condition variables*.
 
 **Namespaces + modules:**
 - `module foo { … }` (inline + nested + deep `a::b::c::Item` paths).
@@ -123,6 +128,51 @@ semantic model **borrowed from Rust** and a code-generator that
 **Multi-file projects:**
 - `use "path.vani";` for file-level inclusion; cycle detection;
   diagnostics resolve to the original file:line via a `FileMap`.
+
+**Since closure #258 (2026-05-26 → 2026-05-27):**
+- **FFI v1–v8** — `extern "C" fn` declarations (#269), `--link-with`
+  linker flag (#270), extern call-site checker (#271), extern codegen
+  with mangled symbols (#272), struct-by-value rejection with `ref T`
+  hint (#273), linker-discovery polish (#274), FFI callbacks via
+  `Type::FnPtr` (#279), System V x86-64 small-struct return lowering
+  for FFI (#288). Net: `qsort`-style callbacks and libc string /
+  math interop work end-to-end without a runtime shim.
+- **vani.toml manifest** — hand-rolled minimal-TOML parser
+  (`src/manifest.rs`), `find_manifest` parent-walk, `[package].entry`
+  auto-discovery in `intentc build|run|check` (#280); v2 added
+  `[deps]` inline-table for multi-file dependency wiring (#287).
+- **Generic struct + enum declarations** — `enum Result<T, E> { Ok(T),
+  Err(E) }` / `struct Pair<A, B> { … }` (#281). `Type::Apply { name,
+  args }` for parse-time generic instantiations; mangled names like
+  `Result__Vec_I64___AllocError` flow through the monomorphizer.
+- **Mixed-payload enums** — variants with different payload types
+  share one enum on both backends (#283). C uses a tagged union
+  (`union { Type0 v_Ok; Type1 v_Err; }`); LLVM uses `[N x i8]` byte
+  buffer + per-variant bitcast.
+- **`try_vec(n) -> Result<Vec<i64>, AllocError>`** — fallible
+  allocation builtin emitting malloc + null-check + Result
+  construction (#284). Programs handle OOM gracefully.
+- **Attribute syntax + `#[bounded(N)]`** — first attribute in the
+  language (#286). New `#` token + parser. Tree-LLVM uses
+  thread-local globals + per-Return decrement (#289); SSA-LLVM
+  mirrors the pattern (#290). C emits a thread-local counter with
+  GCC `__attribute__((cleanup))` for the decrement.
+- **Nested arrays `[[T; N]; M]` / `[Vec<T>; N]`** — array-element
+  Copy restriction lifted, `clone_at(ref arr, i)` extended to arrays,
+  per-slot per-field drops including struct fields (#291 Phases 1–4).
+  Tree-LLVM `len` of a Vec rvalue (e.g. `len(clone_at(ref xs, i))`)
+  now spills to alloca, GEPs `.len`, loads.
+- **Prelude injection** — `Option<T>`, `Result<T, E>`, `AllocError`
+  injected at AST level (NOT source-prepend, which would shift
+  diagnostic line numbers) so user programs use them without `use`
+  (#282).
+- **Match on `f64` / `f32` scrutinees** — `Pattern::Float(f64)` AST
+  variant + `check_match_float` desugar to nested IfExpr; clear
+  diagnostics for missing wildcard, duplicate literals, NaN-in-pattern
+  (#278).
+- **Other closures #275–#277** — parallel-for purity hole closed in
+  reduction RHS; DynCoerce non-Var hoist via synthetic Block expr;
+  `let _ = make()` discard of fresh struct value frees heap fields.
 
 See [STATUS.md](STATUS.md) for the closure-by-closure history and
 [TODO.md](TODO.md) for what's queued. The full Roadmap (small +
@@ -274,7 +324,11 @@ fat pointers (16 bytes each: vtable + data pointer); no `Box` needed.
 
 - **No garbage collector.** Affine ownership + deterministic Drop
   cover what GC would cover, without the unpredictable pause.
-- **No `async` / `await` / event loop.** Concurrency in vāṇī is
+- **`async` / `await` / event loop — queued.** Compiler-lowered
+  state machines on an arena are the canonical path (NOT Rust's
+  `Pin` / self-referential approach, which stays non-compliant
+  under affine; see [TODO.md](TODO.md) *Async / asyncio*). Today's
+  concurrency in vāṇī is
   threads (`task` + `join`) plus shared-state primitives (`Atomic`,
   `Mutex`, `Channel`). The user gets thread-safe code by construction
   — the checker rejects the source patterns that would race —
@@ -2704,24 +2758,59 @@ Every control-flow path is statically visible — no hidden unwind
 from any call site. `assert` triggers `abort()`; there's no
 mechanism to recover from a failed assertion.
 
-### Basic data structures — `Vec` is the backbone
+### Data structures + algorithms — affine-first roadmap
 
-Stacks, queues, sets, and maps build from existing primitives
-rather than each getting a new built-in type:
+vāṇी keeps **affine ownership** as the standing language decision.
+Every container, algorithm, or API on the roadmap is flagged for
+compliance — items that fight single-owner semantics are explicitly
+marked with the affine-friendly substitute named in the same row.
 
-| Structure | How to build it |
-|-----------|-----------------|
-| **Stack** | `Vec<T>` with `push(mut ref xs, v)`. A `pop` builtin is a small future addition; last-element pop is O(1). |
-| **Queue (concurrent)** | `Channel<T, N>` — MPSC ring buffer with futex-based blocking. Already in the language. |
-| **Queue (single-threaded FIFO)** | `Vec<T>` with front-shift (O(n) per pop), or just use `Channel<T, N>` even single-threaded. A future `VecDeque` (ring buffer over `Vec`) is reasonable but unblocked-by-need. |
-| **Set / Map (small N)** | `Vec<(K, V)>` with linear scan. Fine until N is large. |
-| **Set / Map (large N)** | Reserved for a future stdlib module. Needs hash/cmp interfaces the language doesn't ship yet. |
-| **Linked list / tree** | Index-based via `Vec<T>` with `parent: i64` / `next: i64` fields. Pointer-based linked structures fight the affine ownership model. |
+**Flag legend.** ✅ AFFINE — single-owner holds end-to-end.
+⚠️ AFFINE-TENSION — compiles, but the API needs a careful contract
+(e.g. `get` returns `Option<ref V>` not `V`; `remove() -> Option<V>`
+is the move-out path; `insert(k, v)` consumes both).
+🛑 NON-COMPLIANT — cannot ship as designed; substitute named.
 
-The principle: **add a new built-in only when no composition of
-existing primitives gets within an order of magnitude of optimal**.
-`Vec` + `Array` + `Channel` + `Mutex` + `Atomic` cover ~95% of real
-use cases; the rest is stdlib work, not language work.
+**Shipped today.** Backbone primitives that already cover ~70% of
+real use cases:
+
+| Structure | Shipped form | Flag |
+|-----------|--------------|------|
+| Stack | `Vec<T>` + `push(mut ref xs, v)` (`pop` builtin queued) | ✅ AFFINE |
+| Queue (concurrent) | `Channel<T, N>` MPSC ring buffer w/ futex blocking | ✅ AFFINE |
+| Array (fixed) | `[T; N]` w/ nested-array support (closure #291) | ✅ AFFINE |
+| Heap-vec | `Vec<T>` incl. `Vec<Vec<T>>`, `Vec<Struct{OwnedStr…}>` | ✅ AFFINE |
+| Owned string | `OwnedStr` from `"a" + "b"`; `Str` for borrowed | ✅ AFFINE |
+| Result / Option | Prelude-injected generic enums (#282 + #281) | ✅ AFFINE |
+| Shared atomic | `Atomic<T>` for shared counters | ✅ AFFINE |
+| Shared mutable | `Mutex<T>` + `Guard<T>` | ✅ AFFINE |
+| Fallible alloc | `try_vec(n) -> Result<Vec<i64>, AllocError>` (#284) | ✅ AFFINE |
+
+**Sequenced queue.** Full per-item detail (with implementation
+plan and affine contract) lives in [TODO.md](TODO.md) under the
+*Data structures + algorithms roadmap* section.
+
+| Level | Items | Affine flag |
+|-------|-------|-------------|
+| **1 — Operations on existing primitives** | `Vec.sort` / `sort_by(fn)`, `Vec.reverse`, `Vec.dedup`, `Vec.find` / `contains` / `binary_search`, `Vec.pop` / `swap_remove` / `insert` / `clear`, `Array.sort` / `find` (Copy only), `String.split` / `contains` / `starts_with` / `ends_with` / `trim` / `replace`, `String.parse_int` / `parse_float`, math (`pow`, `abs`, `sqrt`, `sin` / `cos` / `tan`, `floor` / `ceil`, fn-form `min` / `max`), RNG (`seed_rng`, `rand_i64`, `rand_in_range`), `Hash` interface + FNV-1a / SipHash builtin | ✅ AFFINE |
+| **2 — Generic containers** (deps: Level 1, generic decls #281) | `HashSet<T>` (✅ Copy / ⚠️ owning), `HashMap<K, V>` (⚠️ — `get -> Option<ref V>`, `insert` consumes, `remove` moves), `BTreeSet<T>` (✅ Copy / ⚠️ owning), `BTreeMap<K, V>` (⚠️ same contract), `Deque<T>` ring buffer (✅), `BinaryHeap<T>` (✅) | ✅ / ⚠️ AFFINE-TENSION |
+| **3 — Closures + iterators** | Closures w/ captured state (⚠️ capture-by-value moves; capture-by-ref produces a second-class closure), `.map(f).filter(p).fold(init, g)` loop-fused (✅), `sort_by` / `find_by` lifted to closure (✅) | ✅ / ⚠️ AFFINE-TENSION |
+| **4 — Advanced / domain-specific** | BST / AVL / red-black via node arena + `i32` child indices (✅), B-tree arena (✅), Trie arena (✅), graphs as `Vec<Node>` + `Vec<Vec<u32>>` adjacency (✅), graph algorithms BFS / DFS / Dijkstra / A* / topo / Kruskal / Prim (✅), Union-Find (✅), skip list (✅), Bloom filter (✅) | ✅ AFFINE |
+
+**Deferred / non-compliant** (flagged with reasoning + substitute):
+
+| Item | Why non-compliant | Substitute |
+|------|-------------------|------------|
+| 🛑 Doubly-linked list w/ raw `prev` / `next` pointers | Two pointers into one node violate single-owner | Index-based Deque (Level 2 #15); index-based BST (Level 4 #20) |
+| 🛑 Rc / Arc reference-counted shared ownership | Cycles defeat cycle-free Drop; deliberate v1 trade-off | Index-based graphs (Level 4 #23) for shared refs; `Channel<T, N>` for cross-task ownership; `Mutex<T>` for shared mutable |
+| 🛑 Iterators yielding owned `T` | Would move every element out; tail Drop then double-frees | `for x in xs` already iterates by Copy-value (Copy T) or by-ref (non-Copy T); combinator chain (Level 3 #18) is by-ref or consume-whole-Vec via `.fold` / `.collect` |
+| 🛑 Self-referential structs (Pin / pinning) | Affine moves invalidate self-pointers | Index-based arena pattern (Level 4 #20–#23) |
+| 🛑 Garbage collector (any flavor) | Duplicates affine's deterministic Drop; defeats no-runtime promise | Affine + scope-exit Drop already covers it |
+
+**The principle remains: add a new built-in only when no composition
+of existing primitives gets within an order of magnitude of optimal.**
+The roadmap above is what to ship — and *how to ship it under affine*
+— not a wishlist of every container ever designed.
 
 ### Current limitations
 
@@ -2736,7 +2825,6 @@ The honest list, grouped by which work item closes them:
 - No `bool ↔ int` cast (deliberate — forces explicit branching).
 - `Mutex<T>` restricted to `Mutex<i64>` (other widths waiting on a
   parametric runtime helper).
-- Match doesn't accept `f64` scrutinees.
 - Type aliases can't be recursive.
 
 **Affine ownership**
@@ -2764,9 +2852,12 @@ The honest list, grouped by which work item closes them:
 **Memory & runtime model**
 
 - No GC, no Rc / Arc — affine + scope-exit Drop only.
-- No async / await / coroutines — concurrency is real threads
-  (`task` + `join`) plus shared-state via `Atomic` / `Mutex` /
-  `Channel`.
+- Async / await / coroutines: **queued** (see *Async / asyncio*
+  in [TODO.md](TODO.md)). The canonical path is compiler-lowered
+  state machines on an arena — explicitly NOT Rust-style `Pin<&mut
+  Self>` self-references (those stay 🛑 NON-COMPLIANT under
+  affine). Today's concurrency is real threads (`task` + `join`)
+  plus shared-state via `Atomic` / `Mutex` / `Channel`.
 - No exceptions (covered above).
 
 **Tooling**
@@ -2887,8 +2978,12 @@ deliberately deferred as v1 trade-offs.
   struct (`intent_arr_ret_N_T`); tree-LLVM returns `[N x T]` by
   value natively. SSA-LLVM falls back to tree-LLVM for the
   stack-aliasing case. See [examples/array_return.vani](examples/array_return.vani).
-- ⏳ Nested arrays `[[T; N]; M]` and `[Vec<T>; N]` — SSA path doesn't lower
-  by-value element loads of these shapes yet.
+- ✅ Nested arrays `[[T; N]; M]` and `[Vec<T>; N]` — closure #291
+  Phases 1–4 (2026-05-27). Array-element-must-be-Copy restriction
+  lifted; `clone_at(ref arr, i)` extended to arrays; per-slot
+  per-field drops including struct-slot field walks; tree-LLVM
+  `len` of a Vec rvalue (`len(clone_at(ref xs, i))`) spills to
+  alloca, GEPs `.len`, loads.
 - ✅ Empty struct `struct E {}` — useful for marker / zero-sized types.
 - ✅ Unit-return functions — `fn f() { … }` without `-> Type` is sugar
   for `-> i64` with an implicit `return 0;` appended. Callers invoke as
@@ -2909,10 +3004,10 @@ deliberately deferred as v1 trade-offs.
   and the leaf field must be Copy.
 - ⏳ Generic function call sites — parses, gated diagnostic, lands with T1.4.
 - ⏳ Enum payload variants — parses, gated diagnostic, lands with T1.3 phase 2b.
-- ⏳ Match on float scrutinee — `bool` and `Str` ship today (see
-  [examples/match_bool.vani](examples/match_bool.vani) and
-  [examples/match_str.vani](examples/match_str.vani)); float
-  comparison is the usual gnarly case (NaN, epsilon thresholds).
+- ✅ Match on float scrutinee — closure #278 (2026-05-27).
+  `Pattern::Float(f64)` AST variant + `check_match_float` desugars
+  to a nested IfExpr chain; diagnostics for missing wildcard,
+  duplicate literals, NaN-in-pattern, wrong scrutinee type.
 (Tuple / struct / enum `==` all ship today — see the
 "Generics & interfaces" section above.)
 
@@ -2942,7 +3037,16 @@ roadmap surface and unblocks the items below it.
 | 9 | ✅ **Devanagari keyword aliases — Sanskrit / Hindi / Marathi (Phase 1 + 2)** | — | medium/high | Phase 1 done 2026-05-21 (single-word aliases + multi-word fusion `नहीं तो` / `के लिए` / `सिद्ध करो`). Phase 2 done 2026-05-26/27 (closures #265–#267): SOV word order for range `for` (`i के लिए 0 से 5 तक { … }`) and verb-at-end statements (`X पुनरागम;` / `… लिखो;` / `cond सुनिश्चित;` / `expr प्रमाण;`), plus 3-way alias parity for the previously English-only keywords. Grammar-consultant refinement pass still welcome. See [examples/hindi_keywords.vani](examples/hindi_keywords.vani), [examples/sanskrit_keywords.vani](examples/sanskrit_keywords.vani), [examples/marathi_keywords.vani](examples/marathi_keywords.vani). |
 | 10 | ✅ **Namespaces — modules, visibility, use, kosh** | — | high | done 2026-05-26 across closures #242–#258. `module foo { … }` blocks (inline + nested + deep `a::b::c::Item` paths), per-item `pub` / `pub(kosh)` visibility, `use foo::bar [as baz];` / `use foo::{a, b};` / `use foo::*;` import forms (top-level AND inside module bodies), `pub use foo::bar;` re-exports (transitively resolved), orphan rules for `implement Iface for T`, collision diagnostics, formatter round-trip. See [examples/modules.vani](examples/modules.vani) and the *Modules and namespaces* section above. The full kosh package-manager arc (manifest, resolver, registry, stdlib-as-kosh) is still on the deferred queue — see [TODO.md](TODO.md) item #10. |
 | 11 | ✅ **SSA-LLVM multi-block parallel-for body — atomicrmw emit** | #10 (SSA Step 3b recognizer) | medium/high | done 2026-05-26 (closure #264). The recognizer (#241) accepts multi-block bodies; SSA-C emit landed (#251); SSA-LLVM Phi-traceback now locates the actual reduction-update across conditional branches and replaces it with atomicrmw at its production site. Multi-block bodies (e.g. `parallel for { if cond { acc = acc + i; } }`) no longer fall back to tree-LLVM — they lower directly to atomicrmw in the outlined fn. |
-| 12 | ⏳ **Kosh package manager + Vāṇī-Kosh registry** | #10 | high (multi-session) | `kosh.toml` manifest, resolver + lockfile, `pub(kosh)` enforcement at the boundary, registry CLI (`intentc kosh add`, `kosh publish`), stdlib-as-kosh. Item #10 in [TODO.md](TODO.md). |
+| 12 | ✅ **FFI v1–v8 (`extern "C" fn` end-to-end)** | — | high | done 2026-05-27 across closures #269–#274, #279, #285, #288. `extern "C" fn` declarations, `--link-with PATH` / `-l<name>` flags, extern call-site checker, mangled-symbol codegen, struct-by-value rejection with `ref T` hint, callbacks via `Type::FnPtr`, System V x86-64 small-struct return lowering. Net: `qsort`-style callbacks and libc string / math interop work end-to-end without a runtime shim. |
+| 13 | ✅ **vani.toml manifest (v1 + v2 [deps])** | — | medium | done 2026-05-27 (#280 + #287). Hand-rolled minimal-TOML parser, `find_manifest` parent-walk, `[package].entry` auto-discovery, `[deps]` inline-table for multi-file dependency wiring. |
+| 14 | ✅ **Generic struct + enum declarations** | #6 | high | done 2026-05-27 (#281 + #282). `Type::Apply { name, args }` for parse-time generic instantiations; mangled names like `Result__Vec_I64___AllocError`; `Option<T>` / `Result<T, E>` / `AllocError` injected at AST level as prelude. |
+| 15 | ✅ **Mixed-payload enums + `try_vec(n) -> Result<Vec<i64>, AllocError>`** | #14 | medium/high | done 2026-05-27 (#283 + #284). C uses tagged union `union { Type0 v_Ok; Type1 v_Err; }`; LLVM uses `[N x i8]` byte buffer + per-variant bitcast. `try_vec` builtin emits malloc + null-check + Result construction. |
+| 16 | ✅ **Attribute syntax + `#[bounded(N)]`** | — | medium | done 2026-05-27 (#286, #289, #290). First attribute in the language. New `#` token + parser; tree-LLVM uses thread-local globals + per-Return decrement; SSA-LLVM mirrors the pattern; C emits a thread-local counter with GCC `__attribute__((cleanup))` for the decrement. |
+| 17 | ✅ **Nested arrays `[[T; N]; M]` / `[Vec<T>; N]`** | — | medium | done 2026-05-27 (#291 Phases 1–4). Array-element Copy restriction lifted; `clone_at(ref arr, i)` extended to arrays; per-slot per-field drops including struct-slot field walks; tree-LLVM `len` of a Vec rvalue spills to alloca, GEPs `.len`, loads. |
+| 18 | ⏳ **Data structures + algorithms roadmap (Levels 1–4)** | #14 (for Level 2+) | high (multi-session) | Levels 1–4 sequenced under affine ownership. Level 1: `sort` / `sort_by` / `find` / `binary_search` / `pop` / RNG / Hash interface. Level 2: `HashSet` / `HashMap` (⚠️ AFFINE-TENSION — `get -> Option<ref V>`) / `BTreeSet` / `BTreeMap` / `Deque` / `BinaryHeap`. Level 3: closures + iterator combinators. Level 4: arena-based BST / B-tree / Trie / graphs + algorithms. Full per-item plan in [TODO.md](TODO.md). |
+| 19 | ⏳ **Condition variables (`Condvar`)** | — | medium (single session) | ✅ AFFINE. `condvar_new / wait(ref cv, mut ref g: Guard<T>) / wait_timeout / notify_one / notify_all`. Pairs with `Mutex<T>` + `Guard<T>` for "wait until predicate" patterns; guard stays mut-borrowed across `wait` so the predicate-check loop keeps using it. Codegen reuses Linux futex / Win32 WaitOnAddress / pthread-cond runtime helpers already in tree for `Mutex`. No new dependencies — independent of closures, generics, async. |
+| 20 | ⏳ **Async / asyncio** (⚠️ AFFINE-TENSION via compiler-lowered state machines; 🛑 NOT Pin / self-references) | Level 3 closures (#18) | high (multi-session) | Each `async fn` lowers to an enum-of-frames in `Vec<StateMachine>`. Single-threaded event-loop driver `intent_async_run`; non-blocking I/O (file / socket / timer) under epoll / kqueue / IOCP; `Channel<T, N>` is the cooperative coordination primitive; `Future<T>` = generic enum w/ `Ready(T)` / `Pending` (uses #281 + #283). NOT shipping: Rust-style `Pin<&mut Self>`, panic-based cancellation, stackful coroutines, async inside `parallel for`. Full design in [TODO.md](TODO.md) under *Async / asyncio*. |
+| 21 | ⏳ **Kosh package manager + Vāṇī-Kosh registry** | #10, #13 | high (multi-session) | `kosh.toml` manifest, resolver + lockfile, `pub(kosh)` enforcement at the boundary, registry CLI (`intentc kosh add`, `kosh publish`), stdlib-as-kosh. Item #10 in [TODO.md](TODO.md). |
 
 **Devanagari aliases (#9) — current state + remaining work:**
 
