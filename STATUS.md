@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #311 — Level 3 method-call sugar for Vec combinators. `xs.map(f)` / `xs.filter(p)` / `xs.fold(init, g)` desugar to the existing `vec_map(ref xs, f)` / `vec_filter(ref xs, p)` / `vec_fold(ref xs, init, g)` builtins; `xs.sort_by(cmp)` and `xs.sort()` to the mut-ref variants. Pure checker-side desugar — zero backend changes. Receiver must be a named `Var` of `Vec<T>` (or `ref/mut ref Vec<T>`); non-Var receivers fall through to the existing user-method lookup. 5 new lib tests.)
-**Test totals:** 1140 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 77 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #312 — Level 3 method-call sugar extended to the affine containers (HashMap / HashSet / BTreeMap / BTreeSet / Deque). `m.get(k)` / `m.insert(k, v)` / `m.contains_key(k)` / `m.remove(k)` / `m.len()` / `s.contains(v)` / `d.push_back(v)` / `d.pop_front()` etc. all desugar to the existing `<container>_<method>` builtins. Parser extended to accept the `len` keyword as a method name after `.`. **Bug fix bundled:** SSA-LLVM emit now clears the `LLVM_ENUM_PAYLOAD_REGISTRY` (and the variant-payload / tag registries) at the start — a stale leak from a previous tree-LLVM compile in the same process was causing `intent_vec_i64__heap_peek` to emit references to `%Enum_Option__i64` without the corresponding typedef when programs were batched. New `examples/container_method_sugar.vani`; 6 new lib tests.)
+**Test totals:** 1146 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 78 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,76 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 3 — Affine container method-call sugar (shipped 2026-05-28, closure #312)
+
+✅ AFFINE — pure surface desugar; same proven pattern as #311.
+
+A second arm in `check_expr`'s `MethodCall` handler rewrites
+method-call syntax on the five affine container types to their
+existing builtin form:
+
+| Container  | Sugar                  | Desugared form                          |
+|------------|------------------------|-----------------------------------------|
+| HashMap    | `m.get(k)`             | `hashmap_get(ref m, k)`                 |
+|            | `m.insert(k, v)`       | `hashmap_insert(mut ref m, k, v)`       |
+|            | `m.contains_key(k)`    | `hashmap_contains_key(ref m, k)`        |
+|            | `m.len()`              | `hashmap_len(ref m)`                    |
+| HashSet    | `s.insert(v)`          | `hashset_insert(mut ref s, v)`          |
+|            | `s.contains(v)`        | `hashset_contains(ref s, v)`            |
+|            | `s.len()`              | `hashset_len(ref s)`                    |
+| BTreeMap   | `m.get(k)`             | `btreemap_get(ref m, k)`                |
+|            | `m.insert(k, v)`       | `btreemap_insert(mut ref m, k, v)`      |
+|            | `m.contains_key(k)`    | `btreemap_contains_key(ref m, k)`       |
+|            | `m.remove(k)`          | `btreemap_remove(mut ref m, k)`         |
+|            | `m.len()`              | `btreemap_len(ref m)`                   |
+| BTreeSet   | `s.insert(v)`          | `btreeset_insert(mut ref s, v)`         |
+|            | `s.contains(v)`        | `btreeset_contains(ref s, v)`           |
+|            | `s.remove(v)`          | `btreeset_remove(mut ref s, v)`         |
+|            | `s.len()`              | `btreeset_len(ref s)`                   |
+| Deque      | `d.push_back(v)`       | `deque_push_back(mut ref d, v)`         |
+|            | `d.push_front(v)`      | `deque_push_front(mut ref d, v)`        |
+|            | `d.pop_back()`         | `deque_pop_back(mut ref d)`             |
+|            | `d.pop_front()`        | `deque_pop_front(mut ref d)`            |
+|            | `d.peek_back()`        | `deque_peek_back(ref d)`                |
+|            | `d.peek_front()`       | `deque_peek_front(ref d)`               |
+|            | `d.len()`              | `deque_len(ref d)`                      |
+
+Same restriction as #311: the receiver must be a simple `Var`
+binding (after stripping one level of borrow). Non-Var
+receivers (`make_map().get(k)`) fall through to the existing
+user-method-dispatch path.
+
+**Parser change:** `len` is a reserved token (`TokenKind::Len`,
+used for the unary `len(xs)` builtin). To allow `.len()` method
+position, the parser now accepts `Len` as a method name after
+`.` and maps it to the synthetic ident `"len"`. Both
+`obj.len()` (MethodCall) and `obj.len` (FieldAccess) parse
+correctly.
+
+**Bug fix bundled:** the SSA-LLVM backend reuses tree-LLVM's
+`emit_vec_helpers`, which gates `heap_peek` / `heap_pop`
+emission on `LLVM_ENUM_PAYLOAD_REGISTRY`. The registry was
+cleared at the start of tree-LLVM's `emit_llvm` but NOT at the
+start of SSA-LLVM's `emit`. When a process compiled
+container_method_sugar.vani (which registers `Option__i64`)
+followed by control_flow.vani (which goes through SSA-LLVM
+because it has no payloaded enums), the SSA emit would pick
+up the stale `Option__i64` registration and emit
+`%Enum_Option__i64`-referencing helpers without the
+corresponding typedef. The fix: SSA-LLVM's `emit` now clears
+the enum payload, variant-payload, and tag registries at the
+top alongside its own thread_locals.
+
+**Tests:** 6 new lib tests (one per container + fall-through
+behaviour). New `examples/container_method_sugar.vani` covers
+all five containers' sugared methods on both backends.
+
+**Pending follow-ups:** method-call sugar for Vec mutators
+(push / pop / reverse / dedup / find / contains /
+binary_search); non-Var receivers via implicit temporary
+binding; uniform `.len()` method on Vec (which currently uses
+the standalone `len(xs)` builtin form).
 
 ### Data-structures roadmap Level 3 — Vec method-call sugar (shipped 2026-05-28, closure #311)
 

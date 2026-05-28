@@ -833,6 +833,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "composite_types.vani",
         "concurrency.vani",
         "condvar.vani",
+        "container_method_sugar.vani",
         "contracts.vani",
         "control_flow.vani",
         "deque.vani",

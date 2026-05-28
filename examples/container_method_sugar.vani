@@ -1,0 +1,76 @@
+// build & run:
+//   intentc run examples/container_method_sugar.vani                          # LLVM backend
+//   intentc run examples/container_method_sugar.vani --backend=c              # C backend
+//   intentc build examples/container_method_sugar.vani -o /tmp/cms && /tmp/cms
+
+intent "Method-call sugar for affine containers — HashMap / HashSet / BTreeMap / BTreeSet / Deque (closure #312)";
+
+// v1 design: a checker-only desugar pass rewrites `recv.method(args)`
+// on container-typed receivers to the existing
+// `<container>_<method>(<ref|mut ref> recv, args...)` builtin call.
+// No backend changes; same generated code as direct calls. The
+// receiver must be a named `Var` binding — non-Var receivers
+// (e.g., `make_map().get(k)`) fall through to user-method
+// dispatch (which doesn't match for containers in v1).
+
+fn unwrap_or(o: Option<i64>, def: i64) -> i64 {
+  return match o {
+    Option.Some(v) then v,
+    Option.None then def,
+  };
+}
+
+fn main() -> i64 {
+  // HashMap method sugar.
+  let m: HashMap<i64, i64> = hashmap_new();
+  let _ = m.insert(1, 100);
+  let _ = m.insert(2, 200);
+  let _ = m.insert(1, 999);  // overwrite returns Some(100)
+  print "hashmap get(1):", unwrap_or(m.get(1), 0 - 1);
+  print "hashmap get(99):", unwrap_or(m.get(99), 0 - 1);
+  print "hashmap contains_key(2):", m.contains_key(2);
+  print "hashmap contains_key(99):", m.contains_key(99);
+  print "hashmap len:", m.len();
+
+  // HashSet method sugar.
+  let s: HashSet<i64> = hashset_new();
+  let _ = s.insert(5);
+  let _ = s.insert(7);
+  let _ = s.insert(5);  // duplicate returns false
+  print "hashset contains(5):", s.contains(5);
+  print "hashset contains(6):", s.contains(6);
+  print "hashset len:", s.len();
+
+  // BTreeMap method sugar — ordered insertion + removal.
+  let bm: BTreeMap<i64, i64> = btreemap_new();
+  let _ = bm.insert(3, 30);
+  let _ = bm.insert(1, 10);
+  let _ = bm.insert(2, 20);
+  print "btreemap get(2):", unwrap_or(bm.get(2), 0 - 1);
+  print "btreemap remove(1):", unwrap_or(bm.remove(1), 0 - 1);
+  print "btreemap len after remove:", bm.len();
+  print "btreemap contains_key(1):", bm.contains_key(1);
+
+  // BTreeSet method sugar.
+  let bs: BTreeSet<i64> = btreeset_new();
+  let _ = bs.insert(8);
+  let _ = bs.insert(2);
+  let _ = bs.insert(5);
+  print "btreeset contains(5):", bs.contains(5);
+  print "btreeset remove(8):", bs.remove(8);
+  print "btreeset len:", bs.len();
+
+  // Deque method sugar — two-ended queue.
+  let d: Deque<i64> = deque_new();
+  let _ = d.push_back(1);
+  let _ = d.push_back(2);
+  let _ = d.push_front(0);
+  print "deque len:", d.len();
+  print "deque peek_front:", unwrap_or(d.peek_front(), 0 - 1);
+  print "deque peek_back:", unwrap_or(d.peek_back(), 0 - 1);
+  print "deque pop_front:", unwrap_or(d.pop_front(), 0 - 1);
+  print "deque pop_back:", unwrap_or(d.pop_back(), 0 - 1);
+  print "deque len after pops:", d.len();
+
+  return 0;
+}

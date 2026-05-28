@@ -9320,6 +9320,96 @@ fn check_expr(
                 }
             }
 
+            // Closure #312 — method-call sugar for affine
+            // containers. `m.get(k)` / `s.insert(v)` / `d.pop_back()`
+            // etc. on HashMap / HashSet / BTreeMap / BTreeSet /
+            // Deque receivers rewrite to the existing
+            // `<container>_<method>(<borrow> recv, args...)`
+            // builtins. Same restriction as #311: receiver must
+            // be a simple `Var`. Borrow shape (`ref` vs
+            // `mut ref`) is per-method — readers borrow shared,
+            // mutators borrow exclusive.
+            if let ExprKind::Var(recv_name) = &receiver.kind {
+                let recv_ty_opt = env.lookup(recv_name).map(|i| i.ty.clone());
+                // Strip one level of borrow to discover the
+                // underlying container shape.
+                let underlying_ty = recv_ty_opt.as_ref().map(|t| match t {
+                    Type::Ref(inner) | Type::RefMut(inner) => inner.as_ref(),
+                    other => other,
+                });
+                let (builtin_name, want_mut_ref): (&str, bool) = match underlying_ty {
+                    Some(Type::HashMap(_, _)) => match method.as_str() {
+                        "get" => ("hashmap_get", false),
+                        "insert" => ("hashmap_insert", true),
+                        "contains_key" => ("hashmap_contains_key", false),
+                        "len" => ("hashmap_len", false),
+                        _ => ("", false),
+                    },
+                    Some(Type::HashSet(_)) => match method.as_str() {
+                        "insert" => ("hashset_insert", true),
+                        "contains" => ("hashset_contains", false),
+                        "len" => ("hashset_len", false),
+                        _ => ("", false),
+                    },
+                    Some(Type::BTreeMap(_, _)) => match method.as_str() {
+                        "get" => ("btreemap_get", false),
+                        "insert" => ("btreemap_insert", true),
+                        "contains_key" => ("btreemap_contains_key", false),
+                        "remove" => ("btreemap_remove", true),
+                        "len" => ("btreemap_len", false),
+                        _ => ("", false),
+                    },
+                    Some(Type::BTreeSet(_)) => match method.as_str() {
+                        "insert" => ("btreeset_insert", true),
+                        "contains" => ("btreeset_contains", false),
+                        "remove" => ("btreeset_remove", true),
+                        "len" => ("btreeset_len", false),
+                        _ => ("", false),
+                    },
+                    Some(Type::Deque(_)) => match method.as_str() {
+                        "push_back" => ("deque_push_back", true),
+                        "push_front" => ("deque_push_front", true),
+                        "pop_back" => ("deque_pop_back", true),
+                        "pop_front" => ("deque_pop_front", true),
+                        "peek_back" => ("deque_peek_back", false),
+                        "peek_front" => ("deque_peek_front", false),
+                        "len" => ("deque_len", false),
+                        _ => ("", false),
+                    },
+                    _ => ("", false),
+                };
+                if !builtin_name.is_empty() {
+                    let recv_clone = (**receiver).clone();
+                    let borrow_kind = if want_mut_ref {
+                        ExprKind::RefMut {
+                            inner: Box::new(recv_clone),
+                        }
+                    } else {
+                        ExprKind::Ref {
+                            inner: Box::new(recv_clone),
+                        }
+                    };
+                    let receiver_borrow = Expr {
+                        kind: borrow_kind,
+                        span: receiver.span,
+                    };
+                    let mut new_args: Vec<Expr> = Vec::with_capacity(args.len() + 1);
+                    new_args.push(receiver_borrow);
+                    for a in args {
+                        new_args.push(a.clone());
+                    }
+                    return check_call(
+                        builtin_name,
+                        *method_span,
+                        &new_args,
+                        env,
+                        signatures,
+                        expr.span,
+                        diagnostics,
+                    );
+                }
+            }
+
             // Type-associated function call: `Type.fn(args)`
             // where `Type` is a declared struct/enum AND
             // `<Type>_<fn>` is in scope. This is the

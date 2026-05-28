@@ -12870,6 +12870,92 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn hashmap_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: HashMap<i64, i64> = hashmap_new();
+              let _ = m.insert(1, 100);
+              let n: i64 = m.len();
+              if m.contains_key(1) { return n; } else { return 0; }
+            }
+        "#;
+        compile_to_c(source).expect("hashmap method sugar in C");
+        compile_to_llvm(source).expect("hashmap method sugar in LLVM");
+    }
+
+    #[test]
+    fn hashset_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: HashSet<i64> = hashset_new();
+              let _ = s.insert(5);
+              if s.contains(5) { return s.len(); } else { return 0; }
+            }
+        "#;
+        compile_to_c(source).expect("hashset method sugar in C");
+        compile_to_llvm(source).expect("hashset method sugar in LLVM");
+    }
+
+    #[test]
+    fn btreemap_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: BTreeMap<i64, i64> = btreemap_new();
+              let _ = m.insert(3, 30);
+              let _ = m.insert(1, 10);
+              let _ = m.remove(1);
+              return m.len();
+            }
+        "#;
+        compile_to_c(source).expect("btreemap method sugar in C");
+        compile_to_llvm(source).expect("btreemap method sugar in LLVM");
+    }
+
+    #[test]
+    fn btreeset_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: BTreeSet<i64> = btreeset_new();
+              let _ = s.insert(5);
+              let _ = s.insert(2);
+              let _ = s.remove(5);
+              if s.contains(2) { return s.len(); } else { return 0; }
+            }
+        "#;
+        compile_to_c(source).expect("btreeset method sugar in C");
+        compile_to_llvm(source).expect("btreeset method sugar in LLVM");
+    }
+
+    #[test]
+    fn deque_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let d: Deque<i64> = deque_new();
+              let _ = d.push_back(1);
+              let _ = d.push_front(0);
+              return d.len();
+            }
+        "#;
+        compile_to_c(source).expect("deque method sugar in C");
+        compile_to_llvm(source).expect("deque method sugar in LLVM");
+    }
+
+    #[test]
+    fn container_sugar_falls_through_unknown_methods() {
+        // A method name not in the sugar map must fall through to
+        // the existing user-method-dispatch path, which produces
+        // the standard "no such method" diagnostic.
+        let source = r#"
+            fn main() -> i64 {
+              let s: HashSet<i64> = hashset_new();
+              return s.bogus_method(0);
+            }
+        "#;
+        let errors = compile(source).expect_err("unknown method on container must fail");
+        assert!(!errors.is_empty(), "expected at least one diagnostic");
+    }
+
+    #[test]
     fn vec_method_sugar_map() {
         let source = r#"
             pure fn double(x: i64) -> i64 { return x + x; }

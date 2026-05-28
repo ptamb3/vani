@@ -91,6 +91,28 @@ pub fn emit(module: &Module) -> Result<String, EmitError> {
             }
         }
     });
+    // Closure #312 fix: SSA-LLVM reuses tree-LLVM's
+    // `emit_vec_helpers`, which gates `heap_peek` / `heap_pop`
+    // emission (and `parse_int` / `find` etc. at use sites) on
+    // `LLVM_ENUM_PAYLOAD_REGISTRY` containing the relevant
+    // monomorphic Option / Result entries. The SSA Module
+    // doesn't carry enum decls (the SSA path is only taken
+    // when the program has NO payloaded enums per
+    // `emit_llvm_via_ssa`'s gate), so the right behaviour is
+    // to clear the registry — any leftover from a prior
+    // tree-LLVM emit in the same process would otherwise
+    // make us emit Enum_Option-referencing helpers whose
+    // typedef isn't in scope. Same rationale for the variant-
+    // payload and tag registries.
+    crate::backend_llvm::LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
+        r.borrow_mut().clear();
+    });
+    crate::backend_llvm::LLVM_ENUM_VARIANT_PAYLOADS_REGISTRY.with(|r| {
+        r.borrow_mut().clear();
+    });
+    crate::backend_llvm::LLVM_ENUM_PAYLOAD_TAGS_REGISTRY.with(|r| {
+        r.borrow_mut().clear();
+    });
 
     // Walk the SSA module for `Type::Vec(T)` element types.
     // Each unique element gets one `%intent_vec_<elt>` struct

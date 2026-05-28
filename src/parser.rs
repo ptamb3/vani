@@ -3054,6 +3054,55 @@ impl Parser {
                             }
                         }
                     }
+                    // `TokenKind::Len` lexes the keyword `len`, used
+                    // as the unary builtin `len(xs)`. In method-call
+                    // position (`obj.len()`), `len` is unambiguously
+                    // an identifier — there's no `len(...)` builtin
+                    // syntax after `.`. Recover by mapping the
+                    // keyword to a synthetic ident "len" so method-
+                    // call sugar works (`m.len()` → MethodCall).
+                    // Closure #312.
+                    TokenKind::Len => {
+                        let name_text = "len".to_string();
+                        if self.check(|k| matches!(k, TokenKind::LParen)) {
+                            let method_span = next.span;
+                            self.expect_keyword("'('", |k| matches!(k, TokenKind::LParen))?;
+                            let mut args = Vec::new();
+                            if !self.check(|k| matches!(k, TokenKind::RParen)) {
+                                loop {
+                                    args.push(self.parse_expr()?);
+                                    if self
+                                        .match_token(|k| matches!(k, TokenKind::Comma))
+                                        .is_none()
+                                    {
+                                        break;
+                                    }
+                                    if self.check(|k| matches!(k, TokenKind::RParen)) {
+                                        break;
+                                    }
+                                }
+                            }
+                            let close = self
+                                .expect_keyword("')'", |k| matches!(k, TokenKind::RParen))?;
+                            expr = Expr {
+                                kind: ExprKind::MethodCall {
+                                    receiver: Box::new(expr),
+                                    method: name_text,
+                                    method_span,
+                                    args,
+                                },
+                                span: span.merge(close.span),
+                            };
+                        } else {
+                            expr = Expr {
+                                kind: ExprKind::FieldAccess {
+                                    object: Box::new(expr),
+                                    field: name_text,
+                                },
+                                span,
+                            };
+                        }
+                    }
                     TokenKind::Ident(name_text) => {
                         // Disambiguate: `expr.foo(args)` is a
                         // MethodCall; `expr.foo` is a
