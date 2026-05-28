@@ -304,6 +304,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
             // tree backend.
             if name == "push_mut" || name == "pop"
                 || name == "sort" || name == "sort_by"
+                || name == "reverse" || name == "dedup"
             {
                 return false;
             }

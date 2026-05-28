@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -11812,6 +11812,11 @@ fn check_call(
         "sort" | "sort_by" => {
             return check_sort_builtin(name, args, env, signatures, span, diagnostics);
         }
+        "reverse" | "dedup" => {
+            return check_reverse_dedup_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "clone" => return check_clone_builtin(args, env, signatures, span, diagnostics),
         "clone_at" => {
             return check_clone_at_builtin(args, env, signatures, span, diagnostics)
@@ -13609,6 +13614,101 @@ fn check_sort_builtin(
             name: name.to_string(),
             name_span: span,
             args: typed_args,
+        },
+        Type::I64,
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 1 — `reverse(mut ref xs)` /
+/// `dedup(mut ref xs)`.
+///
+///   reverse(mut ref xs: Vec<T>) -> i64
+///       — in-place reverse, any element type. Returns 0.
+///   dedup(mut ref xs: Vec<i64>) -> i64
+///       — in-place removal of consecutive duplicates; returns
+///         the post-dedup length. v1: Vec<i64> only (needs
+///         equality on the element type; will widen with the
+///         Hash + Eq interfaces later).
+fn check_reverse_dedup_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    if args.len() != 1 {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}(mut ref xs) expects 1 argument, got {}",
+                name,
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback_integer(span);
+    }
+    let xs = check_expr(&args[0], env, signatures, diagnostics);
+    let element_type = match xs.ty() {
+        Type::RefMut(inner) => match &**inner {
+            Type::Vec(element) => (**element).clone(),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "{}() requires a `mut ref Vec<T>` argument, got {}",
+                        name,
+                        xs.ty()
+                    ),
+                ));
+                return CheckedExpr::fallback_integer(span);
+            }
+        },
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "{}() requires a `mut ref Vec<T>` argument, got {}",
+                    name, other
+                ),
+            ));
+            return CheckedExpr::fallback_integer(span);
+        }
+    };
+    // dedup needs `==` on the element type — v1 ships i64 only,
+    // matching sort's scoping. reverse works for any element
+    // type (it just swaps slots) but v1 limits to Copy element
+    // types since affine-handle Vecs (Vec<Mutex<_>>, …) aren't
+    // a meaningful target for reverse and would require careful
+    // handling of the swap semantics. Most practical reverse
+    // calls are on integer / OwnedStr Vecs; keep it tight.
+    if name == "dedup" && !matches!(element_type, Type::I64) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "dedup() only supports `Vec<i64>` in v1, got Vec<{}>",
+                element_type
+            ),
+        ));
+        return CheckedExpr::fallback_integer(span);
+    }
+    if name == "reverse" && !element_type.is_copy() {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "reverse() requires a Vec<T> with Copy element type in v1, got Vec<{}>",
+                element_type
+            ),
+        ));
+        return CheckedExpr::fallback_integer(span);
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: vec![xs.expr],
         },
         Type::I64,
         None,

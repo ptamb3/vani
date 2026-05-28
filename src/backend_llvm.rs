@@ -4800,7 +4800,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             }
             if matches!(
                 name.as_str(),
-                "push" | "set" | "clone" | "push_mut" | "pop" | "sort" | "sort_by"
+                "push"
+                    | "set"
+                    | "clone"
+                    | "push_mut"
+                    | "pop"
+                    | "sort"
+                    | "sort_by"
+                    | "reverse"
+                    | "dedup"
             ) {
                 let elt = vec_element_of_first_arg(args)
                     .expect("vec builtins take a Vec as the first arg");
@@ -6651,6 +6659,133 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
             sty = s_ty,
         ));
         out.push_str("  ret i64 %r\n");
+        out.push_str("}\n");
+        // ---- dedup: remove consecutive duplicates. v1: i64
+        // only. Returns the post-dedup length.
+        let dedup_name = format!("@intent_vec_{}__dedup", tag);
+        out.push_str(&format!(
+            "define i64 {dn}({sty}* %xs_p) {{\n",
+            dn = dedup_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %dd_data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %dd_len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %dd_data = load i64*, i64** %dd_data_p\n");
+        out.push_str("  %dd_len = load i64, i64* %dd_len_p\n");
+        out.push_str("  %dd_small = icmp slt i64 %dd_len, 2\n");
+        out.push_str("  br i1 %dd_small, label %dd_done, label %dd_init\n");
+        out.push_str("dd_init:\n");
+        out.push_str("  %dd_w_p = alloca i64\n");
+        out.push_str("  %dd_r_p = alloca i64\n");
+        out.push_str("  store i64 1, i64* %dd_w_p\n");
+        out.push_str("  store i64 1, i64* %dd_r_p\n");
+        out.push_str("  br label %dd_loop\n");
+        out.push_str("dd_loop:\n");
+        out.push_str("  %dd_r = load i64, i64* %dd_r_p\n");
+        out.push_str("  %dd_cont = icmp slt i64 %dd_r, %dd_len\n");
+        out.push_str("  br i1 %dd_cont, label %dd_body, label %dd_finish\n");
+        out.push_str("dd_body:\n");
+        out.push_str("  %dd_w = load i64, i64* %dd_w_p\n");
+        out.push_str("  %dd_w_m1 = sub i64 %dd_w, 1\n");
+        out.push_str("  %dd_slot_r = getelementptr i64, i64* %dd_data, i64 %dd_r\n");
+        out.push_str("  %dd_slot_prev = getelementptr i64, i64* %dd_data, i64 %dd_w_m1\n");
+        out.push_str("  %dd_vr = load i64, i64* %dd_slot_r\n");
+        out.push_str("  %dd_vprev = load i64, i64* %dd_slot_prev\n");
+        out.push_str("  %dd_neq = icmp ne i64 %dd_vr, %dd_vprev\n");
+        out.push_str("  br i1 %dd_neq, label %dd_write, label %dd_next\n");
+        out.push_str("dd_write:\n");
+        out.push_str("  %dd_slot_w = getelementptr i64, i64* %dd_data, i64 %dd_w\n");
+        out.push_str("  store i64 %dd_vr, i64* %dd_slot_w\n");
+        out.push_str("  %dd_w_next = add i64 %dd_w, 1\n");
+        out.push_str("  store i64 %dd_w_next, i64* %dd_w_p\n");
+        out.push_str("  br label %dd_next\n");
+        out.push_str("dd_next:\n");
+        out.push_str("  %dd_r_next = add i64 %dd_r, 1\n");
+        out.push_str("  store i64 %dd_r_next, i64* %dd_r_p\n");
+        out.push_str("  br label %dd_loop\n");
+        out.push_str("dd_finish:\n");
+        out.push_str("  %dd_w_final = load i64, i64* %dd_w_p\n");
+        out.push_str("  store i64 %dd_w_final, i64* %dd_len_p\n");
+        out.push_str("  ret i64 %dd_w_final\n");
+        out.push_str("dd_done:\n");
+        out.push_str("  ret i64 %dd_len\n");
+        out.push_str("}\n");
+    }
+
+    // ---- reverse: two-pointer in-place swap. Any Copy
+    // element type. Returns 0.
+    if element.is_copy() {
+        let reverse_name = format!("@intent_vec_{}__reverse", tag);
+        out.push_str(&format!(
+            "define i64 {rn}({sty}* %xs_p) {{\n",
+            rn = reverse_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %rv_data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %rv_len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %rv_data = load {elt}*, {elt}** %rv_data_p\n",
+            elt = elt_ty,
+        ));
+        out.push_str("  %rv_len = load i64, i64* %rv_len_p\n");
+        out.push_str("  %rv_small = icmp slt i64 %rv_len, 2\n");
+        out.push_str("  br i1 %rv_small, label %rv_done, label %rv_init\n");
+        out.push_str("rv_init:\n");
+        out.push_str("  %rv_i_p = alloca i64\n");
+        out.push_str("  %rv_j_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %rv_i_p\n");
+        out.push_str("  %rv_j0 = sub i64 %rv_len, 1\n");
+        out.push_str("  store i64 %rv_j0, i64* %rv_j_p\n");
+        out.push_str("  br label %rv_loop\n");
+        out.push_str("rv_loop:\n");
+        out.push_str("  %rv_i = load i64, i64* %rv_i_p\n");
+        out.push_str("  %rv_j = load i64, i64* %rv_j_p\n");
+        out.push_str("  %rv_cont = icmp slt i64 %rv_i, %rv_j\n");
+        out.push_str("  br i1 %rv_cont, label %rv_swap, label %rv_done\n");
+        out.push_str("rv_swap:\n");
+        out.push_str(&format!(
+            "  %rv_pi = getelementptr {elt}, {elt}* %rv_data, i64 %rv_i\n",
+            elt = elt_ty,
+        ));
+        out.push_str(&format!(
+            "  %rv_pj = getelementptr {elt}, {elt}* %rv_data, i64 %rv_j\n",
+            elt = elt_ty,
+        ));
+        out.push_str(&format!(
+            "  %rv_vi = load {elt}, {elt}* %rv_pi\n",
+            elt = elt_ty,
+        ));
+        out.push_str(&format!(
+            "  %rv_vj = load {elt}, {elt}* %rv_pj\n",
+            elt = elt_ty,
+        ));
+        out.push_str(&format!(
+            "  store {elt} %rv_vj, {elt}* %rv_pi\n",
+            elt = elt_ty,
+        ));
+        out.push_str(&format!(
+            "  store {elt} %rv_vi, {elt}* %rv_pj\n",
+            elt = elt_ty,
+        ));
+        out.push_str("  %rv_i_next = add i64 %rv_i, 1\n");
+        out.push_str("  %rv_j_next = sub i64 %rv_j, 1\n");
+        out.push_str("  store i64 %rv_i_next, i64* %rv_i_p\n");
+        out.push_str("  store i64 %rv_j_next, i64* %rv_j_p\n");
+        out.push_str("  br label %rv_loop\n");
+        out.push_str("rv_done:\n");
+        out.push_str("  ret i64 0\n");
         out.push_str("}\n");
     }
 

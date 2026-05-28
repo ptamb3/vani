@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #293 — Vec.sort + Vec.sort_by on Vec<i64>; sort.vani example + 6 lib tests)
-**Test totals:** 1036 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 65 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #294 — Vec.reverse + Vec.dedup; sort.vani extended; 5 new lib tests)
+**Test totals:** 1041 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 65 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,32 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 1 — Vec.reverse + Vec.dedup (shipped 2026-05-28, closure #294)
+
+✅ AFFINE — both in-place over `mut ref Vec<T>`.
+
+**`reverse(mut ref xs: Vec<T>) -> i64`** — two-pointer swap;
+works for any Copy element type. Returns 0.
+
+**`dedup(mut ref xs: Vec<i64>) -> i64`** — drops consecutive
+duplicates (sort first for set-like behavior); returns the
+post-dedup length. v1: `Vec<i64>` only (needs `==` on the
+element; will widen with Hash/Eq interfaces).
+
+**Codegen:**
+- **Tree-C**: reverse uses two-pointer swap via temp; dedup is
+  the canonical read-cursor / write-cursor loop.
+- **Tree-LLVM**: inline IR using alloca-based loop counters
+  (no phi). Reverse emitted for any Copy element type; dedup
+  alongside sort (i64-only gate).
+- **SSA**: routes through tree via `ssa_path_supports`.
+
+**Tests:** 5 lib tests (reverse + dedup typecheck; reverse
+rejects by-value Vec; dedup rejects non-i64 element; runtime
+helpers present in C output). `examples/sort.vani` extended
+with reverse / dedup / sort+dedup combo. Cross-backend parity
+green.
 
 ### Data-structures roadmap Level 1 — Vec.sort + Vec.sort_by (shipped 2026-05-28, closure #293)
 

@@ -11968,6 +11968,86 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn reverse_typechecks_on_vec_i64() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let _ = reverse(mut ref xs);
+              return xs[0];
+            }
+        "#;
+        compile_to_c(source).expect("reverse must type-check");
+    }
+
+    #[test]
+    fn dedup_returns_new_length() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 1, 2, 2, 3);
+              let n: i64 = dedup(mut ref xs);
+              return n;
+            }
+        "#;
+        compile_to_c(source).expect("dedup must type-check + return i64");
+    }
+
+    #[test]
+    fn dedup_rejects_non_i64_element() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i32> = vec(1 as i32, 1 as i32);
+              let _ = dedup(mut ref xs);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("dedup on Vec<i32> must fail in v1");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("only supports `Vec<i64>` in v1")),
+            "expected v1-restriction diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn reverse_rejects_non_mut_ref_arg() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              let _ = reverse(xs);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("reverse with by-value Vec must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref Vec<T>")),
+            "expected mut-ref-Vec diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn reverse_and_dedup_emit_runtime_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(3, 1, 2);
+              let _ = reverse(mut ref xs);
+              let _ = dedup(mut ref xs);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("reverse+dedup program must compile");
+        assert!(
+            c.contains("__reverse") && c.contains("__dedup"),
+            "C output must include reverse + dedup runtime helpers; got:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn sort_emits_quicksort_runtime_helpers_in_c() {
         let source = r#"
             fn main() -> i64 {

@@ -76,5 +76,33 @@ fn main() -> i64 {
   print "one:";
   let _ = print_vec(ref one);
 
+  // reverse — in-place, any Copy element type. Returns 0.
+  let rs: Vec<i64> = vec(1, 2, 3, 4, 5);
+  let _ = reverse(mut ref rs);
+  print "reversed:";
+  let _ = print_vec(ref rs);
+
+  // dedup — drops consecutive duplicates and returns the new
+  // length. Sort first if you need set-like behavior.
+  let ds: Vec<i64> = vec(1, 1, 2, 2, 2, 3, 4, 4, 5);
+  let dn: i64 = dedup(mut ref ds);
+  print "dedup len:", dn;
+  let dk: i64 = 0;
+  while dk < dn {
+    print ds[dk];
+    dk = dk + 1;
+  }
+
+  // sort + dedup — canonical "unique sorted" combo.
+  let us: Vec<i64> = vec(5, 3, 5, 1, 3, 1, 4, 5);
+  let _ = sort(mut ref us);
+  let un: i64 = dedup(mut ref us);
+  print "sorted+dedup len:", un;
+  let uk: i64 = 0;
+  while uk < un {
+    print us[uk];
+    uk = uk + 1;
+  }
+
   return 0;
 }

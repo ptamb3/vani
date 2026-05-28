@@ -1633,6 +1633,39 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
         ));
     }
 
+    // Data-structures roadmap Level 1: `reverse(mut ref xs)`.
+    // Two-pointer in-place swap; works for any Copy element
+    // type. Array-element slots use memcpy through a scratch
+    // buffer; scalar slots use the natural three-temp swap.
+    if element.is_copy() {
+        let swap_body = if element_is_array {
+            format!(
+                "        {ct} tmp;\n        memcpy(tmp, xs->data[i], sizeof({ct}));\n        memcpy(xs->data[i], xs->data[j], sizeof({ct}));\n        memcpy(xs->data[j], tmp, sizeof({ct}));",
+                ct = c_element,
+            )
+        } else {
+            format!(
+                "        {ct} tmp = xs->data[i];\n        xs->data[i] = xs->data[j];\n        xs->data[j] = tmp;",
+                ct = c_element,
+            )
+        };
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__reverse({sn}* xs) {{\
+\n    if (xs->len < 2) {{ return 0; }}\
+\n    uint64_t i = 0;\
+\n    uint64_t j = xs->len - 1;\
+\n    while (i < j) {{\
+\n{body}\
+\n        i++;\
+\n        j--;\
+\n    }}\
+\n    return 0;\
+\n}}\n",
+            sn = struct_name,
+            body = swap_body,
+        ));
+    }
+
     // Data-structures roadmap Level 1: in-place `sort` /
     // `sort_by` on `Vec<i64>`. v1 restricts to i64 — the
     // runtime helper is monomorphized over that width. The
@@ -1705,6 +1738,24 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
 \n        {sn}__qsort_impl(xs->data, 0, (int64_t)xs->len - 1, cmp);\
 \n    }}\
 \n    return 0;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        // dedup: remove consecutive duplicates. Returns the
+        // post-dedup length so the caller can verify the work
+        // was done. Sort first if you want unique-set behavior.
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__dedup({sn}* xs) {{\
+\n    if (xs->len < 2) {{ return (int64_t)xs->len; }}\
+\n    uint64_t w = 1;\
+\n    for (uint64_t r = 1; r < xs->len; r++) {{\
+\n        if (xs->data[r] != xs->data[w - 1]) {{\
+\n            xs->data[w] = xs->data[r];\
+\n            w++;\
+\n        }}\
+\n    }}\
+\n    xs->len = w;\
+\n    return (int64_t)w;\
 \n}}\n",
             sn = struct_name,
         ));
@@ -4746,6 +4797,19 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 vec_helper(&element, "sort_by"),
                 emit_expr(&args[0]),
                 emit_expr(&args[1])
+            )
+        }
+        "reverse" | "dedup" => {
+            // In-place reverse / dedup over `mut ref Vec<T>`.
+            // Dedup is i64-only in v1.
+            let element = match args[0].ty.deref() {
+                Type::Vec(element) => element.clone(),
+                _ => unreachable!("{name}() arg 0 must be (mut ref) Vec<_>"),
+            };
+            format!(
+                "{}({})",
+                vec_helper(&element, name),
+                emit_expr(&args[0])
             )
         }
         "set" => {
