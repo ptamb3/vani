@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #304 — Level 2 #3: HashSet<i64> open-addressing hash set with 4 builtins; new hashset.vani; 5 new lib tests)
-**Test totals:** 1101 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 72 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #305 — Level 2 #4: HashMap<i64, i64> open-addressing key/value map with 5 builtins; new hashmap.vani; 6 new lib tests. **The headline AFFINE-TENSION container ships under its v1 Copy-V scoping.**)
+**Test totals:** 1107 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 73 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,58 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 2 — HashMap<i64, i64> (shipped 2026-05-28, closure #305)
+
+✅ AFFINE under v1 Copy-V scoping. ⚠️ AFFINE-TENSION when V
+goes non-Copy — that's the v2 expansion where `get` must
+shift from `Option<V>` (by-value Copy) to `Option<ref V>`
+(borrowed view, map retains ownership).
+
+**Layout:** `{ keys: i64*, values: i64*, occ: u8*, len: u64,
+capacity: u64 }`. Parallel arrays for cache-friendly probing.
+Open-addressing linear probing; grow doubles capacity at 50%
+load and rehashes. Same FNV-1a hash function as `hash_i64`.
+
+**API (5 builtins):**
+- `hashmap_new() -> HashMap<i64, i64>`
+- `hashmap_insert(mut ref m, k, v) -> Option<i64>` — returns
+  the previous value at key k (Some), or None if the key was
+  not present
+- `hashmap_get(ref m, k) -> Option<i64>` — Some(v) on hit,
+  None on miss
+- `hashmap_contains_key(ref m, k) -> bool`
+- `hashmap_len(ref m) -> i64`
+
+**Codegen:**
+- **Tree-C**: `intent_hashmap_i64_i64` struct + helpers in
+  body via `program_uses_i64_i64_hashmap` walker. get /
+  insert gated on Option__i64 registry.
+- **Tree-LLVM**: `%intent_hashmap_i64_i64 = type { i64*, i64*,
+  i8*, i64, i64 }` typedef. Module-level `define`s; linear
+  probing via alloca + capacity mask.
+- **SSA**: routes through tree.
+- **Drop**: both backends free keys, values, occ at scope
+  exit.
+
+**v1 restrictions:**
+- (K, V) = (i64, i64) only.
+- `hashmap_remove` deferred (same tombstone-or-rebuild
+  rationale as HashSet).
+- No iteration builtin yet.
+
+**Tests:** 6 lib tests (basics + LLVM compile; insert returns
+prev via Option<i64>; insert rejects ref (non-mut); `HashMap`
+name reserved against user structs; C runtime emitted; LLVM
+typedef + insert define emitted). `examples/hashmap.vani`
+covers insert returning prev (None first, then Some on
+overwrite), get hit/miss, contains_key, bulk insert
+triggering grow + rehash. Cross-backend parity green.
+
+**Pending follow-ups:** `hashmap_remove`; non-Copy V via
+`Option<ref V>` (the AFFINE-TENSION shift); wider K widths
+(`HashMap<Str, V>`, `HashMap<i64, Str>`); user `Hash` trait
+for struct keys; iteration via Level 3 closures.
 
 ### Data-structures roadmap Level 2 — HashSet<i64> (shipped 2026-05-28, closure #304)
 

@@ -328,6 +328,9 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "deque_len"
                 || name == "hashset_new" || name == "hashset_insert"
                 || name == "hashset_contains" || name == "hashset_len"
+                || name == "hashmap_new" || name == "hashmap_insert"
+                || name == "hashmap_get" || name == "hashmap_contains_key"
+                || name == "hashmap_len"
             {
                 return false;
             }

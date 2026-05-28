@@ -488,7 +488,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #304 — Level 2 #3: HashSet<i64> open-addressing hash set with 4 builtins (new / insert / contains / len) + scope-exit Drop + 5 lib tests + new hashset.vani parity example. Next focal area: Level 2 #4+ — HashMap<i64, i64> (⚠️ AFFINE-TENSION when V is non-Copy — v1 Copy-only), BTreeSet<i64>, BTreeMap<i64, i64>. hashset_remove, SipHash, hash_f64, Hash interface (user struct keys), heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type all deferred.)
+## ⏳ Resume here (paused 2026-05-28, after closure #305 — Level 2 #4: HashMap<i64, i64> open-addressing key/value map with 5 builtins (new / insert / get / contains_key / len) + scope-exit Drop + 6 lib tests + new hashmap.vani parity example. **The headline AFFINE-TENSION container is now shipped under its v1 Copy-V scoping.** Next focal area: Level 2 #5+ — BTreeSet<i64> + BTreeMap<i64, i64> (ordered variants). After Level 2 closes: Level 3 closures + iterator combinators; Level 4 arenas. Deferred: hashmap_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, hashset_remove, SipHash, hash_f64, Hash interface for user structs, heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

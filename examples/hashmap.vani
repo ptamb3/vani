@@ -1,0 +1,64 @@
+// build & run:
+//   intentc run examples/hashmap.vani                          # LLVM backend
+//   intentc run examples/hashmap.vani --backend=c              # C backend
+//   intentc build examples/hashmap.vani -o /tmp/hashmap && /tmp/hashmap
+
+intent "HashMap<i64, i64> — open-addressing key/value map (Level 2 #4)";
+
+// v1 design: open-addressing linear probing with parallel
+// keys / values / occupancy arrays. v1: K = V = i64. Hash via
+// inlined FNV-1a (matching the hash_i64 builtin).
+//
+//   hashmap_new() -> HashMap<i64, i64>
+//   hashmap_insert(mut ref m, k, v) -> Option<i64>
+//       returns the previous value at k (Some), or None
+//   hashmap_get(ref m, k) -> Option<i64>
+//   hashmap_contains_key(ref m, k) -> bool
+//   hashmap_len(ref m) -> i64
+//
+// AFFINE-TENSION note: for Copy V (i64 in v1), `get` returns
+// `Option<V>` by-value safely. When V can be non-Copy (Vec /
+// OwnedStr), `get` must shift to `Option<ref V>` so the map
+// retains ownership — that's a v2+ extension. Today the
+// contract is "v is Copy; get returns a fresh copy".
+
+fn unwrap_or(o: Option<i64>, def: i64) -> i64 {
+  return match o {
+    Option.Some(v) then v,
+    Option.None then def,
+  };
+}
+
+fn main() -> i64 {
+  let m: HashMap<i64, i64> = hashmap_new();
+
+  // Insert returns previous value (or None on first insert).
+  let p1: Option<i64> = hashmap_insert(mut ref m, 1, 100);
+  let p2: Option<i64> = hashmap_insert(mut ref m, 2, 200);
+  let p3: Option<i64> = hashmap_insert(mut ref m, 1, 999);
+  print "insert k=1 prev (None):", unwrap_or(p1, 0 - 1);
+  print "insert k=2 prev (None):", unwrap_or(p2, 0 - 1);
+  print "overwrite k=1 prev (100):", unwrap_or(p3, 0 - 1);
+
+  // Get returns Some(v) on match, None on miss.
+  print "get k=1 (999):", unwrap_or(hashmap_get(ref m, 1), 0 - 1);
+  print "get k=2 (200):", unwrap_or(hashmap_get(ref m, 2), 0 - 1);
+  print "get k=42 (none):", unwrap_or(hashmap_get(ref m, 42), 0 - 1);
+
+  // contains_key + len for fast checks.
+  print "contains 1:", hashmap_contains_key(ref m, 1);
+  print "contains 42:", hashmap_contains_key(ref m, 42);
+  print "len:", hashmap_len(ref m);
+
+  // Bulk insert triggers grow + rehash.
+  let i: i64 = 0;
+  while i < 100 {
+    let _ = hashmap_insert(mut ref m, i, i * i);
+    i = i + 1;
+  }
+  print "after bulk insert len:", hashmap_len(ref m);
+  print "get k=13 (169):", unwrap_or(hashmap_get(ref m, 13), 0 - 1);
+  print "get k=99 (9801):", unwrap_or(hashmap_get(ref m, 99), 0 - 1);
+
+  return 0;
+}

@@ -12482,6 +12482,114 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn hashmap_basics_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: HashMap<i64, i64> = hashmap_new();
+              let _: Option<i64> = hashmap_insert(mut ref m, 1, 100);
+              let g: Option<i64> = hashmap_get(ref m, 1);
+              let has: bool = hashmap_contains_key(ref m, 1);
+              let n: i64 = hashmap_len(ref m);
+              let _ = g;
+              if has { return n; } else { return 0 - 1; }
+            }
+        "#;
+        compile_to_c(source).expect("hashmap basics must type-check");
+        compile_to_llvm(source).expect("hashmap basics must compile to LLVM");
+    }
+
+    #[test]
+    fn hashmap_insert_returns_previous_via_option_i64() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: HashMap<i64, i64> = hashmap_new();
+              let _ = hashmap_insert(mut ref m, 1, 100);
+              let prev: Option<i64> = hashmap_insert(mut ref m, 1, 200);
+              return match prev {
+                Option.Some(v) then v,
+                Option.None then 0 - 1,
+              };
+            }
+        "#;
+        compile_to_c(source).expect("hashmap_insert returning Option must compile");
+        compile_to_llvm(source).expect("LLVM ditto");
+    }
+
+    #[test]
+    fn hashmap_insert_rejects_non_mut_ref() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: HashMap<i64, i64> = hashmap_new();
+              let _: Option<i64> = hashmap_insert(ref m, 1, 1);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("by-ref insert must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref HashMap<K, V>")),
+            "expected mut-ref-HashMap diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn hashmap_reserves_name_against_user_struct() {
+        let source = r#"
+            struct HashMap { x: i64 }
+            fn main() -> i64 { return 0; }
+        "#;
+        let errors = compile(source).expect_err("`struct HashMap` must collide");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("built-in") || e.message.contains("reserved")),
+            "expected reserved-name diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn hashmap_emits_runtime_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: HashMap<i64, i64> = hashmap_new();
+              let _ = hashmap_insert(mut ref m, 1, 100);
+              let _: Option<i64> = hashmap_get(ref m, 1);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("hashmap program compiles");
+        assert!(
+            c.contains("intent_hashmap_i64_i64")
+                && c.contains("intent_hashmap_i64_i64_insert")
+                && c.contains("intent_hashmap_i64_i64_get")
+                && c.contains("intent_hashmap_i64_i64_drop"),
+            "C output must include the hashmap runtime; got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn hashmap_emits_helpers_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: HashMap<i64, i64> = hashmap_new();
+              let _ = hashmap_insert(mut ref m, 1, 100);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("hashmap LLVM compile");
+        assert!(
+            ll.contains("%intent_hashmap_i64_i64 = type")
+                && ll.contains("define %Enum_Option__i64 @intent_hashmap_i64_i64_insert"),
+            "LLVM output must include the hashmap typedef + insert define; got snippet:\n{}",
+            &ll[..ll.len().min(800)]
+        );
+    }
+
+    #[test]
     fn hashset_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {
