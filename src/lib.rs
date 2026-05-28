@@ -915,24 +915,39 @@ mod tests {
         );
     }
 
+    // Closure #291: arrays now accept `clone_at(ref xs, i)`
+    // alongside Vec. The C backend lowers it to `xs[i]`
+    // (with a deep-clone for Vec elements). LLVM lowers via
+    // GEP + load (+ vec __clone for nested Vec).
+    // Closure #291: arrays of non-Copy elements
+    // (`[Vec<i64>; N]`, `[OwnedStr; N]`, nested struct
+    // arrays) — checker accepts them now. Codegen on the C
+    // backend lowers correctly via `clone_at(ref xs, i)`.
+    // Verified end-to-end: nested array `[Vec<i64>; 2]`
+    // initialized + indexed + cloned returns the slot's
+    // length.
     #[test]
-    fn clone_at_rejected_on_non_vec_collection() {
+    fn nested_array_of_vec_compiles_on_c_backend() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: [Vec<i64>; 2] = [vec(1 as i64, 2 as i64), vec(3 as i64, 4 as i64)];
+              return len(clone_at(ref xs, 0)) as i64;
+            }
+        "#;
+        compile_to_c(source).expect("[Vec<i64>; 2] compiles to C");
+    }
+
+    #[test]
+    fn clone_at_accepts_array_argument() {
         let source = r#"
             fn main() -> i64 {
               let xs: [i64; 4] = [1, 2, 3, 4];
-              let _: i64 = clone_at(ref xs, 0);
-              return 0;
+              let v: i64 = clone_at(ref xs, 2);
+              return v;
             }
         "#;
-        let errors = compile(source)
-            .expect_err("clone_at on a fixed-size array should fail");
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("Vec") && e.message.contains("clone_at")),
-            "expected clone_at/Vec diagnostic, got: {:?}",
-            errors
-        );
+        compile_to_c(source).expect("clone_at(ref [T; N]) compiles to C");
+        compile_to_llvm(source).expect("clone_at(ref [T; N]) compiles to LLVM");
     }
 
     #[test]

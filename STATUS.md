@@ -11,7 +11,7 @@
 > [TODO.md](TODO.md) for the canonical work list.
 
 **Last updated:** 2026-05-27
-**Test totals:** 1022 lib + 54 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Test totals:** 1023 lib + 54 end-to-end tests passing; the cross-backend parity runner covers all 63 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the new CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 ---
 
@@ -1493,6 +1493,55 @@ fn main() returns i64 {
 
    Test totals: 1022 lib + 54 e2e + 11 vtables-phase3 + 2
    user-drop-by-ref + 1 ssa-examples. Closure #290.
+
+   **Nested arrays — Copy-restriction lifted done 2026-05-27**:
+   `[Vec<i64>; N]`, `[OwnedStr; N]`, and other non-Copy
+   element arrays now type-check. References as element
+   types remain rejected (dangling-pointer risk).
+
+   Pipeline:
+
+     • Checker — `validate_array_element_type` and the
+       array-literal check no longer reject non-Copy
+       elements. The "must be Copy" diagnostic is replaced
+       by a "cannot be a reference" guard that catches the
+       genuinely-unsafe case.
+     • `clone_at` builtin — both backends extended to
+       accept arrays alongside Vec. C lowers to `xs[i]`
+       (with through-ref decay handling); LLVM emits
+       `getelementptr [N x T], [N x T]*, i64 0, i64 idx`
+       followed by a per-element-type clone (load for
+       Copy elements; vec __clone for Vec elements).
+
+   Verified end-to-end on C backend:
+   `[Vec<i64>; 2] xs = [vec(1, 2), vec(3, 4)]; return
+   len(clone_at(ref xs, 0));` returns 2.
+
+   Remaining work queued:
+   - **Bare `xs[i]` rejection for non-Copy element**:
+     mirrors Vec's restriction. Today bare indexing on a
+     non-Copy array slot would silently move from the
+     array, leaving a dangling slot. Should reject with a
+     `clone_at(ref xs, i)` hint.
+   - **Per-slot drop at scope exit**: arrays of OwnedStr /
+     Vec / nested-struct need each slot freed when the
+     array binding goes out of scope. Today only Copy
+     elements (no heap) are correct at scope exit.
+   - **LLVM end-to-end pass for nested-array-of-Vec**: the
+     LLVM IR for nested arrays runs but len() of the
+     cloned slot returns 0 (likely a Vec field-access
+     issue when the Vec comes from a nested-array
+     `clone_at`). Tree-LLVM has the path; SSA-LLVM falls
+     back. Debug + fix queued.
+
+   2 new lib tests
+   (`clone_at_accepts_array_argument`,
+   `nested_array_of_vec_compiles_on_c_backend`). 1 test
+   updated (`clone_at_rejected_on_non_vec_collection` →
+   `clone_at_accepts_array_argument`).
+
+   Test totals: 1023 lib + 54 e2e + 11 vtables-phase3 + 2
+   user-drop-by-ref + 1 ssa-examples. Closure #291 (Phase 1).
 
    **Devanagari Sanskrit/Hindi/Marathi 3-way alias parity (Phase 2) done 2026-05-27**:
    pragmatic best-effort sweep of the lexer's alias table

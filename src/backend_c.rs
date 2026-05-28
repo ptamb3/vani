@@ -4504,12 +4504,17 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             // is well-formed.
             let xs_arg = &args[0];
             let underlying = xs_arg.ty.deref();
+            // Closure #291: `clone_at(ref [T; N], i)` accepts
+            // arrays alongside Vec. Arrays index directly as
+            // `xs[i]` (C array decay); Vec uses `.data[i]`.
             let element_ty = match underlying {
                 Type::Vec(element) => &**element,
+                Type::Array { element, .. } => &**element,
                 other => {
-                    unreachable!("clone_at requires Vec, got {:?}", other)
+                    unreachable!("clone_at requires Vec or Array, got {:?}", other)
                 }
             };
+            let is_array = matches!(underlying, Type::Array { .. });
             let xs_str = emit_expr(xs_arg);
             let access_via_ref = matches!(
                 &xs_arg.ty,
@@ -4519,7 +4524,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             // parses as `(&xs)->data[i]` — `->` binds
             // tighter than unary `&` so naked
             // concatenation breaks.
-            let slot = if access_via_ref {
+            let slot = if is_array {
+                // C array indexing: arrays decay to T* so
+                // both `xs[i]` (value) and `xs[i]` (ref —
+                // ref-of-array passes the decayed pointer)
+                // index the same way. No `*` indirection
+                // needed.
+                format!("({})[{}]", xs_str, emit_expr(&args[1]))
+            } else if access_via_ref {
                 format!("({})->data[{}]", xs_str, emit_expr(&args[1]))
             } else {
                 format!("({}).data[{}]", xs_str, emit_expr(&args[1]))

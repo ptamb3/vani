@@ -7854,15 +7854,18 @@ fn emit_drops_through_loop(env: &Env, loop_body_depth: usize, body: &mut Vec<Typ
 
 fn validate_array_element_type(ty: &Type, span: Span, diagnostics: &mut Vec<Diagnostic>) {
     if let Type::Array { element, .. } = ty {
-        // Fixed-size arrays still require Copy elements: every
-        // slot has identical inline storage and the backend
-        // emits them as `T[N]` (no per-slot drop hook). Lifting
-        // arrays to non-Copy is out of scope for #7's first
-        // pass.
-        if !element.is_copy() || element.is_ref() {
+        // Closure #291: arrays now accept non-Copy elements
+        // (`[Vec<i64>; 4]`, `[OwnedStr; N]`, etc.). Bare
+        // indexing on a non-Copy slot is rejected at the
+        // index site (mirrors Vec's restriction); user
+        // takes a borrow via `ref xs[i]` or extracts via
+        // `clone_at(ref xs, i)`. References as elements
+        // remain rejected — a `[&T; N]` would dangle when
+        // referents go out of scope.
+        if element.is_ref() {
             diagnostics.push(Diagnostic::new(
                 span,
-                format!("array element type must be Copy and non-reference, got {}", element),
+                format!("array element type cannot be a reference, got {}", element),
             ));
         }
     }
@@ -10563,10 +10566,17 @@ fn check_array_literal(
         .collect();
 
     let element_type = typed_elements[0].ty().clone();
-    if !element_type.is_copy() {
+    // Closure #291: array literals accept non-Copy elements;
+    // each Var argument is consumed (moved into the slot,
+    // marked as moved on the source binding). References as
+    // elements remain rejected (dangling-pointer risk).
+    if matches!(element_type, Type::Ref(_) | Type::RefMut(_)) {
         diagnostics.push(Diagnostic::new(
             span,
-            format!("array element type must be Copy, got {}", element_type),
+            format!(
+                "array element type cannot be a reference, got {}",
+                element_type
+            ),
         ));
     }
 
@@ -13427,13 +13437,17 @@ fn check_clone_at_builtin(
         return CheckedExpr::fallback_integer(span);
     }
     let xs = check_expr(&args[0], env, signatures, diagnostics);
+    // Closure #291: `clone_at` now also accepts arrays —
+    // `clone_at(ref [T; N], i)` returns an owned clone of
+    // slot i. Mirrors the Vec path.
     let element_type = match xs.ty().deref() {
         Type::Vec(element) => (**element).clone(),
+        Type::Array { element, .. } => (**element).clone(),
         other => {
             diagnostics.push(Diagnostic::new(
                 args[0].span,
                 format!(
-                    "clone_at() requires a Vec or &Vec argument, got {}",
+                    "clone_at() requires a Vec / array / &Vec / &Array argument, got {}",
                     other
                 ),
             ));

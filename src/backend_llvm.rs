@@ -4082,10 +4082,79 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             // `__clone` helper.
             if name == "clone_at" {
                 let xs_arg = &args[0];
+                // Closure #291: clone_at now supports arrays
+                // in addition to Vec. Array case branches
+                // separately since the storage shape
+                // differs (`[N x T]` vs `%intent_vec_<T>`).
+                if let Type::Array { element, length: _ } = xs_arg.ty.deref() {
+                    let element_ty = (**element).clone();
+                    let access_via_ref = matches!(
+                        &xs_arg.ty,
+                        Type::Ref(_) | Type::RefMut(_)
+                    );
+                    let arr_ty = llvm_type_string(&xs_arg.ty.deref().clone());
+                    let elt_ll = llvm_type_string(&element_ty);
+                    let arr_ptr = if access_via_ref {
+                        emit_expr(xs_arg, ctx, out)
+                    } else {
+                        let v = emit_expr(xs_arg, ctx, out);
+                        let p = ctx.fresh_tmp();
+                        out.push_str(&format!("  {} = alloca {}\n", p, arr_ty));
+                        out.push_str(&format!(
+                            "  store {} {}, {}* {}\n",
+                            arr_ty, v, arr_ty, p
+                        ));
+                        p
+                    };
+                    let idx = emit_expr(&args[1], ctx, out);
+                    let slot_p = ctx.fresh_tmp();
+                    out.push_str(&format!(
+                        "  {} = getelementptr {}, {}* {}, i64 0, i64 {}\n",
+                        slot_p, arr_ty, arr_ty, arr_ptr, idx
+                    ));
+                    let dest = ctx.fresh_tmp();
+                    if element_ty.is_copy() {
+                        out.push_str(&format!(
+                            "  {} = load {}, {}* {}\n",
+                            dest, elt_ll, elt_ll, slot_p
+                        ));
+                    } else if let Type::Vec(_) = &element_ty {
+                        // Vec element — call the per-element
+                        // `__clone` helper to deep-clone the
+                        // slot (mirrors the Vec-side path).
+                        let loaded = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = load {}, {}* {}\n",
+                            loaded, elt_ll, elt_ll, slot_p
+                        ));
+                        let clone_fn = format!(
+                            "@intent_vec_{}__clone",
+                            vec_struct_tag(match &element_ty {
+                                Type::Vec(inner) => inner,
+                                _ => unreachable!(),
+                            })
+                        );
+                        out.push_str(&format!(
+                            "  {} = call {} {}({} {})\n",
+                            dest, elt_ll, clone_fn, elt_ll, loaded
+                        ));
+                    } else {
+                        // For other non-Copy element types,
+                        // a load suffices for v1 — the user
+                        // owns the cloned struct value
+                        // directly. (Future: per-type clone
+                        // helpers for OwnedStr arrays etc.)
+                        out.push_str(&format!(
+                            "  {} = load {}, {}* {}\n",
+                            dest, elt_ll, elt_ll, slot_p
+                        ));
+                    }
+                    return dest;
+                }
                 let element_ty = match xs_arg.ty.deref() {
                     Type::Vec(element) => (**element).clone(),
                     other => unreachable!(
-                        "clone_at requires Vec, got {:?}", other
+                        "clone_at requires Vec or Array, got {:?}", other
                     ),
                 };
                 let access_via_ref = matches!(

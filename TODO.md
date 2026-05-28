@@ -29,7 +29,7 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
-## ⏳ Resume here (paused 2026-05-27, after closure #290 — #[bounded(N)] tree-LLVM follow-up)
+## ⏳ Resume here (paused 2026-05-27, after closure #291 Phase 1 — nested arrays compile)
 
 **Next pickup chain (each closure unblocks the next):**
 
