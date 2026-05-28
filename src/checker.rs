@@ -347,6 +347,16 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // in the next closure under Level 3).
     lambda_lift_program(&mut program);
 
+    // Closure #318: auto-fuse adjacent `let m = xs.map(f);
+    // let t = m.fold(init, g);` patterns into a single
+    // `vec_map_fold(ref xs, init, f, g)` call when `m` has
+    // no other uses. Eliminates the intermediate Vec
+    // allocation transparently — users get the perf benefit
+    // without rewriting to the fused builtin manually. Runs
+    // after lambda-lift so closures-in-Let-RHS positions
+    // (closure #314/#315) are already lifted.
+    fuse_combinator_chains_in_program(&mut program);
+
     // Pre-pass: resolve `Type::Struct(name)` → `Type::Enum(name)`
     // for every name declared as an enum. The parser can't
     // distinguish at parse time, so we run this before anything
@@ -1559,6 +1569,281 @@ fn recurse_lift_closures_in_stmt(
         }
         // Statements without nested blocks need no recursion here.
         _ => {}
+    }
+}
+
+/// Closure #318: auto-fuse `let m = xs.map(f); let t = m.fold(init, g);`
+/// AST patterns into a single `vec_map_fold(ref xs, init, f, g)`
+/// call when the intermediate binding `m` has no other uses
+/// in the enclosing function. Handles both fn-call form
+/// (`vec_map(ref xs, f)` + `vec_fold(ref m, init, g)`) and
+/// method-call form (`xs.map(f)` + `m.fold(init, g)`). The
+/// rewrite happens at AST level so the checker subsequently
+/// type-checks the fused expression normally and Drop
+/// emission for the elided intermediate Vec never runs.
+fn fuse_combinator_chains_in_program(program: &mut Program) {
+    for f in program.functions.iter_mut() {
+        fuse_chains_in_block(&mut f.body);
+    }
+}
+
+fn fuse_chains_in_block(body: &mut Vec<crate::ast::Stmt>) {
+    // First recurse into nested blocks so inner fusion happens
+    // before we look at outer-scope patterns.
+    for stmt in body.iter_mut() {
+        fuse_chains_in_nested_stmt(stmt);
+    }
+    // Scan for adjacent `Let m = vec_map(...)` + `Let t =
+    // vec_fold(ref m, ...)` (or method-call equivalents).
+    let mut i: usize = 0;
+    while i + 1 < body.len() {
+        // Try to extract a candidate (map_name, m, xs_ref, f).
+        let map_candidate = match &body[i] {
+            crate::ast::Stmt::Let { name: m, expr, .. } => {
+                extract_map_call(expr).map(|(xs_ref, f)| (m.clone(), xs_ref, f))
+            }
+            _ => None,
+        };
+        let Some((m_name, xs_ref, f_expr)) = map_candidate else {
+            i += 1;
+            continue;
+        };
+        // Check the next statement for a fold-of-m pattern.
+        let fold_pattern = match &body[i + 1] {
+            crate::ast::Stmt::Let { name: t, annotation, expr, span } => {
+                extract_fold_of_var(expr, &m_name)
+                    .map(|(init, g)| (t.clone(), annotation.clone(), *span, init, g, true))
+            }
+            crate::ast::Stmt::Return { expr, span } => {
+                extract_fold_of_var(expr, &m_name)
+                    .map(|(init, g)| (String::new(), None, *span, init, g, false))
+            }
+            _ => None,
+        };
+        let Some((t_name, t_anno, t_span, init, g_expr, is_let)) = fold_pattern else {
+            i += 1;
+            continue;
+        };
+        // Confirm `m` is not used in any subsequent statement
+        // (besides stmt i+1's fold call, which we've already
+        // identified). The fold call's Ref(Var(m)) doesn't
+        // count — we've already validated the only use site.
+        // Easiest: do a fresh scan of body[i+2..] for any
+        // reference to `m`. If any, bail.
+        let m_used_later = body[i + 2..]
+            .iter()
+            .any(|s| stmt_mentions_var(s, &m_name));
+        if m_used_later {
+            i += 1;
+            continue;
+        }
+        // Build the fused call: `vec_map_fold(xs_ref, init, f, g)`.
+        // The xs_ref is the original receiver borrow from the
+        // map call. The fused call inherits the original fold's
+        // surrounding statement (Let or Return).
+        let fused_call_span = body[i].span().merge(body[i + 1].span());
+        let fused_call = crate::ast::Expr {
+            kind: ExprKind::Call {
+                name: "vec_map_fold".to_string(),
+                name_span: fused_call_span,
+                args: vec![xs_ref, init, f_expr, g_expr],
+            },
+            span: fused_call_span,
+        };
+        let new_stmt = if is_let {
+            crate::ast::Stmt::Let {
+                name: t_name,
+                annotation: t_anno,
+                expr: fused_call,
+                span: t_span,
+            }
+        } else {
+            crate::ast::Stmt::Return {
+                expr: fused_call,
+                span: t_span,
+            }
+        };
+        // Replace the two adjacent statements with the fused one.
+        body[i + 1] = new_stmt;
+        body.remove(i);
+        // Don't increment i — the next iteration revisits this
+        // position so we can catch a NEW fusion that may have
+        // opened up by elision (e.g. a 3-stage map → fold → fold).
+    }
+}
+
+fn fuse_chains_in_nested_stmt(stmt: &mut crate::ast::Stmt) {
+    use crate::ast::Stmt as S;
+    match stmt {
+        S::If { then_body, else_body, .. } => {
+            fuse_chains_in_block(then_body);
+            fuse_chains_in_block(else_body);
+        }
+        S::While { body, .. } | S::For { body, .. }
+        | S::ForIter { body, .. } | S::TaskSpawn { body, .. } => {
+            fuse_chains_in_block(body);
+        }
+        _ => {}
+    }
+}
+
+/// Extract `(xs_ref, f)` if `expr` is a `vec_map(ref xs, f)`
+/// or `xs.map(f)` call. Returns the original `ref xs` Expr +
+/// the mapper expr. The returned Expr is moved (cloned) so the
+/// caller can re-use it in the fused call.
+fn extract_map_call(expr: &crate::ast::Expr) -> Option<(crate::ast::Expr, crate::ast::Expr)> {
+    match &expr.kind {
+        ExprKind::Call { name, args, .. } if name == "vec_map" && args.len() == 2 => {
+            Some((args[0].clone(), args[1].clone()))
+        }
+        ExprKind::MethodCall { receiver, method, args, .. }
+            if method == "map" && args.len() == 1 =>
+        {
+            // Synthesize `ref xs` from the receiver Var. Like the
+            // checker's method-sugar arm, restrict to bare-Var
+            // receivers in v1.
+            if let ExprKind::Var(_) = &receiver.kind {
+                let xs_ref = crate::ast::Expr {
+                    kind: ExprKind::Ref {
+                        inner: Box::new((**receiver).clone()),
+                    },
+                    span: receiver.span,
+                };
+                Some((xs_ref, args[0].clone()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract `(init, g)` if `expr` is a `vec_fold(ref Var(m), init, g)`
+/// or `m.fold(init, g)` call. Returns the init Expr + the
+/// combiner Expr. Returns None if the call isn't on the
+/// specific `m` binding.
+fn extract_fold_of_var(
+    expr: &crate::ast::Expr,
+    m_name: &str,
+) -> Option<(crate::ast::Expr, crate::ast::Expr)> {
+    match &expr.kind {
+        ExprKind::Call { name, args, .. } if name == "vec_fold" && args.len() == 3 => {
+            // args[0] must be `Ref(Var(m_name))`.
+            if let ExprKind::Ref { inner } = &args[0].kind {
+                if let ExprKind::Var(n) = &inner.kind {
+                    if n == m_name {
+                        return Some((args[1].clone(), args[2].clone()));
+                    }
+                }
+            }
+            None
+        }
+        ExprKind::MethodCall { receiver, method, args, .. }
+            if method == "fold" && args.len() == 2 =>
+        {
+            if let ExprKind::Var(n) = &receiver.kind {
+                if n == m_name {
+                    return Some((args[0].clone(), args[1].clone()));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Conservative "does this statement reference `name` anywhere"
+/// check. Recurses through nested exprs and blocks. Used by the
+/// fusion pass to confirm the intermediate map binding isn't
+/// referenced elsewhere before we elide it.
+fn stmt_mentions_var(stmt: &crate::ast::Stmt, name: &str) -> bool {
+    use crate::ast::Stmt as S;
+    match stmt {
+        S::Let { expr, .. }
+        | S::LetTuple { expr, .. }
+        | S::Return { expr, .. }
+        | S::Assert { expr, .. }
+        | S::Prove { expr, .. }
+        | S::Assign { expr, .. } => expr_mentions_var(expr, name),
+        S::Print { items, .. } => items.iter().any(|it| match it {
+            crate::ast::PrintItem::Expr(e) => expr_mentions_var(e, name),
+            _ => false,
+        }),
+        S::If { cond, then_body, else_body, .. } => {
+            expr_mentions_var(cond, name)
+                || then_body.iter().any(|s| stmt_mentions_var(s, name))
+                || else_body.iter().any(|s| stmt_mentions_var(s, name))
+        }
+        S::While { cond, invariants, body, .. } => {
+            expr_mentions_var(cond, name)
+                || invariants.iter().any(|e| expr_mentions_var(e, name))
+                || body.iter().any(|s| stmt_mentions_var(s, name))
+        }
+        S::IndexAssign { name: target, index, value, .. } => {
+            target == name
+                || expr_mentions_var(index, name)
+                || expr_mentions_var(value, name)
+        }
+        S::FieldAssign { object, value, .. } => {
+            expr_mentions_var(object, name) || expr_mentions_var(value, name)
+        }
+        S::For { start, end, invariants, body, .. } => {
+            expr_mentions_var(start, name)
+                || expr_mentions_var(end, name)
+                || invariants.iter().any(|e| expr_mentions_var(e, name))
+                || body.iter().any(|s| stmt_mentions_var(s, name))
+        }
+        S::ForIter { collection, body, .. } => {
+            collection == name
+                || body.iter().any(|s| stmt_mentions_var(s, name))
+        }
+        S::TaskSpawn { body, .. } => body.iter().any(|s| stmt_mentions_var(s, name)),
+        S::Break { .. } | S::Continue { .. } | S::TaskJoin { .. } => false,
+    }
+}
+
+fn expr_mentions_var(expr: &crate::ast::Expr, name: &str) -> bool {
+    match &expr.kind {
+        ExprKind::Var(n) => n == name,
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_) => false,
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            expr_mentions_var(expr, name)
+        }
+        ExprKind::Binary { left, right, .. } => {
+            expr_mentions_var(left, name) || expr_mentions_var(right, name)
+        }
+        ExprKind::Call { args, .. } => args.iter().any(|a| expr_mentions_var(a, name)),
+        ExprKind::MethodCall { receiver, args, .. } => {
+            expr_mentions_var(receiver, name) || args.iter().any(|a| expr_mentions_var(a, name))
+        }
+        ExprKind::Index { array, index } => {
+            expr_mentions_var(array, name) || expr_mentions_var(index, name)
+        }
+        ExprKind::Len { array } => expr_mentions_var(array, name),
+        ExprKind::Ref { inner } | ExprKind::RefMut { inner } => expr_mentions_var(inner, name),
+        ExprKind::ArrayLit { elements } | ExprKind::Tuple(elements) => {
+            elements.iter().any(|e| expr_mentions_var(e, name))
+        }
+        ExprKind::TupleAccess { tuple, .. } => expr_mentions_var(tuple, name),
+        ExprKind::StructLit { fields, .. } => {
+            fields.iter().any(|(_, e)| expr_mentions_var(e, name))
+        }
+        ExprKind::FieldAccess { object, .. } => expr_mentions_var(object, name),
+        ExprKind::Match { scrutinee, arms } => {
+            expr_mentions_var(scrutinee, name)
+                || arms.iter().any(|a| expr_mentions_var(&a.body, name))
+        }
+        ExprKind::IfExpr { cond, then_value, else_value } => {
+            expr_mentions_var(cond, name)
+                || expr_mentions_var(then_value, name)
+                || expr_mentions_var(else_value, name)
+        }
+        ExprKind::Block { stmts, tail } => {
+            stmts.iter().any(|s| stmt_mentions_var(s, name))
+                || expr_mentions_var(tail, name)
+        }
+        ExprKind::Try { inner } => expr_mentions_var(inner, name),
+        ExprKind::AnonFn { body, .. } => body.iter().any(|s| stmt_mentions_var(s, name)),
     }
 }
 

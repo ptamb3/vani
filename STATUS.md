@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #317 — Level 3 fused combinator family completion: `vec_filter_fold(ref xs, init, p, g) -> i64` reduces over matching elements only; `vec_map_filter(ref xs, f, p) -> Vec<i64>` is two-pass (count after mapping, allocate exact, fill); `vec_map_filter_fold(ref xs, init, f, p, g) -> i64` is the full single-pass pipeline with no intermediate Vec. Method sugar `xs.filter_fold(...)` / `xs.map_filter(...)` / `xs.map_filter_fold(...)`. 5 new lib tests + extended `examples/iter_combinators.vani`.)
-**Test totals:** 1167 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #318 — Level 3 transparent loop fusion: an AST-level peephole pass auto-detects `let m = xs.map(f); let t = m.fold(init, g);` patterns (both fn-call and method-call forms) and rewrites them to a single fused `vec_map_fold(ref xs, init, f, g)` call when the intermediate binding `m` has no other uses in the function. Eliminates the intermediate Vec allocation transparently — users get the fused-combinator perf benefit without rewriting source code. Conservative: when `m` IS used elsewhere, fusion is skipped (unfused `__map` + `__fold` calls remain). Also handles `return vec_fold(ref m, init, g)` position. 4 new lib tests verifying the fusion happens (or correctly doesn't) by inspecting emitted LLVM.)
+**Test totals:** 1171 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -147,6 +147,59 @@ ref second-class closures; passing closures across function
 boundaries (needs closure-as-value type — likely a struct
 holding the env + fn-ptr pair); reassigning a closure
 binding; nested closure declarations.
+
+### Data-structures roadmap Level 3 — Transparent loop fusion (shipped 2026-05-28, closure #318)
+
+✅ AFFINE — pure AST rewrite; no new types, no runtime cost.
+
+A new pre-check pass `fuse_combinator_chains_in_program` walks
+each function's body looking for two-statement patterns:
+
+```vani
+let m: Vec<i64> = vec_map(ref xs, f);   // or xs.map(f)
+let t: i64 = vec_fold(ref m, init, g);  // or m.fold(init, g)
+```
+
+When `m` has NO other references in the function, the pair
+collapses to a single fused call:
+
+```vani
+let t: i64 = vec_map_fold(ref xs, init, f, g);
+```
+
+The intermediate Vec allocation is eliminated transparently —
+users get the fused-combinator perf benefit even when writing
+the unfused source pattern.
+
+**Recognized variants:**
+- Function-call form: `vec_map(...)` + `vec_fold(ref m, ...)`.
+- Method-call form: `xs.map(f)` + `m.fold(init, g)`.
+- Mixed forms (one fn-call, one method-call).
+- Return-position fold: `let m = ...; return vec_fold(ref m, ...);`
+  fuses to `return vec_map_fold(...);`.
+
+**Conservative behavior:** when `m` is referenced anywhere
+else in the function (e.g. a second fold, or passed to another
+fn), fusion is skipped — the unfused `__map` + `__fold` calls
+remain, preserving semantics.
+
+**Implementation:** AST-level peephole that runs after
+`lambda_lift_program` (so closures-in-RHS positions are
+already lifted) and before any type-checking. Recurses into
+nested blocks (`if`/`while`/`for` bodies) so chains inside
+control flow also fuse.
+
+**Tests:** 4 lib tests verifying fusion happens (fn-call form,
+method-call form, return position) and correctly DOES NOT
+happen (intermediate used twice). The tests inspect emitted
+LLVM directly to confirm the helper name.
+
+**Pending follow-ups:** auto-fusion of more pattern shapes —
+`vec_filter` + `vec_fold` → `vec_filter_fold`; `vec_map` +
+`vec_filter` → `vec_map_filter`; 3-stage `map` + `filter` +
+`fold` → `vec_map_filter_fold`; chains across more than two
+adjacent statements (e.g. `map → use_for_print → fold` skipping
+the print).
 
 ### Data-structures roadmap Level 3 — Fused combinator family (shipped 2026-05-28, closure #317)
 

@@ -13036,6 +13036,97 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn autofuse_map_fold_fn_call_form_emits_fused_helper() {
+        // `let m = vec_map(...); let s = vec_fold(ref m, ...);`
+        // with `m` unused elsewhere should auto-fuse to a single
+        // `vec_map_fold` call. Verify by looking for the helper
+        // name in emitted LLVM.
+        let source = r#"
+            pure fn double(x: i64) -> i64 { return x + x; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              let m: Vec<i64> = vec_map(ref xs, double);
+              let s: i64 = vec_fold(ref m, 0, add);
+              return s;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("auto-fuse map+fold compiles");
+        assert!(
+            ll.contains("call i64 @intent_vec_i64__map_fold"),
+            "fusion should have rewritten to __map_fold; got snippet:\n{}",
+            &ll[..ll.len().min(800)]
+        );
+    }
+
+    #[test]
+    fn autofuse_map_fold_method_call_form_emits_fused_helper() {
+        let source = r#"
+            pure fn double(x: i64) -> i64 { return x + x; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              let m: Vec<i64> = xs.map(double);
+              let s: i64 = m.fold(0, add);
+              return s;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("auto-fuse method-call form compiles");
+        assert!(
+            ll.contains("call i64 @intent_vec_i64__map_fold"),
+            "method-call fusion should have rewritten to __map_fold"
+        );
+    }
+
+    #[test]
+    fn autofuse_does_not_apply_when_intermediate_is_used_twice() {
+        // Conservative: if `m` is referenced more than once,
+        // fusion must NOT happen.
+        let source = r#"
+            pure fn double(x: i64) -> i64 { return x + x; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let m: Vec<i64> = vec_map(ref xs, double);
+              let s1: i64 = vec_fold(ref m, 0, add);
+              let s2: i64 = vec_fold(ref m, 0, add);
+              return s1 + s2;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("conservative case compiles");
+        // The unfused __map and __fold calls must still appear.
+        assert!(
+            ll.contains("call %intent_vec_i64 @intent_vec_i64__map"),
+            "unfused __map call must remain when m is used twice"
+        );
+        let fold_calls = ll.matches("call i64 @intent_vec_i64__fold").count();
+        assert_eq!(fold_calls, 2, "both fold calls must remain unfused");
+    }
+
+    #[test]
+    fn autofuse_map_fold_inside_return_position() {
+        // `let m = vec_map(...); return vec_fold(ref m, ...);`
+        // should also auto-fuse to a single `return vec_map_fold(...);`.
+        let source = r#"
+            pure fn sq(x: i64) -> i64 { return x * x; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn sum_of_squares(xs: ref Vec<i64>) -> i64 {
+              let m: Vec<i64> = vec_map(xs, sq);
+              return vec_fold(ref m, 0, add);
+            }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              return sum_of_squares(ref xs);
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("return-position fusion compiles");
+        assert!(
+            ll.contains("call i64 @intent_vec_i64__map_fold"),
+            "return-position fusion should have rewritten to __map_fold"
+        );
+    }
+
+    #[test]
     fn vec_map_fold_typechecks_and_compiles() {
         let source = r#"
             pure fn sq(x: i64) -> i64 { return x * x; }
