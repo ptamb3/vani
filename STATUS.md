@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #302 — Level 2 begins: BinaryHeap-on-Vec ops (heap_push / heap_pop / heap_peek / heapify) on Vec<i64>; new heap.vani; 6 new lib tests)
-**Test totals:** 1089 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 70 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #303 — Level 2 #2: Deque<i64> new affine type — ring buffer with 8 builtins; new deque.vani; 7 new lib tests)
+**Test totals:** 1096 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 71 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,57 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 2 — Deque<i64> (shipped 2026-05-28, closure #303)
+
+✅ AFFINE — new affine handle type `Deque<T>` (v1 i64 only).
+Heap-backed ring buffer; scope-exit Drop frees the data
+buffer.
+
+**Layout (both backends):** `{ data: i64*, front: u64, len:
+u64, capacity: u64 }`. Mod-capacity arithmetic implements
+ring wrap-around. Grow doubles capacity and unwraps the ring
+so subsequent ops see a contiguous prefix.
+
+**API (8 builtins):**
+- `deque_new() -> Deque<i64>` — empty (zero capacity)
+- `deque_push_back(mut ref d, v: i64) -> i64` — new len
+- `deque_push_front(mut ref d, v: i64) -> i64` — new len
+- `deque_pop_back(mut ref d) -> Option<i64>` — Some / None
+- `deque_pop_front(mut ref d) -> Option<i64>` — Some / None
+- `deque_peek_back(ref d) -> Option<i64>` — Some / None
+- `deque_peek_front(ref d) -> Option<i64>` — Some / None
+- `deque_len(ref d) -> i64`
+
+**Codegen:**
+- **Tree-C**: `typedef struct { … } intent_deque_i64` +
+  helpers emitted in body (so the `Enum_Option__i64` typedef
+  is in scope when pop / peek helpers are defined). pop /
+  peek further gated on Option__i64 registry.
+- **Tree-LLVM**: `%intent_deque_i64 = type { i64*, i64, i64,
+  i64 }` declared in the preamble; `define` helpers gated via
+  the new `program_uses_i64_deque` walker.
+- **SSA**: routes through tree.
+- **Drop**: both backends call `intent_deque_i64_drop` at
+  scope exit, which frees the data buffer.
+
+**v1 restrictions:**
+- i64 element only (extending to wider widths needs
+  parameterized runtime helpers).
+- `deque_clear` not yet shipped (use `pop_front` in a loop
+  for now).
+
+**Tests:** 7 lib tests (basics + pop/peek typecheck; pop with
+mut-ref dispatch; non-i64 element rejected; `Deque` name
+reserved against user structs; C runtime emitted; LLVM
+typedef + helpers emitted). New `examples/deque.vani` covers
+mixed-end pushes, FIFO drain, LIFO from back, empty pop, and
+ring-stress test triggering capacity grow at both ends.
+Cross-backend parity green.
+
+**Pending follow-ups:** wider element widths; `deque_clear`
+sugar; index access (`deque_get(ref d, i)`); iteration via
+closures (Level 3).
 
 ### Data-structures roadmap Level 2 — BinaryHeap on Vec (shipped 2026-05-28, closure #302)
 

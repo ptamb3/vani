@@ -12482,6 +12482,134 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn deque_basics_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let d: Deque<i64> = deque_new();
+              let _ = deque_push_back(mut ref d, 1);
+              let _ = deque_push_front(mut ref d, 0);
+              let n: i64 = deque_len(ref d);
+              return n;
+            }
+        "#;
+        compile_to_c(source).expect("deque basics must type-check");
+        compile_to_llvm(source).expect("deque basics must compile to LLVM");
+    }
+
+    #[test]
+    fn deque_pop_peek_return_option_i64() {
+        let source = r#"
+            fn main() -> i64 {
+              let d: Deque<i64> = deque_new();
+              let _ = deque_push_back(mut ref d, 5);
+              let f: Option<i64> = deque_peek_front(ref d);
+              let b: Option<i64> = deque_peek_back(ref d);
+              let _ = f;
+              let _ = b;
+              return match deque_pop_back(mut ref d) {
+                Option.Some(v) then v,
+                Option.None then 0 - 1,
+              };
+            }
+        "#;
+        compile_to_c(source).expect("deque pop/peek must compile");
+        compile_to_llvm(source).expect("LLVM ditto");
+    }
+
+    #[test]
+    fn deque_push_rejects_non_mut_ref() {
+        let source = r#"
+            fn main() -> i64 {
+              let d: Deque<i64> = deque_new();
+              let _ = deque_push_back(ref d, 1);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("by-ref push must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref Deque<i64>")),
+            "expected mut-ref-Deque diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn deque_rejects_non_i64_element() {
+        let source = r#"
+            fn main() -> i64 {
+              let d: Deque<i32> = deque_new();
+              let _ = d;
+              return 0;
+            }
+        "#;
+        // deque_new returns Deque<i64> — assigning into Deque<i32>
+        // is a type mismatch.
+        let errors = compile(source).expect_err("Deque<i32> must fail");
+        assert!(
+            !errors.is_empty(),
+            "Deque<i32> must produce a diagnostic"
+        );
+    }
+
+    #[test]
+    fn deque_reserves_name_against_user_struct() {
+        let source = r#"
+            struct Deque { x: i64 }
+            fn main() -> i64 { return 0; }
+        "#;
+        let errors = compile(source).expect_err("`struct Deque` must collide");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("built-in") || e.message.contains("reserved")),
+            "expected reserved-name diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn deque_emits_runtime_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let d: Deque<i64> = deque_new();
+              let _ = deque_push_back(mut ref d, 1);
+              let _: Option<i64> = deque_pop_front(mut ref d);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("deque program compiles");
+        assert!(
+            c.contains("intent_deque_i64")
+                && c.contains("intent_deque_i64_push_back")
+                && c.contains("intent_deque_i64_pop_front")
+                && c.contains("intent_deque_i64_drop"),
+            "C output must include the deque runtime; got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn deque_emits_helpers_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let d: Deque<i64> = deque_new();
+              let _ = deque_push_back(mut ref d, 1);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("deque LLVM compile");
+        assert!(
+            ll.contains("%intent_deque_i64 = type")
+                && ll.contains("define %intent_deque_i64 @intent_deque_i64_new")
+                && ll.contains("define i64 @intent_deque_i64_push_back"),
+            "LLVM output must include the deque typedef + helpers; got snippet:\n{}",
+            &ll[..ll.len().min(800)]
+        );
+    }
+
+    #[test]
     fn heap_push_pop_peek_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

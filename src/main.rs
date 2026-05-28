@@ -321,6 +321,11 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "hash_combine"
                 || name == "heap_push" || name == "heap_pop"
                 || name == "heap_peek" || name == "heapify"
+                || name == "deque_new"
+                || name == "deque_push_back" || name == "deque_push_front"
+                || name == "deque_pop_back" || name == "deque_pop_front"
+                || name == "deque_peek_back" || name == "deque_peek_front"
+                || name == "deque_len"
             {
                 return false;
             }

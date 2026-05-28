@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -437,7 +437,7 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // built-in `Type::Task`, leading to confusing
     // "got Task" errors deep in the pipeline.
     const RESERVED_TYPE_NAMES: &[&str] = &[
-        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "OwnedStr", "Self",
+        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "OwnedStr", "Self",
     ];
     for decl in &program.structs {
         if RESERVED_TYPE_NAMES.contains(&decl.name.as_str()) {
@@ -4260,7 +4260,9 @@ fn monomorphize_type_decls_in_program(
             // + #298 (parse_int / parse_float).
             let needed_arg: Option<Type> = match name.as_str() {
                 "find" | "binary_search" | "parse_int"
-                | "heap_pop" | "heap_peek" => Some(Type::I64),
+                | "heap_pop" | "heap_peek"
+                | "deque_pop_back" | "deque_pop_front"
+                | "deque_peek_back" | "deque_peek_front" => Some(Type::I64),
                 "parse_float" => Some(Type::F64),
                 _ => None,
             };
@@ -11988,6 +11990,18 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "deque_new"
+        | "deque_push_back"
+        | "deque_push_front"
+        | "deque_pop_back"
+        | "deque_pop_front"
+        | "deque_peek_back"
+        | "deque_peek_front"
+        | "deque_len" => {
+            return check_deque_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "clone" => return check_clone_builtin(args, env, signatures, span, diagnostics),
         "clone_at" => {
             return check_clone_at_builtin(args, env, signatures, span, diagnostics)
@@ -14399,6 +14413,172 @@ fn check_heap_builtin(
     }
     let ret_ty = match name {
         "heap_pop" | "heap_peek" => {
+            Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+        }
+        _ => Type::I64,
+    };
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        ret_ty,
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 2 — Deque<i64> ring buffer
+/// builtins.
+///
+///   deque_new() -> Deque<i64>                          empty
+///   deque_push_back(mut ref d, v: i64) -> i64          new len
+///   deque_push_front(mut ref d, v: i64) -> i64         new len
+///   deque_pop_back(mut ref d) -> Option<i64>           Some/None
+///   deque_pop_front(mut ref d) -> Option<i64>          Some/None
+///   deque_peek_back(ref d) -> Option<i64>              Some/None
+///   deque_peek_front(ref d) -> Option<i64>             Some/None
+///   deque_len(ref d) -> i64
+///
+/// v1: i64 element only.
+fn check_deque_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args = match name {
+        "deque_new" => 0,
+        "deque_push_back" | "deque_push_front" => 2,
+        _ => 1,
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}() expects {} argument{}, got {}",
+                name,
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        let ret_ty = match name {
+            "deque_new" => Type::Deque(Box::new(Type::I64)),
+            "deque_pop_back"
+            | "deque_pop_front"
+            | "deque_peek_back"
+            | "deque_peek_front" => {
+                Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+            }
+            _ => Type::I64,
+        };
+        return CheckedExpr::fallback(ret_ty, span);
+    }
+    // deque_new takes no Deque arg; it constructs one.
+    if name == "deque_new" {
+        return CheckedExpr::new(
+            TypedExprKind::Call {
+                name: "deque_new".to_string(),
+                name_span: span,
+                args: Vec::new(),
+            },
+            Type::Deque(Box::new(Type::I64)),
+            None,
+            span,
+        );
+    }
+    let d = check_expr(&args[0], env, signatures, diagnostics);
+    let is_mut_op = matches!(
+        name,
+        "deque_push_back" | "deque_push_front" | "deque_pop_back" | "deque_pop_front"
+    );
+    let element_type = match d.ty() {
+        Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
+            Type::Deque(element) => (**element).clone(),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "{}() requires a `{}Deque<i64>` argument, got {}",
+                        name,
+                        if is_mut_op { "mut ref " } else { "ref " },
+                        d.ty()
+                    ),
+                ));
+                let ret_ty = match name {
+                    "deque_pop_back"
+                    | "deque_pop_front"
+                    | "deque_peek_back"
+                    | "deque_peek_front" => {
+                        Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+                    }
+                    _ => Type::I64,
+                };
+                return CheckedExpr::fallback(ret_ty, span);
+            }
+        },
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "{}() requires a `{}Deque<i64>` argument, got {}",
+                    name,
+                    if is_mut_op { "mut ref " } else { "ref " },
+                    other
+                ),
+            ));
+            let ret_ty = match name {
+                "deque_pop_back"
+                | "deque_pop_front"
+                | "deque_peek_back"
+                | "deque_peek_front" => {
+                    Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+                }
+                _ => Type::I64,
+            };
+            return CheckedExpr::fallback(ret_ty, span);
+        }
+    };
+    if is_mut_op && !matches!(d.ty(), Type::RefMut(_)) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() requires a `mut ref Deque<i64>` argument, got {}",
+                name,
+                d.ty()
+            ),
+        ));
+    }
+    if !matches!(element_type, Type::I64) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() only supports `Deque<i64>` in v1, got Deque<{}>",
+                name, element_type
+            ),
+        ));
+    }
+    let mut typed_args = vec![d.expr];
+    if matches!(name, "deque_push_back" | "deque_push_front") {
+        let v_raw = check_expr(&args[1], env, signatures, diagnostics);
+        let v = coerce_checked(
+            v_raw,
+            &Type::I64,
+            args[1].span,
+            "deque push value",
+            diagnostics,
+        );
+        typed_args.push(v.expr);
+    }
+    let ret_ty = match name {
+        "deque_pop_back"
+        | "deque_pop_front"
+        | "deque_peek_back"
+        | "deque_peek_front" => {
             Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
         }
         _ => Type::I64,

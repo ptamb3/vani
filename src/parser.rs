@@ -1570,6 +1570,13 @@ impl Parser {
                 self.bump();
                 return Ok(Type::Condvar);
             }
+            if name == "Deque" {
+                self.bump();
+                self.expect_keyword("'<'", |kind| matches!(kind, TokenKind::Less))?;
+                let element = self.parse_type()?;
+                self.expect_close_angle()?;
+                return Ok(Type::Deque(Box::new(element)));
+            }
             if name == "Atomic" {
                 self.bump();
                 self.expect_keyword("'<'", |kind| matches!(kind, TokenKind::Less))?;

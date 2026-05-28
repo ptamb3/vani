@@ -250,6 +250,7 @@ fn llvm_byte_size(ty: &Type) -> u64 {
         Type::Channel(_, _) => 32, // ring buffer header — generous
         Type::Task => 16, // pthread_t + ctx*
         Type::Condvar => 8, // pointer to heap-allocated cv state
+        Type::Deque(_) => 32, // {data ptr, front, len, capacity}
         Type::Object(_) => 16, // fat pointer: vtable + data
         Type::Vec(_) => 24, // {data, len, cap} on 64-bit
         Type::Array { element, length } => llvm_byte_size(element) * length,
@@ -616,7 +617,9 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // Condvar (stack-by-value, like Mutex/Guard): a single
     // i32 seq counter accessed atomically. Notify ops bump
     // seq + futex-wake; wait snapshots seq + futex-waits.
-    out.push_str("%intent_condvar = type { i32 }\n\n");
+    out.push_str("%intent_condvar = type { i32 }\n");
+    // Deque<i64> (closure #303): { data*, front, len, cap }.
+    out.push_str("%intent_deque_i64 = type { i64*, i64, i64, i64 }\n\n");
 
     emit_intent_str_concat_definition(&mut out);
 
@@ -808,6 +811,14 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // the program actually using a hash builtin.
     if program_uses_hash(program) {
         emit_intent_hash_helpers_llvm(&mut out);
+    }
+
+    // Deque<i64> helpers (closure #303). Gated on actual use.
+    if crate::backend_c::program_uses_i64_deque(program) {
+        let has_option_i64 = LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        emit_intent_deque_i64_helpers_llvm(&mut out, has_option_i64);
     }
 
     for function in &program.functions {
@@ -1480,6 +1491,17 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
             }
         }
         TypedStmt::Drop { name, ty, moved_fields } => {
+            // Deque<i64>: free the heap data buffer at scope
+            // exit. Handle's stack-allocated struct otherwise.
+            if matches!(ty, Type::Deque(_)) {
+                if let Some((_, addr)) = ctx.locals.get(name).cloned() {
+                    out.push_str(&format!(
+                        "  call void @intent_deque_i64_drop(%intent_deque_i64* {})\n",
+                        addr
+                    ));
+                }
+                return;
+            }
             // For `Vec<T>`, route through the per-element-type
             // `@intent_vec_<tag>__free` helper. The helper
             // walks elements first for non-Copy element types
@@ -4835,6 +4857,51 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
                 return dest;
             }
+            // Deque<i64> builtins (closure #303). Call
+            // outlined helpers emitted at module scope.
+            if name == "deque_new" {
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_deque_i64 @intent_deque_i64_new()\n",
+                    dest
+                ));
+                return dest;
+            }
+            if name == "deque_push_back" || name == "deque_push_front" {
+                let d = emit_expr(&args[0], ctx, out);
+                let v = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                // Strip the `deque_` source prefix; helper is
+                // named e.g. `intent_deque_i64_push_back`.
+                let op = name.strip_prefix("deque_").unwrap();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_deque_i64_{}(%intent_deque_i64* {}, i64 {})\n",
+                    dest, op, d, v
+                ));
+                return dest;
+            }
+            if name == "deque_len" {
+                let d = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_deque_i64_len(%intent_deque_i64* {})\n",
+                    dest, d
+                ));
+                return dest;
+            }
+            if matches!(
+                name.as_str(),
+                "deque_pop_back" | "deque_pop_front" | "deque_peek_back" | "deque_peek_front"
+            ) {
+                let d = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                let op = name.strip_prefix("deque_").unwrap();
+                out.push_str(&format!(
+                    "  {} = call %Enum_Option__i64 @intent_deque_i64_{}(%intent_deque_i64* {})\n",
+                    dest, op, d
+                ));
+                return dest;
+            }
             // Hash builtins (closure #301). Call outlined
             // FNV-1a helpers emitted at module scope.
             if name == "hash_i64" {
@@ -7097,6 +7164,244 @@ fn emit_intent_hash_helpers_llvm(out: &mut String) {
          \x20 ret i64 %r\n\
          }\n\n",
     );
+}
+
+/// Data-structures roadmap Level 2 — Deque<i64> ring buffer
+/// helpers. v1 i64 only; pop / peek gated on Option__i64
+/// registration via the `has_option_i64` flag.
+fn emit_intent_deque_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
+    out.push_str(
+        "define %intent_deque_i64 @intent_deque_i64_new() {\n\
+         \x20 %r0 = insertvalue %intent_deque_i64 undef, i64* null, 0\n\
+         \x20 %r1 = insertvalue %intent_deque_i64 %r0, i64 0, 1\n\
+         \x20 %r2 = insertvalue %intent_deque_i64 %r1, i64 0, 2\n\
+         \x20 %r3 = insertvalue %intent_deque_i64 %r2, i64 0, 3\n\
+         \x20 ret %intent_deque_i64 %r3\n\
+         }\n\
+         define void @intent_deque_i64_drop(%intent_deque_i64* %d) {\n\
+         \x20 %dpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 0\n\
+         \x20 %data = load i64*, i64** %dpp\n\
+         \x20 %is_null = icmp eq i64* %data, null\n\
+         \x20 br i1 %is_null, label %drop_done, label %drop_free\n\
+         drop_free:\n\
+         \x20 %data_i8 = bitcast i64* %data to i8*\n\
+         \x20 call void @free(i8* %data_i8)\n\
+         \x20 br label %drop_done\n\
+         drop_done:\n\
+         \x20 store i64* null, i64** %dpp\n\
+         \x20 %fpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 1\n\
+         \x20 store i64 0, i64* %fpp\n\
+         \x20 %lpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 2\n\
+         \x20 store i64 0, i64* %lpp\n\
+         \x20 %cpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 3\n\
+         \x20 store i64 0, i64* %cpp\n\
+         \x20 ret void\n\
+         }\n\
+         define internal void @intent_deque_i64_grow(%intent_deque_i64* %d) {\n\
+         \x20 %dpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 0\n\
+         \x20 %fpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 1\n\
+         \x20 %lpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 2\n\
+         \x20 %cpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 3\n\
+         \x20 %old_data = load i64*, i64** %dpp\n\
+         \x20 %front = load i64, i64* %fpp\n\
+         \x20 %len = load i64, i64* %lpp\n\
+         \x20 %cap = load i64, i64* %cpp\n\
+         \x20 %cap_zero = icmp eq i64 %cap, 0\n\
+         \x20 %cap_doubled = mul i64 %cap, 2\n\
+         \x20 %new_cap = select i1 %cap_zero, i64 4, i64 %cap_doubled\n\
+         \x20 %new_bytes = mul i64 %new_cap, 8\n\
+         \x20 %new_data_i8 = call i8* @malloc(i64 %new_bytes)\n\
+         \x20 %new_data = bitcast i8* %new_data_i8 to i64*\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 store i64 0, i64* %i_p\n\
+         \x20 br label %unwrap_loop\n\
+         unwrap_loop:\n\
+         \x20 %i = load i64, i64* %i_p\n\
+         \x20 %cont = icmp slt i64 %i, %len\n\
+         \x20 br i1 %cont, label %unwrap_body, label %unwrap_done\n\
+         unwrap_body:\n\
+         \x20 %src_idx_raw = add i64 %front, %i\n\
+         \x20 %src_idx = urem i64 %src_idx_raw, %cap\n\
+         \x20 %src = getelementptr i64, i64* %old_data, i64 %src_idx\n\
+         \x20 %val = load i64, i64* %src\n\
+         \x20 %dst = getelementptr i64, i64* %new_data, i64 %i\n\
+         \x20 store i64 %val, i64* %dst\n\
+         \x20 %i_n = add i64 %i, 1\n\
+         \x20 store i64 %i_n, i64* %i_p\n\
+         \x20 br label %unwrap_loop\n\
+         unwrap_done:\n\
+         \x20 %old_is_null = icmp eq i64* %old_data, null\n\
+         \x20 br i1 %old_is_null, label %store_new, label %free_old\n\
+         free_old:\n\
+         \x20 %old_i8 = bitcast i64* %old_data to i8*\n\
+         \x20 call void @free(i8* %old_i8)\n\
+         \x20 br label %store_new\n\
+         store_new:\n\
+         \x20 store i64* %new_data, i64** %dpp\n\
+         \x20 store i64 0, i64* %fpp\n\
+         \x20 store i64 %new_cap, i64* %cpp\n\
+         \x20 ret void\n\
+         }\n\
+         define i64 @intent_deque_i64_push_back(%intent_deque_i64* %d, i64 %v) {\n\
+         \x20 %lpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 2\n\
+         \x20 %cpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 3\n\
+         \x20 %len = load i64, i64* %lpp\n\
+         \x20 %cap = load i64, i64* %cpp\n\
+         \x20 %need = icmp uge i64 %len, %cap\n\
+         \x20 br i1 %need, label %pb_grow, label %pb_store\n\
+         pb_grow:\n\
+         \x20 call void @intent_deque_i64_grow(%intent_deque_i64* %d)\n\
+         \x20 br label %pb_store\n\
+         pb_store:\n\
+         \x20 %fpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 1\n\
+         \x20 %front = load i64, i64* %fpp\n\
+         \x20 %len2 = load i64, i64* %lpp\n\
+         \x20 %cap2 = load i64, i64* %cpp\n\
+         \x20 %back_raw = add i64 %front, %len2\n\
+         \x20 %back = urem i64 %back_raw, %cap2\n\
+         \x20 %dpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 0\n\
+         \x20 %data = load i64*, i64** %dpp\n\
+         \x20 %slot = getelementptr i64, i64* %data, i64 %back\n\
+         \x20 store i64 %v, i64* %slot\n\
+         \x20 %new_len = add i64 %len2, 1\n\
+         \x20 store i64 %new_len, i64* %lpp\n\
+         \x20 ret i64 %new_len\n\
+         }\n\
+         define i64 @intent_deque_i64_push_front(%intent_deque_i64* %d, i64 %v) {\n\
+         \x20 %lpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 2\n\
+         \x20 %cpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 3\n\
+         \x20 %len = load i64, i64* %lpp\n\
+         \x20 %cap = load i64, i64* %cpp\n\
+         \x20 %need = icmp uge i64 %len, %cap\n\
+         \x20 br i1 %need, label %pf_grow, label %pf_store\n\
+         pf_grow:\n\
+         \x20 call void @intent_deque_i64_grow(%intent_deque_i64* %d)\n\
+         \x20 br label %pf_store\n\
+         pf_store:\n\
+         \x20 %fpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 1\n\
+         \x20 %front = load i64, i64* %fpp\n\
+         \x20 %len2 = load i64, i64* %lpp\n\
+         \x20 %cap2 = load i64, i64* %cpp\n\
+         \x20 %fpc = add i64 %front, %cap2\n\
+         \x20 %fpc_m1 = sub i64 %fpc, 1\n\
+         \x20 %new_front = urem i64 %fpc_m1, %cap2\n\
+         \x20 store i64 %new_front, i64* %fpp\n\
+         \x20 %dpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 0\n\
+         \x20 %data = load i64*, i64** %dpp\n\
+         \x20 %slot = getelementptr i64, i64* %data, i64 %new_front\n\
+         \x20 store i64 %v, i64* %slot\n\
+         \x20 %new_len = add i64 %len2, 1\n\
+         \x20 store i64 %new_len, i64* %lpp\n\
+         \x20 ret i64 %new_len\n\
+         }\n\
+         define i64 @intent_deque_i64_len(%intent_deque_i64* %d) {\n\
+         \x20 %lpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 2\n\
+         \x20 %len = load i64, i64* %lpp\n\
+         \x20 ret i64 %len\n\
+         }\n",
+    );
+    if has_option_i64 {
+        out.push_str(
+            "define %Enum_Option__i64 @intent_deque_i64_pop_back(%intent_deque_i64* %d) {\n\
+             \x20 %lpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 2\n\
+             \x20 %len = load i64, i64* %lpp\n\
+             \x20 %empty = icmp eq i64 %len, 0\n\
+             \x20 br i1 %empty, label %pb_none, label %pb_some\n\
+             pb_some:\n\
+             \x20 %new_len = sub i64 %len, 1\n\
+             \x20 store i64 %new_len, i64* %lpp\n\
+             \x20 %fpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 1\n\
+             \x20 %cpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 3\n\
+             \x20 %front = load i64, i64* %fpp\n\
+             \x20 %cap = load i64, i64* %cpp\n\
+             \x20 %back_raw = add i64 %front, %new_len\n\
+             \x20 %back = urem i64 %back_raw, %cap\n\
+             \x20 %dpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 0\n\
+             \x20 %data = load i64*, i64** %dpp\n\
+             \x20 %slot = getelementptr i64, i64* %data, i64 %back\n\
+             \x20 %v = load i64, i64* %slot\n\
+             \x20 %r1 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %r2 = insertvalue %Enum_Option__i64 %r1, i64 %v, 1\n\
+             \x20 ret %Enum_Option__i64 %r2\n\
+             pb_none:\n\
+             \x20 %n1 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %n2 = insertvalue %Enum_Option__i64 %n1, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %n2\n\
+             }\n\
+             define %Enum_Option__i64 @intent_deque_i64_pop_front(%intent_deque_i64* %d) {\n\
+             \x20 %lpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 2\n\
+             \x20 %len = load i64, i64* %lpp\n\
+             \x20 %empty = icmp eq i64 %len, 0\n\
+             \x20 br i1 %empty, label %pf_none, label %pf_some\n\
+             pf_some:\n\
+             \x20 %fpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 1\n\
+             \x20 %cpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 3\n\
+             \x20 %front = load i64, i64* %fpp\n\
+             \x20 %cap = load i64, i64* %cpp\n\
+             \x20 %dpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 0\n\
+             \x20 %data = load i64*, i64** %dpp\n\
+             \x20 %slot = getelementptr i64, i64* %data, i64 %front\n\
+             \x20 %v = load i64, i64* %slot\n\
+             \x20 %fp1 = add i64 %front, 1\n\
+             \x20 %new_front = urem i64 %fp1, %cap\n\
+             \x20 store i64 %new_front, i64* %fpp\n\
+             \x20 %new_len = sub i64 %len, 1\n\
+             \x20 store i64 %new_len, i64* %lpp\n\
+             \x20 %r1 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %r2 = insertvalue %Enum_Option__i64 %r1, i64 %v, 1\n\
+             \x20 ret %Enum_Option__i64 %r2\n\
+             pf_none:\n\
+             \x20 %n1 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %n2 = insertvalue %Enum_Option__i64 %n1, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %n2\n\
+             }\n\
+             define %Enum_Option__i64 @intent_deque_i64_peek_back(%intent_deque_i64* %d) {\n\
+             \x20 %lpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 2\n\
+             \x20 %len = load i64, i64* %lpp\n\
+             \x20 %empty = icmp eq i64 %len, 0\n\
+             \x20 br i1 %empty, label %pkb_none, label %pkb_some\n\
+             pkb_some:\n\
+             \x20 %fpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 1\n\
+             \x20 %cpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 3\n\
+             \x20 %front = load i64, i64* %fpp\n\
+             \x20 %cap = load i64, i64* %cpp\n\
+             \x20 %len_m1 = sub i64 %len, 1\n\
+             \x20 %back_raw = add i64 %front, %len_m1\n\
+             \x20 %back = urem i64 %back_raw, %cap\n\
+             \x20 %dpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 0\n\
+             \x20 %data = load i64*, i64** %dpp\n\
+             \x20 %slot = getelementptr i64, i64* %data, i64 %back\n\
+             \x20 %v = load i64, i64* %slot\n\
+             \x20 %r1 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %r2 = insertvalue %Enum_Option__i64 %r1, i64 %v, 1\n\
+             \x20 ret %Enum_Option__i64 %r2\n\
+             pkb_none:\n\
+             \x20 %n1 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %n2 = insertvalue %Enum_Option__i64 %n1, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %n2\n\
+             }\n\
+             define %Enum_Option__i64 @intent_deque_i64_peek_front(%intent_deque_i64* %d) {\n\
+             \x20 %lpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 2\n\
+             \x20 %len = load i64, i64* %lpp\n\
+             \x20 %empty = icmp eq i64 %len, 0\n\
+             \x20 br i1 %empty, label %pkf_none, label %pkf_some\n\
+             pkf_some:\n\
+             \x20 %fpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 1\n\
+             \x20 %front = load i64, i64* %fpp\n\
+             \x20 %dpp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 0\n\
+             \x20 %data = load i64*, i64** %dpp\n\
+             \x20 %slot = getelementptr i64, i64* %data, i64 %front\n\
+             \x20 %v = load i64, i64* %slot\n\
+             \x20 %r1 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %r2 = insertvalue %Enum_Option__i64 %r1, i64 %v, 1\n\
+             \x20 ret %Enum_Option__i64 %r2\n\
+             pkf_none:\n\
+             \x20 %n1 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %n2 = insertvalue %Enum_Option__i64 %n1, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %n2\n\
+             }\n\n",
+        );
+    }
 }
 
 /// Data-structures roadmap: shared array sort/search helpers
@@ -10722,7 +11027,7 @@ fn is_scalar(ty: &Type) -> bool {
         // <ty> <v>, <ty>* …` work uniformly. The builtins
         // (channel_new, mutex_new, mutex_lock) return SSA
         // values of these struct types.
-        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar)
+        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_))
         // Function pointers are pointer-sized scalars. The
         // alloca holds a single value of fn-ptr type (the
         // load returns a function-pointer SSA value the
@@ -10772,6 +11077,7 @@ pub(crate) fn llvm_type(ty: &Type) -> &'static str {
         Type::Mutex(_) => "%intent_mutex_i64",
         Type::Guard(_) => "%intent_guard_i64",
         Type::Condvar => "%intent_condvar",
+        Type::Deque(_) => "%intent_deque_i64",
         // Enums lower to a 32-bit tag — see `llvm_type_string`
         // for the same. T1.3.
         Type::Enum(_) => "i32",

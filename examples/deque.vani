@@ -1,0 +1,81 @@
+// build & run:
+//   intentc run examples/deque.vani                          # LLVM backend
+//   intentc run examples/deque.vani --backend=c              # C backend
+//   intentc build examples/deque.vani -o /tmp/deque && /tmp/deque
+
+intent "Deque<i64> — double-ended ring buffer (Level 2 #2)";
+
+// `Deque<T>` is a new affine handle to a heap-backed ring
+// buffer. v1: T = i64 only (mirrors Mutex<i64> scoping).
+//
+//   deque_new() -> Deque<i64>
+//   deque_push_back(mut ref d, v) -> i64     — new len
+//   deque_push_front(mut ref d, v) -> i64    — new len
+//   deque_pop_back(mut ref d) -> Option<i64>
+//   deque_pop_front(mut ref d) -> Option<i64>
+//   deque_peek_back(ref d) -> Option<i64>
+//   deque_peek_front(ref d) -> Option<i64>
+//   deque_len(ref d) -> i64
+//
+// O(1) amortized at both ends. The data buffer wraps around
+// (front index + len modulo capacity); grow doubles capacity
+// and unwraps the ring so subsequent ops see a contiguous
+// prefix. Scope-exit Drop frees the heap data buffer.
+
+fn unwrap_or(o: Option<i64>, def: i64) -> i64 {
+  return match o {
+    Option.Some(v) then v,
+    Option.None then def,
+  };
+}
+
+fn main() -> i64 {
+  let d: Deque<i64> = deque_new();
+
+  // Mixed-end pushes.
+  let _ = deque_push_back(mut ref d, 1);
+  let _ = deque_push_back(mut ref d, 2);
+  let _ = deque_push_back(mut ref d, 3);
+  let _ = deque_push_front(mut ref d, 0);
+  let _ = deque_push_front(mut ref d, 0 - 1);
+  // Deque now: [-1, 0, 1, 2, 3]
+
+  print "len:", deque_len(ref d);
+  print "front:", unwrap_or(deque_peek_front(ref d), 0 - 99);
+  print "back:", unwrap_or(deque_peek_back(ref d), 0 - 99);
+
+  // Drain from the front (FIFO order).
+  print "drain front:";
+  while deque_len(ref d) > 0 {
+    print unwrap_or(deque_pop_front(mut ref d), 0 - 99);
+  }
+
+  // Empty deque returns None on pop.
+  print "pop empty:", unwrap_or(deque_pop_back(mut ref d), 0 - 99);
+
+  // Demonstrate LIFO-from-back semantics.
+  let s: Deque<i64> = deque_new();
+  let _ = deque_push_back(mut ref s, 10);
+  let _ = deque_push_back(mut ref s, 20);
+  let _ = deque_push_back(mut ref s, 30);
+  print "stack-like (pop back):";
+  while deque_len(ref s) > 0 {
+    print unwrap_or(deque_pop_back(mut ref s), 0 - 99);
+  }
+
+  // Ring-buffer stress: push enough to trigger grow at both ends.
+  let g: Deque<i64> = deque_new();
+  let i: i64 = 0;
+  while i < 8 {
+    let _ = deque_push_back(mut ref g, i);
+    let _ = deque_push_front(mut ref g, 0 - i);
+    i = i + 1;
+  }
+  print "after ring stress len:", deque_len(ref g);
+  print "first three from front:";
+  print unwrap_or(deque_pop_front(mut ref g), 0 - 99);
+  print unwrap_or(deque_pop_front(mut ref g), 0 - 99);
+  print unwrap_or(deque_pop_front(mut ref g), 0 - 99);
+
+  return 0;
+}

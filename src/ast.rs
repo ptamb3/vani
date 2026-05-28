@@ -713,6 +713,13 @@ pub enum Type {
     /// ops are by-ref (`notify_one` / `notify_all`). No
     /// payload — condvars are pure signaling primitives.
     Condvar,
+    /// `Deque<T>` — affine handle to a heap-backed
+    /// double-ended ring buffer. push_back / push_front /
+    /// pop_back / pop_front are all O(1) amortized; capacity
+    /// grows on demand. v1: T = i64 only (mirrors Mutex<i64>
+    /// scoping). Drop frees the heap data buffer at scope
+    /// exit. Closure #303.
+    Deque(Box<Type>),
 }
 
 impl Type {
@@ -790,7 +797,8 @@ impl Type {
             | Type::Channel(_, _)
             | Type::Mutex(_)
             | Type::Guard(_)
-            | Type::Condvar => false,
+            | Type::Condvar
+            | Type::Deque(_) => false,
             Type::Ref(_) | Type::RefMut(_) => true,
             // Structs with at least one affine field (OwnedStr in v1)
             // are themselves affine — copying would alias the heap
@@ -810,7 +818,7 @@ impl Type {
             Type::I16 | Type::U16 => Some(16),
             Type::I32 | Type::U32 => Some(32),
             Type::I64 | Type::U64 => Some(64),
-            Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => None,
+            Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => None,
         }
     }
 
@@ -821,7 +829,7 @@ impl Type {
             Type::I32 => Some(i32::MIN as i128),
             Type::I64 => Some(i64::MIN as i128),
             Type::U8 | Type::U16 | Type::U32 | Type::U64 => Some(0),
-            Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => None,
+            Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => None,
         }
     }
 
@@ -835,7 +843,7 @@ impl Type {
             Type::U16 => Some(u16::MAX as i128),
             Type::U32 => Some(u32::MAX as i128),
             Type::U64 => Some(u64::MAX as i128),
-            Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => None,
+            Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => None,
         }
     }
 
@@ -880,6 +888,7 @@ impl fmt::Display for Type {
             Type::Mutex(inner) => write!(formatter, "Mutex<{}>", inner),
             Type::Guard(inner) => write!(formatter, "Guard<{}>", inner),
             Type::Condvar => write!(formatter, "Condvar"),
+            Type::Deque(inner) => write!(formatter, "Deque<{}>", inner),
             Type::FnPtr(params, ret) => {
                 write!(formatter, "fn(")?;
                 for (i, p) in params.iter().enumerate() {

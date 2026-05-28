@@ -519,6 +519,15 @@ pub fn emit_c(program: &TypedProgram) -> String {
         });
         emit_intent_array_helpers_i64_unconditional(&mut body, has_option_i64);
     }
+    // Deque<i64> helpers: emitted in body so `Enum_Option__i64`
+    // typedef (added by the enum decl pass above) is visible
+    // when the pop / peek helpers are defined.
+    if program_uses_i64_deque(program) {
+        let has_option_i64 = ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        emit_intent_deque_helpers_c_body(&mut body, has_option_i64);
+    }
 
     for function in &program.functions {
         emit_prototype(function, &mut body);
@@ -613,6 +622,140 @@ fn emit_intent_rng_helpers_c(out: &mut String, body: &str) {
          \x20 return lo + (int64_t)(r % span);\n\
          }\n\n",
     );
+}
+
+/// Walk the program for any `Deque<i64>` type usage. Triggers
+/// emission of the deque runtime helpers in body (so the
+/// Enum_Option__i64 typedef is visible when the pop/peek
+/// helpers are defined).
+pub(crate) fn program_uses_i64_deque(program: &TypedProgram) -> bool {
+    fn ty_uses(ty: &Type) -> bool {
+        match ty {
+            Type::Deque(element) if matches!(**element, Type::I64) => true,
+            Type::Vec(inner) | Type::Ref(inner) | Type::RefMut(inner) => ty_uses(inner),
+            Type::Array { element, .. } => ty_uses(element),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if ty_uses(&f.return_type) {
+            return true;
+        }
+        for p in &f.params {
+            if ty_uses(&p.ty) {
+                return true;
+            }
+        }
+        for s in &f.body {
+            if stmt_uses_i64_deque(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn stmt_uses_i64_deque(stmt: &crate::ir::TypedStmt) -> bool {
+    use crate::ir::TypedStmt as S;
+    fn ty_uses(ty: &Type) -> bool {
+        matches!(ty, Type::Deque(element) if matches!(**element, Type::I64))
+            || matches!(ty,
+                Type::Vec(i) | Type::Ref(i) | Type::RefMut(i) if ty_uses(i))
+    }
+    match stmt {
+        S::Let { ty, .. } | S::Reassign { ty, .. } | S::Drop { ty, .. } => ty_uses(ty),
+        S::If { then_body, else_body, .. } => {
+            then_body.iter().any(stmt_uses_i64_deque)
+                || else_body.iter().any(stmt_uses_i64_deque)
+        }
+        S::While { body, .. } | S::For { body, .. } | S::ForIter { body, .. } => {
+            body.iter().any(stmt_uses_i64_deque)
+        }
+        _ => false,
+    }
+}
+
+/// Data-structures roadmap Level 2 — Deque<i64> ring buffer
+/// runtime helpers. `intent_deque_i64` is a 4-field struct:
+/// data pointer, front index, len, capacity. Mod-capacity
+/// arithmetic implements the wrap-around. Grow doubles
+/// capacity and unwraps the ring so future ops see a
+/// contiguous prefix. v1 i64 only; Option<i64> return for
+/// pop/peek gated on `has_option_i64` flag from the caller.
+fn emit_intent_deque_helpers_c_body(out: &mut String, has_option_i64: bool) {
+    out.push_str(
+        "typedef struct { int64_t* data; uint64_t front; uint64_t len; uint64_t capacity; } intent_deque_i64;\n\
+         static INTENT_UNUSED intent_deque_i64 intent_deque_i64_new(void) {\n\
+         \x20 intent_deque_i64 d; d.data = (int64_t*)0; d.front = 0; d.len = 0; d.capacity = 0; return d;\n\
+         }\n\
+         static INTENT_UNUSED void intent_deque_i64_drop(intent_deque_i64* d) {\n\
+         \x20 if (d->data) free(d->data);\n\
+         \x20 d->data = (int64_t*)0; d->front = 0; d->len = 0; d->capacity = 0;\n\
+         }\n\
+         static INTENT_UNUSED void intent_deque_i64_grow(intent_deque_i64* d) {\n\
+         \x20 uint64_t new_cap = d->capacity == 0 ? 4 : d->capacity * 2;\n\
+         \x20 int64_t* new_data = (int64_t*)malloc(new_cap * sizeof(int64_t));\n\
+         \x20 if (!new_data) abort();\n\
+         \x20 /* Unwrap the ring into the new buffer. */\n\
+         \x20 for (uint64_t i = 0; i < d->len; i++) {\n\
+         \x20   new_data[i] = d->data[(d->front + i) % d->capacity];\n\
+         \x20 }\n\
+         \x20 if (d->data) free(d->data);\n\
+         \x20 d->data = new_data;\n\
+         \x20 d->front = 0;\n\
+         \x20 d->capacity = new_cap;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_deque_i64_push_back(intent_deque_i64* d, int64_t v) {\n\
+         \x20 if (d->len >= d->capacity) intent_deque_i64_grow(d);\n\
+         \x20 uint64_t back = (d->front + d->len) % d->capacity;\n\
+         \x20 d->data[back] = v;\n\
+         \x20 d->len++;\n\
+         \x20 return (int64_t)d->len;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_deque_i64_push_front(intent_deque_i64* d, int64_t v) {\n\
+         \x20 if (d->len >= d->capacity) intent_deque_i64_grow(d);\n\
+         \x20 d->front = (d->front + d->capacity - 1) % d->capacity;\n\
+         \x20 d->data[d->front] = v;\n\
+         \x20 d->len++;\n\
+         \x20 return (int64_t)d->len;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_deque_i64_len(const intent_deque_i64* d) {\n\
+         \x20 return (int64_t)d->len;\n\
+         }\n",
+    );
+    if has_option_i64 {
+        out.push_str(
+            "static INTENT_UNUSED Enum_Option__i64 intent_deque_i64_pop_back(intent_deque_i64* d) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (d->len == 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 d->len--;\n\
+             \x20 uint64_t back = (d->front + d->len) % d->capacity;\n\
+             \x20 r.tag = 0; r.payload = d->data[back];\n\
+             \x20 return r;\n\
+             }\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_deque_i64_pop_front(intent_deque_i64* d) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (d->len == 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 r.tag = 0; r.payload = d->data[d->front];\n\
+             \x20 d->front = (d->front + 1) % d->capacity;\n\
+             \x20 d->len--;\n\
+             \x20 return r;\n\
+             }\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_deque_i64_peek_back(const intent_deque_i64* d) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (d->len == 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 uint64_t back = (d->front + d->len - 1) % d->capacity;\n\
+             \x20 r.tag = 0; r.payload = d->data[back];\n\
+             \x20 return r;\n\
+             }\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_deque_i64_peek_front(const intent_deque_i64* d) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (d->len == 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 r.tag = 0; r.payload = d->data[d->front];\n\
+             \x20 return r;\n\
+             }\n\n",
+        );
+    }
 }
 
 /// Data-structures roadmap Level 1 — FNV-1a hash helpers.
@@ -2956,6 +3099,15 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 // waiters (if any) are the user's responsibility
                 // to drain via notify_all before the condvar
                 // goes out of scope.
+            }
+            Type::Deque(_) => {
+                // Affine handle: free the ring buffer's heap
+                // data at scope exit. The struct itself is
+                // stack-allocated; only `data` lives on the
+                // heap.
+                out.push_str("  intent_deque_i64_drop(&");
+                out.push_str(&local_name(name));
+                out.push_str(");\n");
             }
             Type::Struct(struct_name) => {
                 // Auto-call the user's `Drop` impl when one
@@ -5338,6 +5490,37 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 opt = opt_c,
             )
         }
+        "deque_new" => "intent_deque_i64_new()".to_string(),
+        "deque_push_back" => format!(
+            "intent_deque_i64_push_back({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "deque_push_front" => format!(
+            "intent_deque_i64_push_front({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "deque_pop_back" => format!(
+            "intent_deque_i64_pop_back({})",
+            emit_expr(&args[0])
+        ),
+        "deque_pop_front" => format!(
+            "intent_deque_i64_pop_front({})",
+            emit_expr(&args[0])
+        ),
+        "deque_peek_back" => format!(
+            "intent_deque_i64_peek_back({})",
+            emit_expr(&args[0])
+        ),
+        "deque_peek_front" => format!(
+            "intent_deque_i64_peek_front({})",
+            emit_expr(&args[0])
+        ),
+        "deque_len" => format!(
+            "intent_deque_i64_len({})",
+            emit_expr(&args[0])
+        ),
         "heap_push" | "heap_pop" | "heap_peek" | "heapify" => {
             let element = match args[0].ty.deref() {
                 Type::Vec(element) => element.clone(),
@@ -5820,6 +6003,10 @@ pub(crate) fn c_leaf_type(ty: &Type) -> &'static str {
         // futex / WaitOnAddress seq counter under the hood. The
         // affine handle is just a pointer to that storage.
         Type::Condvar => "intent_condvar",
+        // `Deque<T>` is a ring buffer with heap data. v1 i64
+        // only; the type spelling is fixed at the i64 form
+        // since c_leaf_type can't synthesize per-T strings.
+        Type::Deque(_) => "intent_deque_i64",
         // `fn(T1, T2) -> R` has no fixed leaf spelling in C —
         // function-pointer types are declarator-shaped
         // (`R (*name)(T1, T2)`). Callers that need to emit a
@@ -6151,7 +6338,7 @@ fn divisor_helper(ty: &Type) -> &'static str {
         Type::U64 => "intent_check_u64_divisor",
         Type::F32 => "intent_check_f32_divisor",
         Type::F64 => "intent_check_f64_divisor",
-        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
+        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
             unreachable!("non-numeric type cannot be a divisor")
         }
     }
@@ -6182,6 +6369,7 @@ fn shift_helper(ty: &Type) -> &'static str {
         | Type::Mutex(_)
         | Type::Guard(_)
         | Type::Condvar
+        | Type::Deque(_)
         | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => unreachable!("shift count must be an integer"),
     }
 }

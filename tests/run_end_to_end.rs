@@ -832,6 +832,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "condvar.vani",
         "contracts.vani",
         "control_flow.vani",
+        "deque.vani",
         "drop_interface.vani",
         "memory_safety.vani",
         "dyn_dispatch.vani",
