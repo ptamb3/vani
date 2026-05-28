@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #314 — Level 3 #1 phase 2: closures with captured environment. `let f = fn(x: i64) -> i64 { return x + n; };` now compiles — the lambda-lift pass detects free vars in the anon fn body, hoists the fn with `__cap_<name>: T` leading params, deletes the original Let, and rewrites every `f(args)` Call in the same function to `__anon_fn_<N>(<cap vars...>, args...)`. The closure binding is purely compile-time — never materializes at runtime. v1 restrictions: capture-by-value of Copy types only; closures may only be CALLED in the same function (no passing, storing, or returning); captured bindings need an explicit type annotation or be a fn param so the hoisted fn's capture params know their types. 5 new lib tests + new `examples/closures.vani`.)
-**Test totals:** 1155 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #315 — Level 3 #1 phase 2 follow-up: nested closures inside `if`/`while`/`for`/`ForIter`/`TaskSpawn` bodies. The lambda-lift pre-pass now recurses through nested block statements looking for `let f = fn(...) -> R { ... }` patterns. The closure-handle map propagates down into nested scopes, so a closure declared in an outer scope is callable from an inner scope; captures of outer-let bindings work the same way. The pre-pass also tracks loop-vars (`for j from 0 to N { ... }`) as i64 bindings visible to closures declared inside the loop body. 3 new lib tests + extended `examples/closures.vani`. The `Let-of-AnonFn pattern is only recognized at the function's top-level statement list` restriction noted in #314 is closed.)
+**Test totals:** 1158 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -121,9 +121,14 @@ identical code to a direct call.
   queued — they need move/clone semantics decisions.
 - Captured bindings must have an explicit type annotation
   or be a fn param so the lift pass can read their types.
-- The Let-of-AnonFn pattern is only recognized at the
+- ~~The Let-of-AnonFn pattern is only recognized at the
   function's top-level statement list (not inside nested
-  `if` / `while` / block bodies in v1).
+  `if` / `while` / block bodies in v1).~~ **Closed in
+  closure #315.** Nested closures inside `if` / `while` /
+  `for` / `ForIter` / `TaskSpawn` bodies are now supported;
+  the lift pass recurses into nested blocks. Closure names
+  must still be unique within the function (vāṇी's
+  shadowing rules forbid same-scope reuse).
 
 **Codegen:** None new. The rewritten calls are regular
 `Call` nodes that lower identically to direct calls.

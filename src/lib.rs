@@ -13194,6 +13194,60 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn closure_nested_inside_if_body() {
+        let source = r#"
+            fn main() -> i64 {
+              let n: i64 = 5;
+              let positive: i64 = 1;
+              if positive > 0 {
+                let add_n = fn(x: i64) -> i64 { return x + n; };
+                return add_n(10);
+              } else {
+                return 0;
+              }
+            }
+        "#;
+        compile_to_c(source).expect("nested-in-if closure in C");
+        compile_to_llvm(source).expect("nested-in-if closure in LLVM");
+    }
+
+    #[test]
+    fn closure_nested_inside_while_body() {
+        let source = r#"
+            fn main() -> i64 {
+              let n: i64 = 100;
+              let total: i64 = 0;
+              let i: i64 = 0;
+              while i < 3 {
+                let add_n = fn(x: i64) -> i64 { return x + n; };
+                total = total + add_n(i);
+                i = i + 1;
+              }
+              return total;
+            }
+        "#;
+        compile_to_c(source).expect("nested-in-while closure in C");
+        compile_to_llvm(source).expect("nested-in-while closure in LLVM");
+    }
+
+    #[test]
+    fn closure_nested_inside_for_body_captures_outer_let() {
+        let source = r#"
+            fn main() -> i64 {
+              let base: i64 = 10;
+              let sum: i64 = 0;
+              for j from 0 to 5 {
+                let scale = fn(x: i64) -> i64 { return x * base; };
+                sum = sum + scale(j);
+              }
+              return sum;
+            }
+        "#;
+        compile_to_c(source).expect("nested-in-for closure in C");
+        compile_to_llvm(source).expect("nested-in-for closure in LLVM");
+    }
+
+    #[test]
     fn closure_capture_multiple_vars_via_closure_lift() {
         let source = r#"
             fn main() -> i64 {

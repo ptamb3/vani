@@ -185,13 +185,19 @@ pointer (already in the language as of #279 FFI callbacks).
     the body), deletes the original Let, and rewrites every
     `f(args)` Call in the same function to the prepended-args
     direct call. 5 lib tests + `examples/closures.vani`.
-    Pending phase 3+: non-Copy captures with move semantics
+    *Phase 3 shipped 2026-05-28 (closure #315) — nested
+    closures inside `if`/`while`/`for`/`ForIter`/`TaskSpawn`
+    bodies.* The lift pass recurses into nested blocks; the
+    closure-handle map propagates so nested-scope closures
+    can capture outer-let bindings, and the pre-pass tracks
+    loop vars (`for j from 0 to N`) as i64 bindings visible
+    to closures declared inside.
+    Pending phase 4+: non-Copy captures with move semantics
     (needs affine analysis); capture-by-ref second-class
     closures (callable only within the captured ref's lifetime);
     passing closures across function boundaries (needs closure-
     as-value type — env-struct + fn-ptr pair); reassigning
-    closure bindings; nested closure declarations inside
-    `if`/`while`/block bodies.
+    closure bindings; closure-name reuse across sibling scopes.
 18. **Iterator combinators** — ✅ AFFINE.
     `.map(f).filter(p).fold(init, g)` over Vec / Array.
     Combinators are zero-allocation in v1 (loop-fused at
@@ -546,7 +552,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #314 — Level 3 #1 phase 2: closures with captured environment. `let f = fn(x: i64) -> i64 { return x + n; };` now compiles via a checker-side lambda-lift transform. The closure binding is purely compile-time; the lift pass detects free vars, hoists the fn with `__cap_<name>: T` leading params, deletes the original Let, and rewrites every `f(args)` Call in the same fn to the prepended-args direct call. Zero new runtime types, IR, or backend code. v1 restrictions: capture-by-value of Copy types only; closure may only be CALLED in the same fn (no passing/storing/returning); captured bindings need type annotations or be fn params. 5 new lib tests + `examples/closures.vani`. Next focal area sequence: (#315) **Loop fusion** at monomorphization time so chained `vec_map → vec_filter → vec_fold` doesn't allocate intermediate Vecs. (#316) `vec_zip` (needs Vec<(i64, i64)> tuple element type); `.collect()` (once lazy iterators land); non-i64 element types in combinators; type-changing map (`Vec<i64> -> Vec<Str>`); method-call sugar for Vec mutators (push / pop / reverse / dedup). Closure-with-captures follow-ups: non-Copy captures with move semantics; capture-by-ref second-class closures; passing closures as fn-ptr args (needs env+ptr struct value type); nested closure declarations inside `if`/`while` bodies. After Level 3 closes: Level 4 arena-based BST/AVL/B-tree/Trie/graphs + algorithms. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries + iteration via closures, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-28, after closure #315 — Level 3 #1 phase 2 follow-up: nested closures inside `if`/`while`/`for`/`ForIter`/`TaskSpawn` bodies. The lambda-lift pre-pass now recurses into nested blocks; the closure-handle map propagates down so a closure declared in an outer scope is callable from an inner scope, and captures of outer-let bindings work the same as before. Loop vars from `for j from 0 to N` are tracked as i64 bindings visible to closures declared inside the loop body. 3 new lib tests + extended `examples/closures.vani`. Next focal area sequence: (#316) **Loop fusion** at monomorphization time so chained `vec_map → vec_filter → vec_fold` doesn't allocate intermediate Vecs — peephole pattern recognition on the IR. (#317) `vec_zip` (needs Vec<(i64, i64)> tuple element type); `.collect()` (once lazy iterators land); non-i64 element types in combinators; type-changing map (`Vec<i64> -> Vec<Str>`); method-call sugar for Vec mutators (push / pop / reverse / dedup). Closure follow-ups: non-Copy captures with move semantics; capture-by-ref second-class closures; passing closures as fn-ptr args (needs env+ptr struct value type); closure-name reuse across sibling scopes. After Level 3 closes: Level 4 arena-based BST/AVL/B-tree/Trie/graphs + algorithms. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries + iteration via closures, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

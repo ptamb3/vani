@@ -1362,90 +1362,20 @@ fn lambda_lift_program(program: &mut Program) {
         }
         let mut closure_handles: std::collections::HashMap<String, (String, Vec<String>)> =
             std::collections::HashMap::new();
-        let mut new_body: Vec<crate::ast::Stmt> = Vec::with_capacity(f.body.len());
-        for stmt in f.body.drain(..) {
-            if let crate::ast::Stmt::Let {
-                name: bind_name,
-                annotation,
-                expr,
-                span,
-            } = &stmt
-            {
-                if let ExprKind::AnonFn { params, return_type, body, fn_span } = &expr.kind {
-                    let captures = compute_captures_in_body(
-                        body, params, &env, &top_level_names,
-                    );
-                    if !captures.is_empty() {
-                        // Build the hoisted fn with leading
-                        // capture params, then existing user
-                        // params. Capture param names are
-                        // `__cap_<original_name>`; body's
-                        // Var(name) references are rewritten
-                        // to Var(__cap_<name>) for each capture.
-                        let hoist_name = format!("__anon_fn_{}", counter);
-                        counter += 1;
-                        let mut hoist_params: Vec<crate::ast::Param> =
-                            Vec::with_capacity(captures.len() + params.len());
-                        let mut capture_names_only: Vec<String> = Vec::new();
-                        for cap in &captures {
-                            let cap_ty = env.get(cap).cloned().unwrap();
-                            hoist_params.push(crate::ast::Param {
-                                name: format!("__cap_{}", cap),
-                                ty: cap_ty,
-                                name_span: *fn_span,
-                                span: *fn_span,
-                            });
-                            capture_names_only.push(cap.clone());
-                        }
-                        for p in params {
-                            hoist_params.push(p.clone());
-                        }
-                        let mut hoist_body: Vec<crate::ast::Stmt> = body.clone();
-                        let rename: std::collections::HashMap<String, String> = captures
-                            .iter()
-                            .map(|c| (c.clone(), format!("__cap_{}", c)))
-                            .collect();
-                        for s in &mut hoist_body {
-                            rename_vars_in_stmt(s, &rename);
-                        }
-                        // Lift any nested anon fns inside the body.
-                        for s in &mut hoist_body {
-                            lift_stmt_anon_fn(s, &mut counter, &mut hoisted);
-                        }
-                        hoisted.push(crate::ast::Function {
-                            name: hoist_name.clone(),
-                            type_params: Vec::new(),
-                            where_clauses: Vec::new(),
-                            params: hoist_params,
-                            return_type: return_type.clone(),
-                            requires: Vec::new(),
-                            ensures: Vec::new(),
-                            body: hoist_body,
-                            span: *fn_span,
-                            is_pure: false,
-                            is_extern: false,
-                            recursion_bound: None,
-                        });
-                        closure_handles.insert(
-                            bind_name.clone(),
-                            (hoist_name, capture_names_only),
-                        );
-                        // Drop the original Let — `f` is
-                        // compile-time-only.
-                        continue;
-                    }
-                }
-                // Not a capturing closure — track the binding's
-                // annotated type so later closures can capture it.
-                let _ = span;
-                if let Some(ty) = annotation {
-                    env.insert(bind_name.clone(), ty.clone());
-                }
-            }
-            new_body.push(stmt);
-        }
-        // Rewrite remaining body: every `Call { name = closure_handle }`
+        let mut new_body = std::mem::take(&mut f.body);
+        lift_closures_in_block(
+            &mut new_body,
+            &mut env,
+            &top_level_names,
+            &mut counter,
+            &mut hoisted,
+            &mut closure_handles,
+        );
+        // Rewrite the whole body: every `Call { name = closure_handle }`
         // gets expanded to the hoisted fn with prepended captures.
+        // The rewriter recurses through nested blocks too, so calls
+        // inside nested if/while/for bodies pick up handles declared
+        // in the same or enclosing scope (closure #315).
         if !closure_handles.is_empty() {
             for s in &mut new_body {
                 rewrite_closure_calls_in_stmt(s, &closure_handles);
@@ -1475,6 +1405,163 @@ fn lambda_lift_program(program: &mut Program) {
 /// in the anon fn itself / lets declared inside the body) is
 /// not a capture. Names are returned in first-appearance
 /// order so the hoisted fn's capture param order is stable.
+/// Closure #315: recursive per-block closure lifting. Walks a
+/// block of statements; for each `Stmt::Let { name, expr: AnonFn }`
+/// with captures, hoists the fn with prepended capture params,
+/// deletes the Let in place, and records the closure handle.
+/// Then recurses into nested block bodies (`if`/`while`/`for`/
+/// `TaskSpawn`/`ForIter`) with the SAME env + closure-handle
+/// map — bindings introduced in outer scope are visible to
+/// inner-scope closures, and closure handles propagate down
+/// (so a closure declared in an outer scope can be called from
+/// an inner scope). The map mutates as we go; closure names
+/// must therefore be unique within a function (vāṇी's existing
+/// shadowing rules already enforce this for top-level lets in
+/// the same scope; cross-scope name reuse is an open
+/// restriction).
+fn lift_closures_in_block(
+    body: &mut Vec<crate::ast::Stmt>,
+    env: &mut std::collections::HashMap<String, crate::ast::Type>,
+    top_level_names: &std::collections::HashSet<String>,
+    counter: &mut usize,
+    hoisted: &mut Vec<crate::ast::Function>,
+    closure_handles: &mut std::collections::HashMap<String, (String, Vec<String>)>,
+) {
+    let mut new_body: Vec<crate::ast::Stmt> = Vec::with_capacity(body.len());
+    for mut stmt in body.drain(..) {
+        // First, try to recognize the closure-Let pattern. Match
+        // on a clone-free destructure of the Let so we can move
+        // the inner AnonFn parts out when we lift.
+        let mut handled = false;
+        if let crate::ast::Stmt::Let {
+            name: bind_name,
+            annotation: _,
+            expr,
+            ..
+        } = &mut stmt
+        {
+            if let ExprKind::AnonFn { params, return_type, body: anon_body, fn_span } = &expr.kind {
+                let captures = compute_captures_in_body(
+                    anon_body, params, env, top_level_names,
+                );
+                if !captures.is_empty() {
+                    let hoist_name = format!("__anon_fn_{}", counter);
+                    *counter += 1;
+                    let mut hoist_params: Vec<crate::ast::Param> =
+                        Vec::with_capacity(captures.len() + params.len());
+                    let mut capture_names_only: Vec<String> = Vec::new();
+                    for cap in &captures {
+                        let cap_ty = env.get(cap).cloned().unwrap();
+                        hoist_params.push(crate::ast::Param {
+                            name: format!("__cap_{}", cap),
+                            ty: cap_ty,
+                            name_span: *fn_span,
+                            span: *fn_span,
+                        });
+                        capture_names_only.push(cap.clone());
+                    }
+                    for p in params {
+                        hoist_params.push(p.clone());
+                    }
+                    let mut hoist_body: Vec<crate::ast::Stmt> = anon_body.clone();
+                    let rename: std::collections::HashMap<String, String> = captures
+                        .iter()
+                        .map(|c| (c.clone(), format!("__cap_{}", c)))
+                        .collect();
+                    for s in &mut hoist_body {
+                        rename_vars_in_stmt(s, &rename);
+                    }
+                    for s in &mut hoist_body {
+                        lift_stmt_anon_fn(s, counter, hoisted);
+                    }
+                    let span_for_fn = *fn_span;
+                    let return_type_clone = return_type.clone();
+                    hoisted.push(crate::ast::Function {
+                        name: hoist_name.clone(),
+                        type_params: Vec::new(),
+                        where_clauses: Vec::new(),
+                        params: hoist_params,
+                        return_type: return_type_clone,
+                        requires: Vec::new(),
+                        ensures: Vec::new(),
+                        body: hoist_body,
+                        span: span_for_fn,
+                        is_pure: false,
+                        is_extern: false,
+                        recursion_bound: None,
+                    });
+                    closure_handles.insert(
+                        bind_name.clone(),
+                        (hoist_name, capture_names_only),
+                    );
+                    handled = true;
+                }
+            }
+        }
+        if handled {
+            // Closure binding is purely compile-time — drop the Let.
+            continue;
+        }
+        // Track non-closure annotated lets so nested closures can
+        // see them; then recurse into any nested blocks the stmt
+        // carries.
+        if let crate::ast::Stmt::Let {
+            name: bind_name,
+            annotation: Some(ty),
+            ..
+        } = &stmt
+        {
+            env.insert(bind_name.clone(), ty.clone());
+        }
+        recurse_lift_closures_in_stmt(
+            &mut stmt, env, top_level_names, counter, hoisted, closure_handles,
+        );
+        new_body.push(stmt);
+    }
+    *body = new_body;
+}
+
+fn recurse_lift_closures_in_stmt(
+    stmt: &mut crate::ast::Stmt,
+    env: &mut std::collections::HashMap<String, crate::ast::Type>,
+    top_level_names: &std::collections::HashSet<String>,
+    counter: &mut usize,
+    hoisted: &mut Vec<crate::ast::Function>,
+    closure_handles: &mut std::collections::HashMap<String, (String, Vec<String>)>,
+) {
+    use crate::ast::Stmt as S;
+    match stmt {
+        S::If { then_body, else_body, .. } => {
+            lift_closures_in_block(
+                then_body, env, top_level_names, counter, hoisted, closure_handles,
+            );
+            lift_closures_in_block(
+                else_body, env, top_level_names, counter, hoisted, closure_handles,
+            );
+        }
+        S::While { body, .. } => {
+            lift_closures_in_block(
+                body, env, top_level_names, counter, hoisted, closure_handles,
+            );
+        }
+        S::For { var, body, .. } => {
+            // The loop var is in scope inside the body for any
+            // closure that captures it.
+            env.insert(var.clone(), crate::ast::Type::I64);
+            lift_closures_in_block(
+                body, env, top_level_names, counter, hoisted, closure_handles,
+            );
+        }
+        S::ForIter { body, .. } | S::TaskSpawn { body, .. } => {
+            lift_closures_in_block(
+                body, env, top_level_names, counter, hoisted, closure_handles,
+            );
+        }
+        // Statements without nested blocks need no recursion here.
+        _ => {}
+    }
+}
+
 fn compute_captures_in_body(
     body: &[crate::ast::Stmt],
     params: &[crate::ast::Param],

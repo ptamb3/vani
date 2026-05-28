@@ -72,5 +72,34 @@ fn main() -> i64 {
   let cube = fn(x: i64) -> i64 { return x * x * x; };
   print "cube(4):", cube(4);
 
+  // Closure #315 — nested closures inside if/while/for bodies.
+  // The lift pass recurses into nested blocks; closures declared
+  // inside a block are callable inside that block. Captures of
+  // outer-scope bindings work the same way.
+  let base: i64 = 100;
+  let positive: i64 = 1;
+  if positive > 0 {
+    let add_base = fn(x: i64) -> i64 { return x + base; };
+    print "if-nested add_base(7):", add_base(7);
+  } else {
+    print "unreachable";
+  }
+
+  let loop_total: i64 = 0;
+  let k: i64 = 0;
+  while k < 4 {
+    let inc = fn(x: i64) -> i64 { return x + base; };
+    loop_total = loop_total + inc(k);
+    k = k + 1;
+  }
+  print "while-nested loop_total:", loop_total;
+
+  let for_total: i64 = 0;
+  for j from 0 to 3 {
+    let scale_j = fn(x: i64) -> i64 { return x * base; };
+    for_total = for_total + scale_j(j);
+  }
+  print "for-nested for_total:", for_total;
+
   return 0;
 }
