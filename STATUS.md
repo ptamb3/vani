@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #316 — Level 3 loop-fusion: `vec_map_fold(ref xs, init, f, g) -> i64` ships as a fused single-pass combinator on Vec<i64>. Iterates input once: `acc = g(acc, f(xs[i]))` — no intermediate Vec materializes, zero heap traffic between map and fold. Method sugar: `xs.map_fold(init, f, g)`. Opt-in (user explicitly invokes the fused name); auto-detection of `vec_fold(ref vec_map(...))` chains is a follow-up. 4 new lib tests + extended `examples/iter_combinators.vani` with sum-of-squares + max-of-doubled patterns.)
-**Test totals:** 1162 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #317 — Level 3 fused combinator family completion: `vec_filter_fold(ref xs, init, p, g) -> i64` reduces over matching elements only; `vec_map_filter(ref xs, f, p) -> Vec<i64>` is two-pass (count after mapping, allocate exact, fill); `vec_map_filter_fold(ref xs, init, f, p, g) -> i64` is the full single-pass pipeline with no intermediate Vec. Method sugar `xs.filter_fold(...)` / `xs.map_filter(...)` / `xs.map_filter_fold(...)`. 5 new lib tests + extended `examples/iter_combinators.vani`.)
+**Test totals:** 1167 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -147,6 +147,45 @@ ref second-class closures; passing closures across function
 boundaries (needs closure-as-value type — likely a struct
 holding the env + fn-ptr pair); reassigning a closure
 binding; nested closure declarations.
+
+### Data-structures roadmap Level 3 — Fused combinator family (shipped 2026-05-28, closure #317)
+
+✅ AFFINE — completes the fused family started in #316.
+
+**API:**
+- `vec_filter_fold(ref xs, init, p, g) -> i64` — single-pass
+  reduce over matching elements only.
+- `vec_map_filter(ref xs, f, p) -> Vec<i64>` — two-pass
+  (count after mapping, allocate exact, fill). One Vec alloc
+  instead of two.
+- `vec_map_filter_fold(ref xs, init, f, p, g) -> i64` — full
+  single-pass map → filter → fold pipeline, no intermediate
+  Vec materializes.
+
+Method sugar: `xs.filter_fold(init, p, g)`,
+`xs.map_filter(f, p)`, `xs.map_filter_fold(init, f, p, g)`.
+
+**Codegen:** all three emit straightforward helpers inside the
+existing Vec bundle. Tree-C reuses the existing `__pred_fn` /
+`__cmp_fn` / `__map_fn` typedefs (with `__pred_fn` forward-
+declared earlier in the bundle so the fused combinators above
+can reference it before `vec_filter`'s emission). Tree-LLVM
+emits matching `define`s on `%intent_vec_i64` with the same
+control-flow shape as #316's `__map_fold`.
+
+**v1 restrictions:** Vec<i64> only; locked signatures as in
+the earlier combinators.
+
+**Tests:** 5 new lib tests (each builtin's basic compile +
+LLVM; the chained-method-sugar test; the wrong-predicate
+rejection). `examples/iter_combinators.vani` extended with
+filter+fold (sum of evens), map+filter (doubled > 5), and
+map+filter+fold (sum of doubled > 5) patterns.
+
+**Pending follow-ups:** auto-detection of fold-of-map and
+fold-of-filter chains in user source via a peephole IR pass
+with use-count analysis; type-changing map+fold (`Vec<i64> ->
+R`); non-i64 element types in combinators.
 
 ### Data-structures roadmap Level 3 — Fused map+fold combinator (shipped 2026-05-28, closure #316)
 

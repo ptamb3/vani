@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -10045,6 +10045,9 @@ fn check_expr(
                             "filter" => ("vec_filter", false),
                             "fold" => ("vec_fold", false),
                             "map_fold" => ("vec_map_fold", false),
+                            "filter_fold" => ("vec_filter_fold", false),
+                            "map_filter" => ("vec_map_filter", false),
+                            "map_filter_fold" => ("vec_map_filter_fold", false),
                             "take" => ("vec_take", false),
                             "drop" => ("vec_drop", false),
                             "sort" => ("sort", true),
@@ -13150,6 +13153,11 @@ fn check_call(
                 args, env, signatures, span, diagnostics,
             );
         }
+        "vec_filter_fold" | "vec_map_filter" | "vec_map_filter_fold" => {
+            return check_vec_fused_family_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "reverse" | "dedup" => {
             return check_reverse_dedup_builtin(
                 name, args, env, signatures, span, diagnostics,
@@ -15390,6 +15398,201 @@ fn check_vec_map_fold_fused_builtin(
             args: vec![xs.expr, init.expr, f.expr, g.expr],
         },
         Type::I64,
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 3 — rest of the fused
+/// combinator family (closure #317). Single-pass forms that
+/// avoid materializing intermediates between stages:
+///
+///   vec_filter_fold(ref xs: Vec<i64>, init: i64,
+///                   p: fn(i64) -> bool,
+///                   g: fn(i64, i64) -> i64) -> i64
+///       reduce only over elements matching p.
+///   vec_map_filter(ref xs: Vec<i64>,
+///                  f: fn(i64) -> i64,
+///                  p: fn(i64) -> bool) -> Vec<i64>
+///       map then filter — two-pass internally (count, fill).
+///       Returns a fresh Vec the caller owns.
+///   vec_map_filter_fold(ref xs: Vec<i64>, init: i64,
+///                       f: fn(i64) -> i64,
+///                       p: fn(i64) -> bool,
+///                       g: fn(i64, i64) -> i64) -> i64
+///       map → filter → fold in one pass; no Vec materializes.
+fn check_vec_fused_family_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args: usize = match name {
+        "vec_filter_fold" => 4,
+        "vec_map_filter" => 3,
+        "vec_map_filter_fold" => 5,
+        _ => unreachable!(),
+    };
+    let ret_ty = || -> Type {
+        match name {
+            "vec_map_filter" => Type::Vec(Box::new(Type::I64)),
+            _ => Type::I64,
+        }
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!("{}() expects {} arguments, got {}", name, want_args, args.len()),
+        ));
+        return CheckedExpr::fallback(ret_ty(), span);
+    }
+    let xs = check_expr(&args[0], env, signatures, diagnostics);
+    let element_type = match xs.ty() {
+        Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
+            Type::Vec(element) => (**element).clone(),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!("{}() requires a `ref Vec<i64>` argument, got {}", name, xs.ty()),
+                ));
+                return CheckedExpr::fallback(ret_ty(), span);
+            }
+        },
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!("{}() requires a `ref Vec<i64>` argument, got {}", name, other),
+            ));
+            return CheckedExpr::fallback(ret_ty(), span);
+        }
+    };
+    if !matches!(element_type, Type::I64) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() only supports `Vec<i64>` in v1, got element type {}",
+                name, element_type
+            ),
+        ));
+        return CheckedExpr::fallback(ret_ty(), span);
+    }
+    // Per-builtin arg slots: signatures + arg positions vary.
+    // We slot the args in source order and validate each.
+    let i64_to_i64 = Type::FnPtr(vec![Type::I64], Box::new(Type::I64));
+    let i64_to_bool = Type::FnPtr(vec![Type::I64], Box::new(Type::Bool));
+    let i64i64_to_i64 = Type::FnPtr(vec![Type::I64, Type::I64], Box::new(Type::I64));
+    let mut typed_args: Vec<TypedExpr> = vec![xs.expr];
+    match name {
+        "vec_filter_fold" => {
+            // args: ref xs, init: i64, p: fn(i64)->bool, g: fn(i64,i64)->i64
+            let init_raw = check_expr(&args[1], env, signatures, diagnostics);
+            let init = coerce_checked(
+                init_raw, &Type::I64, args[1].span,
+                "vec_filter_fold initial accumulator", diagnostics,
+            );
+            typed_args.push(init.expr);
+            let p = check_expr(&args[2], env, signatures, diagnostics);
+            if p.ty() != &i64_to_bool {
+                diagnostics.push(Diagnostic::new(
+                    args[2].span,
+                    format!(
+                        "vec_filter_fold predicate must be `fn(i64) -> bool`, got {}",
+                        p.ty()
+                    ),
+                ));
+            }
+            typed_args.push(p.expr);
+            let g = check_expr(&args[3], env, signatures, diagnostics);
+            if g.ty() != &i64i64_to_i64 {
+                diagnostics.push(Diagnostic::new(
+                    args[3].span,
+                    format!(
+                        "vec_filter_fold combiner must be `fn(i64, i64) -> i64`, got {}",
+                        g.ty()
+                    ),
+                ));
+            }
+            typed_args.push(g.expr);
+        }
+        "vec_map_filter" => {
+            // args: ref xs, f: fn(i64)->i64, p: fn(i64)->bool
+            let f = check_expr(&args[1], env, signatures, diagnostics);
+            if f.ty() != &i64_to_i64 {
+                diagnostics.push(Diagnostic::new(
+                    args[1].span,
+                    format!(
+                        "vec_map_filter mapper must be `fn(i64) -> i64`, got {}",
+                        f.ty()
+                    ),
+                ));
+            }
+            typed_args.push(f.expr);
+            let p = check_expr(&args[2], env, signatures, diagnostics);
+            if p.ty() != &i64_to_bool {
+                diagnostics.push(Diagnostic::new(
+                    args[2].span,
+                    format!(
+                        "vec_map_filter predicate must be `fn(i64) -> bool`, got {}",
+                        p.ty()
+                    ),
+                ));
+            }
+            typed_args.push(p.expr);
+        }
+        "vec_map_filter_fold" => {
+            // args: ref xs, init: i64, f: fn(i64)->i64,
+            //       p: fn(i64)->bool, g: fn(i64,i64)->i64
+            let init_raw = check_expr(&args[1], env, signatures, diagnostics);
+            let init = coerce_checked(
+                init_raw, &Type::I64, args[1].span,
+                "vec_map_filter_fold initial accumulator", diagnostics,
+            );
+            typed_args.push(init.expr);
+            let f = check_expr(&args[2], env, signatures, diagnostics);
+            if f.ty() != &i64_to_i64 {
+                diagnostics.push(Diagnostic::new(
+                    args[2].span,
+                    format!(
+                        "vec_map_filter_fold mapper must be `fn(i64) -> i64`, got {}",
+                        f.ty()
+                    ),
+                ));
+            }
+            typed_args.push(f.expr);
+            let p = check_expr(&args[3], env, signatures, diagnostics);
+            if p.ty() != &i64_to_bool {
+                diagnostics.push(Diagnostic::new(
+                    args[3].span,
+                    format!(
+                        "vec_map_filter_fold predicate must be `fn(i64) -> bool`, got {}",
+                        p.ty()
+                    ),
+                ));
+            }
+            typed_args.push(p.expr);
+            let g = check_expr(&args[4], env, signatures, diagnostics);
+            if g.ty() != &i64i64_to_i64 {
+                diagnostics.push(Diagnostic::new(
+                    args[4].span,
+                    format!(
+                        "vec_map_filter_fold combiner must be `fn(i64, i64) -> i64`, got {}",
+                        g.ty()
+                    ),
+                ));
+            }
+            typed_args.push(g.expr);
+        }
+        _ => unreachable!(),
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        ret_ty(),
         None,
         span,
     )

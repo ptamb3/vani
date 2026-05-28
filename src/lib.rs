@@ -12956,6 +12956,86 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_filter_fold_typechecks_and_compiles() {
+        let source = r#"
+            pure fn is_even(x: i64) -> bool { return (x % 2) == 0; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              return vec_filter_fold(ref xs, 0, is_even, add);
+            }
+        "#;
+        compile_to_c(source).expect("vec_filter_fold in C");
+        compile_to_llvm(source).expect("vec_filter_fold in LLVM");
+    }
+
+    #[test]
+    fn vec_map_filter_typechecks_and_compiles() {
+        let source = r#"
+            pure fn double(x: i64) -> i64 { return x + x; }
+            pure fn gt5(x: i64) -> bool { return x > 5; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4, 5);
+              let ys: Vec<i64> = vec_map_filter(ref xs, double, gt5);
+              return ys[0];
+            }
+        "#;
+        compile_to_c(source).expect("vec_map_filter in C");
+        compile_to_llvm(source).expect("vec_map_filter in LLVM");
+    }
+
+    #[test]
+    fn vec_map_filter_fold_typechecks_and_compiles() {
+        let source = r#"
+            pure fn double(x: i64) -> i64 { return x + x; }
+            pure fn gt5(x: i64) -> bool { return x > 5; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4, 5);
+              return vec_map_filter_fold(ref xs, 0, double, gt5, add);
+            }
+        "#;
+        compile_to_c(source).expect("vec_map_filter_fold in C");
+        compile_to_llvm(source).expect("vec_map_filter_fold in LLVM");
+    }
+
+    #[test]
+    fn vec_fused_family_method_sugar() {
+        let source = r#"
+            pure fn double(x: i64) -> i64 { return x + x; }
+            pure fn is_pos(x: i64) -> bool { return x > 0; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let a: i64 = xs.filter_fold(0, is_pos, add);
+              let m: Vec<i64> = xs.map_filter(double, is_pos);
+              let b: i64 = xs.map_filter_fold(0, double, is_pos, add);
+              return a + m[0] + b;
+            }
+        "#;
+        compile_to_c(source).expect("fused family method sugar in C");
+        compile_to_llvm(source).expect("fused family method sugar in LLVM");
+    }
+
+    #[test]
+    fn vec_filter_fold_rejects_wrong_predicate() {
+        let source = r#"
+            pure fn bad(x: i64) -> i64 { return x; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              return vec_filter_fold(ref xs, 0, bad, add);
+            }
+        "#;
+        let errors = compile(source).expect_err("predicate must return bool");
+        assert!(
+            errors.iter().any(|e| e.message.contains("vec_filter_fold predicate must be")),
+            "expected vec_filter_fold signature diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn vec_map_fold_typechecks_and_compiles() {
         let source = r#"
             pure fn sq(x: i64) -> i64 { return x * x; }

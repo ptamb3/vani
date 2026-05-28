@@ -2778,6 +2778,13 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
 \n}}\n",
             sn = struct_name,
         ));
+        // Forward `__pred_fn` typedef so the fused combinators
+        // below can refer to it before `__filter`'s emission
+        // (which historically declared it). Closure #317.
+        out.push_str(&format!(
+            "typedef bool (*{sn}__pred_fn)(int64_t);\n",
+            sn = struct_name,
+        ));
         // vec_map_fold (closure #316): fused map-then-fold,
         // single pass, no intermediate Vec allocation.
         // Signature `int64_t (*)(int64_t)` for the mapper +
@@ -2787,6 +2794,52 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
 \n    int64_t acc = init;\
 \n    for (uint64_t i = 0; i < xs->len; i++) {{\
 \n        acc = g(acc, f(xs->data[i]));\
+\n    }}\
+\n    return acc;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        // Rest of the fused combinator family (closure #317).
+        // All single-pass except __map_filter which is two-pass
+        // (count, allocate, fill — mirrors __filter's shape so
+        // the output Vec has zero wasted capacity).
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__filter_fold(const {sn}* xs, int64_t init, {sn}__pred_fn p, {sn}__cmp_fn g) {{\
+\n    int64_t acc = init;\
+\n    for (uint64_t i = 0; i < xs->len; i++) {{\
+\n        if (p(xs->data[i])) acc = g(acc, xs->data[i]);\
+\n    }}\
+\n    return acc;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED {sn} {sn}__map_filter(const {sn}* xs, {sn}__map_fn f, {sn}__pred_fn p) {{\
+\n    {sn} out;\
+\n    uint64_t hits = 0;\
+\n    for (uint64_t i = 0; i < xs->len; i++) {{\
+\n        if (p(f(xs->data[i]))) hits++;\
+\n    }}\
+\n    out.len = hits;\
+\n    out.capacity = hits;\
+\n    if (hits == 0) {{ out.data = (int64_t*)0; return out; }}\
+\n    out.data = (int64_t*)malloc(hits * sizeof(int64_t));\
+\n    if (!out.data) abort();\
+\n    uint64_t w = 0;\
+\n    for (uint64_t i = 0; i < xs->len; i++) {{\
+\n        int64_t mapped = f(xs->data[i]);\
+\n        if (p(mapped)) out.data[w++] = mapped;\
+\n    }}\
+\n    return out;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__map_filter_fold(const {sn}* xs, int64_t init, {sn}__map_fn f, {sn}__pred_fn p, {sn}__cmp_fn g) {{\
+\n    int64_t acc = init;\
+\n    for (uint64_t i = 0; i < xs->len; i++) {{\
+\n        int64_t mapped = f(xs->data[i]);\
+\n        if (p(mapped)) acc = g(acc, mapped);\
 \n    }}\
 \n    return acc;\
 \n}}\n",
@@ -2829,11 +2882,10 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
         ));
         // vec_filter (closure #310): two-pass — count matches
         // first, allocate exactly that many slots, then fill.
-        // Predicate signature is `bool (*)(int64_t)`.
-        out.push_str(&format!(
-            "typedef bool (*{sn}__pred_fn)(int64_t);\n",
-            sn = struct_name,
-        ));
+        // Predicate signature is `bool (*)(int64_t)`. The
+        // `__pred_fn` typedef is forwarded earlier in the bundle
+        // (closure #317) so the fused combinator family above
+        // can refer to it.
         out.push_str(&format!(
             "static INTENT_UNUSED {sn} {sn}__filter(const {sn}* xs, {sn}__pred_fn p) {{\
 \n    {sn} out;\
@@ -6082,6 +6134,48 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                     emit_expr(&args[3])
                 ),
                 _ => unreachable!("vec_map_fold() arg 0 must be ref Vec<i64>"),
+            }
+        }
+        "vec_filter_fold" => {
+            // Closure #317. args = ref xs, init, p, g.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, ({}), {}, {})",
+                    vec_helper(element, "filter_fold"),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1]),
+                    emit_expr(&args[2]),
+                    emit_expr(&args[3])
+                ),
+                _ => unreachable!("vec_filter_fold() arg 0 must be ref Vec<i64>"),
+            }
+        }
+        "vec_map_filter" => {
+            // Closure #317. args = ref xs, f, p.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, {}, {})",
+                    vec_helper(element, "map_filter"),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1]),
+                    emit_expr(&args[2])
+                ),
+                _ => unreachable!("vec_map_filter() arg 0 must be ref Vec<i64>"),
+            }
+        }
+        "vec_map_filter_fold" => {
+            // Closure #317. args = ref xs, init, f, p, g.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, ({}), {}, {}, {})",
+                    vec_helper(element, "map_filter_fold"),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1]),
+                    emit_expr(&args[2]),
+                    emit_expr(&args[3]),
+                    emit_expr(&args[4])
+                ),
+                _ => unreachable!("vec_map_filter_fold() arg 0 must be ref Vec<i64>"),
             }
         }
         "vec_fold" => {

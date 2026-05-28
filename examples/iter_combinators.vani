@@ -112,6 +112,16 @@ fn main() -> i64 {
       if acc > v { return acc; } else { return v; }
     });
 
+  // Rest of the fused combinator family (closure #317).
+  // filter+fold: reduce only over matching elements.
+  print "sum of evens (filter+fold):", xs.filter_fold(0, fn(x: i64) -> bool { return (x % 2) == 0; }, add);
+  // map+filter: returns a Vec — single allocation rather than two.
+  let big: Vec<i64> = xs.map_filter(double, fn(x: i64) -> bool { return x > 5; });
+  print "doubled > 5 len:", big.len();
+  print "doubled > 5 [0]:", big[0];
+  // map+filter+fold: full single-pass pipeline, no intermediates.
+  print "sum of doubled>5 (mff):", xs.map_filter_fold(0, double, fn(x: i64) -> bool { return x > 5; }, add);
+
   // take / drop / .len() — eager slicing combinators (closure #313).
   // `xs.len()` desugars to the `len(xs)` builtin directly;
   // take / drop materialize fresh Vecs.
