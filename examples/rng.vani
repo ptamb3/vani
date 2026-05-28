@@ -1,0 +1,56 @@
+// build & run:
+//   intentc run examples/rng.vani                          # LLVM backend
+//   intentc run examples/rng.vani --backend=c              # C backend
+//   intentc build examples/rng.vani -o /tmp/rng && /tmp/rng
+
+intent "Random number generation — seeded, deterministic xorshift64";
+
+// Three builtins for pseudo-random integer generation:
+//
+//   seed_rng(s: u64) -> i64         — set thread-local state; returns 0
+//   rand_i64() -> i64               — next full-width pseudo-random
+//   rand_in_range(lo, hi) -> i64    — uniform integer in [lo, hi)
+//
+// Backed by a thread-local xorshift64 PRNG. Each `task` body
+// inherits its own independent state — different tasks don't
+// interfere. Seeding with 0 falls back to a fixed nonzero
+// default (xorshift gets stuck at zero otherwise).
+//
+// Determinism: same seed + same call sequence ⇒ same output.
+// Useful for reproducible simulations / tests. For unpredictable
+// state, seed with a clock reading (out of scope for v1).
+
+fn main() -> i64 {
+  let _ = seed_rng(42 as u64);
+
+  // Six-sided die rolls.
+  print "die rolls:";
+  let i: i64 = 0;
+  while i < 5 {
+    let r: i64 = rand_in_range(1, 7);
+    print r;
+    i = i + 1;
+  }
+
+  // Coin flips via rand_in_range(0, 2).
+  print "coin flips:";
+  let j: i64 = 0;
+  while j < 5 {
+    let c: i64 = rand_in_range(0, 2);
+    if c == 0 { print "heads"; } else { print "tails"; }
+    j = j + 1;
+  }
+
+  // Re-seeding with the same value reproduces the same stream.
+  let _ = seed_rng(42 as u64);
+  let r1: i64 = rand_in_range(1, 7);
+  let r2: i64 = rand_in_range(1, 7);
+  print "after reseed, first two rolls:", r1, ", ", r2;
+
+  // rand_i64 returns a full-width signed value.
+  let _ = seed_rng(7 as u64);
+  let raw: i64 = rand_i64();
+  print "raw signed wide pseudo-random:", raw;
+
+  return 0;
+}

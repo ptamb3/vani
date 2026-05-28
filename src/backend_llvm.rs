@@ -797,6 +797,13 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         emit_intent_array_helpers_i64_llvm(&mut out);
     }
 
+    // Data-structures roadmap: RNG runtime helpers + thread-
+    // local PRNG state. Gated on the program actually calling
+    // any RNG builtin via a quick walk over the typed IR.
+    if program_uses_rng(program) {
+        emit_intent_rng_helpers_llvm(&mut out);
+    }
+
     for function in &program.functions {
         emit_function(function, &assert_idx, &print_idx, &mut out);
         out.push('\n');
@@ -4822,6 +4829,35 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
                 return dest;
             }
+            // RNG builtins (closure #300). Call outlined
+            // helper defs emitted at module scope.
+            if name == "seed_rng" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_rng_seed(i64 {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
+            if name == "rand_i64" {
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_rng_next()\n",
+                    dest
+                ));
+                return dest;
+            }
+            if name == "rand_in_range" {
+                let lo = emit_expr(&args[0], ctx, out);
+                let hi = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_rng_in_range(i64 {}, i64 {})\n",
+                    dest, lo, hi
+                ));
+                return dest;
+            }
             // Math builtins (closure #299). Single-call
             // libm dispatch. abs is overloaded on the arg
             // type — i64 → @llabs, f64 → @fabs.
@@ -6748,6 +6784,128 @@ pub(crate) fn emit_intent_str_concat_definition(out: &mut String) {
 
 /// (matching the affine-ownership convention) and returns the
 /// new Vec value.
+/// Walk the typed program for any Call to seed_rng / rand_i64
+/// / rand_in_range. Triggers emission of the RNG runtime
+/// helpers + thread_local global at module scope.
+fn program_uses_rng(program: &TypedProgram) -> bool {
+    use crate::ir::TypedExprKind as E;
+    use crate::ir::TypedStmt as S;
+    fn expr_uses(expr: &crate::ir::TypedExpr) -> bool {
+        match &expr.kind {
+            E::Call { name, args, .. } => {
+                if matches!(
+                    name.as_str(),
+                    "seed_rng" | "rand_i64" | "rand_in_range"
+                ) {
+                    return true;
+                }
+                args.iter().any(expr_uses)
+            }
+            E::Unary { expr, .. } | E::Cast { expr, .. } => expr_uses(expr),
+            E::Len { array, .. } => expr_uses(array),
+            E::Binary { left, right, .. } => expr_uses(left) || expr_uses(right),
+            E::CallIndirect { callee, args } => {
+                expr_uses(callee) || args.iter().any(expr_uses)
+            }
+            E::ArrayLit { elements } => elements.iter().any(expr_uses),
+            E::Index { array, index, .. } => expr_uses(array) || expr_uses(index),
+            E::Tuple { elements } => elements.iter().any(expr_uses),
+            E::TupleAccess { tuple, .. } => expr_uses(tuple),
+            E::StructLit { fields, .. } => fields.iter().any(|(_, v)| expr_uses(v)),
+            E::FieldAccess { object, .. } => expr_uses(object),
+            E::EnumVariantWithPayload { payload, .. } => expr_uses(payload),
+            E::IfExpr { cond, then_value, else_value } => {
+                expr_uses(cond) || expr_uses(then_value) || expr_uses(else_value)
+            }
+            E::Match { scrutinee, arms } => {
+                expr_uses(scrutinee) || arms.iter().any(|a| expr_uses(&a.body))
+            }
+            E::Block { stmts, tail } => {
+                stmts.iter().any(stmt_uses) || expr_uses(tail)
+            }
+            _ => false,
+        }
+    }
+    fn stmt_uses(stmt: &crate::ir::TypedStmt) -> bool {
+        match stmt {
+            S::Let { expr, .. }
+            | S::Reassign { expr, .. }
+            | S::Return { expr }
+            | S::Assert { expr, .. }
+            | S::Prove { expr } => expr_uses(expr),
+            S::Discard { expr } => expr_uses(expr),
+            S::Print { items } => items.iter().any(|it| match it {
+                crate::ir::TypedPrintItem::Expr(e) => expr_uses(e),
+                _ => false,
+            }),
+            S::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                expr_uses(cond)
+                    || then_body.iter().any(stmt_uses)
+                    || else_body.iter().any(stmt_uses)
+            }
+            S::While { cond, body } => expr_uses(cond) || body.iter().any(stmt_uses),
+            S::For { body, .. } | S::ForIter { body, .. } => {
+                body.iter().any(stmt_uses)
+            }
+            S::IndexAssign { index, value, .. } => expr_uses(index) || expr_uses(value),
+            S::FieldAssign { object, value, .. } => expr_uses(object) || expr_uses(value),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        for s in &f.body {
+            if stmt_uses(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// RNG runtime helpers (xorshift64) emitted at module scope.
+/// Mirrors the tree-C `intent_rng_*` helpers. Thread-local
+/// global state means each thread (and each `task` body) has
+/// an independent stream.
+fn emit_intent_rng_helpers_llvm(out: &mut String) {
+    // 0x123456789abcdef0 = 1311768467463790320 in decimal.
+    out.push_str(
+        "@intent_rng_state = thread_local global i64 1311768467463790320\n\
+         define i64 @intent_rng_seed(i64 %s) {\n\
+         \x20 %is_zero = icmp eq i64 %s, 0\n\
+         \x20 %new = select i1 %is_zero, i64 1311768467463790320, i64 %s\n\
+         \x20 store i64 %new, i64* @intent_rng_state\n\
+         \x20 ret i64 0\n\
+         }\n\
+         define i64 @intent_rng_next() {\n\
+         \x20 %x0 = load i64, i64* @intent_rng_state\n\
+         \x20 %s1 = shl i64 %x0, 13\n\
+         \x20 %x1 = xor i64 %x0, %s1\n\
+         \x20 %s2 = lshr i64 %x1, 7\n\
+         \x20 %x2 = xor i64 %x1, %s2\n\
+         \x20 %s3 = shl i64 %x2, 17\n\
+         \x20 %x3 = xor i64 %x2, %s3\n\
+         \x20 store i64 %x3, i64* @intent_rng_state\n\
+         \x20 ret i64 %x3\n\
+         }\n\
+         define i64 @intent_rng_in_range(i64 %lo, i64 %hi) {\n\
+         \x20 %ge = icmp sge i64 %lo, %hi\n\
+         \x20 br i1 %ge, label %rng_clamp, label %rng_compute\n\
+         rng_clamp:\n\
+         \x20 ret i64 %lo\n\
+         rng_compute:\n\
+         \x20 %span = sub i64 %hi, %lo\n\
+         \x20 %r = call i64 @intent_rng_next()\n\
+         \x20 %ur = urem i64 %r, %span\n\
+         \x20 %res = add i64 %lo, %ur\n\
+         \x20 ret i64 %res\n\
+         }\n\n",
+    );
+}
+
 /// Data-structures roadmap: shared array sort/search helpers
 /// for `[i64; N]` (single set per program; pointer + length).
 /// find / binary_search gate on `Option__i64` being in the

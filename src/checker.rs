@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -11972,6 +11972,11 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "seed_rng" | "rand_i64" | "rand_in_range" => {
+            return check_rng_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "clone" => return check_clone_builtin(args, env, signatures, span, diagnostics),
         "clone_at" => {
             return check_clone_at_builtin(args, env, signatures, span, diagnostics)
@@ -14095,6 +14100,87 @@ fn check_math_builtin(
             args: typed_args,
         },
         Type::F64,
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 1 — RNG surface builtins.
+///
+///   seed_rng(seed: u64) -> i64       — set thread-local RNG state
+///   rand_i64() -> i64                — next 64-bit pseudo-random
+///   rand_in_range(lo: i64, hi: i64) -> i64
+///                                    — uniform `lo..hi` (exclusive)
+///
+/// Backed by a thread-local xorshift64 PRNG state per backend.
+/// Deterministic from a given seed; thread-local means each
+/// `task` has independent state. v1 returns signed i64; cast
+/// to u64 / smaller widths at the call site if needed.
+fn check_rng_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args = match name {
+        "seed_rng" => 1,
+        "rand_i64" => 0,
+        "rand_in_range" => 2,
+        _ => unreachable!(),
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}() expects {} argument{}, got {}",
+                name,
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback(Type::I64, span);
+    }
+    let mut typed_args = Vec::new();
+    if name == "seed_rng" {
+        let s_raw = check_expr(&args[0], env, signatures, diagnostics);
+        let s = coerce_checked(
+            s_raw,
+            &Type::U64,
+            args[0].span,
+            "seed value (u64)",
+            diagnostics,
+        );
+        typed_args.push(s.expr);
+    } else if name == "rand_in_range" {
+        let lo_raw = check_expr(&args[0], env, signatures, diagnostics);
+        let lo = coerce_checked(
+            lo_raw,
+            &Type::I64,
+            args[0].span,
+            "rand_in_range lower bound",
+            diagnostics,
+        );
+        let hi_raw = check_expr(&args[1], env, signatures, diagnostics);
+        let hi = coerce_checked(
+            hi_raw,
+            &Type::I64,
+            args[1].span,
+            "rand_in_range upper bound (exclusive)",
+            diagnostics,
+        );
+        typed_args.push(lo.expr);
+        typed_args.push(hi.expr);
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        Type::I64,
         None,
         span,
     )

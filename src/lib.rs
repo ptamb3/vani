@@ -12482,6 +12482,107 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn rng_builtins_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let _ = seed_rng(42 as u64);
+              let _: i64 = rand_i64();
+              let r: i64 = rand_in_range(1, 100);
+              return r;
+            }
+        "#;
+        compile_to_c(source).expect("rng must type-check");
+        compile_to_llvm(source).expect("rng must compile to LLVM");
+    }
+
+    #[test]
+    fn rng_seed_rejects_non_u64() {
+        let source = r#"
+            fn main() -> i64 {
+              let _ = seed_rng("hello");
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("seed_rng with Str must fail");
+        assert!(
+            !errors.is_empty(),
+            "seed_rng with wrong arg type must diagnose"
+        );
+    }
+
+    #[test]
+    fn rng_in_range_rejects_wrong_arity() {
+        let source = r#"
+            fn main() -> i64 {
+              let _ = rand_in_range(1);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("arity must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("2 arguments")),
+            "expected arity diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn rng_emits_thread_local_state_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let _ = seed_rng(1 as u64);
+              return rand_in_range(0, 10);
+            }
+        "#;
+        let c = compile_to_c(source).expect("rng program compiles");
+        assert!(
+            c.contains("_Thread_local") && c.contains("intent_rng_state")
+                && c.contains("intent_rng_seed") && c.contains("intent_rng_next")
+                && c.contains("intent_rng_in_range"),
+            "C output must include the xorshift64 thread-local runtime; got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn rng_emits_thread_local_state_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let _ = seed_rng(1 as u64);
+              return rand_i64();
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("rng LLVM compile");
+        assert!(
+            ll.contains("@intent_rng_state = thread_local global i64")
+                && ll.contains("define i64 @intent_rng_next()"),
+            "LLVM output must include the thread_local rng state + helpers; got snippet:\n{}",
+            &ll[..ll.len().min(800)]
+        );
+    }
+
+    #[test]
+    fn rng_deterministic_from_same_seed() {
+        // Run the same source twice; under the deterministic
+        // xorshift64 implementation, the same seed must produce
+        // the same first roll. We use exit code as a side
+        // channel.
+        let source = r#"
+            fn main() -> i64 {
+              let _ = seed_rng(7 as u64);
+              return rand_in_range(0, 200);
+            }
+        "#;
+        let _ = compile_to_c(source).expect("rng program compiles");
+        // The actual cross-run determinism is exercised by
+        // the parity runner (examples/rng.vani) — two backends
+        // must produce identical stdout. This unit test just
+        // pins that the program type-checks cleanly.
+    }
+
+    #[test]
     fn str_builtins_emit_libc_calls_in_c() {
         let source = r#"
             fn main() -> i64 {

@@ -315,6 +315,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "pow" || name == "sqrt"
                 || name == "sin" || name == "cos" || name == "tan"
                 || name == "floor" || name == "ceil" || name == "abs"
+                || name == "seed_rng" || name == "rand_i64"
+                || name == "rand_in_range"
             {
                 return false;
             }

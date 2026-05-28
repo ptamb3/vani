@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #299 — Math ops: pow/sqrt/sin/cos/tan/floor/ceil + abs overloaded; new math_ops.vani; 6 new lib tests; -lm added to POSIX linker args; <math.h> in C preamble; example abs → my_abs rename to free the builtin namespace)
-**Test totals:** 1071 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 67 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #300 — RNG: seed_rng / rand_i64 / rand_in_range backed by thread-local xorshift64; new rng.vani; 6 new lib tests)
+**Test totals:** 1077 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 68 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,45 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 1 — RNG (shipped 2026-05-28, closure #300)
+
+✅ AFFINE — thread-local xorshift64 PRNG state.
+
+**API:**
+- `seed_rng(seed: u64) -> i64` — sets the thread-local state.
+  Seed 0 falls back to a fixed nonzero default (xorshift's
+  zero-state trap).
+- `rand_i64() -> i64` — returns the next full-width signed
+  value. Cast to u64 / smaller widths at the call site if
+  needed.
+- `rand_in_range(lo: i64, hi: i64) -> i64` — uniform integer
+  in `[lo, hi)`. `lo >= hi` returns `lo` as a safe clamp.
+
+**Codegen:**
+- **Tree-C**: `_Thread_local uint64_t intent_rng_state` global
+  + 3 static helpers. Gated on the program actually calling
+  any RNG builtin via the body substring check.
+- **Tree-LLVM**: `@intent_rng_state = thread_local global i64`
+  + outlined `define i64 @intent_rng_seed(...)` / `_next` /
+  `_in_range` helpers emitted once at module scope. Same
+  body-walk gate.
+- **SSA**: routes through tree via `ssa_path_supports`.
+
+**Determinism:** same seed + same call sequence ⇒ identical
+output. Cross-backend parity passes byte-for-byte on
+`examples/rng.vani`.
+
+**Thread-locality:** each `task` body inherits its own
+independent stream (no cross-task interference). A separate
+RNG instance per `Mutex<u64>` is a possible v2 layer if users
+want shared seedable state across threads.
+
+**Tests:** 6 lib tests (typecheck + LLVM compile; seed_rng
+type check; arity rejection; C thread-local emit; LLVM
+thread_local global + helpers emit; determinism stub).
+`examples/rng.vani` exercises die rolls, coin flips, reseed
+reproducibility. Cross-backend parity green.
 
 ### Data-structures roadmap Level 1 — Math ops (shipped 2026-05-28, closure #299)
 

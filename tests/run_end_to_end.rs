@@ -864,6 +864,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "parallel.vani",
         "partial_move.vani",
         "push_mut.vani",
+        "rng.vani",
         "sanskrit_keywords.vani",
         "scopes.vani",
         "sort.vani",

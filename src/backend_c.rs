@@ -571,6 +571,7 @@ pub fn emit_c(program: &TypedProgram) -> String {
     emit_runtime_helpers(&mut out, &body);
     emit_intent_str_concat_c(&mut out);
     emit_concurrency_runtime_helpers(&mut out, &body, &channel_specs);
+    emit_intent_rng_helpers_c(&mut out, &body);
     out.push_str(&body);
     out
 }
@@ -582,6 +583,37 @@ pub fn emit_c(program: &TypedProgram) -> String {
 /// every `[i64; N]` shape. The unconditional variant always
 /// emits the helpers — the call site is gated by
 /// `program_uses_i64_array`.
+/// Data-structures roadmap Level 1 — RNG runtime helpers
+/// (xorshift64). Thread-local state means each `task` has an
+/// independent stream. seed_rng(0) resets to a fixed nonzero
+/// default to avoid the xorshift trap of getting stuck at 0.
+fn emit_intent_rng_helpers_c(out: &mut String, body: &str) {
+    if !body.contains("intent_rng_") {
+        return;
+    }
+    out.push_str(
+        "static _Thread_local uint64_t intent_rng_state = 0x123456789abcdef0ULL;\n\
+         static INTENT_UNUSED int64_t intent_rng_seed(uint64_t s) {\n\
+         \x20 intent_rng_state = s == 0 ? 0x123456789abcdef0ULL : s;\n\
+         \x20 return 0;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_rng_next(void) {\n\
+         \x20 uint64_t x = intent_rng_state;\n\
+         \x20 x ^= x << 13;\n\
+         \x20 x ^= x >> 7;\n\
+         \x20 x ^= x << 17;\n\
+         \x20 intent_rng_state = x;\n\
+         \x20 return (int64_t)x;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_rng_in_range(int64_t lo, int64_t hi) {\n\
+         \x20 if (lo >= hi) return lo;\n\
+         \x20 uint64_t span = (uint64_t)(hi - lo);\n\
+         \x20 uint64_t r = (uint64_t)intent_rng_next();\n\
+         \x20 return lo + (int64_t)(r % span);\n\
+         }\n\n",
+    );
+}
+
 /// Walk the program for any `[i64; N]` type usage. The check
 /// triggers emission of the array-i64 runtime helpers.
 pub(crate) fn program_uses_i64_array(program: &TypedProgram) -> bool {
@@ -5194,6 +5226,17 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 "({{ const char* __pi_s = ({s}); char* __pi_end = (char*)0; long long __pi_v = strtoll(__pi_s, &__pi_end, 10); {opt} __pi_r; if (__pi_end != __pi_s && *__pi_end == 0 && *__pi_s != 0) {{ __pi_r.tag = 0; __pi_r.payload = (int64_t)__pi_v; }} else {{ __pi_r.tag = 1; __pi_r.payload = 0; }} __pi_r; }})",
                 s = emit_expr(&args[0]),
                 opt = opt_c,
+            )
+        }
+        "seed_rng" => {
+            format!("intent_rng_seed(({}))", emit_expr(&args[0]))
+        }
+        "rand_i64" => "intent_rng_next()".to_string(),
+        "rand_in_range" => {
+            format!(
+                "intent_rng_in_range(({}), ({}))",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
             )
         }
         "pow" => {
