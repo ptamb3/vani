@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -4239,6 +4239,112 @@ fn monomorphize_type_decls_in_program(
                     p_ty, &struct_templates, &enum_templates,
                     &mut needed_structs, &mut needed_enums,
                 );
+            }
+        }
+    }
+    // Closure #295: builtins that return `Option<i64>` (`find`,
+    // `binary_search`) need the monomorphic `Option__i64` decl
+    // to be materialized even when the user doesn't write the
+    // type explicitly. Walk Call expressions for these builtin
+    // names and synthetically register `Option<i64>` so the
+    // monomorphization pass emits the concrete enum.
+    fn walk_expr_for_search_builtins(
+        expr: &Expr,
+        needed_enums: &mut Vec<(String, Vec<Type>)>,
+    ) {
+        if let ExprKind::Call { name, args, .. } = &expr.kind {
+            if matches!(name.as_str(), "find" | "binary_search") {
+                let key = ("Option".to_string(), vec![Type::I64]);
+                if !needed_enums.iter().any(|(n, a)| n == &key.0 && a == &key.1) {
+                    needed_enums.push(key);
+                }
+            }
+            for a in args {
+                walk_expr_for_search_builtins(a, needed_enums);
+            }
+        } else {
+            // Recurse into sub-expressions of every variant.
+            // Cheap conservative walk via ExprKind discriminants
+            // that hold sub-Exprs.
+            walk_expr_kids(expr, &mut |e| walk_expr_for_search_builtins(e, needed_enums));
+        }
+    }
+    fn walk_expr_kids(expr: &Expr, f: &mut impl FnMut(&Expr)) {
+        match &expr.kind {
+            ExprKind::Binary { left, right, .. } => { f(left); f(right); }
+            ExprKind::Unary { expr: e, .. } => f(e),
+            ExprKind::Cast { expr: e, .. } => f(e),
+            ExprKind::Index { array, index } => { f(array); f(index); }
+            ExprKind::Len { array } => f(array),
+            ExprKind::Call { args, .. } | ExprKind::ArrayLit { elements: args } => {
+                for a in args { f(a); }
+            }
+            ExprKind::MethodCall { receiver, args, .. } => {
+                f(receiver);
+                for a in args { f(a); }
+            }
+            ExprKind::Ref { inner } | ExprKind::RefMut { inner } => f(inner),
+            ExprKind::Tuple(elements) => { for e in elements { f(e); } }
+            ExprKind::TupleAccess { tuple, .. } => f(tuple),
+            ExprKind::FieldAccess { object, .. } => f(object),
+            ExprKind::StructLit { fields, .. } => {
+                for (_, v) in fields { f(v); }
+            }
+            ExprKind::Try { inner } => f(inner),
+            ExprKind::IfExpr { cond, then_value, else_value } => {
+                f(cond); f(then_value); f(else_value);
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                f(scrutinee);
+                for arm in arms { f(&arm.body); }
+            }
+            ExprKind::Block { stmts, tail } => {
+                for s in stmts { walk_stmt_kids(s, f); }
+                f(tail);
+            }
+            _ => {}
+        }
+    }
+    fn walk_stmt_kids(stmt: &Stmt, f: &mut impl FnMut(&Expr)) {
+        match stmt {
+            Stmt::Let { expr, .. }
+            | Stmt::LetTuple { expr, .. }
+            | Stmt::Return { expr, .. }
+            | Stmt::Assert { expr, .. }
+            | Stmt::Prove { expr, .. }
+            | Stmt::Assign { expr, .. } => f(expr),
+            Stmt::IndexAssign { index, value, .. } => { f(index); f(value); }
+            Stmt::FieldAssign { object, value, .. } => { f(object); f(value); }
+            Stmt::Print { items, .. } => {
+                for it in items {
+                    if let crate::ast::PrintItem::Expr(e) = it { f(e); }
+                }
+            }
+            Stmt::If { cond, then_body, else_body, .. } => {
+                f(cond);
+                for s in then_body { walk_stmt_kids(s, f); }
+                for s in else_body { walk_stmt_kids(s, f); }
+            }
+            Stmt::While { cond, body, .. } => {
+                f(cond);
+                for s in body { walk_stmt_kids(s, f); }
+            }
+            Stmt::For { start, end, body, .. } => {
+                f(start); f(end);
+                for s in body { walk_stmt_kids(s, f); }
+            }
+            Stmt::ForIter { body, .. } => {
+                for s in body { walk_stmt_kids(s, f); }
+            }
+            _ => {}
+        }
+    }
+    if enum_templates.contains_key("Option") {
+        for f in &program.functions {
+            for stmt in &f.body {
+                walk_stmt_kids(stmt, &mut |e| {
+                    walk_expr_for_search_builtins(e, &mut needed_enums)
+                });
             }
         }
     }
@@ -11817,6 +11923,11 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "find" | "contains" | "binary_search" => {
+            return check_search_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "clone" => return check_clone_builtin(args, env, signatures, span, diagnostics),
         "clone_at" => {
             return check_clone_at_builtin(args, env, signatures, span, diagnostics)
@@ -13711,6 +13822,116 @@ fn check_reverse_dedup_builtin(
             args: vec![xs.expr],
         },
         Type::I64,
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 1 — Vec search ops on
+/// `Vec<i64>`. Read-only; the Vec is borrowed via `ref` (not
+/// `mut ref`).
+///
+///   find(ref xs: Vec<i64>, needle: i64) -> Option<i64>
+///       — linear scan; returns Some(index) of first match
+///         or None.
+///   contains(ref xs: Vec<i64>, needle: i64) -> bool
+///       — same scan, just returns the boolean.
+///   binary_search(ref xs: Vec<i64>, needle: i64) -> Option<i64>
+///       — assumes xs is sorted ascending. Returns Some(index)
+///         on match, None on absent. Caller responsibility to
+///         pre-sort (we don't verify).
+///
+/// v1: Vec<i64> only. Will widen when Hash + Eq interfaces ship.
+fn check_search_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    if args.len() != 2 {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}(ref xs, needle) expects 2 arguments, got {}",
+                name,
+                args.len()
+            ),
+        ));
+        let ret_ty = if name == "contains" {
+            Type::Bool
+        } else {
+            Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+        };
+        return CheckedExpr::fallback(ret_ty, span);
+    }
+    let xs = check_expr(&args[0], env, signatures, diagnostics);
+    let element_type = match xs.ty() {
+        Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
+            Type::Vec(element) => (**element).clone(),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "{}() requires a `ref Vec<i64>` argument, got {}",
+                        name,
+                        xs.ty()
+                    ),
+                ));
+                let ret_ty = if name == "contains" {
+                    Type::Bool
+                } else {
+                    Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+                };
+                return CheckedExpr::fallback(ret_ty, span);
+            }
+        },
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "{}() requires a `ref Vec<i64>` argument, got {}",
+                    name, other
+                ),
+            ));
+            let ret_ty = if name == "contains" {
+                Type::Bool
+            } else {
+                Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+            };
+            return CheckedExpr::fallback(ret_ty, span);
+        }
+    };
+    if !matches!(element_type, Type::I64) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() only supports `Vec<i64>` in v1, got Vec<{}>",
+                name, element_type
+            ),
+        ));
+    }
+    let needle_raw = check_expr(&args[1], env, signatures, diagnostics);
+    let needle = coerce_checked(
+        needle_raw,
+        &Type::I64,
+        args[1].span,
+        "search needle",
+        diagnostics,
+    );
+    let ret_ty = if name == "contains" {
+        Type::Bool
+    } else {
+        Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+    };
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: vec![xs.expr, needle.expr],
+        },
+        ret_ty,
         None,
         span,
     )

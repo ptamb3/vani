@@ -4809,6 +4809,9 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "sort_by"
                     | "reverse"
                     | "dedup"
+                    | "find"
+                    | "contains"
+                    | "binary_search"
             ) {
                 let elt = vec_element_of_first_arg(args)
                     .expect("vec builtins take a Vec as the first arg");
@@ -6716,6 +6719,174 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
         out.push_str("dd_done:\n");
         out.push_str("  ret i64 %dd_len\n");
         out.push_str("}\n");
+        // ---- find / contains / binary_search. All read-only;
+        // first arg is `intent_vec_i64*` (from `ref Vec<i64>`).
+        // find / binary_search return `%Enum_Option__i64`
+        // (`{ i32 tag, i64 payload }`); contains returns i1
+        // which the wrapper rewires to bool.
+        let find_name = format!("@intent_vec_{}__find", tag);
+        let contains_name = format!("@intent_vec_{}__contains", tag);
+        let bsearch_name = format!("@intent_vec_{}__binary_search", tag);
+        // ----- contains: bool linear scan.
+        out.push_str(&format!(
+            "define i1 {cn}({sty}* %xs_p, i64 %needle) {{\n",
+            cn = contains_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %cn_data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %cn_len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %cn_data = load i64*, i64** %cn_data_p\n");
+        out.push_str("  %cn_len = load i64, i64* %cn_len_p\n");
+        out.push_str("  %cn_i_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %cn_i_p\n");
+        out.push_str("  br label %cn_loop\n");
+        out.push_str("cn_loop:\n");
+        out.push_str("  %cn_i = load i64, i64* %cn_i_p\n");
+        out.push_str("  %cn_cont = icmp slt i64 %cn_i, %cn_len\n");
+        out.push_str("  br i1 %cn_cont, label %cn_check, label %cn_no\n");
+        out.push_str("cn_check:\n");
+        out.push_str("  %cn_slot = getelementptr i64, i64* %cn_data, i64 %cn_i\n");
+        out.push_str("  %cn_v = load i64, i64* %cn_slot\n");
+        out.push_str("  %cn_eq = icmp eq i64 %cn_v, %needle\n");
+        out.push_str("  br i1 %cn_eq, label %cn_yes, label %cn_next\n");
+        out.push_str("cn_next:\n");
+        out.push_str("  %cn_i_next = add i64 %cn_i, 1\n");
+        out.push_str("  store i64 %cn_i_next, i64* %cn_i_p\n");
+        out.push_str("  br label %cn_loop\n");
+        out.push_str("cn_yes:\n");
+        out.push_str("  ret i1 true\n");
+        out.push_str("cn_no:\n");
+        out.push_str("  ret i1 false\n");
+        out.push_str("}\n");
+        // find / binary_search depend on `%Enum_Option__i64`.
+        // Only emit when Option<i64> is registered upstream
+        // (the checker's monomorphize-walk for search builtins,
+        // closure #295). If absent, the helpers' forward
+        // references would fail LLVM verification — `contains`
+        // alone is safe to emit (returns plain i1).
+        let option_i64_registered = LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        if option_i64_registered {
+        // ----- find: same scan + Option<i64> result.
+        out.push_str(&format!(
+            "define %Enum_Option__i64 {fn}({sty}* %xs_p, i64 %needle) {{\n",
+            fn = find_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %fn_data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %fn_len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %fn_data = load i64*, i64** %fn_data_p\n");
+        out.push_str("  %fn_len = load i64, i64* %fn_len_p\n");
+        out.push_str("  %fn_i_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %fn_i_p\n");
+        out.push_str("  br label %fn_loop\n");
+        out.push_str("fn_loop:\n");
+        out.push_str("  %fn_i = load i64, i64* %fn_i_p\n");
+        out.push_str("  %fn_cont = icmp slt i64 %fn_i, %fn_len\n");
+        out.push_str("  br i1 %fn_cont, label %fn_check, label %fn_none\n");
+        out.push_str("fn_check:\n");
+        out.push_str("  %fn_slot = getelementptr i64, i64* %fn_data, i64 %fn_i\n");
+        out.push_str("  %fn_v = load i64, i64* %fn_slot\n");
+        out.push_str("  %fn_eq = icmp eq i64 %fn_v, %needle\n");
+        out.push_str("  br i1 %fn_eq, label %fn_some, label %fn_next\n");
+        out.push_str("fn_next:\n");
+        out.push_str("  %fn_i_next = add i64 %fn_i, 1\n");
+        out.push_str("  store i64 %fn_i_next, i64* %fn_i_p\n");
+        out.push_str("  br label %fn_loop\n");
+        out.push_str("fn_some:\n");
+        out.push_str(
+            "  %fn_r1 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n",
+        );
+        out.push_str(
+            "  %fn_r2 = insertvalue %Enum_Option__i64 %fn_r1, i64 %fn_i, 1\n",
+        );
+        out.push_str("  ret %Enum_Option__i64 %fn_r2\n");
+        out.push_str("fn_none:\n");
+        out.push_str(
+            "  %fn_n1 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n",
+        );
+        out.push_str(
+            "  %fn_n2 = insertvalue %Enum_Option__i64 %fn_n1, i64 0, 1\n",
+        );
+        out.push_str("  ret %Enum_Option__i64 %fn_n2\n");
+        out.push_str("}\n");
+        // ----- binary_search: assumes xs is sorted asc.
+        out.push_str(&format!(
+            "define %Enum_Option__i64 {bn}({sty}* %xs_p, i64 %needle) {{\n",
+            bn = bsearch_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %bs_data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %bs_len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %bs_data = load i64*, i64** %bs_data_p\n");
+        out.push_str("  %bs_len = load i64, i64* %bs_len_p\n");
+        out.push_str("  %bs_lo_p = alloca i64\n");
+        out.push_str("  %bs_hi_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %bs_lo_p\n");
+        out.push_str("  %bs_hi0 = sub i64 %bs_len, 1\n");
+        out.push_str("  store i64 %bs_hi0, i64* %bs_hi_p\n");
+        out.push_str("  br label %bs_loop\n");
+        out.push_str("bs_loop:\n");
+        out.push_str("  %bs_lo = load i64, i64* %bs_lo_p\n");
+        out.push_str("  %bs_hi = load i64, i64* %bs_hi_p\n");
+        out.push_str("  %bs_cont = icmp sle i64 %bs_lo, %bs_hi\n");
+        out.push_str("  br i1 %bs_cont, label %bs_body, label %bs_none\n");
+        out.push_str("bs_body:\n");
+        out.push_str("  %bs_diff = sub i64 %bs_hi, %bs_lo\n");
+        out.push_str("  %bs_half = sdiv i64 %bs_diff, 2\n");
+        out.push_str("  %bs_mid = add i64 %bs_lo, %bs_half\n");
+        out.push_str("  %bs_slot = getelementptr i64, i64* %bs_data, i64 %bs_mid\n");
+        out.push_str("  %bs_v = load i64, i64* %bs_slot\n");
+        out.push_str("  %bs_eq = icmp eq i64 %bs_v, %needle\n");
+        out.push_str("  br i1 %bs_eq, label %bs_some, label %bs_split\n");
+        out.push_str("bs_split:\n");
+        out.push_str("  %bs_lt = icmp slt i64 %bs_v, %needle\n");
+        out.push_str("  br i1 %bs_lt, label %bs_raise_lo, label %bs_lower_hi\n");
+        out.push_str("bs_raise_lo:\n");
+        out.push_str("  %bs_lo_new = add i64 %bs_mid, 1\n");
+        out.push_str("  store i64 %bs_lo_new, i64* %bs_lo_p\n");
+        out.push_str("  br label %bs_loop\n");
+        out.push_str("bs_lower_hi:\n");
+        out.push_str("  %bs_hi_new = sub i64 %bs_mid, 1\n");
+        out.push_str("  store i64 %bs_hi_new, i64* %bs_hi_p\n");
+        out.push_str("  br label %bs_loop\n");
+        out.push_str("bs_some:\n");
+        out.push_str(
+            "  %bs_r1 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n",
+        );
+        out.push_str(
+            "  %bs_r2 = insertvalue %Enum_Option__i64 %bs_r1, i64 %bs_mid, 1\n",
+        );
+        out.push_str("  ret %Enum_Option__i64 %bs_r2\n");
+        out.push_str("bs_none:\n");
+        out.push_str(
+            "  %bs_n1 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n",
+        );
+        out.push_str(
+            "  %bs_n2 = insertvalue %Enum_Option__i64 %bs_n1, i64 0, 1\n",
+        );
+        out.push_str("  ret %Enum_Option__i64 %bs_n2\n");
+        out.push_str("}\n");
+        } // end if option_i64_registered
     }
 
     // ---- reverse: two-pointer in-place swap. Any Copy

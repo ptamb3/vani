@@ -104,5 +104,38 @@ fn main() -> i64 {
     uk = uk + 1;
   }
 
+  // Linear search: find returns Option<i64> of the index.
+  let searchable: Vec<i64> = vec(10, 20, 30, 40, 50);
+  let hit: Option<i64> = find(ref searchable, 30);
+  let hit_idx: i64 = match hit {
+    Option.Some(i) then i,
+    Option.None then 0 - 1,
+  };
+  print "find 30:", hit_idx;
+  let miss: Option<i64> = find(ref searchable, 999);
+  let miss_idx: i64 = match miss {
+    Option.Some(i) then i,
+    Option.None then 0 - 1,
+  };
+  print "find 999:", miss_idx;
+
+  // contains: boolean fast-path.
+  let has20: bool = contains(ref searchable, 20);
+  if has20 { print "contains 20: true"; } else { print "contains 20: false"; }
+
+  // Binary search assumes the Vec is sorted ascending.
+  let bs_hit: Option<i64> = binary_search(ref searchable, 40);
+  let bs_hit_idx: i64 = match bs_hit {
+    Option.Some(i) then i,
+    Option.None then 0 - 1,
+  };
+  print "binary_search 40:", bs_hit_idx;
+  let bs_miss: Option<i64> = binary_search(ref searchable, 35);
+  let bs_miss_idx: i64 = match bs_miss {
+    Option.Some(i) then i,
+    Option.None then 0 - 1,
+  };
+  print "binary_search 35:", bs_miss_idx;
+
   return 0;
 }

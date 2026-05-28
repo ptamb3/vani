@@ -12030,6 +12030,109 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn find_returns_option_i64() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let r: Option<i64> = find(ref xs, 2);
+              return match r {
+                Option.Some(i) then i,
+                Option.None then 0 - 1,
+              };
+            }
+        "#;
+        compile_to_c(source).expect("find must type-check + return Option<i64>");
+        compile_to_llvm(source).expect("find must compile to LLVM");
+    }
+
+    #[test]
+    fn contains_returns_bool() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let b: bool = contains(ref xs, 2);
+              if b { return 1; } else { return 0; }
+            }
+        "#;
+        compile_to_c(source).expect("contains must type-check + return bool");
+    }
+
+    #[test]
+    fn binary_search_returns_option_i64() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4, 5);
+              let r: Option<i64> = binary_search(ref xs, 4);
+              return match r {
+                Option.Some(i) then i,
+                Option.None then 0 - 1,
+              };
+            }
+        "#;
+        compile_to_c(source).expect("binary_search must type-check + return Option<i64>");
+    }
+
+    #[test]
+    fn find_rejects_non_ref_vec_arg() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              let _: Option<i64> = find(xs, 1);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("find with by-value Vec must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("ref Vec<i64>")),
+            "expected ref-Vec diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn contains_rejects_non_i64_element() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i32> = vec(1 as i32, 2 as i32);
+              let _: bool = contains(ref xs, 1);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("contains on Vec<i32> must fail in v1");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("only supports `Vec<i64>` in v1")),
+            "expected v1-restriction diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn search_builtins_emit_helpers_in_llvm() {
+        // The LLVM helpers reference %Enum_Option__i64 which
+        // is itself emitted only when Option<i64> shows up in
+        // the program (forced by the prelude __vani_force_option_i64
+        // fn). Verify the typedef + helper appear.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let _: Option<i64> = find(ref xs, 2);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("find program must compile to LLVM");
+        assert!(
+            ll.contains("%Enum_Option__i64 = type")
+                && ll.contains("@intent_vec_i64__find"),
+            "LLVM output must include Option<i64> typedef and find helper; got snippet:\n{}",
+            &ll[..ll.len().min(500)]
+        );
+    }
+
+    #[test]
     fn reverse_and_dedup_emit_runtime_helpers_in_c() {
         let source = r#"
             fn main() -> i64 {

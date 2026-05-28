@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #294 — Vec.reverse + Vec.dedup; sort.vani extended; 5 new lib tests)
-**Test totals:** 1041 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 65 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #295 — Vec search: find / contains / binary_search; sort.vani extended; 6 new lib tests)
+**Test totals:** 1047 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 65 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,51 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 1 — Vec.find + Vec.contains + Vec.binary_search (shipped 2026-05-28, closure #295)
+
+✅ AFFINE — all three are read-only over `ref Vec<i64>`; no
+elements moved (the affine-friendly substitute pattern from
+the container API memo).
+
+**API:**
+- `find(ref xs: Vec<i64>, needle: i64) -> Option<i64>` —
+  linear scan; `Some(i)` of first match or `None`.
+- `contains(ref xs: Vec<i64>, needle: i64) -> bool` — same
+  scan, returns the boolean.
+- `binary_search(ref xs: Vec<i64>, needle: i64) -> Option<i64>`
+  — assumes `xs` is sorted ascending. Caller responsibility
+  to pre-sort.
+
+**Auto-monomorphization:** the checker's
+`monomorphize_type_decls_in_program` pass now walks Call
+expressions for the search builtin names and synthetically
+registers `Option<i64>` so `Option__i64` is materialized
+without the user having to write `let _: Option<i64> = …`
+explicitly. Result returns still need annotation (the let-
+type unification path), but the enum decl is guaranteed in
+scope.
+
+**Codegen:**
+- **Tree-C**: inline stmt-expr at the call site, building the
+  `Enum_Option__i64` struct directly (single-payload layout —
+  `{ int32_t tag; int64_t payload; }`).
+- **Tree-LLVM**: module-level helper fns in `emit_vec_helpers`
+  (`@intent_vec_i64__find` / `__contains` / `__binary_search`).
+  find / binary_search emission gated on `Option__i64` being
+  registered (avoids forward-referencing a missing type).
+- **SSA-C / SSA-LLVM**: route through tree via
+  `ssa_path_supports` gate (mirrors push_mut / pop / sort
+  treatment for in-place + read-only Vec ops).
+
+**v1 restriction:** `Vec<i64>` only.
+
+**Tests:** 6 lib tests (typecheck + LLVM compile for find,
+binary_search; bool return for contains; rejects by-value
+Vec; rejects non-i64 element; LLVM emits the Option<i64>
+typedef + find helper). `examples/sort.vani` extended with
+find / contains / binary_search demos. Cross-backend parity
+green.
 
 ### Data-structures roadmap Level 1 — Vec.reverse + Vec.dedup (shipped 2026-05-28, closure #294)
 

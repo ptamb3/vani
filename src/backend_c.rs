@@ -4812,6 +4812,46 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[0])
             )
         }
+        "contains" => {
+            // Linear scan; returns bool. xs is `ref Vec<i64>`.
+            format!(
+                "({{ const intent_vec_int64_t* __cv = ({xs}); int64_t __cn = ({n}); bool __cr = false; for (uint64_t __ci = 0; __ci < __cv->len; __ci++) {{ if (__cv->data[__ci] == __cn) {{ __cr = true; break; }} }} __cr; }})",
+                xs = emit_expr(&args[0]),
+                n = emit_expr(&args[1]),
+            )
+        }
+        "find" => {
+            // Linear scan; returns Option<i64>. Some(idx) on
+            // first match, None on no match. v1: i64 element.
+            // Option<T>'s C layout is `{ int32_t tag; T
+            // payload; }` (single-payload enum — no union).
+            let opt_name = match result_ty {
+                Type::Enum(name) => name.clone(),
+                _ => unreachable!("find() must return Type::Enum(Option__i64)"),
+            };
+            let opt_c = enum_c_name(&opt_name);
+            format!(
+                "({{ const intent_vec_int64_t* __fv = ({xs}); int64_t __fn = ({n}); {opt} __fr; bool __ff = false; uint64_t __fi = 0; for (__fi = 0; __fi < __fv->len; __fi++) {{ if (__fv->data[__fi] == __fn) {{ __ff = true; break; }} }} if (__ff) {{ __fr.tag = 0; __fr.payload = (int64_t)__fi; }} else {{ __fr.tag = 1; __fr.payload = 0; }} __fr; }})",
+                xs = emit_expr(&args[0]),
+                n = emit_expr(&args[1]),
+                opt = opt_c,
+            )
+        }
+        "binary_search" => {
+            // Standard binary search; assumes xs is sorted
+            // ascending. Returns Option<i64>(index) on match.
+            let opt_name = match result_ty {
+                Type::Enum(name) => name.clone(),
+                _ => unreachable!("binary_search() must return Type::Enum(Option__i64)"),
+            };
+            let opt_c = enum_c_name(&opt_name);
+            format!(
+                "({{ const intent_vec_int64_t* __bv = ({xs}); int64_t __bn = ({n}); {opt} __br; int64_t __blo = 0; int64_t __bhi = (int64_t)__bv->len - 1; bool __bf = false; int64_t __bm = 0; while (__blo <= __bhi) {{ __bm = __blo + (__bhi - __blo) / 2; int64_t __bv0 = __bv->data[__bm]; if (__bv0 == __bn) {{ __bf = true; break; }} else if (__bv0 < __bn) {{ __blo = __bm + 1; }} else {{ __bhi = __bm - 1; }} }} if (__bf) {{ __br.tag = 0; __br.payload = __bm; }} else {{ __br.tag = 1; __br.payload = 0; }} __br; }})",
+                xs = emit_expr(&args[0]),
+                n = emit_expr(&args[1]),
+                opt = opt_c,
+            )
+        }
         "set" => {
             let element = match result_ty {
                 Type::Vec(element) => element,
