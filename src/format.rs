@@ -1282,6 +1282,27 @@ fn format_expr(e: &Expr, parens_if_binary: bool, out: &mut String) {
             out.push_str("try ");
             format_expr(inner, true, out);
         }
+        ExprKind::AnonFn { params, return_type, body, .. } => {
+            out.push_str("fn(");
+            for (i, p) in params.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                format_param(p, out);
+            }
+            out.push_str(") -> ");
+            out.push_str(&type_to_source(return_type));
+            out.push_str(" { ");
+            let empty_comments: &[crate::lexer::Comment] = &[];
+            for s in body {
+                let mut tmp = String::new();
+                let mut ctx = FmtCtx::new("", empty_comments);
+                format_stmt(s, 0, &mut ctx, &mut tmp);
+                out.push_str(tmp.trim());
+                out.push(' ');
+            }
+            out.push('}');
+        }
     }
 }
 

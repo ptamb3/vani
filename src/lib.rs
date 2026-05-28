@@ -12795,6 +12795,88 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn anon_fn_binds_to_fn_ptr_local() {
+        let source = r#"
+            fn main() -> i64 {
+              let f: fn(i64) -> i64 = fn(x: i64) -> i64 { return x + x; };
+              return f(7);
+            }
+        "#;
+        compile_to_c(source).expect("anon fn binds to fn-ptr local in C");
+        compile_to_llvm(source).expect("anon fn binds to fn-ptr local in LLVM");
+    }
+
+    #[test]
+    fn anon_fn_passed_inline_as_arg() {
+        let source = r#"
+            fn apply(f: fn(i64) -> i64, x: i64) -> i64 { return f(x); }
+            fn main() -> i64 {
+              return apply(fn(x: i64) -> i64 { return x * 3; }, 9);
+            }
+        "#;
+        compile_to_c(source).expect("anon fn inline arg in C");
+        compile_to_llvm(source).expect("anon fn inline arg in LLVM");
+    }
+
+    #[test]
+    fn anon_fn_rejects_outer_capture() {
+        let source = r#"
+            fn main() -> i64 {
+              let n: i64 = 10;
+              let f: fn(i64) -> i64 = fn(x: i64) -> i64 { return x + n; };
+              return f(5);
+            }
+        "#;
+        let errors = compile(source).expect_err("v1 anon fns must reject outer captures");
+        assert!(
+            errors.iter().any(|e| e.message.contains("unknown variable 'n'")),
+            "expected `unknown variable 'n'` diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn anon_fn_signature_mismatch_rejected() {
+        let source = r#"
+            fn main() -> i64 {
+              let f: fn(i64, i64) -> i64 = fn(x: i64) -> i64 { return x; };
+              return f(1, 2);
+            }
+        "#;
+        let errors = compile(source).expect_err("arity mismatch must fail");
+        assert!(!errors.is_empty(), "expected arity-mismatch diagnostic");
+    }
+
+    #[test]
+    fn anon_fn_as_sort_by_comparator() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(5, 2, 8, 1, 9, 3);
+              sort_by(mut ref xs, fn(a: i64, b: i64) -> i64 { return a - b; });
+              return xs[0];
+            }
+        "#;
+        compile_to_c(source).expect("anon fn as sort_by comparator in C");
+        compile_to_llvm(source).expect("anon fn as sort_by comparator in LLVM");
+    }
+
+    #[test]
+    fn anon_fn_hoisted_name_appears_in_emitted_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let f: fn(i64) -> i64 = fn(x: i64) -> i64 { return x + 1; };
+              return f(5);
+            }
+        "#;
+        let c = compile_to_c(source).expect("anon fn program compiles");
+        assert!(
+            c.contains("__anon_fn_0"),
+            "C output must include the hoisted `__anon_fn_0` function; got snippet:\n{}",
+            &c[..c.len().min(800)]
+        );
+    }
+
+    #[test]
     fn btreeset_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

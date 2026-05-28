@@ -3231,6 +3231,80 @@ impl Parser {
                     span: token.span.merge(close_span),
                 })
             }
+            TokenKind::Fn => {
+                // Anonymous fn expression — `fn(p: T) -> R { body }`.
+                // Body is parsed as a regular fn body (Vec<Stmt> with
+                // auto-`return 0` unit-return shorthand). v1 has no
+                // captures — the checker's lambda-lift pass hoists
+                // each AnonFn into a generated `__anon_fn_<N>` top-
+                // level fn; outer-variable references then surface
+                // the usual "unknown variable" diagnostic. Closure #308.
+                let fn_span = token.span;
+                self.expect_keyword("'('", |k| matches!(k, TokenKind::LParen))?;
+                let mut params: Vec<Param> = Vec::new();
+                if !self.check(|k| matches!(k, TokenKind::RParen)) {
+                    loop {
+                        let pname_tok = self.expect_ident()?;
+                        let pname_span = pname_tok.span;
+                        let pname = ident_text(pname_tok);
+                        self.expect_keyword("':'", |k| matches!(k, TokenKind::Colon))?;
+                        let pty = self.parse_type()?;
+                        params.push(Param {
+                            name: pname,
+                            ty: pty,
+                            name_span: pname_span,
+                            span: pname_span,
+                        });
+                        if self.match_token(|k| matches!(k, TokenKind::Comma)).is_none() {
+                            break;
+                        }
+                        if self.check(|k| matches!(k, TokenKind::RParen)) {
+                            break;
+                        }
+                    }
+                }
+                self.expect_keyword("')'", |k| matches!(k, TokenKind::RParen))?;
+                let unit_return = !self.check(|k| matches!(k, TokenKind::Arrow));
+                let return_type = if unit_return {
+                    Type::I64
+                } else {
+                    self.expect_keyword("'->'", |k| matches!(k, TokenKind::Arrow))?;
+                    self.parse_type()?
+                };
+                self.expect_keyword("'{'", |k| matches!(k, TokenKind::LBrace))?;
+                let mut body: Vec<Stmt> = Vec::new();
+                while !self.check(|k| matches!(k, TokenKind::RBrace | TokenKind::Eof)) {
+                    match self.parse_stmt() {
+                        Ok(s) => body.push(s),
+                        Err(e) => {
+                            self.errors.push(e);
+                            self.sync_to_stmt();
+                        }
+                    }
+                }
+                let close = self.expect_keyword("'}'", |k| matches!(k, TokenKind::RBrace))?;
+                if unit_return {
+                    let last_is_return = matches!(body.last(), Some(Stmt::Return { .. }));
+                    if !last_is_return {
+                        body.push(Stmt::Return {
+                            expr: Expr {
+                                kind: ExprKind::Int(0),
+                                span: close.span,
+                            },
+                            span: close.span,
+                        });
+                    }
+                }
+                Ok(Expr {
+                    kind: ExprKind::AnonFn {
+                        params,
+                        return_type,
+                        body,
+                        fn_span,
+                    },
+                    span: fn_span.merge(close.span),
+                })
+            }
             TokenKind::Match => {
                 let scrutinee = self.parse_expr()?;
                 self.expect_keyword("'{'", |k| matches!(k, TokenKind::LBrace))?;

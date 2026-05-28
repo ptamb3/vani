@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #307 — Level 2 #6: BTreeMap<i64, i64> ordered key/value map on parallel-sorted-Vec backing with 6 builtins (new / insert / get / contains_key / remove / len); new btreemap.vani; 6 new lib tests. **Level 2 of the data-structures roadmap is now complete** — all six generic containers (BinaryHeap-on-Vec, Deque, HashSet, HashMap, BTreeSet, BTreeMap) shipped under their v1 affine contracts.)
-**Test totals:** 1119 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 75 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #308 — Level 3 #1: anonymous fn expressions (lambda literals) without captured environment. New `ExprKind::AnonFn`; parser entry; lambda-lift pre-pass hoists each `fn(...) -> R { body }` to a generated top-level `__anon_fn_<N>` function; existing fn-pointer infrastructure handles indirect calls. Outer-capture references surface as `unknown variable` diagnostics; captures land in the next closure. New `examples/anon_fn.vani`; 6 new lib tests. **Level 3 of the roadmap has opened**: anonymous fns first, then captured-environment closures, then loop-fused iterator combinators.)
+**Test totals:** 1125 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 76 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,58 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 3 — Anonymous fn expressions (shipped 2026-05-28, closure #308)
+
+✅ AFFINE in v1 (no captured environment, so no aliasing of
+outer bindings is possible). Foundation for Level 3 — the
+follow-up closure adds captured environments (capture-by-
+value moves; capture-by-ref produces second-class closures).
+
+**Syntax:**
+```vani
+let f: fn(i64) -> i64 = fn(x: i64) -> i64 { return x + x; };
+let result = apply(fn(x: i64) -> i64 { return x * 3; }, 7);
+sort_by(mut ref xs, fn(a: i64, b: i64) -> i64 { return a - b; });
+```
+
+The body is parsed identically to a top-level fn body: `{ stmt*
+return EXPR; }`. The unit-return shorthand `fn(x: i64) { print
+x; }` is accepted (auto-appends `return 0`).
+
+**Strategy — lambda-lift:** A new pre-checker pass
+`lambda_lift_program` walks each top-level fn's body / requires
+/ ensures and replaces every `fn(...) -> R { body }` expression
+with a `Var(name)` referencing a freshly generated top-level
+fn `__anon_fn_<N>`. The lifted fn is appended to
+`program.functions`, so signature collection and the existing
+fn-pointer infrastructure (FnRef → CallIndirect, both backends'
+indirect-call lowerings) handle everything downstream with zero
+new codegen.
+
+**Codegen:** None new. Both backends already emitted lowerings
+for `TypedExprKind::FnRef` and `TypedExprKind::CallIndirect`
+(closure #213). The hoisted fn appears identical to a user-
+written top-level fn.
+
+**v1 restrictions:**
+- No captured environment. The body is type-checked in a fresh
+  scope containing only its own params + top-level fns +
+  builtins; references to outer let-bound vars surface as the
+  existing `unknown variable 'X'` diagnostic.
+- Statement-style body only. Expression-body sugar (`fn(x) =>
+  x + x`) is deferred.
+- Generic anon fns deferred (would require monomorphization
+  to see the typed call site).
+
+**Tests:** 6 lib tests (let-binding; inline call argument;
+outer-capture rejection; signature-mismatch rejection;
+`sort_by` comparator; `__anon_fn_0` appears in emitted C).
+New `examples/anon_fn.vani` exercises both backends via the
+parity runner.
+
+**Pending follow-ups:** captured environment (next closure);
+expression-body shorthand; generic anon fns.
 
 ### Data-structures roadmap Level 2 — BTreeMap<i64, i64> (shipped 2026-05-28, closure #307)
 

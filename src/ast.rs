@@ -1320,6 +1320,23 @@ pub enum ExprKind {
     Try {
         inner: Box<Expr>,
     },
+    /// Anonymous fn expression — `fn(p: T) -> R { body }`
+    /// in value position. v1 has no captured environment:
+    /// the body sees only the listed params + top-level
+    /// names. The checker pre-pass `lambda_lift_program`
+    /// lifts each AnonFn into a generated top-level
+    /// function `__anon_fn_<N>` and replaces this
+    /// expression with `Var(name)`, so downstream type-
+    /// checking treats it as a bare fn-pointer reference.
+    /// Captures (closures with environment) are queued
+    /// for the next closure. Closure #308.
+    AnonFn {
+        params: Vec<Param>,
+        return_type: Type,
+        body: Vec<Stmt>,
+        /// Span of the `fn` keyword for error messages.
+        fn_span: Span,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

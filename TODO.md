@@ -166,6 +166,18 @@ pointer (already in the language as of #279 FFI callbacks).
     environment is itself an affine struct under the hood.
     Files: full pipeline — lexer / parser / checker /
     monomorphization / both backends.
+    *Phase 1 shipped 2026-05-28 (closure #308) — anonymous fn
+    expressions WITHOUT captures.* New `ExprKind::AnonFn`;
+    `lambda_lift_program` pre-pass hoists each `fn(...) -> R
+    { body }` into a generated top-level `__anon_fn_<N>` fn
+    and replaces the expression with `Var(name)`. The existing
+    fn-pointer infrastructure (FnRef → CallIndirect on both
+    backends) handles everything downstream. Outer-let
+    references surface as `unknown variable` diagnostics. 6
+    lib tests + `examples/anon_fn.vani`. Phase 2 (captures) is
+    the next closure: needs an environment struct lifted
+    alongside the fn, an affine analysis for captured non-Copy
+    bindings, capture-by-ref second-class closure restrictions.
 18. **Iterator combinators** — ✅ AFFINE.
     `.map(f).filter(p).fold(init, g)` over Vec / Array.
     Combinators are zero-allocation in v1 (loop-fused at
@@ -507,7 +519,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #307 — Level 2 #6: BTreeMap<i64, i64> ordered key/value map on a parallel-sorted-Vec backing with 6 builtins (new / insert / get / contains_key / remove / len) + scope-exit Drop + 6 lib tests + new btreemap.vani parity example. **Level 2 of the data-structures roadmap is now closed**: BinaryHeap-on-Vec (#302) · Deque (#303) · HashSet (#304) · HashMap (#305) · BTreeSet (#306) · BTreeMap (#307) all shipped under their v1 affine contracts. Next focal area: Level 3 — closures with captured state (multi-session — lexer/parser/checker/monomorphization/both backends); then `.map(f).filter(p).fold(init, g)` loop-fused iterator combinators; then sort_by / find_by lifted to closure. After Level 3 closes: Level 4 arena-based BST/AVL/B-tree/Trie/graphs + algorithms. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries + iteration via closures, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-28, after closure #308 — Level 3 #1: anonymous fn expressions (lambda literals) without captured environment. New `ExprKind::AnonFn`; parser entry in `parse_primary_expr`; new `lambda_lift_program` pre-pass that hoists each `fn(...) -> R { body }` to a generated top-level `__anon_fn_<N>` and replaces the expression with `Var(name)` — existing fn-pointer infrastructure (FnRef + CallIndirect on both backends) handles indirect calls with zero new codegen. Outer-let references surface as `unknown variable` diagnostics (captures land in the next closure). 6 lib tests + `examples/anon_fn.vani` + parity runner entry. Next focal area: Level 3 #1 phase 2 — **closures with captured environment** (capture-by-value moves; capture-by-ref produces second-class closures). Then Level 3 #2 — `.map(f).filter(p).fold(init, g)` loop-fused iterator combinators. Then Level 3 #3 — sort_by / find_by lifted to closure. After Level 3 closes: Level 4 arena-based BST/AVL/B-tree/Trie/graphs + algorithms. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries + iteration via closures, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

@@ -1385,6 +1385,9 @@ fn encode_expr(
         ExprKind::Try { .. } => Err(EncodeError::Unsupported(
             "try expressions not supported in SMT v1".into(),
         )),
+        ExprKind::AnonFn { .. } => Err(EncodeError::Unsupported(
+            "anonymous fn expressions not supported in SMT v1".into(),
+        )),
     }
 }
 

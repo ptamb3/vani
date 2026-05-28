@@ -333,6 +333,20 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // colon-colon-mangled names.
     flatten_modules_in_program(&mut program, &mut diagnostics);
 
+    // Closure #308: lambda-lift anonymous fn expressions.
+    // Walks each function's body / requires / ensures and
+    // hoists every `fn(...) -> R { body }` expression into a
+    // generated top-level `__anon_fn_<N>` function, replacing
+    // the original expression with `Var(name)`. Downstream
+    // passes see a flat program of named top-level fns; the
+    // existing fn-pointer infrastructure resolves Var(name)
+    // → FnRef via the signatures map. v1 has no captured
+    // environment — references to outer locals from the
+    // anon fn body surface as the usual `unknown variable`
+    // diagnostic once check_function runs (captures land
+    // in the next closure under Level 3).
+    lambda_lift_program(&mut program);
+
     // Pre-pass: resolve `Type::Struct(name)` → `Type::Enum(name)`
     // for every name declared as an enum. The parser can't
     // distinguish at parse time, so we run this before anything
@@ -1277,6 +1291,223 @@ fn validate_main(
 ///   enforcement layer lands in a follow-up commit; this
 ///   first cut establishes the name-flow infrastructure.
 /// - Cross-module impl orphan rules unchecked in v1.
+/// Closure #308 — lambda-lift anonymous fn expressions.
+///
+/// Walks each top-level function's body / requires / ensures
+/// clauses and replaces every `fn(...) -> R { body }`
+/// expression with a `Var(name)` pointing to a freshly-
+/// generated top-level fn named `__anon_fn_<N>`. The lifted
+/// fn carries the original params + return + body verbatim.
+///
+/// Nested anon fns are handled inside-out: the recursion
+/// first lifts AnonFns inside the body, so by the time the
+/// outer fn is created its body contains only Var references.
+///
+/// v1 has no captured environment — the body is type-checked
+/// in a fresh scope containing only its own params (plus
+/// top-level functions). References to outer let-bound vars
+/// surface as `unknown variable` diagnostics. The next
+/// closure under Level 3 introduces captured environments
+/// (capture-by-value moves; capture-by-ref produces second-
+/// class closures).
+fn lambda_lift_program(program: &mut Program) {
+    let mut counter: usize = 0;
+    let mut hoisted: Vec<crate::ast::Function> = Vec::new();
+
+    let original_len = program.functions.len();
+    for idx in 0..original_len {
+        // Work against a clone to avoid borrowing both the
+        // function slice and the hoisted output vector
+        // simultaneously (the lift recursion pushes into
+        // `hoisted`).
+        let mut f = program.functions[idx].clone();
+        for s in &mut f.body {
+            lift_stmt_anon_fn(s, &mut counter, &mut hoisted);
+        }
+        for r in &mut f.requires {
+            lift_expr_anon_fn(r, &mut counter, &mut hoisted);
+        }
+        for e in &mut f.ensures {
+            lift_expr_anon_fn(e, &mut counter, &mut hoisted);
+        }
+        program.functions[idx] = f;
+    }
+    program.functions.extend(hoisted);
+}
+
+fn lift_stmt_anon_fn(
+    stmt: &mut crate::ast::Stmt,
+    counter: &mut usize,
+    hoisted: &mut Vec<crate::ast::Function>,
+) {
+    use crate::ast::Stmt as S;
+    match stmt {
+        S::Let { expr, .. }
+        | S::LetTuple { expr, .. }
+        | S::Return { expr, .. }
+        | S::Assert { expr, .. }
+        | S::Prove { expr, .. }
+        | S::Assign { expr, .. } => {
+            lift_expr_anon_fn(expr, counter, hoisted);
+        }
+        S::Print { items, .. } => {
+            for item in items {
+                if let crate::ast::PrintItem::Expr(e) = item {
+                    lift_expr_anon_fn(e, counter, hoisted);
+                }
+            }
+        }
+        S::If { cond, then_body, else_body, .. } => {
+            lift_expr_anon_fn(cond, counter, hoisted);
+            for s in then_body {
+                lift_stmt_anon_fn(s, counter, hoisted);
+            }
+            for s in else_body {
+                lift_stmt_anon_fn(s, counter, hoisted);
+            }
+        }
+        S::While { cond, invariants, body, .. } => {
+            lift_expr_anon_fn(cond, counter, hoisted);
+            for inv in invariants {
+                lift_expr_anon_fn(inv, counter, hoisted);
+            }
+            for s in body {
+                lift_stmt_anon_fn(s, counter, hoisted);
+            }
+        }
+        S::IndexAssign { index, value, .. } => {
+            lift_expr_anon_fn(index, counter, hoisted);
+            lift_expr_anon_fn(value, counter, hoisted);
+        }
+        S::FieldAssign { object, value, .. } => {
+            lift_expr_anon_fn(object, counter, hoisted);
+            lift_expr_anon_fn(value, counter, hoisted);
+        }
+        S::For { start, end, invariants, body, .. } => {
+            lift_expr_anon_fn(start, counter, hoisted);
+            lift_expr_anon_fn(end, counter, hoisted);
+            for inv in invariants {
+                lift_expr_anon_fn(inv, counter, hoisted);
+            }
+            for s in body {
+                lift_stmt_anon_fn(s, counter, hoisted);
+            }
+        }
+        S::ForIter { body, .. } | S::TaskSpawn { body, .. } => {
+            for s in body {
+                lift_stmt_anon_fn(s, counter, hoisted);
+            }
+        }
+        S::Break { .. } | S::Continue { .. } | S::TaskJoin { .. } => {}
+    }
+}
+
+fn lift_expr_anon_fn(
+    expr: &mut crate::ast::Expr,
+    counter: &mut usize,
+    hoisted: &mut Vec<crate::ast::Function>,
+) {
+    match &mut expr.kind {
+        ExprKind::AnonFn { params, return_type, body, fn_span } => {
+            // First lift any nested anon fns inside the body.
+            for s in body.iter_mut() {
+                lift_stmt_anon_fn(s, counter, hoisted);
+            }
+            // Generate the hoisted fn.
+            let name = format!("__anon_fn_{}", *counter);
+            *counter += 1;
+            let span = *fn_span;
+            hoisted.push(crate::ast::Function {
+                name: name.clone(),
+                type_params: Vec::new(),
+                where_clauses: Vec::new(),
+                params: std::mem::take(params),
+                return_type: std::mem::replace(return_type, crate::ast::Type::I64),
+                requires: Vec::new(),
+                ensures: Vec::new(),
+                body: std::mem::take(body),
+                span,
+                is_pure: false,
+                is_extern: false,
+                recursion_bound: None,
+            });
+            // Replace the AnonFn expression with a Var that
+            // resolves against the lifted fn's signature.
+            expr.kind = ExprKind::Var(name);
+        }
+        ExprKind::Unary { expr: inner, .. }
+        | ExprKind::Cast { expr: inner, .. } => {
+            lift_expr_anon_fn(inner, counter, hoisted);
+        }
+        ExprKind::Ref { inner } | ExprKind::RefMut { inner } => {
+            lift_expr_anon_fn(inner, counter, hoisted);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            lift_expr_anon_fn(left, counter, hoisted);
+            lift_expr_anon_fn(right, counter, hoisted);
+        }
+        ExprKind::Index { array, index } => {
+            lift_expr_anon_fn(array, counter, hoisted);
+            lift_expr_anon_fn(index, counter, hoisted);
+        }
+        ExprKind::Len { array } => {
+            lift_expr_anon_fn(array, counter, hoisted);
+        }
+        ExprKind::Call { args, .. } => {
+            for a in args {
+                lift_expr_anon_fn(a, counter, hoisted);
+            }
+        }
+        ExprKind::MethodCall { receiver, args, .. } => {
+            lift_expr_anon_fn(receiver, counter, hoisted);
+            for a in args {
+                lift_expr_anon_fn(a, counter, hoisted);
+            }
+        }
+        ExprKind::ArrayLit { elements } | ExprKind::Tuple(elements) => {
+            for e in elements {
+                lift_expr_anon_fn(e, counter, hoisted);
+            }
+        }
+        ExprKind::TupleAccess { tuple, .. } => {
+            lift_expr_anon_fn(tuple, counter, hoisted);
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for (_, e) in fields {
+                lift_expr_anon_fn(e, counter, hoisted);
+            }
+        }
+        ExprKind::FieldAccess { object, .. } => {
+            lift_expr_anon_fn(object, counter, hoisted);
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            lift_expr_anon_fn(scrutinee, counter, hoisted);
+            for arm in arms {
+                lift_expr_anon_fn(&mut arm.body, counter, hoisted);
+            }
+        }
+        ExprKind::IfExpr { cond, then_value, else_value } => {
+            lift_expr_anon_fn(cond, counter, hoisted);
+            lift_expr_anon_fn(then_value, counter, hoisted);
+            lift_expr_anon_fn(else_value, counter, hoisted);
+        }
+        ExprKind::Block { stmts, tail } => {
+            for s in stmts {
+                lift_stmt_anon_fn(s, counter, hoisted);
+            }
+            lift_expr_anon_fn(tail, counter, hoisted);
+        }
+        ExprKind::Try { inner } => {
+            lift_expr_anon_fn(inner, counter, hoisted);
+        }
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Var(_) => {}
+    }
+}
+
 fn flatten_modules_in_program(
     program: &mut Program,
     diagnostics: &mut Vec<Diagnostic>,
@@ -2403,6 +2634,15 @@ fn resolve_enum_types_in_expr(
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Var(_) => {}
+        ExprKind::AnonFn { params, return_type, body, .. } => {
+            for p in params {
+                resolve_enum_types_in_type(&mut p.ty, enums);
+            }
+            resolve_enum_types_in_type(return_type, enums);
+            for s in body {
+                resolve_enum_types_in_stmt(s, enums);
+            }
+        }
     }
 }
 
@@ -2761,6 +3001,15 @@ fn sub_aliases_in_expr(expr: &mut Expr, aliases: &BTreeMap<String, Type>) {
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Var(_) => {}
+        ExprKind::AnonFn { params, return_type, body, .. } => {
+            for p in params {
+                sub_aliases_in_type(&mut p.ty, aliases);
+            }
+            sub_aliases_in_type(return_type, aliases);
+            for s in body {
+                sub_aliases_in_stmt(s, aliases);
+            }
+        }
     }
 }
 
@@ -5736,6 +5985,11 @@ fn walk_branch_mutations_in_expr(
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Var(_) => {}
+        ExprKind::AnonFn { .. } => {
+            // Anon fn body is lifted to a top-level fn before
+            // branch-mutation analysis runs (closure #308).
+            unreachable!("AnonFn should have been lifted before walk_branch_mutations_in_expr")
+        }
     }
 }
 
@@ -10438,6 +10692,20 @@ fn check_expr(
                 constant,
                 expr.span,
             )
+        }
+        ExprKind::AnonFn { .. } => {
+            // Anon fns are lifted to top-level `__anon_fn_<N>`
+            // by `lambda_lift_program` before signature collection
+            // and check_function run. Reaching check_expr with an
+            // AnonFn means the lift pass missed an expression
+            // context — surface a clear diagnostic rather than
+            // panic so users get an actionable bug report.
+            diagnostics.push(Diagnostic::new(
+                expr.span,
+                "internal: anonymous fn expression survived the lambda-lift \
+                 pass. This is a vāṇी compiler bug — please report.".to_string(),
+            ));
+            CheckedExpr::fallback_integer(expr.span)
         }
     }
 }
@@ -16514,6 +16782,10 @@ fn substitute_expr(expr: &Expr, subs: &HashMap<String, Expr>) -> Expr {
         ExprKind::Try { inner } => ExprKind::Try {
             inner: Box::new(substitute_expr(inner, subs)),
         },
+        ExprKind::AnonFn { .. } => {
+            // AnonFn is lifted before contract substitution runs.
+            unreachable!("AnonFn should have been lifted before substitute_expr")
+        }
     };
     Expr {
         kind: new_kind,
@@ -16617,6 +16889,10 @@ fn expr_mentions(expr: &Expr, name: &str) -> bool {
             }) || expr_mentions(tail, name)
         }
         ExprKind::Try { inner } => expr_mentions(inner, name),
+        ExprKind::AnonFn { .. } => {
+            // AnonFn is lifted before fact-tracking analysis runs.
+            unreachable!("AnonFn should have been lifted before expr_mentions")
+        }
     }
 }
 
@@ -17381,6 +17657,10 @@ fn pin_var_to_version(expr: &mut Expr, name: &str, version: u32) {
         ExprKind::Try { inner } => {
             pin_var_to_version(inner, name, version);
         }
+        ExprKind::AnonFn { .. } => {
+            // AnonFn is lifted before SMT version-pinning runs.
+            unreachable!("AnonFn should have been lifted before pin_var_to_version")
+        }
     }
 }
 
@@ -18114,6 +18394,13 @@ fn pretty_expr(expr: &Expr) -> String {
         }
         ExprKind::Try { inner } => {
             format!("try {}", pretty_expr(inner))
+        }
+        ExprKind::AnonFn { params, return_type, .. } => {
+            let parts: Vec<String> = params
+                .iter()
+                .map(|p| format!("{}: {}", p.name, p.ty))
+                .collect();
+            format!("fn({}) -> {} {{ … }}", parts.join(", "), return_type)
         }
     }
 }

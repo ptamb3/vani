@@ -1,0 +1,73 @@
+// build & run:
+//   intentc run examples/anon_fn.vani                          # LLVM backend
+//   intentc run examples/anon_fn.vani --backend=c              # C backend
+//   intentc build examples/anon_fn.vani -o /tmp/anon_fn && /tmp/anon_fn
+
+intent "Anonymous fn expressions — lambda literals without captured environment (Level 3 #1)";
+
+// v1 design: `fn(p: T, ...) -> R { body }` in value position
+// is a lambda literal. The checker's lambda-lift pass hoists
+// each anon-fn expression into a generated top-level
+// function (`__anon_fn_<N>`), so the existing fn-pointer
+// infrastructure handles everything downstream: type-check,
+// indirect call, both backend lowerings.
+//
+// v1 has NO captured environment. The body sees only its
+// own params + top-level fns + builtins. A reference to a
+// surrounding `let` binding surfaces an `unknown variable`
+// diagnostic. Captures (capture-by-value moves; capture-
+// by-ref produces second-class closures) are queued for
+// the next closure under Level 3.
+//
+// Restrictions:
+//   - Statement-style body only: `fn(x: i64) -> i64 { return
+//     x + x; }`. Expression-body sugar (`fn(x) => x + x`)
+//     is deferred.
+//   - No captures from the enclosing scope yet.
+
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+  return f(x);
+}
+
+fn combine(a: i64, b: i64, op: fn(i64, i64) -> i64) -> i64 {
+  return op(a, b);
+}
+
+fn main() -> i64 {
+  // Bind a lambda to a fn-ptr-typed let.
+  let double_anon: fn(i64) -> i64 = fn(x: i64) -> i64 { return x + x; };
+  print "double_anon(5):", double_anon(5);
+  print "double_anon(13):", double_anon(13);
+
+  // Pass an inline lambda as an argument.
+  print "apply(triple_anon, 7):", apply(fn(x: i64) -> i64 { return x * 3; }, 7);
+  print "apply(square_anon, 9):", apply(fn(x: i64) -> i64 { return x * x; }, 9);
+
+  // Multi-param lambda used as a combinator.
+  print "combine(+, 5, 8):", combine(5, 8, fn(a: i64, b: i64) -> i64 { return a + b; });
+  print "combine(*, 5, 8):", combine(5, 8, fn(a: i64, b: i64) -> i64 { return a * b; });
+  print "combine(max, 5, 8):", combine(5, 8, fn(a: i64, b: i64) -> i64 {
+    if a > b { return a; } else { return b; }
+  });
+
+  // Anon fn as sort_by comparator — ascending and descending.
+  let asc: Vec<i64> = vec(5, 2, 8, 1, 9, 3);
+  sort_by(mut ref asc, fn(a: i64, b: i64) -> i64 { return a - b; });
+  print "ascending:";
+  let i: i64 = 0;
+  while i < 6 {
+    print asc[i];
+    i = i + 1;
+  }
+
+  let dsc: Vec<i64> = vec(5, 2, 8, 1, 9, 3);
+  sort_by(mut ref dsc, fn(a: i64, b: i64) -> i64 { return b - a; });
+  print "descending:";
+  let j: i64 = 0;
+  while j < 6 {
+    print dsc[j];
+    j = j + 1;
+  }
+
+  return 0;
+}

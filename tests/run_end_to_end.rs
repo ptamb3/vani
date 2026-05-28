@@ -817,6 +817,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
     // matrix of feature interactions. Update this list when a new
     // example file lands.
     for name in &[
+        "anon_fn.vani",
         "array_proofs.vani",
         "array_return.vani",
         "arrays.vani",
