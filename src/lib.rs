@@ -5790,7 +5790,7 @@ mod tests {
         // else, `शुद्ध फलन` = pure fn, plus `अपेक्षित` /
         // `निश्चित` for requires / ensures.
         let source = r#"
-            शुद्ध फलन abs(n: i64) -> i64
+            शुद्ध फलन my_abs(n: i64) -> i64
             अपेक्षित n > 0 - 1000000;
             निश्चित _return >= 0;
             {
@@ -5801,7 +5801,7 @@ mod tests {
               }
             }
             फलन main() -> i64 {
-              मान y: i64 = abs(0 - 7);
+              मान y: i64 = my_abs(0 - 7);
               खात्री y == 7;
               सिद्ध y >= 0;
               परत y;
@@ -12377,6 +12377,108 @@ fn main() -> i64 {
         "#;
         compile_to_c(source).expect("Option<i64> + Option<f64> must coexist");
         compile_to_llvm(source).expect("LLVM ditto");
+    }
+
+    #[test]
+    fn math_pow_sqrt_sin_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = sqrt(16.0);
+              let b: f64 = pow(2.0, 8.0);
+              let c: f64 = sin(0.0);
+              let _ = a;
+              let _ = b;
+              let _ = c;
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("pow/sqrt/sin must type-check");
+        compile_to_llvm(source).expect("ditto LLVM");
+    }
+
+    #[test]
+    fn math_abs_overloads_i64_and_f64() {
+        let source = r#"
+            fn main() -> i64 {
+              let xi: i64 = 0 - 42;
+              let yi: i64 = abs(xi);
+              let xf: f64 = 0.0 - 3.14;
+              let yf: f64 = abs(xf);
+              let _ = yf;
+              return yi;
+            }
+        "#;
+        compile_to_c(source).expect("abs overload must compile to C");
+        compile_to_llvm(source).expect("abs overload must compile to LLVM");
+    }
+
+    #[test]
+    fn math_floor_ceil_round_correctly() {
+        let source = r#"
+            fn main() -> i64 {
+              let f: f64 = floor(3.7);
+              let c: f64 = ceil(3.2);
+              let _ = f;
+              return c as i64;
+            }
+        "#;
+        compile_to_c(source).expect("floor + ceil must compile");
+    }
+
+    #[test]
+    fn math_rejects_wrong_arg_arity() {
+        let source = r#"
+            fn main() -> i64 {
+              let _ = pow(2.0);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("pow with 1 arg must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("2 arguments")),
+            "expected arity diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn math_builtins_emit_libm_calls_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let _: f64 = sqrt(2.0);
+              let _: f64 = pow(2.0, 3.0);
+              let _: f64 = sin(0.0);
+              let _: f64 = floor(1.5);
+              let _: i64 = abs(0 - 1);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("math program must compile");
+        assert!(
+            c.contains("sqrt(") && c.contains("pow(")
+                && c.contains("sin(") && c.contains("floor(")
+                && c.contains("llabs("),
+            "C output must call libm primitives; got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn math_builtins_emit_libm_declares_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let _: f64 = sqrt(2.0);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("math LLVM compile");
+        assert!(
+            ll.contains("declare double @sqrt(double)"),
+            "LLVM output must declare libm @sqrt; got snippet:\n{}",
+            &ll[..ll.len().min(800)]
+        );
     }
 
     #[test]
@@ -20403,10 +20505,10 @@ fn main() -> i64 {
     #[test]
     fn extern_c_fn_parses_and_checks_without_body() {
         let source = r#"
-            extern "C" fn abs(x: i32) -> i32;
+            extern "C" fn atoi(x: Str) -> i32;
 
             fn main() -> i64 {
-              let a: i32 = abs(-7 as i32);
+              let a: i32 = atoi("7");
               return a as i64;
             }
         "#;
@@ -20417,23 +20519,23 @@ fn main() -> i64 {
     #[test]
     fn extern_c_fn_emits_bare_c_prototype_and_call() {
         let source = r#"
-            extern "C" fn abs(x: i32) -> i32;
+            extern "C" fn atoi(x: Str) -> i32;
 
             fn main() -> i64 {
-              let a: i32 = abs(-7 as i32);
+              let a: i32 = atoi("7");
               return a as i64;
             }
         "#;
         let c = compile_to_c(source).expect("compiles to C");
         // Prototype: no `fn_` prefix, no `static`, marked extern.
         assert!(
-            c.contains("extern") && c.contains("abs("),
-            "expected extern prototype for `abs`, got:\n{}",
+            c.contains("extern") && c.contains("atoi("),
+            "expected extern prototype for `atoi`, got:\n{}",
             c
         );
-        // Call site uses the bare C name, not `fn_abs`.
+        // Call site uses the bare C name, not `fn_atoi`.
         assert!(
-            !c.contains("fn_abs("),
+            !c.contains("fn_atoi("),
             "extern call must not use `fn_` prefix, got:\n{}",
             c
         );
@@ -20446,14 +20548,14 @@ fn main() -> i64 {
     #[test]
     fn pure_extern_c_fn_parses_and_a_pure_fn_can_call_it() {
         let source = r#"
-            pure extern "C" fn abs(x: i32) -> i32;
+            pure extern "C" fn atoi(x: Str) -> i32;
 
-            pure fn use_extern(x: i32) -> i32 {
-              return abs(x);
+            pure fn use_extern(x: Str) -> i32 {
+              return atoi(x);
             }
 
             fn main() -> i64 {
-              let a: i32 = use_extern(-5 as i32);
+              let a: i32 = use_extern("5");
               return a as i64;
             }
         "#;
@@ -20463,10 +20565,10 @@ fn main() -> i64 {
     #[test]
     fn impure_extern_rejected_from_pure_fn_with_pure_extern_hint() {
         let source = r#"
-            extern "C" fn abs(x: i32) -> i32;
+            extern "C" fn atoi(x: Str) -> i32;
 
-            pure fn use_extern(x: i32) -> i32 {
-              return abs(x);
+            pure fn use_extern(x: Str) -> i32 {
+              return atoi(x);
             }
 
             fn main() -> i64 { return 0; }
@@ -21239,22 +21341,22 @@ fn main() -> i64 {
     #[test]
     fn extern_c_fn_emits_llvm_declare() {
         let source = r#"
-            extern "C" fn abs(x: i32) -> i32;
+            extern "C" fn atoi(x: Str) -> i32;
 
             fn main() -> i64 {
-              let a: i32 = abs(-7 as i32);
+              let a: i32 = atoi("7");
               return a as i64;
             }
         "#;
         let ll = compile_to_llvm(source).expect("compiles to LLVM");
-        // Prototype is a `declare @abs(...)`, not `define @fn_abs`.
+        // Prototype is a `declare @atoi(...)`, not `define @fn_atoi`.
         assert!(
-            ll.contains("declare ") && ll.contains("@abs("),
-            "expected `declare @abs`, got:\n{}",
+            ll.contains("declare ") && ll.contains("@atoi("),
+            "expected `declare @atoi`, got:\n{}",
             ll
         );
         assert!(
-            !ll.contains("@fn_abs("),
+            !ll.contains("@fn_atoi("),
             "extern call must not use `@fn_` prefix, got:\n{}",
             ll
         );

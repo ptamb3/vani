@@ -1,0 +1,51 @@
+// build & run:
+//   intentc run examples/math_ops.vani                          # LLVM backend
+//   intentc run examples/math_ops.vani --backend=c              # C backend
+//   intentc build examples/math_ops.vani -o /tmp/math && /tmp/math
+
+intent "Math surface — libm-backed scalar functions";
+
+// Eight builtins covering the most-used scalar math:
+//
+//   pow(base: f64, exp: f64) -> f64        — base^exp
+//   sqrt(x: f64) -> f64
+//   sin(x: f64) -> f64 / cos(x: f64) / tan(x: f64)
+//   floor(x: f64) -> f64                   — round toward -infty
+//   ceil(x: f64) -> f64                    — round toward +infty
+//   abs(x: i64) -> i64                     — signed integer absolute
+//   abs(x: f64) -> f64                     — floating absolute
+//
+// `abs` is overloaded on the argument type. All other math
+// builtins take f64 (with implicit numeric coercion at the
+// argument site) and return f64. Codegen calls libm directly:
+// the C backend uses `<math.h>` symbols, the LLVM backend
+// declares `@sqrt` / `@pow` / `@sin` / etc. and links against
+// `-lm` on POSIX (Windows ships these in the C runtime).
+
+fn main() -> i64 {
+  print "sqrt(16):", sqrt(16.0);
+  print "sqrt(2):", sqrt(2.0);
+  print "pow(2, 10):", pow(2.0, 10.0);
+  print "pow(2, 0.5):", pow(2.0, 0.5);
+
+  print "sin(0):", sin(0.0);
+  print "cos(0):", cos(0.0);
+  print "tan(0):", tan(0.0);
+
+  print "floor(3.7):", floor(3.7);
+  print "ceil(3.2):", ceil(3.2);
+
+  // abs is overloaded on argument type.
+  let neg_i: i64 = 0 - 42;
+  print "abs(-42):", abs(neg_i);
+  let neg_f: f64 = 0.0 - 3.14;
+  print "abs(-3.14):", abs(neg_f);
+
+  // Composed: distance(x, y) = sqrt(x^2 + y^2).
+  let dx: f64 = 3.0;
+  let dy: f64 = 4.0;
+  let dist: f64 = sqrt(pow(dx, 2.0) + pow(dy, 2.0));
+  print "distance(3,4):", dist;
+
+  return 0;
+}

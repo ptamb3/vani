@@ -469,6 +469,17 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare i8* @strstr(i8*, i8*)\n");
     out.push_str("declare i64 @strtoll(i8*, i8**, i32)\n");
     out.push_str("declare double @strtod(i8*, i8**)\n");
+    // Math builtins (closure #299). All from libm; -lm is
+    // passed to cc / linker.
+    out.push_str("declare double @pow(double, double)\n");
+    out.push_str("declare double @sqrt(double)\n");
+    out.push_str("declare double @sin(double)\n");
+    out.push_str("declare double @cos(double)\n");
+    out.push_str("declare double @tan(double)\n");
+    out.push_str("declare double @floor(double)\n");
+    out.push_str("declare double @ceil(double)\n");
+    out.push_str("declare double @fabs(double)\n");
+    out.push_str("declare i64 @llabs(i64)\n");
     // Threading primitives: POSIX on Linux/macOS, Win32 on
     // Windows. `intentc` picks the host's flavor at codegen
     // time via `host_uses_win32_threading()`. Cross-
@@ -4808,6 +4819,50 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                         "clone_at on element type {:?} not yet supported in tree-LLVM",
                         element_ty
                     );
+                }
+                return dest;
+            }
+            // Math builtins (closure #299). Single-call
+            // libm dispatch. abs is overloaded on the arg
+            // type — i64 → @llabs, f64 → @fabs.
+            if matches!(
+                name.as_str(),
+                "sqrt" | "sin" | "cos" | "tan" | "floor" | "ceil"
+            ) {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @{}(double {})\n",
+                    dest, name, x
+                ));
+                return dest;
+            }
+            if name == "pow" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @pow(double {}, double {})\n",
+                    dest, a, b
+                ));
+                return dest;
+            }
+            if name == "abs" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                match &args[0].ty {
+                    Type::F64 | Type::F32 => {
+                        out.push_str(&format!(
+                            "  {} = call double @fabs(double {})\n",
+                            dest, x
+                        ));
+                    }
+                    _ => {
+                        out.push_str(&format!(
+                            "  {} = call i64 @llabs(i64 {})\n",
+                            dest, x
+                        ));
+                    }
                 }
                 return dest;
             }

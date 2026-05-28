@@ -35,21 +35,21 @@ intent "FFI — calling C-ABI functions from vāṇी";
 // `-lcurl`) forwards a library-link flag.
 
 // libc — links by default, conservatively impure
-extern "C" fn abs(x: i32) -> i32;
+extern "C" fn atoi(x: Str) -> i32;
 
-// libc — declared as pure (abs is side-effect-free and
+// libc — declared as pure (atoll is side-effect-free and
 // deterministic, so opt into purity for use from pure fn bodies)
-pure extern "C" fn labs(x: i64) -> i64;
+pure extern "C" fn atoll(x: Str) -> i64;
 
 // Pure callers can compose pure externs
-pure fn abs_sum(a: i64, b: i64) -> i64 {
-  return labs(a) + labs(b);
+pure fn parse_sum(a: Str, b: Str) -> i64 {
+  return atoll(a) + atoll(b);
 }
 
 fn main() -> i64 {
-  let a: i32 = abs(-7 as i32);
-  let s: i64 = abs_sum(-3 as i64, -4 as i64);
-  write "abs(-7) =", a;
-  write "abs_sum(-3, -4) =", s;
+  let a: i32 = atoi("7");
+  let s: i64 = parse_sum("3", "4");
+  write "atoi(7) =", a;
+  write "parse_sum(3, 4) =", s;
   return 0;
 }

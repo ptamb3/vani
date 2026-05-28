@@ -312,6 +312,9 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "str_contains" || name == "str_starts_with"
                 || name == "str_ends_with" || name == "parse_int"
                 || name == "parse_float"
+                || name == "pow" || name == "sqrt"
+                || name == "sin" || name == "cos" || name == "tan"
+                || name == "floor" || name == "ceil" || name == "abs"
             {
                 return false;
             }
@@ -1217,6 +1220,14 @@ fn run_program(path: &Path, link_args: &[String]) -> Result<ExitCode, String> {
     // synchronization.lib).
     if !cfg!(target_os = "windows") {
         cmd.arg("-pthread");
+        // Link libm so libm symbols emitted by the math
+        // builtins (sqrt / sin / cos / pow / floor / ceil
+        // / fabs) resolve at link time. glibc keeps the
+        // math functions in libm; modern Apple SDKs / BSDs
+        // ship the same set in libm. Windows has the math
+        // functions in the C runtime (msvcrt) — no extra
+        // flag needed. Closure #299.
+        cmd.arg("-lm");
     } else {
         cmd.arg("-lsynchronization");
     }

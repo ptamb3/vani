@@ -26,14 +26,14 @@ fn descending(a: i64, b: i64) -> i64 {
   return 0;
 }
 
-fn abs(x: i64) -> i64 {
+fn my_abs(x: i64) -> i64 {
   if x < 0 { return 0 - x; }
   return x;
 }
 
-fn by_absolute_value(a: i64, b: i64) -> i64 {
-  let aa: i64 = abs(a);
-  let bb: i64 = abs(b);
+fn by_my_absolute_value(a: i64, b: i64) -> i64 {
+  let aa: i64 = my_abs(a);
+  let bb: i64 = my_abs(b);
   return aa - bb;
 }
 
@@ -60,9 +60,9 @@ fn main() -> i64 {
   print "descending:";
   let _ = print_vec(ref ys);
 
-  // Sort by absolute value — duplicates allowed.
+  // Sort by my_absolute value — duplicates allowed.
   let zs: Vec<i64> = vec(0 - 3, 1, 0 - 4, 2, 0 - 1, 5);
-  let _ = sort_by(mut ref zs, by_absolute_value);
+  let _ = sort_by(mut ref zs, by_my_absolute_value);
   print "by |x|:";
   let _ = print_vec(ref zs);
 

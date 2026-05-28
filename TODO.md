@@ -488,7 +488,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #298 — String ops: str_contains / str_starts_with / str_ends_with + parse_int / parse_float lumped into one commit + multi-instantiation Option pattern resolution fix + 6 lib tests + new string_ops.vani parity example. Next focal area: Level 1 items #8–#10 — math (pow / abs / sqrt / trig / floor / ceil), RNG (seed_rng / rand_i64 / rand_in_range), Hash interface + FNV-1a / SipHash. Heap-allocating str_split / str_trim / str_replace deferred.)
+## ⏳ Resume here (paused 2026-05-28, after closure #299 — Math ops: pow / sqrt / sin / cos / tan / floor / ceil + overloaded abs(i64|f64) lumped into one commit + libm wiring + 6 lib tests + new math_ops.vani parity example. Next focal area: Level 1 items #9–#10 — RNG (seed_rng / rand_i64 / rand_in_range), Hash interface + FNV-1a / SipHash. Heap-allocating str_split / str_trim / str_replace deferred.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

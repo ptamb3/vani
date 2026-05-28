@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -11967,6 +11967,11 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "pow" | "sqrt" | "sin" | "cos" | "tan" | "floor" | "ceil" | "abs" => {
+            return check_math_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "clone" => return check_clone_builtin(args, env, signatures, span, diagnostics),
         "clone_at" => {
             return check_clone_at_builtin(args, env, signatures, span, diagnostics)
@@ -14001,6 +14006,95 @@ fn check_search_builtin(
             args: vec![xs.expr, needle.expr],
         },
         ret_ty,
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 1 — math surface builtins.
+///
+///   pow(base: f64, exp: f64) -> f64
+///   sqrt(x: f64) -> f64
+///   sin(x: f64) -> f64 / cos / tan
+///   floor(x: f64) -> f64 / ceil
+///   abs(x: i64) -> i64 (or abs(x: f64) -> f64) — overloaded
+///     on argument type. i64 path: `x < 0 ? -x : x` inline;
+///     f64 path: libm fabs.
+///
+/// All non-`abs` callables take exactly one f64 (or two for
+/// pow) and return f64. Lowered to libm directly.
+fn check_math_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args = if name == "pow" { 2 } else { 1 };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}() expects {} argument{}, got {}",
+                name,
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback(Type::F64, span);
+    }
+    // abs is overloaded: i64 or f64 first arg dictates the
+    // result type. All other math fns are f64-only.
+    if name == "abs" {
+        let arg = check_expr(&args[0], env, signatures, diagnostics);
+        let arg_ty = arg.ty().clone();
+        let result_ty = match &arg_ty {
+            Type::I64 | Type::I32 | Type::I16 | Type::I8 => arg_ty.clone(),
+            Type::F64 | Type::F32 => arg_ty.clone(),
+            other => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "abs() expects a signed integer or float argument, got {}",
+                        other
+                    ),
+                ));
+                Type::I64
+            }
+        };
+        return CheckedExpr::new(
+            TypedExprKind::Call {
+                name: "abs".to_string(),
+                name_span: span,
+                args: vec![arg.expr],
+            },
+            result_ty,
+            None,
+            span,
+        );
+    }
+    // All other math fns: f64 args + f64 result.
+    let mut typed_args = Vec::new();
+    for arg in args {
+        let checked = check_expr(arg, env, signatures, diagnostics);
+        let coerced = coerce_checked(
+            checked,
+            &Type::F64,
+            arg.span,
+            &format!("{} argument", name),
+            diagnostics,
+        );
+        typed_args.push(coerced.expr);
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        Type::F64,
         None,
         span,
     )

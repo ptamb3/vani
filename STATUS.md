@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #298 — String ops: str_contains/str_starts_with/str_ends_with + parse_int/parse_float; new string_ops.vani example; 6 new lib tests; multi-instantiation Option pattern resolution fix)
-**Test totals:** 1065 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 66 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #299 — Math ops: pow/sqrt/sin/cos/tan/floor/ceil + abs overloaded; new math_ops.vani; 6 new lib tests; -lm added to POSIX linker args; <math.h> in C preamble; example abs → my_abs rename to free the builtin namespace)
+**Test totals:** 1071 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 67 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,41 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 1 — Math ops (shipped 2026-05-28, closure #299)
+
+✅ AFFINE — all scalar pure, libm-backed.
+
+**API:**
+- `pow(base: f64, exp: f64) -> f64`
+- `sqrt(x: f64) -> f64`
+- `sin(x: f64) -> f64` / `cos(x: f64) -> f64` / `tan(x: f64) -> f64`
+- `floor(x: f64) -> f64` / `ceil(x: f64) -> f64`
+- `abs(x: i64) -> i64` (signed int → llabs)
+- `abs(x: f64) -> f64` (float → fabs) — overloaded on arg type
+
+**Codegen:**
+- **Tree-C**: `<math.h>` added to the preamble; call-sites emit
+  the libm symbol directly (`sqrt(x)`, `pow(b, e)`, `llabs(x)`,
+  `fabs(x)`).
+- **Tree-LLVM**: `declare double @sqrt(double)` etc. emitted in
+  the preamble; call-sites emit `call double @sqrt(...)`.
+- **Linker**: `-lm` added to the cc args on POSIX (libm holds
+  the math symbols on glibc / macOS / BSD). Windows ships
+  them in the C runtime — no extra flag.
+- **SSA**: routes through tree via `ssa_path_supports` gate.
+
+**Example rename:** `abs` is now a builtin, so the existing
+`examples/ffi.vani` (which used `extern "C" fn abs`) was
+renamed to use `atoi` / `atoll`; sort.vani's helper renamed to
+`my_abs`; sanskrit_keywords.vani's helper likewise. Six lib
+tests covering extern-`abs` were updated to use `atoi`.
+
+**Tests:** 6 lib tests (pow/sqrt/sin compile; abs overload;
+floor + ceil; rejects wrong arity; C libm symbols emitted;
+LLVM libm declares emitted). New `examples/math_ops.vani`
+covers each builtin + a composed distance(x, y) example.
+Cross-backend parity green.
 
 ### Data-structures roadmap Level 1 — String ops + parsers (shipped 2026-05-28, closure #298)
 

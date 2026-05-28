@@ -557,6 +557,7 @@ pub fn emit_c(program: &TypedProgram) -> String {
     out.push_str("#include <stdio.h>\n");
     out.push_str("#include <stdlib.h>\n");
     out.push_str("#include <string.h>\n");
+    out.push_str("#include <math.h>\n");
     // INTENT_UNUSED is referenced by every Vec helper and
     // by the threading wrappers below, so define it
     // unconditionally even if no runtime guard helpers
@@ -5194,6 +5195,24 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 s = emit_expr(&args[0]),
                 opt = opt_c,
             )
+        }
+        "pow" => {
+            format!(
+                "pow(({}), ({}))",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
+        "sqrt" | "sin" | "cos" | "tan" | "floor" | "ceil" => {
+            format!("{}(({}))", name, emit_expr(&args[0]))
+        }
+        "abs" => {
+            // Overload: i64 → llabs / (x<0?-x:x); f64 → fabs.
+            // Other signed ints get cast to i64.
+            match &args[0].ty {
+                Type::F64 | Type::F32 => format!("fabs(({}))", emit_expr(&args[0])),
+                _ => format!("llabs(({}))", emit_expr(&args[0])),
+            }
         }
         "parse_float" => {
             let opt_name = match result_ty {
