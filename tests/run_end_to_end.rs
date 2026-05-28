@@ -830,6 +830,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "bounds_elision.vani",
         "btreemap.vani",
         "btreeset.vani",
+        "closures.vani",
         "composite_types.vani",
         "concurrency.vani",
         "condvar.vani",

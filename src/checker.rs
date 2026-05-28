@@ -1314,6 +1314,22 @@ fn lambda_lift_program(program: &mut Program) {
     let mut counter: usize = 0;
     let mut hoisted: Vec<crate::ast::Function> = Vec::new();
 
+    // Closure #314: build the set of names visible at the top
+    // level (fns + consts + builtins). Used by `lift_let_capture_anon_fn`
+    // to classify free-var references inside anon fn bodies as
+    // captures vs. top-level references.
+    let mut top_level_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for f in &program.functions {
+        top_level_names.insert(f.name.clone());
+    }
+    for c in &program.consts {
+        top_level_names.insert(c.name.clone());
+    }
+    for n in BUILTIN_FUNCTION_NAMES {
+        top_level_names.insert((*n).to_string());
+    }
+
     let original_len = program.functions.len();
     for idx in 0..original_len {
         // Work against a clone to avoid borrowing both the
@@ -1321,6 +1337,122 @@ fn lambda_lift_program(program: &mut Program) {
         // simultaneously (the lift recursion pushes into
         // `hoisted`).
         let mut f = program.functions[idx].clone();
+
+        // Closure #314 phase 1 — capture-by-value closures.
+        // Detect `let f = fn(...) -> R { ...captures... };` at
+        // the top level of this fn's body. For each such Let:
+        //   - compute free vars (captures) inside the AnonFn body
+        //   - hoist the fn with `__cap_<name>: T` as leading params
+        //   - delete the original Let from the body
+        //   - rewrite every `f(args)` Call in the rest of the body
+        //     to `__anon_fn_<N>(<capture vars...>, args...)`
+        // The closure binding `f` is purely compile-time — it
+        // never exists at runtime. v1 restrictions:
+        //   - only direct Let-of-AnonFn (no nested-block Lets)
+        //   - captured bindings must have an explicit type
+        //     annotation (or be a fn param) so the hoisted fn's
+        //     capture params know their types
+        //   - captures are read at call time (not snapshotted)
+        //   - non-Copy captures rejected later by the regular
+        //     affine check on the rewritten Call args
+        let mut env: std::collections::HashMap<String, crate::ast::Type> =
+            std::collections::HashMap::new();
+        for p in &f.params {
+            env.insert(p.name.clone(), p.ty.clone());
+        }
+        let mut closure_handles: std::collections::HashMap<String, (String, Vec<String>)> =
+            std::collections::HashMap::new();
+        let mut new_body: Vec<crate::ast::Stmt> = Vec::with_capacity(f.body.len());
+        for stmt in f.body.drain(..) {
+            if let crate::ast::Stmt::Let {
+                name: bind_name,
+                annotation,
+                expr,
+                span,
+            } = &stmt
+            {
+                if let ExprKind::AnonFn { params, return_type, body, fn_span } = &expr.kind {
+                    let captures = compute_captures_in_body(
+                        body, params, &env, &top_level_names,
+                    );
+                    if !captures.is_empty() {
+                        // Build the hoisted fn with leading
+                        // capture params, then existing user
+                        // params. Capture param names are
+                        // `__cap_<original_name>`; body's
+                        // Var(name) references are rewritten
+                        // to Var(__cap_<name>) for each capture.
+                        let hoist_name = format!("__anon_fn_{}", counter);
+                        counter += 1;
+                        let mut hoist_params: Vec<crate::ast::Param> =
+                            Vec::with_capacity(captures.len() + params.len());
+                        let mut capture_names_only: Vec<String> = Vec::new();
+                        for cap in &captures {
+                            let cap_ty = env.get(cap).cloned().unwrap();
+                            hoist_params.push(crate::ast::Param {
+                                name: format!("__cap_{}", cap),
+                                ty: cap_ty,
+                                name_span: *fn_span,
+                                span: *fn_span,
+                            });
+                            capture_names_only.push(cap.clone());
+                        }
+                        for p in params {
+                            hoist_params.push(p.clone());
+                        }
+                        let mut hoist_body: Vec<crate::ast::Stmt> = body.clone();
+                        let rename: std::collections::HashMap<String, String> = captures
+                            .iter()
+                            .map(|c| (c.clone(), format!("__cap_{}", c)))
+                            .collect();
+                        for s in &mut hoist_body {
+                            rename_vars_in_stmt(s, &rename);
+                        }
+                        // Lift any nested anon fns inside the body.
+                        for s in &mut hoist_body {
+                            lift_stmt_anon_fn(s, &mut counter, &mut hoisted);
+                        }
+                        hoisted.push(crate::ast::Function {
+                            name: hoist_name.clone(),
+                            type_params: Vec::new(),
+                            where_clauses: Vec::new(),
+                            params: hoist_params,
+                            return_type: return_type.clone(),
+                            requires: Vec::new(),
+                            ensures: Vec::new(),
+                            body: hoist_body,
+                            span: *fn_span,
+                            is_pure: false,
+                            is_extern: false,
+                            recursion_bound: None,
+                        });
+                        closure_handles.insert(
+                            bind_name.clone(),
+                            (hoist_name, capture_names_only),
+                        );
+                        // Drop the original Let — `f` is
+                        // compile-time-only.
+                        continue;
+                    }
+                }
+                // Not a capturing closure — track the binding's
+                // annotated type so later closures can capture it.
+                let _ = span;
+                if let Some(ty) = annotation {
+                    env.insert(bind_name.clone(), ty.clone());
+                }
+            }
+            new_body.push(stmt);
+        }
+        // Rewrite remaining body: every `Call { name = closure_handle }`
+        // gets expanded to the hoisted fn with prepended captures.
+        if !closure_handles.is_empty() {
+            for s in &mut new_body {
+                rewrite_closure_calls_in_stmt(s, &closure_handles);
+            }
+        }
+        f.body = new_body;
+
         for s in &mut f.body {
             lift_stmt_anon_fn(s, &mut counter, &mut hoisted);
         }
@@ -1333,6 +1465,533 @@ fn lambda_lift_program(program: &mut Program) {
         program.functions[idx] = f;
     }
     program.functions.extend(hoisted);
+}
+
+/// Closure #314 helper: walk an anon fn body, return the
+/// ordered list of free var names that are captured from the
+/// enclosing fn's environment. Captures must be in `env`
+/// (the enclosing fn's annotated/param bindings) — anything
+/// else (top-level fns / consts / builtins / params declared
+/// in the anon fn itself / lets declared inside the body) is
+/// not a capture. Names are returned in first-appearance
+/// order so the hoisted fn's capture param order is stable.
+fn compute_captures_in_body(
+    body: &[crate::ast::Stmt],
+    params: &[crate::ast::Param],
+    env: &std::collections::HashMap<String, crate::ast::Type>,
+    top_level_names: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut captures: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut bound: std::collections::HashSet<String> =
+        params.iter().map(|p| p.name.clone()).collect();
+    for s in body {
+        walk_stmt_for_captures(
+            s, &mut bound, env, top_level_names, &mut captures, &mut seen,
+        );
+    }
+    captures
+}
+
+fn walk_stmt_for_captures(
+    stmt: &crate::ast::Stmt,
+    bound: &mut std::collections::HashSet<String>,
+    env: &std::collections::HashMap<String, crate::ast::Type>,
+    top_level_names: &std::collections::HashSet<String>,
+    captures: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    use crate::ast::Stmt as S;
+    match stmt {
+        S::Let { name, expr, .. } => {
+            walk_expr_for_captures(expr, bound, env, top_level_names, captures, seen);
+            bound.insert(name.clone());
+        }
+        S::LetTuple { names, expr, .. } => {
+            walk_expr_for_captures(expr, bound, env, top_level_names, captures, seen);
+            for n in names {
+                bound.insert(n.clone());
+            }
+        }
+        S::Return { expr, .. }
+        | S::Assert { expr, .. }
+        | S::Prove { expr, .. }
+        | S::Assign { expr, .. } => {
+            walk_expr_for_captures(expr, bound, env, top_level_names, captures, seen);
+        }
+        S::Print { items, .. } => {
+            for item in items {
+                if let crate::ast::PrintItem::Expr(e) = item {
+                    walk_expr_for_captures(e, bound, env, top_level_names, captures, seen);
+                }
+            }
+        }
+        S::If { cond, then_body, else_body, .. } => {
+            walk_expr_for_captures(cond, bound, env, top_level_names, captures, seen);
+            for s in then_body {
+                walk_stmt_for_captures(s, bound, env, top_level_names, captures, seen);
+            }
+            for s in else_body {
+                walk_stmt_for_captures(s, bound, env, top_level_names, captures, seen);
+            }
+        }
+        S::While { cond, invariants, body, .. } => {
+            walk_expr_for_captures(cond, bound, env, top_level_names, captures, seen);
+            for inv in invariants {
+                walk_expr_for_captures(inv, bound, env, top_level_names, captures, seen);
+            }
+            for s in body {
+                walk_stmt_for_captures(s, bound, env, top_level_names, captures, seen);
+            }
+        }
+        S::IndexAssign { name, index, value, .. } => {
+            check_var_capture(name, bound, env, top_level_names, captures, seen);
+            walk_expr_for_captures(index, bound, env, top_level_names, captures, seen);
+            walk_expr_for_captures(value, bound, env, top_level_names, captures, seen);
+        }
+        S::FieldAssign { object, value, .. } => {
+            walk_expr_for_captures(object, bound, env, top_level_names, captures, seen);
+            walk_expr_for_captures(value, bound, env, top_level_names, captures, seen);
+        }
+        S::For { var, start, end, invariants, body, .. } => {
+            walk_expr_for_captures(start, bound, env, top_level_names, captures, seen);
+            walk_expr_for_captures(end, bound, env, top_level_names, captures, seen);
+            bound.insert(var.clone());
+            for inv in invariants {
+                walk_expr_for_captures(inv, bound, env, top_level_names, captures, seen);
+            }
+            for s in body {
+                walk_stmt_for_captures(s, bound, env, top_level_names, captures, seen);
+            }
+        }
+        S::ForIter { var, collection, body, .. } => {
+            check_var_capture(collection, bound, env, top_level_names, captures, seen);
+            bound.insert(var.clone());
+            for s in body {
+                walk_stmt_for_captures(s, bound, env, top_level_names, captures, seen);
+            }
+        }
+        S::Break { .. } | S::Continue { .. } | S::TaskJoin { .. } | S::TaskSpawn { .. } => {}
+    }
+}
+
+fn walk_expr_for_captures(
+    expr: &crate::ast::Expr,
+    bound: &mut std::collections::HashSet<String>,
+    env: &std::collections::HashMap<String, crate::ast::Type>,
+    top_level_names: &std::collections::HashSet<String>,
+    captures: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    match &expr.kind {
+        ExprKind::Var(name) => {
+            check_var_capture(name, bound, env, top_level_names, captures, seen);
+        }
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_) => {}
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            walk_expr_for_captures(expr, bound, env, top_level_names, captures, seen);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            walk_expr_for_captures(left, bound, env, top_level_names, captures, seen);
+            walk_expr_for_captures(right, bound, env, top_level_names, captures, seen);
+        }
+        ExprKind::Call { args, .. } => {
+            for a in args {
+                walk_expr_for_captures(a, bound, env, top_level_names, captures, seen);
+            }
+        }
+        ExprKind::MethodCall { receiver, args, .. } => {
+            walk_expr_for_captures(receiver, bound, env, top_level_names, captures, seen);
+            for a in args {
+                walk_expr_for_captures(a, bound, env, top_level_names, captures, seen);
+            }
+        }
+        ExprKind::Index { array, index } => {
+            walk_expr_for_captures(array, bound, env, top_level_names, captures, seen);
+            walk_expr_for_captures(index, bound, env, top_level_names, captures, seen);
+        }
+        ExprKind::Len { array } => {
+            walk_expr_for_captures(array, bound, env, top_level_names, captures, seen);
+        }
+        ExprKind::Ref { inner } | ExprKind::RefMut { inner } => {
+            walk_expr_for_captures(inner, bound, env, top_level_names, captures, seen);
+        }
+        ExprKind::ArrayLit { elements } | ExprKind::Tuple(elements) => {
+            for e in elements {
+                walk_expr_for_captures(e, bound, env, top_level_names, captures, seen);
+            }
+        }
+        ExprKind::TupleAccess { tuple, .. } => {
+            walk_expr_for_captures(tuple, bound, env, top_level_names, captures, seen);
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for (_, e) in fields {
+                walk_expr_for_captures(e, bound, env, top_level_names, captures, seen);
+            }
+        }
+        ExprKind::FieldAccess { object, .. } => {
+            walk_expr_for_captures(object, bound, env, top_level_names, captures, seen);
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            walk_expr_for_captures(scrutinee, bound, env, top_level_names, captures, seen);
+            for arm in arms {
+                walk_expr_for_captures(&arm.body, bound, env, top_level_names, captures, seen);
+            }
+        }
+        ExprKind::IfExpr { cond, then_value, else_value } => {
+            walk_expr_for_captures(cond, bound, env, top_level_names, captures, seen);
+            walk_expr_for_captures(then_value, bound, env, top_level_names, captures, seen);
+            walk_expr_for_captures(else_value, bound, env, top_level_names, captures, seen);
+        }
+        ExprKind::Block { stmts, tail } => {
+            for s in stmts {
+                walk_stmt_for_captures(s, bound, env, top_level_names, captures, seen);
+            }
+            walk_expr_for_captures(tail, bound, env, top_level_names, captures, seen);
+        }
+        ExprKind::Try { inner } => {
+            walk_expr_for_captures(inner, bound, env, top_level_names, captures, seen);
+        }
+        ExprKind::AnonFn { .. } => {
+            // Nested anon fns are lifted independently; their
+            // own captures aren't ours to track.
+        }
+    }
+}
+
+fn check_var_capture(
+    name: &str,
+    bound: &std::collections::HashSet<String>,
+    env: &std::collections::HashMap<String, crate::ast::Type>,
+    top_level_names: &std::collections::HashSet<String>,
+    captures: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    if bound.contains(name) || top_level_names.contains(name) {
+        return;
+    }
+    if env.contains_key(name) {
+        if seen.insert(name.to_string()) {
+            captures.push(name.to_string());
+        }
+    }
+}
+
+/// Rename free occurrences of vars in `rename`'s keys to their
+/// corresponding values, inside an anon fn body. Used when
+/// lifting a capturing closure: each captured var gets a
+/// `__cap_<name>` rename so the body reads from the hoisted
+/// fn's capture-param namespace.
+fn rename_vars_in_stmt(
+    stmt: &mut crate::ast::Stmt,
+    rename: &std::collections::HashMap<String, String>,
+) {
+    use crate::ast::Stmt as S;
+    match stmt {
+        S::Let { expr, .. }
+        | S::LetTuple { expr, .. }
+        | S::Return { expr, .. }
+        | S::Assert { expr, .. }
+        | S::Prove { expr, .. }
+        | S::Assign { expr, .. } => {
+            rename_vars_in_expr(expr, rename);
+        }
+        S::Print { items, .. } => {
+            for item in items {
+                if let crate::ast::PrintItem::Expr(e) = item {
+                    rename_vars_in_expr(e, rename);
+                }
+            }
+        }
+        S::If { cond, then_body, else_body, .. } => {
+            rename_vars_in_expr(cond, rename);
+            for s in then_body {
+                rename_vars_in_stmt(s, rename);
+            }
+            for s in else_body {
+                rename_vars_in_stmt(s, rename);
+            }
+        }
+        S::While { cond, invariants, body, .. } => {
+            rename_vars_in_expr(cond, rename);
+            for inv in invariants {
+                rename_vars_in_expr(inv, rename);
+            }
+            for s in body {
+                rename_vars_in_stmt(s, rename);
+            }
+        }
+        S::IndexAssign { name, index, value, .. } => {
+            if let Some(n) = rename.get(name) {
+                *name = n.clone();
+            }
+            rename_vars_in_expr(index, rename);
+            rename_vars_in_expr(value, rename);
+        }
+        S::FieldAssign { object, value, .. } => {
+            rename_vars_in_expr(object, rename);
+            rename_vars_in_expr(value, rename);
+        }
+        S::For { start, end, invariants, body, .. } => {
+            rename_vars_in_expr(start, rename);
+            rename_vars_in_expr(end, rename);
+            for inv in invariants {
+                rename_vars_in_expr(inv, rename);
+            }
+            for s in body {
+                rename_vars_in_stmt(s, rename);
+            }
+        }
+        S::ForIter { collection, body, .. } => {
+            if let Some(n) = rename.get(collection) {
+                *collection = n.clone();
+            }
+            for s in body {
+                rename_vars_in_stmt(s, rename);
+            }
+        }
+        S::Break { .. } | S::Continue { .. } | S::TaskJoin { .. } | S::TaskSpawn { .. } => {}
+    }
+}
+
+fn rename_vars_in_expr(
+    expr: &mut crate::ast::Expr,
+    rename: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Var(name) => {
+            if let Some(n) = rename.get(name) {
+                *name = n.clone();
+            }
+        }
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_) => {}
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            rename_vars_in_expr(expr, rename);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rename_vars_in_expr(left, rename);
+            rename_vars_in_expr(right, rename);
+        }
+        ExprKind::Call { args, .. } => {
+            for a in args {
+                rename_vars_in_expr(a, rename);
+            }
+        }
+        ExprKind::MethodCall { receiver, args, .. } => {
+            rename_vars_in_expr(receiver, rename);
+            for a in args {
+                rename_vars_in_expr(a, rename);
+            }
+        }
+        ExprKind::Index { array, index } => {
+            rename_vars_in_expr(array, rename);
+            rename_vars_in_expr(index, rename);
+        }
+        ExprKind::Len { array } => {
+            rename_vars_in_expr(array, rename);
+        }
+        ExprKind::Ref { inner } | ExprKind::RefMut { inner } => {
+            rename_vars_in_expr(inner, rename);
+        }
+        ExprKind::ArrayLit { elements } | ExprKind::Tuple(elements) => {
+            for e in elements {
+                rename_vars_in_expr(e, rename);
+            }
+        }
+        ExprKind::TupleAccess { tuple, .. } => {
+            rename_vars_in_expr(tuple, rename);
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for (_, e) in fields {
+                rename_vars_in_expr(e, rename);
+            }
+        }
+        ExprKind::FieldAccess { object, .. } => {
+            rename_vars_in_expr(object, rename);
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            rename_vars_in_expr(scrutinee, rename);
+            for arm in arms {
+                rename_vars_in_expr(&mut arm.body, rename);
+            }
+        }
+        ExprKind::IfExpr { cond, then_value, else_value } => {
+            rename_vars_in_expr(cond, rename);
+            rename_vars_in_expr(then_value, rename);
+            rename_vars_in_expr(else_value, rename);
+        }
+        ExprKind::Block { stmts, tail } => {
+            for s in stmts {
+                rename_vars_in_stmt(s, rename);
+            }
+            rename_vars_in_expr(tail, rename);
+        }
+        ExprKind::Try { inner } => {
+            rename_vars_in_expr(inner, rename);
+        }
+        ExprKind::AnonFn { .. } => {}
+    }
+}
+
+/// Rewrite every `Call { name = closure_handle, args }` in
+/// `stmt` to `Call { name = hoisted_fn, args = [Var(cap)... ++ args] }`.
+/// The closure handle name is purely compile-time; after this
+/// rewrite no reference to it survives in the AST.
+fn rewrite_closure_calls_in_stmt(
+    stmt: &mut crate::ast::Stmt,
+    closures: &std::collections::HashMap<String, (String, Vec<String>)>,
+) {
+    use crate::ast::Stmt as S;
+    match stmt {
+        S::Let { expr, .. }
+        | S::LetTuple { expr, .. }
+        | S::Return { expr, .. }
+        | S::Assert { expr, .. }
+        | S::Prove { expr, .. }
+        | S::Assign { expr, .. } => {
+            rewrite_closure_calls_in_expr(expr, closures);
+        }
+        S::Print { items, .. } => {
+            for item in items {
+                if let crate::ast::PrintItem::Expr(e) = item {
+                    rewrite_closure_calls_in_expr(e, closures);
+                }
+            }
+        }
+        S::If { cond, then_body, else_body, .. } => {
+            rewrite_closure_calls_in_expr(cond, closures);
+            for s in then_body {
+                rewrite_closure_calls_in_stmt(s, closures);
+            }
+            for s in else_body {
+                rewrite_closure_calls_in_stmt(s, closures);
+            }
+        }
+        S::While { cond, invariants, body, .. } => {
+            rewrite_closure_calls_in_expr(cond, closures);
+            for inv in invariants {
+                rewrite_closure_calls_in_expr(inv, closures);
+            }
+            for s in body {
+                rewrite_closure_calls_in_stmt(s, closures);
+            }
+        }
+        S::IndexAssign { index, value, .. } => {
+            rewrite_closure_calls_in_expr(index, closures);
+            rewrite_closure_calls_in_expr(value, closures);
+        }
+        S::FieldAssign { object, value, .. } => {
+            rewrite_closure_calls_in_expr(object, closures);
+            rewrite_closure_calls_in_expr(value, closures);
+        }
+        S::For { start, end, invariants, body, .. } => {
+            rewrite_closure_calls_in_expr(start, closures);
+            rewrite_closure_calls_in_expr(end, closures);
+            for inv in invariants {
+                rewrite_closure_calls_in_expr(inv, closures);
+            }
+            for s in body {
+                rewrite_closure_calls_in_stmt(s, closures);
+            }
+        }
+        S::ForIter { body, .. } | S::TaskSpawn { body, .. } => {
+            for s in body {
+                rewrite_closure_calls_in_stmt(s, closures);
+            }
+        }
+        S::Break { .. } | S::Continue { .. } | S::TaskJoin { .. } => {}
+    }
+}
+
+fn rewrite_closure_calls_in_expr(
+    expr: &mut crate::ast::Expr,
+    closures: &std::collections::HashMap<String, (String, Vec<String>)>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { name, args, .. } => {
+            if let Some((hoist_name, captures)) = closures.get(name) {
+                let mut new_args: Vec<crate::ast::Expr> = Vec::with_capacity(
+                    captures.len() + args.len(),
+                );
+                for cap in captures {
+                    new_args.push(crate::ast::Expr {
+                        kind: ExprKind::Var(cap.clone()),
+                        span: expr.span,
+                    });
+                }
+                for a in args.drain(..) {
+                    new_args.push(a);
+                }
+                *name = hoist_name.clone();
+                *args = new_args;
+            }
+            for a in args.iter_mut() {
+                rewrite_closure_calls_in_expr(a, closures);
+            }
+        }
+        ExprKind::MethodCall { receiver, args, .. } => {
+            rewrite_closure_calls_in_expr(receiver, closures);
+            for a in args {
+                rewrite_closure_calls_in_expr(a, closures);
+            }
+        }
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            rewrite_closure_calls_in_expr(expr, closures);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_closure_calls_in_expr(left, closures);
+            rewrite_closure_calls_in_expr(right, closures);
+        }
+        ExprKind::Index { array, index } => {
+            rewrite_closure_calls_in_expr(array, closures);
+            rewrite_closure_calls_in_expr(index, closures);
+        }
+        ExprKind::Len { array } => {
+            rewrite_closure_calls_in_expr(array, closures);
+        }
+        ExprKind::Ref { inner } | ExprKind::RefMut { inner } => {
+            rewrite_closure_calls_in_expr(inner, closures);
+        }
+        ExprKind::ArrayLit { elements } | ExprKind::Tuple(elements) => {
+            for e in elements {
+                rewrite_closure_calls_in_expr(e, closures);
+            }
+        }
+        ExprKind::TupleAccess { tuple, .. } => {
+            rewrite_closure_calls_in_expr(tuple, closures);
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for (_, e) in fields {
+                rewrite_closure_calls_in_expr(e, closures);
+            }
+        }
+        ExprKind::FieldAccess { object, .. } => {
+            rewrite_closure_calls_in_expr(object, closures);
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            rewrite_closure_calls_in_expr(scrutinee, closures);
+            for arm in arms {
+                rewrite_closure_calls_in_expr(&mut arm.body, closures);
+            }
+        }
+        ExprKind::IfExpr { cond, then_value, else_value } => {
+            rewrite_closure_calls_in_expr(cond, closures);
+            rewrite_closure_calls_in_expr(then_value, closures);
+            rewrite_closure_calls_in_expr(else_value, closures);
+        }
+        ExprKind::Block { stmts, tail } => {
+            for s in stmts {
+                rewrite_closure_calls_in_stmt(s, closures);
+            }
+            rewrite_closure_calls_in_expr(tail, closures);
+        }
+        ExprKind::Try { inner } => {
+            rewrite_closure_calls_in_expr(inner, closures);
+        }
+        ExprKind::Var(_) | ExprKind::Int(_) | ExprKind::Float(_)
+        | ExprKind::Bool(_) | ExprKind::Str(_) => {}
+        ExprKind::AnonFn { .. } => {}
+    }
 }
 
 fn lift_stmt_anon_fn(

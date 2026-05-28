@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #313 — Level 3 eager slicing combinators on Vec<i64> + `.len()` method sugar. `vec_take(ref xs, n)` returns the first min(n, len) elements; `vec_drop(ref xs, n)` returns the rest. Negative n clamps to 0; n > len clamps to len. Method sugar adds `xs.take(n)` / `xs.drop(n)` (Call synthesis like #311/#312) and `xs.len()` (lowers to `ExprKind::Len` directly, matching the bare `len(xs)` builtin form). 5 new lib tests.)
-**Test totals:** 1151 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 78 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #314 — Level 3 #1 phase 2: closures with captured environment. `let f = fn(x: i64) -> i64 { return x + n; };` now compiles — the lambda-lift pass detects free vars in the anon fn body, hoists the fn with `__cap_<name>: T` leading params, deletes the original Let, and rewrites every `f(args)` Call in the same function to `__anon_fn_<N>(<cap vars...>, args...)`. The closure binding is purely compile-time — never materializes at runtime. v1 restrictions: capture-by-value of Copy types only; closures may only be CALLED in the same function (no passing, storing, or returning); captured bindings need an explicit type annotation or be a fn param so the hoisted fn's capture params know their types. 5 new lib tests + new `examples/closures.vani`.)
+**Test totals:** 1155 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,86 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 3 — Closures with captured environment (shipped 2026-05-28, closure #314)
+
+✅ AFFINE under the v1 capture-by-value-of-Copy contract. A
+closure that references an outer Copy binding now compiles via
+a checker-side lambda-lift transform — no new runtime types,
+no new IR nodes, no backend changes.
+
+**Surface:**
+```vani
+fn main() -> i64 {
+  let n: i64 = 10;
+  let factor: i64 = 3;
+  let f = fn(x: i64) -> i64 { return double(x) * factor + n; };
+  return f(5) + f(10);
+}
+```
+
+**Transform (pre-checker pass in `lambda_lift_program`):**
+For each `Stmt::Let { name: f, expr: AnonFn { .. } }` at the
+top level of a function's body:
+
+1. Compute free vars in the AnonFn body — names referenced
+   that aren't in the closure's own params, not declared by
+   `let` inside the body, not in the top-level name set
+   (fns + consts + builtins).
+2. Each free var must be in the enclosing fn's annotated-let
+   or fn-param scope. The captured type is read from that
+   scope.
+3. Hoist `fn __anon_fn_<N>(__cap_<v1>: T1, ..., user_params...) -> R
+   { body with captures renamed }` to `program.functions`.
+4. DELETE the `let f = ...` statement entirely — `f` is
+   compile-time only.
+5. Build a per-function closure-handle map: `f → (hoisted_name,
+   [capture var names])`.
+6. Walk the function's remaining statements. For every
+   `Call { name: f }` where `f` is a closure handle,
+   rewrite to `Call { name: hoisted_name, args: [Var(cap)
+   for each cap..., ...original args] }`. The captured
+   vars are read at call time (not snapshotted at the
+   closure-creation point).
+
+After the rewrite, no reference to the closure handle
+survives. The hoisted top-level fn is type-checked, lowered,
+and called like any other top-level fn — both backends emit
+identical code to a direct call.
+
+**v1 restrictions:**
+- The closure may only be CALLED in the same function. Passing
+  it to another function, storing it in a struct, returning it,
+  or reassigning it is NOT supported.
+- Captures are read at call time, so reassigning the captured
+  binding between closure creation and call is visible to the
+  call. Faithful snapshot semantics are deferred.
+- Captured bindings must be Copy (i64 / bool / f64 / etc.).
+  Non-Copy captures (Vec / OwnedStr / HashMap / ...) are
+  queued — they need move/clone semantics decisions.
+- Captured bindings must have an explicit type annotation
+  or be a fn param so the lift pass can read their types.
+- The Let-of-AnonFn pattern is only recognized at the
+  function's top-level statement list (not inside nested
+  `if` / `while` / block bodies in v1).
+
+**Codegen:** None new. The rewritten calls are regular
+`Call` nodes that lower identically to direct calls.
+
+**Tests:** 5 new lib tests (multi-capture; multi-call to the
+same closure; capture + top-level fn ref in body; no-capture
+path still works; the closure_lift-now-compiles test that
+supersedes #308's "captures rejected" assertion). New
+`examples/closures.vani` exercises single/multi captures,
+multi-call patterns, and closures inside a while loop on
+both backends.
+
+**Pending follow-ups:** non-Copy captures with move semantics
+(needs affine analysis of the captured binding); capture-by-
+ref second-class closures; passing closures across function
+boundaries (needs closure-as-value type — likely a struct
+holding the env + fn-ptr pair); reassigning a closure
+binding; nested closure declarations.
 
 ### Data-structures roadmap Level 3 — Eager slicing combinators + `.len()` (shipped 2026-05-28, closure #313)
 

@@ -1,0 +1,76 @@
+// build & run:
+//   intentc run examples/closures.vani                          # LLVM backend
+//   intentc run examples/closures.vani --backend=c              # C backend
+//   intentc build examples/closures.vani -o /tmp/closures && /tmp/closures
+
+intent "Closures with captured environment — capture-by-value of Copy outer bindings (Level 3 #1 phase 2)";
+
+// v1 design: capture-by-value of Copy outer bindings, callable
+// via direct let-bound name in the same function only. The
+// closure binding is COMPILE-TIME ONLY — it never exists at
+// runtime. The lambda-lift pass:
+//
+//   1. Detects free vars in the anon fn body.
+//   2. Hoists `fn __anon_fn_<N>(__cap_<v1>: T1, ..., params...) -> R
+//      { body with captures renamed }` to top-level.
+//   3. Deletes the `let f = fn(...)` statement.
+//   4. Rewrites every `f(args)` call in the same function to
+//      `__anon_fn_<N>(<cap vars...>, args...)`.
+//
+// Restrictions:
+//   - The closure binding may only be CALLED in the same function;
+//     passing it to another function / storing it in a struct /
+//     returning it is NOT supported in v1.
+//   - Captured bindings must be Copy (i64, bool, f64, ...). Non-
+//     Copy captures (Vec, OwnedStr, HashMap, ...) are queued.
+//   - Capture-by-ref second-class closures are queued.
+//   - Captures are read at call time, not snapshotted (so a
+//     reassignment to the captured var between closure creation
+//     and the call is observed by the call — capture-by-ref-of-
+//     the-binding semantics, faithful for the common case where
+//     the captured var is treated as a constant).
+
+pure fn double(x: i64) -> i64 { return x + x; }
+
+fn main() -> i64 {
+  // Single capture from a let.
+  let n: i64 = 10;
+  let add_n = fn(x: i64) -> i64 { return x + n; };
+  print "add_n(5):", add_n(5);
+  print "add_n(13):", add_n(13);
+
+  // Multiple captures, mixed with a top-level fn reference.
+  let factor: i64 = 3;
+  let bias: i64 = 100;
+  let scale_and_bias = fn(x: i64) -> i64 {
+    return double(x) * factor + bias;
+  };
+  print "scale_and_bias(7):", scale_and_bias(7);
+  print "scale_and_bias(0):", scale_and_bias(0);
+
+  // Multiple closures capturing the same outer var.
+  let limit: i64 = 50;
+  let under = fn(x: i64) -> bool { return x < limit; };
+  let over = fn(x: i64) -> bool { return x > limit; };
+  print "under(30):", under(30);
+  print "under(70):", under(70);
+  print "over(30):", over(30);
+  print "over(70):", over(70);
+
+  // Closure called inside a loop.
+  let step: i64 = 2;
+  let next = fn(x: i64) -> i64 { return x + step; };
+  let total: i64 = 0;
+  let i: i64 = 0;
+  while i < 10 {
+    total = total + next(i);
+    i = i + 1;
+  }
+  print "sum of next(0..10):", total;
+
+  // No-capture closures still work (closure #308 path).
+  let cube = fn(x: i64) -> i64 { return x * x * x; };
+  print "cube(4):", cube(4);
+
+  return 0;
+}

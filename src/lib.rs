@@ -13194,20 +13194,85 @@ fn main() -> i64 {
     }
 
     #[test]
-    fn anon_fn_rejects_outer_capture() {
+    fn closure_capture_multiple_vars_via_closure_lift() {
         let source = r#"
             fn main() -> i64 {
-              let n: i64 = 10;
-              let f: fn(i64) -> i64 = fn(x: i64) -> i64 { return x + n; };
+              let a: i64 = 7;
+              let b: i64 = 3;
+              let f = fn(x: i64) -> i64 { return x + a * b; };
+              return f(10);
+            }
+        "#;
+        compile_to_c(source).expect("multi-capture in C");
+        compile_to_llvm(source).expect("multi-capture in LLVM");
+    }
+
+    #[test]
+    fn closure_capture_used_multiple_times() {
+        let source = r#"
+            fn main() -> i64 {
+              let n: i64 = 5;
+              let f = fn(x: i64) -> i64 { return x + n; };
+              return f(1) + f(2) + f(3);
+            }
+        "#;
+        let c = compile_to_c(source).expect("multi-call captured closure in C");
+        // Hoisted fn name `__anon_fn_0` should appear in the
+        // emitted C and the closure binding `f` should not.
+        assert!(
+            c.contains("__anon_fn_0"),
+            "hoisted closure fn missing from emitted C: {}",
+            &c[..c.len().min(400)]
+        );
+        compile_to_llvm(source).expect("multi-call captured closure in LLVM");
+    }
+
+    #[test]
+    fn closure_capture_with_top_level_fn_in_body() {
+        let source = r#"
+            pure fn double(x: i64) -> i64 { return x + x; }
+            fn main() -> i64 {
+              let bias: i64 = 10;
+              let f = fn(x: i64) -> i64 { return double(x) + bias; };
               return f(5);
             }
         "#;
-        let errors = compile(source).expect_err("v1 anon fns must reject outer captures");
-        assert!(
-            errors.iter().any(|e| e.message.contains("unknown variable 'n'")),
-            "expected `unknown variable 'n'` diagnostic, got: {:?}",
-            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
-        );
+        compile_to_c(source).expect("capture + top-level fn ref in C");
+        compile_to_llvm(source).expect("capture + top-level fn ref in LLVM");
+    }
+
+    #[test]
+    fn closure_no_capture_still_works() {
+        // The capture path must not break the no-capture
+        // closure case shipped in closure #308.
+        let source = r#"
+            fn main() -> i64 {
+              let f = fn(x: i64) -> i64 { return x * x; };
+              return f(6);
+            }
+        "#;
+        compile_to_c(source).expect("no-capture in C");
+        compile_to_llvm(source).expect("no-capture in LLVM");
+    }
+
+    #[test]
+    fn anon_fn_with_outer_capture_now_compiles_via_closure_lift() {
+        // Closure #314 supersedes #308's "captures rejected"
+        // behavior: a Let-bound anon fn that references an
+        // outer Copy binding is lambda-lifted with that
+        // binding as a leading hidden parameter, and call
+        // sites are rewritten to pass it in. The closure
+        // binding itself never exists at runtime; it's a
+        // compile-time handle for the rewriter.
+        let source = r#"
+            fn main() -> i64 {
+              let n: i64 = 10;
+              let f = fn(x: i64) -> i64 { return x + n; };
+              return f(5);
+            }
+        "#;
+        compile_to_c(source).expect("captured-closure should compile in C");
+        compile_to_llvm(source).expect("captured-closure should compile in LLVM");
     }
 
     #[test]
