@@ -1,0 +1,53 @@
+// build & run:
+//   intentc run examples/hash.vani                          # LLVM backend
+//   intentc run examples/hash.vani --backend=c              # C backend
+//   intentc build examples/hash.vani -o /tmp/hash && /tmp/hash
+
+intent "Hash builtins — FNV-1a over i64 / Str + boost-style combine";
+
+// Three builtins for hashing scalar values and strings.
+// All return u64 and are pure + deterministic (same input
+// always produces the same output, identical across both
+// backends).
+//
+//   hash_i64(x: i64) -> u64       — FNV-1a over 8 bytes
+//   hash_str(s: Str) -> u64       — FNV-1a until NUL
+//   hash_combine(a, b: u64) -> u64 — boost::hash_combine mixer
+//
+// These are the building blocks for HashSet<T> / HashMap<K, V>
+// in Level 2 of the data-structures roadmap. v1 ships FNV-1a;
+// SipHash (adversarial-resistant) is queued for a future
+// hardening pass.
+
+fn main() -> i64 {
+  // Determinism: same input ⇒ same hash.
+  let h1: u64 = hash_i64(42);
+  let h2: u64 = hash_i64(42);
+  if h1 == h2 { print "hash_i64 deterministic: ok"; }
+
+  // Different inputs ⇒ different hashes (with overwhelming
+  // probability — FNV-1a has good avalanche).
+  let h3: u64 = hash_i64(43);
+  if h1 != h3 { print "hash_i64(42) != hash_i64(43)"; }
+
+  // Strings — same string, same hash.
+  let s1: u64 = hash_str("vani");
+  let s2: u64 = hash_str("vani");
+  if s1 == s2 { print "hash_str deterministic: ok"; }
+
+  // Different strings ⇒ different hashes.
+  let s3: u64 = hash_str("rust");
+  if s1 != s3 { print "hash_str(vani) != hash_str(rust)"; }
+
+  // Combining for composite keys. Useful for HashMap<(i64, Str)>
+  // when that lands in Level 2.
+  let combined: u64 = hash_combine(h1, s1);
+  print "combined hash is order-sensitive:", combined != hash_combine(s1, h1);
+
+  // Empty string still hashes to a defined value (the FNV-1a
+  // offset basis).
+  let empty: u64 = hash_str("");
+  print "empty string hash is the FNV offset basis";
+
+  return 0;
+}

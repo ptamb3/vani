@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #300 — RNG: seed_rng / rand_i64 / rand_in_range backed by thread-local xorshift64; new rng.vani; 6 new lib tests)
-**Test totals:** 1077 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 68 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #301 — Hash builtins: hash_i64 / hash_str / hash_combine (FNV-1a); new hash.vani; 6 new lib tests. **Level 1 of the data-structures roadmap is now COMPLETE.** Next focal area: Level 2 — HashSet / HashMap / BTreeSet / BTreeMap / Deque / BinaryHeap.)
+**Test totals:** 1083 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 69 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,51 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 1 — Hash builtins (shipped 2026-05-28, closure #301)
+
+✅ AFFINE — pure, deterministic, no heap.
+
+**API:**
+- `hash_i64(x: i64) -> u64` — FNV-1a unrolled over 8 bytes.
+- `hash_str(s: Str) -> u64` — FNV-1a until NUL.
+- `hash_combine(a: u64, b: u64) -> u64` — boost::hash_combine
+  with the golden-ratio constant 0x9e3779b97f4a7c15. Useful for
+  composite keys (tuples, structs) once Level 2 lands.
+
+**Constants:** FNV-1a offset basis 0xcbf29ce484222325, prime
+0x100000001b3 — standard. Cross-backend output is byte-for-byte
+identical for the same input.
+
+**Codegen:**
+- **Tree-C**: 3 static helpers emitted in the preamble when
+  any hash builtin is referenced (body-substring gate).
+- **Tree-LLVM**: 3 module-level `define i64 @intent_hash_*`
+  blocks emitted via the new `program_uses_hash` walker over
+  the typed IR.
+- **SSA**: routes through tree via `ssa_path_supports`.
+
+**Tests:** 6 lib tests (typecheck + LLVM compile; determinism;
+hash_str rejects non-Str; hash_combine rejects wrong arity; C
+runtime present; LLVM define present). `examples/hash.vani`
+covers determinism, distinctness, combine order-sensitivity,
+empty string. Cross-backend parity green.
+
+**Pending follow-ups:** SipHash (adversarial-resistant);
+hash_f64; hash interface (`Hash` trait) for user-defined
+struct keys. These unlock the full `HashSet<T>` / `HashMap<K,
+V>` Level 2 design — the FNV-1a builtins ship today as the
+v1 primitive.
+
+**🎉 Level 1 of the data-structures roadmap is COMPLETE.**
+Shipped closures: #293 (Vec.sort + sort_by) · #294 (Vec.reverse
++ Vec.dedup) · #295 (Vec.find / contains / binary_search) ·
+#296 (Vec.swap_remove / insert / clear) · #297 (Array ops on
+`[i64; N]`) · #298 (str_contains / starts_with / ends_with +
+parse_int / parse_float) · #299 (math: pow / sqrt / trig /
+floor / ceil + overloaded abs) · #300 (RNG) · #301 (hash).
+Level 2 begins next: HashSet / HashMap (⚠️ AFFINE-TENSION) /
+BTreeSet / BTreeMap / Deque / BinaryHeap.
 
 ### Data-structures roadmap Level 1 — RNG (shipped 2026-05-28, closure #300)
 

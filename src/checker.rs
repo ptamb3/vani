@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -11977,6 +11977,11 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "hash_i64" | "hash_str" | "hash_combine" => {
+            return check_hash_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "clone" => return check_clone_builtin(args, env, signatures, span, diagnostics),
         "clone_at" => {
             return check_clone_at_builtin(args, env, signatures, span, diagnostics)
@@ -14181,6 +14186,81 @@ fn check_rng_builtin(
             args: typed_args,
         },
         Type::I64,
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 1 — hash surface builtins.
+///
+///   hash_i64(x: i64) -> u64
+///   hash_str(s: Str) -> u64
+///   hash_combine(a: u64, b: u64) -> u64
+///
+/// FNV-1a backed in v1 (offset basis 0xcbf29ce484222325,
+/// prime 0x100000001b3). Good enough for hash-table buckets;
+/// SipHash queued as a future hardening step for
+/// adversarial-input scenarios. All hash builtins are pure +
+/// deterministic — same input ⇒ same output every time.
+fn check_hash_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args = match name {
+        "hash_combine" => 2,
+        _ => 1,
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}() expects {} argument{}, got {}",
+                name,
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback(Type::U64, span);
+    }
+    let mut typed_args = Vec::new();
+    let arg_ty = match name {
+        "hash_i64" => Type::I64,
+        "hash_str" => Type::Str,
+        "hash_combine" => Type::U64,
+        _ => unreachable!(),
+    };
+    let a0_raw = check_expr(&args[0], env, signatures, diagnostics);
+    let a0 = coerce_checked(
+        a0_raw,
+        &arg_ty,
+        args[0].span,
+        &format!("{} first argument", name),
+        diagnostics,
+    );
+    typed_args.push(a0.expr);
+    if name == "hash_combine" {
+        let a1_raw = check_expr(&args[1], env, signatures, diagnostics);
+        let a1 = coerce_checked(
+            a1_raw,
+            &Type::U64,
+            args[1].span,
+            "hash_combine second argument",
+            diagnostics,
+        );
+        typed_args.push(a1.expr);
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        Type::U64,
         None,
         span,
     )

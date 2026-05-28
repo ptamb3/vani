@@ -488,7 +488,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #300 — RNG: seed_rng / rand_i64 / rand_in_range backed by thread-local xorshift64 lumped into one commit + 6 lib tests + new rng.vani parity example. Next focal area: LAST Level 1 item — Hash interface + FNV-1a / SipHash builtin. After that, Level 2 begins (HashSet / HashMap / BTreeSet / BTreeMap / Deque / BinaryHeap). Heap-allocating str_split / str_trim / str_replace deferred.)
+## ⏳ Resume here (paused 2026-05-28, after closure #301 — Hash builtins: hash_i64 / hash_str / hash_combine (FNV-1a) lumped into one commit + 6 lib tests + new hash.vani parity example. 🎉 **Level 1 of the data-structures roadmap is COMPLETE.** Next focal area: Level 2 — HashSet / HashMap (⚠️ AFFINE-TENSION) / BTreeSet / BTreeMap / Deque / BinaryHeap. SipHash, hash_f64, Hash interface (user struct keys), and heap-allocating str_split / str_trim / str_replace deferred.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

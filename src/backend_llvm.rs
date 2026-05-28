@@ -804,6 +804,12 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         emit_intent_rng_helpers_llvm(&mut out);
     }
 
+    // Data-structures roadmap: FNV-1a hash helpers. Gated on
+    // the program actually using a hash builtin.
+    if program_uses_hash(program) {
+        emit_intent_hash_helpers_llvm(&mut out);
+    }
+
     for function in &program.functions {
         emit_function(function, &assert_idx, &print_idx, &mut out);
         out.push('\n');
@@ -4829,6 +4835,36 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
                 return dest;
             }
+            // Hash builtins (closure #301). Call outlined
+            // FNV-1a helpers emitted at module scope.
+            if name == "hash_i64" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hash_i64(i64 {})\n",
+                    dest, x
+                ));
+                return dest;
+            }
+            if name == "hash_str" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hash_str(i8* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
+            if name == "hash_combine" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hash_combine(i64 {}, i64 {})\n",
+                    dest, a, b
+                ));
+                return dest;
+            }
             // RNG builtins (closure #300). Call outlined
             // helper defs emitted at module scope.
             if name == "seed_rng" {
@@ -6902,6 +6938,159 @@ fn emit_intent_rng_helpers_llvm(out: &mut String) {
          \x20 %ur = urem i64 %r, %span\n\
          \x20 %res = add i64 %lo, %ur\n\
          \x20 ret i64 %res\n\
+         }\n\n",
+    );
+}
+
+/// Walk the typed program for any Call to hash_i64 / hash_str
+/// / hash_combine. Triggers emission of the FNV-1a helpers.
+fn program_uses_hash(program: &TypedProgram) -> bool {
+    use crate::ir::TypedExprKind as E;
+    use crate::ir::TypedStmt as S;
+    fn expr_uses(expr: &crate::ir::TypedExpr) -> bool {
+        match &expr.kind {
+            E::Call { name, args, .. } => {
+                if matches!(
+                    name.as_str(),
+                    "hash_i64" | "hash_str" | "hash_combine"
+                ) {
+                    return true;
+                }
+                args.iter().any(expr_uses)
+            }
+            E::Unary { expr, .. } | E::Cast { expr, .. } => expr_uses(expr),
+            E::Len { array, .. } => expr_uses(array),
+            E::Binary { left, right, .. } => expr_uses(left) || expr_uses(right),
+            E::CallIndirect { callee, args } => {
+                expr_uses(callee) || args.iter().any(expr_uses)
+            }
+            E::ArrayLit { elements } => elements.iter().any(expr_uses),
+            E::Index { array, index, .. } => expr_uses(array) || expr_uses(index),
+            E::Tuple { elements } => elements.iter().any(expr_uses),
+            E::TupleAccess { tuple, .. } => expr_uses(tuple),
+            E::StructLit { fields, .. } => fields.iter().any(|(_, v)| expr_uses(v)),
+            E::FieldAccess { object, .. } => expr_uses(object),
+            E::EnumVariantWithPayload { payload, .. } => expr_uses(payload),
+            E::IfExpr { cond, then_value, else_value } => {
+                expr_uses(cond) || expr_uses(then_value) || expr_uses(else_value)
+            }
+            E::Match { scrutinee, arms } => {
+                expr_uses(scrutinee) || arms.iter().any(|a| expr_uses(&a.body))
+            }
+            E::Block { stmts, tail } => {
+                stmts.iter().any(stmt_uses) || expr_uses(tail)
+            }
+            _ => false,
+        }
+    }
+    fn stmt_uses(stmt: &crate::ir::TypedStmt) -> bool {
+        match stmt {
+            S::Let { expr, .. }
+            | S::Reassign { expr, .. }
+            | S::Return { expr }
+            | S::Assert { expr, .. }
+            | S::Prove { expr } => expr_uses(expr),
+            S::Discard { expr } => expr_uses(expr),
+            S::Print { items } => items.iter().any(|it| match it {
+                crate::ir::TypedPrintItem::Expr(e) => expr_uses(e),
+                _ => false,
+            }),
+            S::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                expr_uses(cond)
+                    || then_body.iter().any(stmt_uses)
+                    || else_body.iter().any(stmt_uses)
+            }
+            S::While { cond, body } => expr_uses(cond) || body.iter().any(stmt_uses),
+            S::For { body, .. } | S::ForIter { body, .. } => {
+                body.iter().any(stmt_uses)
+            }
+            S::IndexAssign { index, value, .. } => expr_uses(index) || expr_uses(value),
+            S::FieldAssign { object, value, .. } => expr_uses(object) || expr_uses(value),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        for s in &f.body {
+            if stmt_uses(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// FNV-1a hash helpers emitted at module scope (closure #301).
+/// Three entrypoints: hash_i64 unrolled over 8 bytes,
+/// hash_str loops until NUL, hash_combine boost-style mixer.
+fn emit_intent_hash_helpers_llvm(out: &mut String) {
+    out.push_str(
+        "define i64 @intent_hash_i64(i64 %x) {\n\
+         \x20 %h_p = alloca i64\n\
+         \x20 store i64 -3750763034362895579, i64* %h_p\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 store i64 0, i64* %i_p\n\
+         \x20 br label %hi_loop\n\
+         hi_loop:\n\
+         \x20 %i = load i64, i64* %i_p\n\
+         \x20 %cont = icmp slt i64 %i, 8\n\
+         \x20 br i1 %cont, label %hi_body, label %hi_done\n\
+         hi_body:\n\
+         \x20 %sh = mul i64 %i, 8\n\
+         \x20 %shifted = lshr i64 %x, %sh\n\
+         \x20 %b = and i64 %shifted, 255\n\
+         \x20 %h = load i64, i64* %h_p\n\
+         \x20 %hx = xor i64 %h, %b\n\
+         \x20 %hp = mul i64 %hx, 1099511628211\n\
+         \x20 store i64 %hp, i64* %h_p\n\
+         \x20 %i_n = add i64 %i, 1\n\
+         \x20 store i64 %i_n, i64* %i_p\n\
+         \x20 br label %hi_loop\n\
+         hi_done:\n\
+         \x20 %final = load i64, i64* %h_p\n\
+         \x20 ret i64 %final\n\
+         }\n\
+         define i64 @intent_hash_str(i8* %s) {\n\
+         \x20 %is_null = icmp eq i8* %s, null\n\
+         \x20 br i1 %is_null, label %hs_empty, label %hs_init\n\
+         hs_empty:\n\
+         \x20 ret i64 -3750763034362895579\n\
+         hs_init:\n\
+         \x20 %h_p = alloca i64\n\
+         \x20 store i64 -3750763034362895579, i64* %h_p\n\
+         \x20 %p_p = alloca i8*\n\
+         \x20 store i8* %s, i8** %p_p\n\
+         \x20 br label %hs_loop\n\
+         hs_loop:\n\
+         \x20 %p = load i8*, i8** %p_p\n\
+         \x20 %c = load i8, i8* %p\n\
+         \x20 %is_nul = icmp eq i8 %c, 0\n\
+         \x20 br i1 %is_nul, label %hs_done, label %hs_body\n\
+         hs_body:\n\
+         \x20 %cz = zext i8 %c to i64\n\
+         \x20 %h = load i64, i64* %h_p\n\
+         \x20 %hx = xor i64 %h, %cz\n\
+         \x20 %hp = mul i64 %hx, 1099511628211\n\
+         \x20 store i64 %hp, i64* %h_p\n\
+         \x20 %p_n = getelementptr i8, i8* %p, i64 1\n\
+         \x20 store i8* %p_n, i8** %p_p\n\
+         \x20 br label %hs_loop\n\
+         hs_done:\n\
+         \x20 %final = load i64, i64* %h_p\n\
+         \x20 ret i64 %final\n\
+         }\n\
+         define i64 @intent_hash_combine(i64 %a, i64 %b) {\n\
+         \x20 ; boost::hash_combine, FNV-tuned.\n\
+         \x20 %m1 = add i64 %b, -7046029254386353131\n\
+         \x20 %sh_l = shl i64 %a, 6\n\
+         \x20 %sh_r = lshr i64 %a, 2\n\
+         \x20 %sum = add i64 %m1, %sh_l\n\
+         \x20 %sum2 = add i64 %sum, %sh_r\n\
+         \x20 %r = xor i64 %a, %sum2\n\
+         \x20 ret i64 %r\n\
          }\n\n",
     );
 }

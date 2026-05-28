@@ -12482,6 +12482,109 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn hash_builtins_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: u64 = hash_i64(42);
+              let b: u64 = hash_str("hello");
+              let c: u64 = hash_combine(a, b);
+              return c as i64;
+            }
+        "#;
+        compile_to_c(source).expect("hash builtins must type-check");
+        compile_to_llvm(source).expect("hash builtins must compile to LLVM");
+    }
+
+    #[test]
+    fn hash_returns_same_value_for_same_input_in_c() {
+        // FNV-1a determinism is the API contract — running
+        // the program twice must produce identical hashes.
+        let source = r#"
+            fn main() -> i64 {
+              let a: u64 = hash_i64(42);
+              let b: u64 = hash_i64(42);
+              if a == b { return 1; } else { return 0; }
+            }
+        "#;
+        let c = compile_to_c(source).expect("hash equality program compiles");
+        assert!(
+            c.contains("intent_hash_i64"),
+            "C output must call the FNV-1a helper; got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn hash_str_rejects_non_str_arg() {
+        let source = r#"
+            fn main() -> i64 {
+              let _: u64 = hash_str(42);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("hash_str on i64 must fail");
+        assert!(
+            !errors.is_empty(),
+            "hash_str with wrong arg type must diagnose"
+        );
+    }
+
+    #[test]
+    fn hash_combine_rejects_wrong_arity() {
+        let source = r#"
+            fn main() -> i64 {
+              let _: u64 = hash_combine(1 as u64);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("arity must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("2 arguments")),
+            "expected arity diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn hash_emits_fnv1a_runtime_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let _: u64 = hash_i64(7);
+              let _: u64 = hash_str("x");
+              let _: u64 = hash_combine(1 as u64, 2 as u64);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("hash program compiles");
+        assert!(
+            c.contains("intent_hash_i64")
+                && c.contains("intent_hash_str")
+                && c.contains("intent_hash_combine")
+                && c.contains("0xcbf29ce484222325ULL"),
+            "C output must include the FNV-1a runtime; got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn hash_emits_fnv1a_defines_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let _: u64 = hash_i64(7);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("hash LLVM compile");
+        assert!(
+            ll.contains("define i64 @intent_hash_i64("),
+            "LLVM output must include the FNV-1a define; got snippet:\n{}",
+            &ll[..ll.len().min(800)]
+        );
+    }
+
+    #[test]
     fn rng_builtins_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

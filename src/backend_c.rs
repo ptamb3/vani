@@ -572,6 +572,7 @@ pub fn emit_c(program: &TypedProgram) -> String {
     emit_intent_str_concat_c(&mut out);
     emit_concurrency_runtime_helpers(&mut out, &body, &channel_specs);
     emit_intent_rng_helpers_c(&mut out, &body);
+    emit_intent_hash_helpers_c(&mut out, &body);
     out.push_str(&body);
     out
 }
@@ -610,6 +611,39 @@ fn emit_intent_rng_helpers_c(out: &mut String, body: &str) {
          \x20 uint64_t span = (uint64_t)(hi - lo);\n\
          \x20 uint64_t r = (uint64_t)intent_rng_next();\n\
          \x20 return lo + (int64_t)(r % span);\n\
+         }\n\n",
+    );
+}
+
+/// Data-structures roadmap Level 1 — FNV-1a hash helpers.
+/// Offset basis 0xcbf29ce484222325, prime 0x100000001b3.
+fn emit_intent_hash_helpers_c(out: &mut String, body: &str) {
+    if !body.contains("intent_hash_") {
+        return;
+    }
+    out.push_str(
+        "static INTENT_UNUSED uint64_t intent_hash_i64(int64_t x) {\n\
+         \x20 uint64_t h = 0xcbf29ce484222325ULL;\n\
+         \x20 uint64_t u = (uint64_t)x;\n\
+         \x20 for (int i = 0; i < 8; i++) {\n\
+         \x20   h ^= (u >> (i * 8)) & 0xffULL;\n\
+         \x20   h *= 0x100000001b3ULL;\n\
+         \x20 }\n\
+         \x20 return h;\n\
+         }\n\
+         static INTENT_UNUSED uint64_t intent_hash_str(const char* s) {\n\
+         \x20 uint64_t h = 0xcbf29ce484222325ULL;\n\
+         \x20 if (s == 0) return h;\n\
+         \x20 for (; *s; s++) {\n\
+         \x20   h ^= (uint64_t)(unsigned char)(*s);\n\
+         \x20   h *= 0x100000001b3ULL;\n\
+         \x20 }\n\
+         \x20 return h;\n\
+         }\n\
+         static INTENT_UNUSED uint64_t intent_hash_combine(uint64_t a, uint64_t b) {\n\
+         \x20 /* boost::hash_combine-style mixer, FNV-tuned. */\n\
+         \x20 a ^= b + 0x9e3779b97f4a7c15ULL + (a << 6) + (a >> 2);\n\
+         \x20 return a;\n\
          }\n\n",
     );
 }
@@ -5226,6 +5260,19 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 "({{ const char* __pi_s = ({s}); char* __pi_end = (char*)0; long long __pi_v = strtoll(__pi_s, &__pi_end, 10); {opt} __pi_r; if (__pi_end != __pi_s && *__pi_end == 0 && *__pi_s != 0) {{ __pi_r.tag = 0; __pi_r.payload = (int64_t)__pi_v; }} else {{ __pi_r.tag = 1; __pi_r.payload = 0; }} __pi_r; }})",
                 s = emit_expr(&args[0]),
                 opt = opt_c,
+            )
+        }
+        "hash_i64" => {
+            format!("intent_hash_i64(({}))", emit_expr(&args[0]))
+        }
+        "hash_str" => {
+            format!("intent_hash_str(({}))", emit_expr(&args[0]))
+        }
+        "hash_combine" => {
+            format!(
+                "intent_hash_combine(({}), ({}))",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
             )
         }
         "seed_rng" => {
