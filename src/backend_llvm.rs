@@ -4798,7 +4798,10 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
                 return dest;
             }
-            if matches!(name.as_str(), "push" | "set" | "clone" | "push_mut" | "pop") {
+            if matches!(
+                name.as_str(),
+                "push" | "set" | "clone" | "push_mut" | "pop" | "sort" | "sort_by"
+            ) {
                 let elt = vec_element_of_first_arg(args)
                     .expect("vec builtins take a Vec as the first arg");
                 // Use the composable tag so nested-Vec elements
@@ -6532,6 +6535,122 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
         ));
         out.push_str("  store i64 %new_len_pp, i64* %len_pp\n");
         out.push_str(&format!("  ret {} %popped_pp\n", elt_ty));
+        out.push_str("}\n");
+    }
+
+    // ---- sort / sort_by: in-place insertion sort. v1: i64
+    // element only (matches tree-C's `Type::I64` gate in
+    // `emit_vec_bundle`). Insertion sort is O(n^2) worst case
+    // but lands the API cleanly; a quicksort upgrade is a
+    // straightforward follow-up. The user-supplied comparator
+    // for `sort_by` has shape `i64(i64, i64)` — i64 is Copy
+    // so the comparator takes values directly. Returns
+    // strcmp convention (negative / zero / positive).
+    if matches!(element, Type::I64) {
+        let sort_name = format!("@intent_vec_{}__sort", tag);
+        let sort_by_name = format!("@intent_vec_{}__sort_by", tag);
+        let sort_with_name = format!("@intent_vec_{}__sort_with", tag);
+        let cmp_asc_name = format!("@intent_vec_{}__cmp_asc", tag);
+        // Default ascending comparator: strcmp convention.
+        out.push_str(&format!(
+            "define internal i64 {cmp}(i64 %a, i64 %b) {{\n",
+            cmp = cmp_asc_name,
+        ));
+        out.push_str("  %gt = icmp sgt i64 %a, %b\n");
+        out.push_str("  %lt = icmp slt i64 %a, %b\n");
+        out.push_str("  %g = zext i1 %gt to i64\n");
+        out.push_str("  %l = zext i1 %lt to i64\n");
+        out.push_str("  %r = sub i64 %g, %l\n");
+        out.push_str("  ret i64 %r\n");
+        out.push_str("}\n");
+        // Core sort: insertion sort over [0..len).
+        out.push_str(&format!(
+            "define i64 {sn_with}({sty}* %xs_p, i64 (i64, i64)* %cmp) {{\n",
+            sn_with = sort_with_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %data = load i64*, i64** %data_p\n");
+        out.push_str("  %len = load i64, i64* %len_p\n");
+        out.push_str("  %i_p = alloca i64\n");
+        out.push_str("  store i64 1, i64* %i_p\n");
+        out.push_str("  %j_p = alloca i64\n");
+        out.push_str("  %key_p = alloca i64\n");
+        out.push_str("  br label %sort_outer\n");
+        out.push_str("sort_outer:\n");
+        out.push_str("  %i_v = load i64, i64* %i_p\n");
+        out.push_str("  %i_cont = icmp slt i64 %i_v, %len\n");
+        out.push_str("  br i1 %i_cont, label %sort_outer_body, label %sort_done\n");
+        out.push_str("sort_outer_body:\n");
+        out.push_str("  %slot_i = getelementptr i64, i64* %data, i64 %i_v\n");
+        out.push_str("  %key_v = load i64, i64* %slot_i\n");
+        out.push_str("  store i64 %key_v, i64* %key_p\n");
+        out.push_str("  %i_m1 = sub i64 %i_v, 1\n");
+        out.push_str("  store i64 %i_m1, i64* %j_p\n");
+        out.push_str("  br label %sort_inner\n");
+        out.push_str("sort_inner:\n");
+        out.push_str("  %j_v = load i64, i64* %j_p\n");
+        out.push_str("  %j_ok = icmp sge i64 %j_v, 0\n");
+        out.push_str("  br i1 %j_ok, label %sort_inner_cmp, label %sort_inner_done\n");
+        out.push_str("sort_inner_cmp:\n");
+        out.push_str("  %slot_j = getelementptr i64, i64* %data, i64 %j_v\n");
+        out.push_str("  %slot_jv = load i64, i64* %slot_j\n");
+        out.push_str("  %key_load = load i64, i64* %key_p\n");
+        out.push_str(
+            "  %cmp_r = call i64 %cmp(i64 %slot_jv, i64 %key_load)\n",
+        );
+        out.push_str("  %cmp_gt = icmp sgt i64 %cmp_r, 0\n");
+        out.push_str("  br i1 %cmp_gt, label %sort_inner_shift, label %sort_inner_done\n");
+        out.push_str("sort_inner_shift:\n");
+        out.push_str("  %j_p1 = add i64 %j_v, 1\n");
+        out.push_str("  %slot_jp1 = getelementptr i64, i64* %data, i64 %j_p1\n");
+        out.push_str("  store i64 %slot_jv, i64* %slot_jp1\n");
+        out.push_str("  %j_dec = sub i64 %j_v, 1\n");
+        out.push_str("  store i64 %j_dec, i64* %j_p\n");
+        out.push_str("  br label %sort_inner\n");
+        out.push_str("sort_inner_done:\n");
+        out.push_str("  %j_final = load i64, i64* %j_p\n");
+        out.push_str("  %insert_at = add i64 %j_final, 1\n");
+        out.push_str("  %insert_p = getelementptr i64, i64* %data, i64 %insert_at\n");
+        out.push_str("  %k = load i64, i64* %key_p\n");
+        out.push_str("  store i64 %k, i64* %insert_p\n");
+        out.push_str("  %i_next = add i64 %i_v, 1\n");
+        out.push_str("  store i64 %i_next, i64* %i_p\n");
+        out.push_str("  br label %sort_outer\n");
+        out.push_str("sort_done:\n");
+        out.push_str("  ret i64 0\n");
+        out.push_str("}\n");
+        out.push_str(&format!(
+            "define i64 {sn}({sty}* %xs_p) {{\n",
+            sn = sort_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %r = call i64 {sn_with}({sty}* %xs_p, i64 (i64, i64)* {cmp})\n",
+            sn_with = sort_with_name,
+            sty = s_ty,
+            cmp = cmp_asc_name,
+        ));
+        out.push_str("  ret i64 %r\n");
+        out.push_str("}\n");
+        out.push_str(&format!(
+            "define i64 {sn}({sty}* %xs_p, i64 (i64, i64)* %cmp) {{\n",
+            sn = sort_by_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %r = call i64 {sn_with}({sty}* %xs_p, i64 (i64, i64)* %cmp)\n",
+            sn_with = sort_with_name,
+            sty = s_ty,
+        ));
+        out.push_str("  ret i64 %r\n");
         out.push_str("}\n");
     }
 

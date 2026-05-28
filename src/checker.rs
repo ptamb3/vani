@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -11809,6 +11809,9 @@ fn check_call(
         "push" => return check_push_builtin(args, env, signatures, span, diagnostics),
         "pop" => return check_pop_builtin(args, env, signatures, span, diagnostics),
         "set" => return check_set_builtin(args, env, signatures, span, diagnostics),
+        "sort" | "sort_by" => {
+            return check_sort_builtin(name, args, env, signatures, span, diagnostics);
+        }
         "clone" => return check_clone_builtin(args, env, signatures, span, diagnostics),
         "clone_at" => {
             return check_clone_at_builtin(args, env, signatures, span, diagnostics)
@@ -13489,6 +13492,125 @@ fn check_pop_builtin(
             args: vec![xs.expr],
         },
         element_type,
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 1 — `sort(mut ref xs)` /
+/// `sort_by(mut ref xs, cmp)` on `Vec<i64>`.
+///
+///   sort(mut ref xs: Vec<i64>) -> i64
+///   sort_by(mut ref xs: Vec<i64>, cmp: fn(ref i64, ref i64) -> i64) -> i64
+///
+/// Default `sort` uses ascending integer order. `sort_by` takes
+/// a function-pointer comparator returning the strcmp convention
+/// (negative / zero / positive). v1: `Vec<i64>` only (matches the
+/// existing Mutex<i64> / Atomic / Channel scoping); wider widths
+/// follow when the runtime helpers are parameterized.
+///
+/// The Vec is borrowed via `mut ref` — sort is in-place, doesn't
+/// move ownership, and returns `i64 0` so it composes with
+/// `let _ = sort(mut ref xs);`.
+fn check_sort_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args: usize = if name == "sort_by" { 2 } else { 1 };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}({}) expects {} argument{}, got {}",
+                name,
+                if name == "sort_by" {
+                    "mut ref xs, cmp"
+                } else {
+                    "mut ref xs"
+                },
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback_integer(span);
+    }
+    let xs = check_expr(&args[0], env, signatures, diagnostics);
+    let element_type = match xs.ty() {
+        Type::RefMut(inner) => match &**inner {
+            Type::Vec(element) => (**element).clone(),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "{}() requires a `mut ref Vec<i64>` argument, got {}",
+                        name,
+                        xs.ty()
+                    ),
+                ));
+                return CheckedExpr::fallback_integer(span);
+            }
+        },
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "{}() requires a `mut ref Vec<i64>` argument, got {}",
+                    name, other
+                ),
+            ));
+            return CheckedExpr::fallback_integer(span);
+        }
+    };
+    // v1 restriction: Vec<i64> only. The runtime helper is
+    // monomorphized over i64 element width; wider widths
+    // would need element-typed runtime helpers (i32 / u64 /
+    // etc.) and are queued as a follow-up. Match the Mutex<i64>
+    // v1 scope.
+    if !matches!(element_type, Type::I64) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() only supports `Vec<i64>` in v1, got Vec<{}>",
+                name, element_type
+            ),
+        ));
+        return CheckedExpr::fallback_integer(span);
+    }
+    let mut typed_args = vec![xs.expr];
+    if name == "sort_by" {
+        // Comparator: v1 element is `i64` (Copy), so the
+        // comparator takes values directly. strcmp convention:
+        // negative / zero / positive. When wider non-Copy
+        // element widths land, the comparator will switch to
+        // `fn(ref T, ref T) -> i64` to avoid moves.
+        let cmp = check_expr(&args[1], env, signatures, diagnostics);
+        let expected = Type::FnPtr(
+            vec![Type::I64, Type::I64],
+            Box::new(Type::I64),
+        );
+        if cmp.ty() != &expected {
+            diagnostics.push(Diagnostic::new(
+                args[1].span,
+                format!(
+                    "sort_by comparator must be `fn(i64, i64) -> i64`, got {}",
+                    cmp.ty()
+                ),
+            ));
+        }
+        typed_args.push(cmp.expr);
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        Type::I64,
         None,
         span,
     )

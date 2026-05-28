@@ -1,0 +1,80 @@
+// build & run:
+//   intentc run examples/sort.vani                          # LLVM backend
+//   intentc run examples/sort.vani --backend=c              # C backend
+//   intentc build examples/sort.vani -o /tmp/sort && /tmp/sort
+
+intent "sort + sort_by on Vec<i64>: Level 1 of the data-structures roadmap";
+
+// `sort(mut ref xs)` sorts `Vec<i64>` in place using the default
+// ascending comparator. `sort_by(mut ref xs, cmp)` sorts using a
+// user-supplied function pointer with strcmp convention:
+//   negative → a < b
+//   zero     → a == b
+//   positive → a > b
+//
+// v1 restricts to `Vec<i64>`; wider element widths follow when
+// the runtime helpers are parameterized. The comparator takes
+// i64 values (i64 is Copy — no refs needed in v1).
+//
+// The Vec is borrowed via `mut ref` — the sort is in-place,
+// doesn't move ownership, and returns `i64 0` so it composes
+// with `let _ = sort(mut ref xs);`.
+
+fn descending(a: i64, b: i64) -> i64 {
+  if a > b { return -1; }
+  if a < b { return 1; }
+  return 0;
+}
+
+fn abs(x: i64) -> i64 {
+  if x < 0 { return 0 - x; }
+  return x;
+}
+
+fn by_absolute_value(a: i64, b: i64) -> i64 {
+  let aa: i64 = abs(a);
+  let bb: i64 = abs(b);
+  return aa - bb;
+}
+
+fn print_vec(xs: ref Vec<i64>) -> i64 {
+  let n: i64 = len(xs) as i64;
+  let i: i64 = 0;
+  while i < n {
+    print xs[i];
+    i = i + 1;
+  }
+  return 0;
+}
+
+fn main() -> i64 {
+  // Default ascending sort.
+  let xs: Vec<i64> = vec(5, 2, 8, 1, 9, 3, 7, 4, 6);
+  let _ = sort(mut ref xs);
+  print "ascending:";
+  let _ = print_vec(ref xs);
+
+  // Descending via sort_by.
+  let ys: Vec<i64> = vec(3, 1, 4, 1, 5, 9, 2, 6, 5);
+  let _ = sort_by(mut ref ys, descending);
+  print "descending:";
+  let _ = print_vec(ref ys);
+
+  // Sort by absolute value — duplicates allowed.
+  let zs: Vec<i64> = vec(0 - 3, 1, 0 - 4, 2, 0 - 1, 5);
+  let _ = sort_by(mut ref zs, by_absolute_value);
+  print "by |x|:";
+  let _ = print_vec(ref zs);
+
+  // Edge cases: empty and singleton vectors.
+  let empty: Vec<i64> = vec();
+  let _ = sort(mut ref empty);
+  print "empty len:", len(ref empty) as i64;
+
+  let one: Vec<i64> = vec(42);
+  let _ = sort(mut ref one);
+  print "one:";
+  let _ = print_vec(ref one);
+
+  return 0;
+}

@@ -865,6 +865,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "push_mut.vani",
         "sanskrit_keywords.vani",
         "scopes.vani",
+        "sort.vani",
         "strings.vani",
         "strings_concat.vani",
         "struct_atomic_field.vani",

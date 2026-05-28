@@ -1633,6 +1633,83 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
         ));
     }
 
+    // Data-structures roadmap Level 1: in-place `sort` /
+    // `sort_by` on `Vec<i64>`. v1 restricts to i64 — the
+    // runtime helper is monomorphized over that width. The
+    // checker rejects non-i64 element types at the call site
+    // so this emit gate matches the surface. The comparator
+    // takes i64 values directly (i64 is Copy); strcmp
+    // convention: negative / zero / positive.
+    if matches!(element, Type::I64) {
+        out.push_str(&format!(
+            "typedef int64_t (*{sn}__cmp_fn)(int64_t, int64_t);\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__cmp_ascending(int64_t a, int64_t b) {{\
+\n    return (a > b) - (a < b);\
+\n}}\n",
+            sn = struct_name,
+        ));
+        // Hoare-partition quicksort with insertion-sort cutoff
+        // (N < 16).
+        out.push_str(&format!(
+            "static INTENT_UNUSED void {sn}__qsort_impl(int64_t* a, int64_t lo, int64_t hi, {sn}__cmp_fn cmp) {{\
+\n    while (lo < hi) {{\
+\n        if (hi - lo < 16) {{\
+\n            for (int64_t i = lo + 1; i <= hi; i++) {{\
+\n                int64_t key = a[i];\
+\n                int64_t j = i - 1;\
+\n                while (j >= lo && cmp(a[j], key) > 0) {{\
+\n                    a[j + 1] = a[j];\
+\n                    j--;\
+\n                }}\
+\n                a[j + 1] = key;\
+\n            }}\
+\n            return;\
+\n        }}\
+\n        int64_t mid = lo + (hi - lo) / 2;\
+\n        int64_t pivot = a[mid];\
+\n        int64_t i = lo - 1;\
+\n        int64_t j = hi + 1;\
+\n        for (;;) {{\
+\n            do {{ i++; }} while (cmp(a[i], pivot) < 0);\
+\n            do {{ j--; }} while (cmp(a[j], pivot) > 0);\
+\n            if (i >= j) break;\
+\n            int64_t tmp = a[i]; a[i] = a[j]; a[j] = tmp;\
+\n        }}\
+\n        /* Tail-recurse on the larger side to bound stack depth. */\
+\n        if (j - lo < hi - (j + 1)) {{\
+\n            {sn}__qsort_impl(a, lo, j, cmp);\
+\n            lo = j + 1;\
+\n        }} else {{\
+\n            {sn}__qsort_impl(a, j + 1, hi, cmp);\
+\n            hi = j;\
+\n        }}\
+\n    }}\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__sort({sn}* xs) {{\
+\n    if (xs->len > 1) {{\
+\n        {sn}__qsort_impl(xs->data, 0, (int64_t)xs->len - 1, {sn}__cmp_ascending);\
+\n    }}\
+\n    return 0;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__sort_by({sn}* xs, {sn}__cmp_fn cmp) {{\
+\n    if (xs->len > 1) {{\
+\n        {sn}__qsort_impl(xs->data, 0, (int64_t)xs->len - 1, cmp);\
+\n    }}\
+\n    return 0;\
+\n}}\n",
+            sn = struct_name,
+        ));
+    }
+
     // `__set(xs, i, v)`: store the new value at xs.data[i].
     // For non-Copy elements (Vec<T>, Array<T, N>) the old slot
     // value's resources are released first via the element-
@@ -4646,6 +4723,29 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 "{}({})",
                 vec_helper(&element, "pop_mut"),
                 emit_expr(&args[0]),
+            )
+        }
+        "sort" => {
+            // In-place ascending sort. v1: Vec<i64> only.
+            // Lowers to the runtime helper `intent_vec_int64_t__sort`.
+            let element = match args[0].ty.deref() {
+                Type::Vec(element) => element.clone(),
+                _ => unreachable!("sort() arg 0 must be (mut ref) Vec<_>"),
+            };
+            format!("{}({})", vec_helper(&element, "sort"), emit_expr(&args[0]))
+        }
+        "sort_by" => {
+            // In-place sort with user comparator
+            // `fn(ref i64, ref i64) -> i64`. v1: Vec<i64> only.
+            let element = match args[0].ty.deref() {
+                Type::Vec(element) => element.clone(),
+                _ => unreachable!("sort_by() arg 0 must be (mut ref) Vec<_>"),
+            };
+            format!(
+                "{}({}, {})",
+                vec_helper(&element, "sort_by"),
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
             )
         }
         "set" => {

@@ -488,7 +488,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #292 — Condvar primitive on both backends + 5 lib tests + condvar.vani parity example. Next focal area: Level 1 of the data-structures roadmap, starting with Vec.sort + Vec.sort_by.)
+## ⏳ Resume here (paused 2026-05-28, after closure #293 — Vec.sort + Vec.sort_by on Vec<i64> across both backends + 6 lib tests + sort.vani parity example. Next focal area: Level 1 items #2–#10 — reverse, dedup, find, contains, binary_search, pop additions, Array.sort, String ops, parse_int/parse_float, math + RNG + Hash interface.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

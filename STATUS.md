@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #292 — Condvar primitive on both backends; condvar.vani example + 5 lib tests)
-**Test totals:** 1030 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 64 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #293 — Vec.sort + Vec.sort_by on Vec<i64>; sort.vani example + 6 lib tests)
+**Test totals:** 1036 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 65 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -62,6 +62,42 @@ under *Data structures + algorithms roadmap*.
   yielding owned T (substitute: by-ref iteration / `.fold` /
   `.collect`); Pin / self-referential structs (substitute: arena
   pattern); GC (any flavor — defeats no-runtime promise).
+
+### Data-structures roadmap Level 1 — Vec.sort + Vec.sort_by (shipped 2026-05-28, closure #293)
+
+✅ AFFINE — `sort(mut ref xs)` / `sort_by(mut ref xs, cmp)` on
+`Vec<i64>`. Vec borrowed by `mut ref` (in-place); returns `i64 0`
+so it composes with `let _ = sort(mut ref xs);`. Comparator
+signature `fn(i64, i64) -> i64` (i64 is Copy — by-value works).
+strcmp convention (negative / zero / positive).
+
+**Codegen:**
+- **Tree-C**: Hoare-partition quicksort with insertion-sort
+  small-N cutoff (N < 16), tail-recursing on the larger
+  partition to bound stack depth. Helpers emitted in
+  `emit_vec_bundle` per-element (gated on `Type::I64`).
+- **Tree-LLVM**: insertion sort in inline LLVM IR (~70 lines).
+  Default ascending comparator emitted as `@intent_vec_int64__cmp_asc`;
+  `sort` and `sort_by` wrap a shared `__sort_with` core that
+  takes a `i64 (i64, i64)*` comparator.
+- **SSA-C / SSA-LLVM**: route through the tree backends via
+  `ssa_path_supports` gate (in-place Vec ops go through tree).
+
+**v1 restriction:** `Vec<i64>` only. Wider element widths
+follow when the runtime helpers are parameterized (matches the
+existing `Mutex<i64>` v1 scope).
+
+**Tests:** 6 lib tests (typecheck for sort + sort_by; rejects
+non-mut-ref arg, non-i64 element, wrong comparator signature;
+C runtime helpers emitted). 1 example (`examples/sort.vani`)
+covering ascending, descending, sort by absolute value, empty
+Vec, singleton Vec. Cross-backend parity green.
+
+**Pending follow-ups:**
+- Wider element widths (`Vec<i32>`, `Vec<u64>`, etc.).
+- Quicksort in LLVM (today insertion sort O(n²)).
+- Stable sort variant.
+- `sort_by_key` ergonomics layer.
 
 ### Condition variables — concurrency primitive (shipped 2026-05-28, closure #292)
 

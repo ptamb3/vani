@@ -11878,6 +11878,115 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn sort_builtin_typechecks_on_vec_i64() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(3, 1, 2);
+              let _ = sort(mut ref xs);
+              return xs[0];
+            }
+        "#;
+        compile_to_c(source).expect("sort on Vec<i64> must type-check");
+    }
+
+    #[test]
+    fn sort_by_accepts_fn_value_comparator() {
+        let source = r#"
+            fn cmp(a: i64, b: i64) -> i64 {
+              return a - b;
+            }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(3, 1, 2);
+              let _ = sort_by(mut ref xs, cmp);
+              return xs[0];
+            }
+        "#;
+        compile_to_c(source).expect("sort_by with fn(i64, i64) -> i64 must type-check");
+    }
+
+    #[test]
+    fn sort_rejects_non_mut_ref_arg() {
+        // sort takes `mut ref Vec<i64>` — passing the Vec by
+        // value or by plain ref is a type error.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(3, 1, 2);
+              let _ = sort(xs);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("sort with by-value Vec must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref Vec<i64>")),
+            "expected mut-ref-Vec diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn sort_rejects_non_i64_element() {
+        // v1 supports Vec<i64> only — other widths surface a
+        // clear "v1" diagnostic so users know it's a known
+        // restriction, not a parser failure.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i32> = vec(3 as i32, 1 as i32, 2 as i32);
+              let _ = sort(mut ref xs);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("sort on Vec<i32> must fail in v1");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("only supports `Vec<i64>` in v1")),
+            "expected v1-restriction diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn sort_by_rejects_wrong_comparator_signature() {
+        let source = r#"
+            fn bad(a: i64) -> i64 { return a; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(3, 1, 2);
+              let _ = sort_by(mut ref xs, bad);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("sort_by with wrong arity must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("fn(i64, i64) -> i64")),
+            "expected comparator-signature diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn sort_emits_quicksort_runtime_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(3, 1, 2);
+              let _ = sort(mut ref xs);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("sort program must compile to C");
+        assert!(
+            c.contains("__sort")
+                && c.contains("__qsort_impl")
+                && c.contains("__cmp_ascending"),
+            "C output must include the sort runtime helpers; got:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn atomic_new_load_store_fetch_add_typecheck_and_compile() {
         // Round-trip through the four builtins. Compiler
         // accepts the program; both backends are exercised by
