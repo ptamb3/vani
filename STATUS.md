@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #319 — Level 3 auto-fusion phase 2: extends closure #318's peephole pass to recognize **all four** producer→consumer combinations. `filter→fold` fuses to `vec_filter_fold`; `map→filter` fuses to `vec_map_filter`; `map_filter→fold` fuses to `vec_map_filter_fold`. The 3-stage `map → filter → fold` chain fuses iteratively: first `map+filter` → `map_filter`, then `map_filter+fold` → `map_filter_fold` (single pass, zero intermediates). Refactored fusion logic via `ProducerKind` / `ConsumerKind` enums for cleaner dispatch. 3 new lib tests covering filter+fold, map+filter, and 3-stage chains.)
-**Test totals:** 1174 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #320 — Level 3 ergonomics polish: method-call sugar extended to all in-place Vec mutators and read-only search builtins. `xs.push(v)`, `xs.pop()`, `xs.reverse()`, `xs.dedup()`, `xs.swap_remove(i)`, `xs.insert(i, v)`, `xs.clear()` desugar to the mut-ref builtin forms; `xs.find(v)`, `xs.contains(v)`, `xs.binary_search(v)` desugar to the ref forms. Same `Var` receiver restriction as #311. Pure checker desugar — zero new code paths. 3 new lib tests.)
+**Test totals:** 1177 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -147,6 +147,46 @@ ref second-class closures; passing closures across function
 boundaries (needs closure-as-value type — likely a struct
 holding the env + fn-ptr pair); reassigning a closure
 binding; nested closure declarations.
+
+### Data-structures roadmap Level 3 — Vec mutator method-call sugar (shipped 2026-05-28, closure #320)
+
+✅ AFFINE — pure surface desugar, mirrors #311's pattern.
+
+Completes the uniform `xs.method()` surface across all Vec
+operations. The Vec method-call arm in the checker now
+recognizes the full set of in-place mutators and read-only
+search builtins:
+
+| Source                | Desugared form                       |
+|-----------------------|--------------------------------------|
+| `xs.push(v)`          | `push(mut ref xs, v)`                |
+| `xs.pop()`            | `pop(mut ref xs)`                    |
+| `xs.reverse()`        | `reverse(mut ref xs)`                |
+| `xs.dedup()`          | `dedup(mut ref xs)`                  |
+| `xs.swap_remove(i)`   | `swap_remove(mut ref xs, i)`         |
+| `xs.insert(i, v)`     | `insert(mut ref xs, i, v)`           |
+| `xs.clear()`          | `clear(mut ref xs)`                  |
+| `xs.find(v)`          | `find(ref xs, v)`                    |
+| `xs.contains(v)`      | `contains(ref xs, v)`                |
+| `xs.binary_search(v)` | `binary_search(ref xs, v)`           |
+
+Same receiver restriction as #311: receiver must be a simple
+`Var` binding (after stripping one level of borrow). The
+by-value `push(xs, v) -> Vec<T>` and `set(xs, i, v) -> Vec<T>`
+forms (consuming forms) intentionally have no method sugar —
+they require reassignment (`xs = xs.push(v)`) which is
+awkward for the method-call pattern. Users keep using the
+function-call form for those.
+
+**Codegen:** none new. The desugared calls flow through the
+existing builtin pipeline identically to direct calls.
+
+**Tests:** 3 new lib tests (push/pop/reverse pattern;
+contains/find pattern; swap_remove/insert/clear pattern).
+
+**Pending follow-ups:** by-value `set` / `push` method sugar
+via implicit reassignment; method sugar for Array-typed
+receivers (today: Vec only).
 
 ### Data-structures roadmap Level 3 — Auto-fusion phase 2 (shipped 2026-05-28, closure #319)
 

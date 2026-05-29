@@ -13328,6 +13328,59 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_mutator_method_sugar_push_pop_reverse() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let _ = xs.push(4);
+              xs.reverse();
+              let last: i64 = xs.pop();
+              return last + xs[0];
+            }
+        "#;
+        compile_to_c(source).expect("xs.push / pop / reverse sugar in C");
+        compile_to_llvm(source).expect("xs.push / pop / reverse sugar in LLVM");
+    }
+
+    #[test]
+    fn vec_mutator_method_sugar_search_methods() {
+        let source = r#"
+            fn unwrap_or(o: Option<i64>, def: i64) -> i64 {
+              return match o {
+                Option.Some(v) then v,
+                Option.None then def,
+              };
+            }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              if xs.contains(2) {
+                return unwrap_or(xs.find(3), 0 - 1);
+              } else {
+                return 0;
+              }
+            }
+        "#;
+        compile_to_c(source).expect("xs.contains / find sugar in C");
+        compile_to_llvm(source).expect("xs.contains / find sugar in LLVM");
+    }
+
+    #[test]
+    fn vec_mutator_method_sugar_swap_remove_insert_clear() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20, 30);
+              let r: i64 = xs.swap_remove(0);
+              let _ = xs.insert(0, 99);
+              xs.clear();
+              let n: i64 = xs.len() as i64;
+              return r + n;
+            }
+        "#;
+        compile_to_c(source).expect("xs.swap_remove / insert / clear sugar in C");
+        compile_to_llvm(source).expect("xs.swap_remove / insert / clear sugar in LLVM");
+    }
+
+    #[test]
     fn vec_method_sugar_map() {
         let source = r#"
             pure fn double(x: i64) -> i64 { return x + x; }

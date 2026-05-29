@@ -10514,6 +10514,7 @@ fn check_expr(
                     }
                     let (builtin_name, want_mut_ref): (&str, bool) =
                         match method.as_str() {
+                            // Iterator combinators — borrow read-only.
                             "map" => ("vec_map", false),
                             "filter" => ("vec_filter", false),
                             "fold" => ("vec_fold", false),
@@ -10523,8 +10524,20 @@ fn check_expr(
                             "map_filter_fold" => ("vec_map_filter_fold", false),
                             "take" => ("vec_take", false),
                             "drop" => ("vec_drop", false),
+                            // Read-only search builtins.
+                            "find" => ("find", false),
+                            "contains" => ("contains", false),
+                            "binary_search" => ("binary_search", false),
+                            // In-place mutators — borrow exclusively.
                             "sort" => ("sort", true),
                             "sort_by" => ("sort_by", true),
+                            "push" => ("push", true),
+                            "pop" => ("pop", true),
+                            "reverse" => ("reverse", true),
+                            "dedup" => ("dedup", true),
+                            "swap_remove" => ("swap_remove", true),
+                            "insert" => ("insert", true),
+                            "clear" => ("clear", true),
                             _ => ("", false),
                         };
                     if !builtin_name.is_empty() {
