@@ -391,8 +391,17 @@ pointer (already in the language as of #279 FFI callbacks).
     candidate to point at the candidate's own forward.
     Tombstones the slot in the arena (no compaction).
     Method sugar `sl.remove(x)`.
-    Pending: tail-tracker for O(log n) max; configurable
-    MAX_LEVEL; non-i64 element types; arena compaction.
+    *Tail tracker shipped 2026-05-29 (closure #341).* Adds an
+    i64 `tail_node` field at struct index 7 (byte_size 56 →
+    64) — the index of the rightmost node (-1 if empty).
+    Insert and remove maintain it. `max()` now reads
+    `keys[tail_node]` in O(1) instead of an O(n) level-0
+    walk. (Note: a "tail tracker for O(log n) max" was the
+    originally-queued goal, but a single tail_node gives
+    O(1) which is strictly better — no per-level cache
+    needed.)
+    Pending: configurable MAX_LEVEL; non-i64 element types;
+    arena compaction.
 26. **Bloom filter** — ✅ AFFINE.
     Bit-vector over `Vec<u64>` + multi-hash via the #10
     Hash interface.
@@ -730,7 +739,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #340 — **`trie_delete(mut ref t, s: Str) -> bool`**. Removes an exact word by walking to the terminal node and flipping its is_end bit; returns true iff the word was present. Arena slots stay tombstoned because other words may share their prefixes (deleting "car" leaves "cart" intact and starts_with "ca" still true). Method sugar `t.delete(s)`. New lib tests + extended `examples/trie.vani` exercise delete-present, delete-twice (returns false), delete-absent, and prefix-survival of "cart" after deleting "car". Both backends produce byte-identical output. 1248 lib + parity green across 90 examples. Closure #339 (skiplist_remove) shipped immediately before. RB-on-Bst (originally queued as #340) was DROPPED from the sequence — adding RB as a parallel type to the existing AVL Bst duplicates code without observable user-value gain (same big-O, same I/O); reconsider only if there's a concrete workload that benefits from RB's lower rotation count on remove-heavy paths. Next focal area sequence: (#341) **Trie alphabet generalization** — per-node sparse children for arbitrary u8 alphabet via `Vec<(u8, u32)>` or a radix-compressed variant; ordered enumeration. Full type refactor. (#342) **SkipList tail-tracker** for O(log n) max via a per-level last-pointer cache invalidated on insert/remove. (#343) **Trie arena compaction** for dead branches with no end-of-word descendants. (#344+) Closure-as-value type — unblocks A* path reconstruction, real Prim/Kruskal weight comparators, sort_by with closures, and the broader iterator-combinator work. After Level 4 extensions: tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-29, after closure #341 — **SkipList tail tracker**. Adds a single `i64 tail_node` field at struct index 7 (byte_size 56 → 64) holding the index of the rightmost (highest-key) node in the list (-1 when empty). Insert maintains it (new node is tail if its level-0 forward is -1 after placement); remove maintains it (if removing the tail, the new tail is `update[0]`, or -1 if that's the head sentinel). `max()` is now O(1) — direct read of `keys[tail_node]` — instead of an O(n) level-0 walk. Existing examples produce byte-identical output. 1 new lib test pins the 8-field LLVM struct shape. 1249 lib + parity green across 90 examples. Closure #340 (trie_delete) shipped immediately before. Note: the originally-queued goal was "O(log n) max via per-level last-pointer cache", but a single tail_node gives O(1) which is strictly better — no per-level cache needed. Next focal area sequence: (#342) **Trie arena compaction** — after a delete, walk back up the path and free arena slots whose subtree has no end-of-word descendants. Reclaims memory on remove-heavy Trie workloads. (#343) **Trie alphabet generalization** — per-node sparse children for arbitrary u8 alphabet via `Vec<(u8, u32)>` or a radix-compressed variant; ordered enumeration. Full type refactor. (#344) **hashmap_remove / hashset_remove** — open-addressing remove via tombstone markers (or shift if probe chain is bounded). (#345+) Closure-as-value type — unblocks A* path reconstruction, real Prim/Kruskal weight comparators, sort_by with closures, and the broader iterator-combinator work. After Level 4 extensions: tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

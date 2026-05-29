@@ -2802,7 +2802,7 @@ fn stmt_uses_skiplist(stmt: &crate::ir::TypedStmt) -> bool {
 fn emit_intent_skiplist_helpers_c_body(out: &mut String, has_option_i64: bool) {
     out.push_str(
         "#define INTENT_SKIPLIST_MAX_LEVEL 8\n\
-         typedef struct { int64_t* keys; int32_t* forward; int32_t* node_levels; uint64_t rng_state; int64_t num_nodes; int64_t capacity; int64_t num_keys; } intent_skiplist_i64;\n\
+         typedef struct { int64_t* keys; int32_t* forward; int32_t* node_levels; uint64_t rng_state; int64_t num_nodes; int64_t capacity; int64_t num_keys; int64_t tail_node; } intent_skiplist_i64;\n\
          static INTENT_UNUSED uint64_t intent_skiplist_i64_rand(intent_skiplist_i64* sl) {\n\
          \x20 sl->rng_state = sl->rng_state * 6364136223846793005ULL + 1442695040888963407ULL;\n\
          \x20 return sl->rng_state;\n\
@@ -2830,6 +2830,7 @@ fn emit_intent_skiplist_helpers_c_body(out: &mut String, has_option_i64: bool) {
          \x20 sl.keys = (int64_t*)0; sl.forward = (int32_t*)0; sl.node_levels = (int32_t*)0;\n\
          \x20 sl.rng_state = 0x9E3779B97F4A7C15ULL;\n\
          \x20 sl.num_nodes = 0; sl.capacity = 0; sl.num_keys = 0;\n\
+         \x20 sl.tail_node = -1;\n\
          \x20 intent_skiplist_i64_ensure_cap(&sl, 1);\n\
          \x20 /* Head sentinel at index 0: key unused, all forward = -1, level = MAX_LEVEL. */\n\
          \x20 sl.keys[0] = 0;\n\
@@ -2844,6 +2845,7 @@ fn emit_intent_skiplist_helpers_c_body(out: &mut String, has_option_i64: bool) {
          \x20 if (sl->node_levels) free(sl->node_levels);\n\
          \x20 sl->keys = (int64_t*)0; sl->forward = (int32_t*)0; sl->node_levels = (int32_t*)0;\n\
          \x20 sl->num_nodes = 0; sl->capacity = 0; sl->num_keys = 0;\n\
+         \x20 sl->tail_node = -1;\n\
          }\n\
          static INTENT_UNUSED bool intent_skiplist_i64_insert(intent_skiplist_i64* sl, int64_t x) {\n\
          \x20 int32_t update[INTENT_SKIPLIST_MAX_LEVEL];\n\
@@ -2870,6 +2872,11 @@ fn emit_intent_skiplist_helpers_c_body(out: &mut String, has_option_i64: bool) {
          \x20 }\n\
          \x20 for (int lvl = new_lvl; lvl < INTENT_SKIPLIST_MAX_LEVEL; lvl++) {\n\
          \x20   sl->forward[new_idx * INTENT_SKIPLIST_MAX_LEVEL + lvl] = -1;\n\
+         \x20 }\n\
+         \x20 /* Closure #341 tail tracker: if the new node's level-0\n\
+          * forward is -1, it's now the rightmost node — update tail. */\n\
+         \x20 if (sl->forward[new_idx * INTENT_SKIPLIST_MAX_LEVEL + 0] == -1) {\n\
+         \x20   sl->tail_node = new_idx;\n\
          \x20 }\n\
          \x20 sl->num_nodes++; sl->num_keys++;\n\
          \x20 return true;\n\
@@ -2915,6 +2922,12 @@ fn emit_intent_skiplist_helpers_c_body(out: &mut String, has_option_i64: bool) {
          \x20       sl->forward[(int64_t)cand * INTENT_SKIPLIST_MAX_LEVEL + lvl];\n\
          \x20   }\n\
          \x20 }\n\
+         \x20 /* Closure #341 tail tracker: if we removed the tail, the\n\
+          * new tail is update[0]. If update[0] is the head sentinel\n\
+          * (index 0) the list is now empty (tail = -1). */\n\
+         \x20 if ((int64_t)cand == sl->tail_node) {\n\
+         \x20   sl->tail_node = (update[0] == 0) ? -1 : (int64_t)update[0];\n\
+         \x20 }\n\
          \x20 sl->num_keys--;\n\
          \x20 return true;\n\
          }\n\
@@ -2930,16 +2943,11 @@ fn emit_intent_skiplist_helpers_c_body(out: &mut String, has_option_i64: bool) {
              \x20 if (first == -1) { r.tag = 1; r.payload = 0; return r; }\n\
              \x20 r.tag = 0; r.payload = sl->keys[first]; return r;\n\
              }\n\
+             /* Closure #341: O(1) max via the maintained tail_node. */\n\
              static INTENT_UNUSED Enum_Option__i64 intent_skiplist_i64_max(const intent_skiplist_i64* sl) {\n\
              \x20 Enum_Option__i64 r;\n\
-             \x20 int64_t cur = 0;\n\
-             \x20 for (;;) {\n\
-             \x20   int32_t next = sl->forward[cur * INTENT_SKIPLIST_MAX_LEVEL + 0];\n\
-             \x20   if (next == -1) break;\n\
-             \x20   cur = (int64_t)next;\n\
-             \x20 }\n\
-             \x20 if (cur == 0) { r.tag = 1; r.payload = 0; return r; }\n\
-             \x20 r.tag = 0; r.payload = sl->keys[cur]; return r;\n\
+             \x20 if (sl->tail_node == -1) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 r.tag = 0; r.payload = sl->keys[sl->tail_node]; return r;\n\
              }\n\n",
         );
     }

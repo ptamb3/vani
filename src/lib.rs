@@ -13772,6 +13772,30 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn skiplist_emits_tail_tracker_field() {
+        // Closure #341: SkipList gained an 8th i64 field
+        // (tail_node) for O(1) max. Pin the new LLVM type
+        // shape so future field-order regressions are caught.
+        let source = r#"
+            fn main() -> i64 {
+              let sl: SkipList = skiplist_new();
+              let _: Option<i64> = skiplist_max(ref sl);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("skiplist tail tracker LLVM compile");
+        assert!(
+            ll.contains("%intent_skiplist_i64 = type { i64*, i32*, i32*, i64, i64, i64, i64, i64 }"),
+            "LLVM output must declare the 8-field SkipList struct"
+        );
+        let c = compile_to_c(source).expect("skiplist tail tracker C compile");
+        assert!(
+            c.contains("tail_node"),
+            "C output must declare the tail_node field"
+        );
+    }
+
+    #[test]
     fn skiplist_remove_emits_helpers() {
         let source = r#"
             fn main() -> i64 {
