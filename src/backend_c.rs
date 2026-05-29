@@ -2728,38 +2728,36 @@ fn stmt_uses_trie(stmt: &crate::ir::TypedStmt) -> bool {
 fn emit_intent_trie_helpers_c_body(out: &mut String) {
     out.push_str(
         "typedef struct { int32_t* children; uint8_t* is_end; int64_t num_nodes; int64_t capacity; int64_t num_words; int64_t free_head; int64_t free_count; } intent_trie;\n\
-         static INTENT_UNUSED bool intent_trie_valid_char(int c) {\n\
-         \x20 return c >= 'a' && c <= 'z';\n\
-         }\n\
+         /* Closure #345: alphabet generalized from a-z (26) to the\n\
+          * full u8 range (256). Every nonzero byte is a valid\n\
+          * character. Note that since C strings are nul-terminated,\n\
+          * the byte 0 still terminates a word (callers needing\n\
+          * embedded NULs would need a length-tagged variant). */\n\
          static INTENT_UNUSED bool intent_trie_valid_str(const char* s) {\n\
-         \x20 if (!s) return false;\n\
-         \x20 for (const char* p = s; *p; p++) {\n\
-         \x20   if (!intent_trie_valid_char((unsigned char)*p)) return false;\n\
-         \x20 }\n\
-         \x20 return true;\n\
+         \x20 return s != (const char*)0;\n\
          }\n\
          /* Closure #344: arena compaction. The freelist of recycled\n\
-          * node indices reuses children[idx*26 + 0] as a next-pointer\n\
-          * (safe because freed nodes have all 26 children set to -1).\n\
+          * node indices reuses children[idx*256 + 0] as a next-pointer\n\
+          * (safe because freed nodes have all 256 children set to -1).\n\
           * num_nodes is the high-water mark; live node count is\n\
           * num_nodes - free_count. */\n\
          static INTENT_UNUSED int64_t intent_trie_new_node(intent_trie* t) {\n\
          \x20 if (t->free_head != -1) {\n\
          \x20   int64_t idx = t->free_head;\n\
-         \x20   t->free_head = (int64_t)t->children[idx * 26 + 0];\n\
+         \x20   t->free_head = (int64_t)t->children[idx * 256 + 0];\n\
          \x20   t->free_count--;\n\
-         \x20   for (int c = 0; c < 26; c++) t->children[idx * 26 + c] = -1;\n\
+         \x20   for (int c = 0; c < 256; c++) t->children[idx * 256 + c] = -1;\n\
          \x20   t->is_end[idx] = 0;\n\
          \x20   return idx;\n\
          \x20 }\n\
          \x20 if (t->num_nodes >= t->capacity) {\n\
          \x20   t->capacity = t->capacity ? t->capacity * 2 : 8;\n\
-         \x20   t->children = (int32_t*)realloc(t->children, (size_t)t->capacity * 26 * sizeof(int32_t));\n\
+         \x20   t->children = (int32_t*)realloc(t->children, (size_t)t->capacity * 256 * sizeof(int32_t));\n\
          \x20   t->is_end = (uint8_t*)realloc(t->is_end, (size_t)t->capacity * sizeof(uint8_t));\n\
          \x20   if (!t->children || !t->is_end) abort();\n\
          \x20 }\n\
          \x20 int64_t idx = t->num_nodes;\n\
-         \x20 for (int c = 0; c < 26; c++) t->children[idx * 26 + c] = -1;\n\
+         \x20 for (int c = 0; c < 256; c++) t->children[idx * 256 + c] = -1;\n\
          \x20 t->is_end[idx] = 0;\n\
          \x20 t->num_nodes++;\n\
          \x20 return idx;\n\
@@ -2787,11 +2785,11 @@ fn emit_intent_trie_helpers_c_body(out: &mut String) {
          \x20 }\n\
          \x20 int64_t cur = 0;\n\
          \x20 for (const char* p = s; *p; p++) {\n\
-         \x20   int c = (unsigned char)*p - 'a';\n\
-         \x20   int32_t next = t->children[cur * 26 + c];\n\
+         \x20   int c = (unsigned char)*p;\n\
+         \x20   int32_t next = t->children[cur * 256 + c];\n\
          \x20   if (next == -1) {\n\
          \x20     int64_t nx = intent_trie_new_node(t);\n\
-         \x20     t->children[cur * 26 + c] = (int32_t)nx;\n\
+         \x20     t->children[cur * 256 + c] = (int32_t)nx;\n\
          \x20     cur = nx;\n\
          \x20   } else {\n\
          \x20     cur = (int64_t)next;\n\
@@ -2802,12 +2800,13 @@ fn emit_intent_trie_helpers_c_body(out: &mut String) {
          }\n\
          static INTENT_UNUSED int64_t intent_trie_walk(const intent_trie* t, const char* s) {\n\
          \x20 /* Returns the node index reached after walking s,\n\
-          * or -1 if s contains a non-a-z char or runs off-tree. */\n\
+          * or -1 if s is NULL or runs off-tree. After closure #345,\n\
+          * any nonzero byte is a valid character. */\n\
          \x20 if (!intent_trie_valid_str(s)) return -1;\n\
          \x20 int64_t cur = 0;\n\
          \x20 for (const char* p = s; *p; p++) {\n\
-         \x20   int c = (unsigned char)*p - 'a';\n\
-         \x20   int32_t next = t->children[cur * 26 + c];\n\
+         \x20   int c = (unsigned char)*p;\n\
+         \x20   int32_t next = t->children[cur * 256 + c];\n\
          \x20   if (next == -1) return -1;\n\
          \x20   cur = (int64_t)next;\n\
          \x20 }\n\
@@ -2839,8 +2838,8 @@ fn emit_intent_trie_helpers_c_body(out: &mut String) {
          \x20 int64_t cur = 0;\n\
          \x20 size_t i;\n\
          \x20 for (i = 0; i < n; i++) {\n\
-         \x20   int c = (unsigned char)s[i] - 'a';\n\
-         \x20   int32_t next = t->children[cur * 26 + c];\n\
+         \x20   int c = (unsigned char)s[i];\n\
+         \x20   int32_t next = t->children[cur * 256 + c];\n\
          \x20   if (next == -1) { free(path_node); free(path_ch); return false; }\n\
          \x20   path_ch[i] = c;\n\
          \x20   cur = (int64_t)next;\n\
@@ -2855,13 +2854,13 @@ fn emit_intent_trie_helpers_c_body(out: &mut String) {
          \x20   if (node == 0) break;\n\
          \x20   if (t->is_end[node]) break;\n\
          \x20   bool has_child = false;\n\
-         \x20   for (int c = 0; c < 26; c++) {\n\
-         \x20     if (t->children[node * 26 + c] != -1) { has_child = true; break; }\n\
+         \x20   for (int c = 0; c < 256; c++) {\n\
+         \x20     if (t->children[node * 256 + c] != -1) { has_child = true; break; }\n\
          \x20   }\n\
          \x20   if (has_child) break;\n\
          \x20   int64_t parent = path_node[step - 1];\n\
-         \x20   t->children[parent * 26 + path_ch[step - 1]] = -1;\n\
-         \x20   t->children[node * 26 + 0] = (int32_t)t->free_head;\n\
+         \x20   t->children[parent * 256 + path_ch[step - 1]] = -1;\n\
+         \x20   t->children[node * 256 + 0] = (int32_t)t->free_head;\n\
          \x20   t->free_head = node;\n\
          \x20   t->free_count++;\n\
          \x20 }\n\

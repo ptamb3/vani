@@ -17267,7 +17267,8 @@ fn check_graph_builtin(
 ///   trie_new() -> Trie
 ///   trie_insert(mut ref t, s: Str) -> bool
 ///       True iff a new word was added. Returns false on
-///       duplicate or if s contains any non-a-z character.
+///       duplicate; closure #345 generalized the alphabet to
+///       the full u8 range, so no character is rejected.
 ///   trie_contains(ref t, s: Str) -> bool
 ///   trie_starts_with(ref t, prefix: Str) -> bool
 ///   trie_len(ref t) -> i64

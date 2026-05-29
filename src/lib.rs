@@ -13748,6 +13748,33 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn trie_alphabet_accepts_full_u8_range() {
+        // Closure #345: alphabet generalized from a-z (26) to the
+        // full u8 range (256). Previously rejected strings like
+        // "Hi!" now insert successfully and can be looked up.
+        let source = r#"
+            fn main() -> i64 {
+              let t: Trie = trie_new();
+              let ok1: bool = trie_insert(mut ref t, "Hi!");
+              let ok2: bool = trie_insert(mut ref t, "Hello, World!");
+              let c1: bool = trie_contains(ref t, "Hi!");
+              let c2: bool = trie_contains(ref t, "Hello, World!");
+              let c3: bool = trie_contains(ref t, "hi!");
+              if ok1 && ok2 && c1 && c2 && !c3 { return 0; } else { return 1; }
+            }
+        "#;
+        compile_to_c(source).expect("u8 alphabet must type-check in C");
+        compile_to_llvm(source).expect("u8 alphabet must compile to LLVM");
+        // Verify the per-node child stride is 256-wide (not 26)
+        // — pin the byte-count in the LLVM grow path.
+        let ll = compile_to_llvm(source).expect("u8 alphabet LLVM compile");
+        assert!(
+            ll.contains("mul i64 %cap_new, 1024"),
+            "LLVM realloc byte size must be cap * 256 * 4 = 1024 * cap (was 104 for 26-wide)"
+        );
+    }
+
+    #[test]
     fn trie_compaction_extends_struct_and_emits_freelist() {
         // Closure #344: arena compaction. The struct gains two
         // fields (free_head, free_count) and the C/LLVM helpers

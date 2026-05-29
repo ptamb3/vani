@@ -12075,34 +12075,16 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
 }
 
 /// Data-structures roadmap Level 4 #4 — Trie runtime helpers
-/// (closure #330). Prefix tree on a flat 26-wide child-index
-/// arena with parallel `is_end` byte array. Insert / lookup
-/// short-circuit to false on any non-a-z character.
+/// (closure #330). Prefix tree on a flat 256-wide child-index
+/// arena with parallel `is_end` byte array. After closure #345,
+/// the alphabet is the full u8 range (any nonzero byte is a
+/// valid character). The only string-validation requirement is
+/// non-NULL; C-string semantics still terminate on byte 0.
 fn emit_intent_trie_helpers_llvm(out: &mut String) {
     out.push_str(
         "define i1 @intent_trie_valid_str(i8* %s) {\n\
          \x20 %s_null = icmp eq i8* %s, null\n\
-         \x20 br i1 %s_null, label %tv_false, label %tv_init\n\
-         tv_init:\n\
-         \x20 %i_p = alloca i64\n\
-         \x20 store i64 0, i64* %i_p\n\
-         \x20 br label %tv_loop\n\
-         tv_loop:\n\
-         \x20 %i = load i64, i64* %i_p\n\
-         \x20 %slot = getelementptr i8, i8* %s, i64 %i\n\
-         \x20 %ch = load i8, i8* %slot\n\
-         \x20 %is_zero = icmp eq i8 %ch, 0\n\
-         \x20 br i1 %is_zero, label %tv_true, label %tv_test\n\
-         tv_test:\n\
-         \x20 %ch64 = sext i8 %ch to i64\n\
-         \x20 %lo = icmp slt i64 %ch64, 97\n\
-         \x20 %hi = icmp sgt i64 %ch64, 122\n\
-         \x20 %bad = or i1 %lo, %hi\n\
-         \x20 br i1 %bad, label %tv_false, label %tv_next\n\
-         tv_next:\n\
-         \x20 %i_inc = add i64 %i, 1\n\
-         \x20 store i64 %i_inc, i64* %i_p\n\
-         \x20 br label %tv_loop\n\
+         \x20 br i1 %s_null, label %tv_false, label %tv_true\n\
          tv_true:\n\
          \x20 ret i1 true\n\
          tv_false:\n\
@@ -12125,7 +12107,7 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          tn_pop:\n\
          \x20 store i64 %fh, i64* %idx_p\n\
          \x20 %c_arr_fp = load i32*, i32** %cpp\n\
-         \x20 %fh_off = mul i64 %fh, 26\n\
+         \x20 %fh_off = mul i64 %fh, 256\n\
          \x20 %fh_slot0 = getelementptr i32, i32* %c_arr_fp, i64 %fh_off\n\
          \x20 %next_free32 = load i32, i32* %fh_slot0\n\
          \x20 %next_free = sext i32 %next_free32 to i64\n\
@@ -12143,7 +12125,7 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 %cap_zero = icmp eq i64 %cap, 0\n\
          \x20 %cap_mul = mul i64 %cap, 2\n\
          \x20 %cap_new = select i1 %cap_zero, i64 8, i64 %cap_mul\n\
-         \x20 %c_bytes = mul i64 %cap_new, 104\n\
+         \x20 %c_bytes = mul i64 %cap_new, 1024\n\
          \x20 %c_old = load i32*, i32** %cpp\n\
          \x20 %c_old_i8 = bitcast i32* %c_old to i8*\n\
          \x20 %c_new_i8 = call i8* @realloc(i8* %c_old_i8, i64 %c_bytes)\n\
@@ -12164,13 +12146,13 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 %c_arr = load i32*, i32** %cpp\n\
          \x20 %e_arr = load i8*, i8** %epp\n\
          \x20 %nn_e = load i64, i64* %idx_p\n\
-         \x20 %base_offset = mul i64 %nn_e, 26\n\
+         \x20 %base_offset = mul i64 %nn_e, 256\n\
          \x20 %k_p = alloca i64\n\
          \x20 store i64 0, i64* %k_p\n\
          \x20 br label %tn_init_loop\n\
          tn_init_loop:\n\
          \x20 %k = load i64, i64* %k_p\n\
-         \x20 %k_done = icmp sge i64 %k, 26\n\
+         \x20 %k_done = icmp sge i64 %k, 256\n\
          \x20 br i1 %k_done, label %tn_clear_end, label %tn_init_body\n\
          tn_init_body:\n\
          \x20 %idx_c = add i64 %base_offset, %k\n\
@@ -12251,10 +12233,10 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 %is_end_ch = icmp eq i8 %ch, 0\n\
          \x20 br i1 %is_end_ch, label %ti_mark, label %ti_step\n\
          ti_step:\n\
-         \x20 %ch64 = sext i8 %ch to i64\n\
-         \x20 %c_off = sub i64 %ch64, 97\n\
+         \x20 %ch64 = zext i8 %ch to i64\n\
+         \x20 %c_off = add i64 %ch64, 0\n\
          \x20 %cur = load i64, i64* %cur_p\n\
-         \x20 %base = mul i64 %cur, 26\n\
+         \x20 %base = mul i64 %cur, 256\n\
          \x20 %child_idx = add i64 %base, %c_off\n\
          \x20 %c_arr = load i32*, i32** %cpp\n\
          \x20 %child_slot = getelementptr i32, i32* %c_arr, i64 %child_idx\n\
@@ -12310,10 +12292,10 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 %is_end_ch = icmp eq i8 %ch, 0\n\
          \x20 br i1 %is_end_ch, label %tw_return, label %tw_step\n\
          tw_step:\n\
-         \x20 %ch64 = sext i8 %ch to i64\n\
-         \x20 %c_off = sub i64 %ch64, 97\n\
+         \x20 %ch64 = zext i8 %ch to i64\n\
+         \x20 %c_off = add i64 %ch64, 0\n\
          \x20 %cur = load i64, i64* %cur_p\n\
-         \x20 %base = mul i64 %cur, 26\n\
+         \x20 %base = mul i64 %cur, 256\n\
          \x20 %child_idx = add i64 %base, %c_off\n\
          \x20 %c_arr = load i32*, i32** %cpp\n\
          \x20 %child_slot = getelementptr i32, i32* %c_arr, i64 %child_idx\n\
@@ -12404,10 +12386,10 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          td_w_body:\n\
          \x20 %ws_slot = getelementptr i8, i8* %s, i64 %iw\n\
          \x20 %wc = load i8, i8* %ws_slot\n\
-         \x20 %wc64 = sext i8 %wc to i64\n\
-         \x20 %wc_off = sub i64 %wc64, 97\n\
+         \x20 %wc64 = zext i8 %wc to i64\n\
+         \x20 %wc_off = add i64 %wc64, 0\n\
          \x20 %cur_w = load i64, i64* %cur_p_d\n\
-         \x20 %wbase = mul i64 %cur_w, 26\n\
+         \x20 %wbase = mul i64 %cur_w, 256\n\
          \x20 %wchild_idx = add i64 %wbase, %wc_off\n\
          \x20 %c_arr_w = load i32*, i32** %cpp_d\n\
          \x20 %wslot = getelementptr i32, i32* %c_arr_w, i64 %wchild_idx\n\
@@ -12465,10 +12447,10 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 br label %td_kid_loop\n\
          td_kid_loop:\n\
          \x20 %ku = load i64, i64* %ku_p\n\
-         \x20 %ku_done = icmp sge i64 %ku, 26\n\
+         \x20 %ku_done = icmp sge i64 %ku, 256\n\
          \x20 br i1 %ku_done, label %td_kid_end, label %td_kid_body\n\
          td_kid_body:\n\
-         \x20 %ubase = mul i64 %node_u, 26\n\
+         \x20 %ubase = mul i64 %node_u, 256\n\
          \x20 %u_idx = add i64 %ubase, %ku\n\
          \x20 %c_arr_u = load i32*, i32** %cpp_d\n\
          \x20 %uslot = getelementptr i32, i32* %c_arr_u, i64 %u_idx\n\
@@ -12486,20 +12468,20 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 %has = load i1, i1* %has_p\n\
          \x20 br i1 %has, label %td_free_bufs_true, label %td_up_unlink\n\
          td_up_unlink:\n\
-         \x20 ; unlink from parent: children[parent*26 + path_ch[step-1]] = -1\n\
+         \x20 ; unlink from parent: children[parent*256 + path_ch[step-1]] = -1\n\
          \x20 %step_m1 = sub i64 %step, 1\n\
          \x20 %ppn = getelementptr i64, i64* %path_node, i64 %step_m1\n\
          \x20 %parent_u = load i64, i64* %ppn\n\
          \x20 %ppc = getelementptr i32, i32* %path_ch, i64 %step_m1\n\
          \x20 %pchar32 = load i32, i32* %ppc\n\
          \x20 %pchar = sext i32 %pchar32 to i64\n\
-         \x20 %pbase = mul i64 %parent_u, 26\n\
+         \x20 %pbase = mul i64 %parent_u, 256\n\
          \x20 %p_idx = add i64 %pbase, %pchar\n\
          \x20 %c_arr_pu = load i32*, i32** %cpp_d\n\
          \x20 %ps = getelementptr i32, i32* %c_arr_pu, i64 %p_idx\n\
          \x20 store i32 -1, i32* %ps\n\
-         \x20 ; push node onto freelist via children[node*26 + 0]\n\
-         \x20 %nbase = mul i64 %node_u, 26\n\
+         \x20 ; push node onto freelist via children[node*256 + 0]\n\
+         \x20 %nbase = mul i64 %node_u, 256\n\
          \x20 %ns0 = getelementptr i32, i32* %c_arr_pu, i64 %nbase\n\
          \x20 %fh_cur = load i64, i64* %fhp_d\n\
          \x20 %fh_cur32 = trunc i64 %fh_cur to i32\n\
