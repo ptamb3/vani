@@ -867,15 +867,27 @@ fn stmt_uses_i64_hashset(stmt: &crate::ir::TypedStmt) -> bool {
 /// only; hashset_remove deferred.
 fn emit_intent_hashset_helpers_c_body(out: &mut String) {
     out.push_str(
-        "typedef struct { int64_t* keys; uint8_t* occ; uint64_t len; uint64_t capacity; } intent_hashset_i64;\n\
+        "typedef struct { int64_t* keys; uint8_t* occ; uint64_t len; uint64_t capacity; uint64_t tombstones; } intent_hashset_i64;\n\
+         /* occ byte states (closure #342):\n\
+          *   0 = empty       — terminates probe chains\n\
+          *   1 = occupied    — slot in use\n\
+          *   2 = tombstone   — slot removed; probe must continue past it\n\
+          * `tombstones` counts state-2 slots. Insert / grow treat\n\
+          * `(len + tombstones) * 2 >= capacity` as the grow threshold\n\
+          * so a remove-heavy workload eventually triggers a rehash\n\
+          * that clears the tombstones. */\n\
          static INTENT_UNUSED uint64_t intent_hashset_i64__hash_key(int64_t k);\n\
          static INTENT_UNUSED intent_hashset_i64 intent_hashset_i64_new(void) {\n\
-         \x20 intent_hashset_i64 s; s.keys = (int64_t*)0; s.occ = (uint8_t*)0; s.len = 0; s.capacity = 0; return s;\n\
+         \x20 intent_hashset_i64 s;\n\
+         \x20 s.keys = (int64_t*)0; s.occ = (uint8_t*)0;\n\
+         \x20 s.len = 0; s.capacity = 0; s.tombstones = 0;\n\
+         \x20 return s;\n\
          }\n\
          static INTENT_UNUSED void intent_hashset_i64_drop(intent_hashset_i64* s) {\n\
          \x20 if (s->keys) free(s->keys);\n\
          \x20 if (s->occ) free(s->occ);\n\
-         \x20 s->keys = (int64_t*)0; s->occ = (uint8_t*)0; s->len = 0; s->capacity = 0;\n\
+         \x20 s->keys = (int64_t*)0; s->occ = (uint8_t*)0;\n\
+         \x20 s->len = 0; s->capacity = 0; s->tombstones = 0;\n\
          }\n\
          /* FNV-1a over the 8 bytes of an i64 — inline so we\n\
          \x20  don't require intent_hash_i64 to be emitted. */\n\
@@ -888,11 +900,12 @@ fn emit_intent_hashset_helpers_c_body(out: &mut String) {
          \x20 }\n\
          \x20 return h;\n\
          }\n\
+         /* Rehash-only insert (used during grow): assumes the key\n\
+          * isn't already in the table and skips the dup check. */\n\
          static INTENT_UNUSED void intent_hashset_i64__insert_into(intent_hashset_i64* s, int64_t k) {\n\
          \x20 uint64_t mask = s->capacity - 1;\n\
          \x20 uint64_t i = intent_hashset_i64__hash_key(k) & mask;\n\
-         \x20 while (s->occ[i] != 0) {\n\
-         \x20   if (s->keys[i] == k) return;\n\
+         \x20 while (s->occ[i] == 1) {\n\
          \x20   i = (i + 1) & mask;\n\
          \x20 }\n\
          \x20 s->keys[i] = k; s->occ[i] = 1; s->len++;\n\
@@ -907,6 +920,7 @@ fn emit_intent_hashset_helpers_c_body(out: &mut String) {
          \x20 if (!s->keys || !s->occ) abort();\n\
          \x20 s->len = 0;\n\
          \x20 s->capacity = new_cap;\n\
+         \x20 s->tombstones = 0;\n\
          \x20 for (uint64_t i = 0; i < old_cap; i++) {\n\
          \x20   if (old_occ[i] == 1) intent_hashset_i64__insert_into(s, old_keys[i]);\n\
          \x20 }\n\
@@ -914,14 +928,27 @@ fn emit_intent_hashset_helpers_c_body(out: &mut String) {
          \x20 if (old_occ) free(old_occ);\n\
          }\n\
          static INTENT_UNUSED bool intent_hashset_i64_insert(intent_hashset_i64* s, int64_t k) {\n\
-         \x20 if (s->capacity == 0 || (s->len * 2) >= s->capacity) intent_hashset_i64__grow(s);\n\
+         \x20 if (s->capacity == 0 || ((s->len + s->tombstones) * 2) >= s->capacity) intent_hashset_i64__grow(s);\n\
          \x20 uint64_t mask = s->capacity - 1;\n\
          \x20 uint64_t i = intent_hashset_i64__hash_key(k) & mask;\n\
+         \x20 /* First-tombstone-or-empty placement strategy: walk past\n\
+          * tombstones in case the key already lives further down the\n\
+          * probe chain; remember the first tombstone position so we\n\
+          * can reuse it if we hit an empty slot without finding the\n\
+          * key. */\n\
+         \x20 int64_t first_tomb = -1;\n\
          \x20 while (s->occ[i] != 0) {\n\
-         \x20   if (s->keys[i] == k) return false; /* already present */\n\
+         \x20   if (s->occ[i] == 1 && s->keys[i] == k) return false; /* already present */\n\
+         \x20   if (s->occ[i] == 2 && first_tomb == -1) first_tomb = (int64_t)i;\n\
          \x20   i = (i + 1) & mask;\n\
          \x20 }\n\
-         \x20 s->keys[i] = k; s->occ[i] = 1; s->len++;\n\
+         \x20 if (first_tomb != -1) {\n\
+         \x20   uint64_t slot = (uint64_t)first_tomb;\n\
+         \x20   s->keys[slot] = k; s->occ[slot] = 1;\n\
+         \x20   s->len++; s->tombstones--;\n\
+         \x20 } else {\n\
+         \x20   s->keys[i] = k; s->occ[i] = 1; s->len++;\n\
+         \x20 }\n\
          \x20 return true;\n\
          }\n\
          static INTENT_UNUSED bool intent_hashset_i64_contains(const intent_hashset_i64* s, int64_t k) {\n\
@@ -929,7 +956,26 @@ fn emit_intent_hashset_helpers_c_body(out: &mut String) {
          \x20 uint64_t mask = s->capacity - 1;\n\
          \x20 uint64_t i = intent_hashset_i64__hash_key(k) & mask;\n\
          \x20 while (s->occ[i] != 0) {\n\
-         \x20   if (s->keys[i] == k) return true;\n\
+         \x20   if (s->occ[i] == 1 && s->keys[i] == k) return true;\n\
+         \x20   i = (i + 1) & mask;\n\
+         \x20 }\n\
+         \x20 return false;\n\
+         }\n\
+         /* Closure #342: remove a key. Probe past tombstones until we\n\
+          * hit a matching occupied slot (mark as tombstone, increment\n\
+          * tombstones, decrement len) or an empty slot (key absent —\n\
+          * return false). */\n\
+         static INTENT_UNUSED bool intent_hashset_i64_remove(intent_hashset_i64* s, int64_t k) {\n\
+         \x20 if (s->capacity == 0) return false;\n\
+         \x20 uint64_t mask = s->capacity - 1;\n\
+         \x20 uint64_t i = intent_hashset_i64__hash_key(k) & mask;\n\
+         \x20 while (s->occ[i] != 0) {\n\
+         \x20   if (s->occ[i] == 1 && s->keys[i] == k) {\n\
+         \x20     s->occ[i] = 2;\n\
+         \x20     s->len--;\n\
+         \x20     s->tombstones++;\n\
+         \x20     return true;\n\
+         \x20   }\n\
          \x20   i = (i + 1) & mask;\n\
          \x20 }\n\
          \x20 return false;\n\
@@ -8419,6 +8465,11 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         "hashmap_len" => format!(
             "intent_hashmap_i64_i64_len({})",
             emit_expr(&args[0])
+        ),
+        "hashset_remove" => format!(
+            "intent_hashset_i64_remove({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
         ),
         "hashset_new" => "intent_hashset_i64_new()".to_string(),
         "hashset_insert" => format!(

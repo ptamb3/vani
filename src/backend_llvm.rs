@@ -251,7 +251,7 @@ fn llvm_byte_size(ty: &Type) -> u64 {
         Type::Task => 16, // pthread_t + ctx*
         Type::Condvar => 8, // pointer to heap-allocated cv state
         Type::Deque(_) => 32, // {data ptr, front, len, capacity}
-        Type::HashSet(_) => 32, // {keys ptr, occupied ptr, len, capacity}
+        Type::HashSet(_) => 40, // closure #342: + tombstones for hashset_remove
         Type::HashMap(_, _) => 40, // {keys ptr, values ptr, occ ptr, len, capacity}
         Type::BTreeSet(_) => 24, // {keys ptr, len, capacity}
         Type::BTreeMap(_, _) => 32, // {keys ptr, values ptr, len, capacity}
@@ -633,7 +633,13 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // Deque<i64> (closure #303): { data*, front, len, cap }.
     out.push_str("%intent_deque_i64 = type { i64*, i64, i64, i64 }\n");
     // HashSet<i64> (closure #304): { keys*, occ*, len, cap }.
-    out.push_str("%intent_hashset_i64 = type { i64*, i8*, i64, i64 }\n");
+    // HashSet<i64> (closure #304 + tombstones in #342):
+    //   0: keys (i64*)
+    //   1: occ (i8*)   — 0 = empty, 1 = occupied, 2 = tombstone
+    //   2: len (i64)   — live (occupied) slot count
+    //   3: capacity (i64)
+    //   4: tombstones (i64) — slot count in state 2; (len + tombstones) drives grow.
+    out.push_str("%intent_hashset_i64 = type { i64*, i8*, i64, i64, i64 }\n");
     // HashMap<i64, i64> (closure #305): { keys*, values*, occ*, len, cap }.
     out.push_str("%intent_hashmap_i64_i64 = type { i64*, i64*, i8*, i64, i64 }\n");
     // BTreeSet<i64> (closure #306): { keys*, len, cap } — sorted-Vec backed.
@@ -5611,7 +5617,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
-            if name == "hashset_insert" || name == "hashset_contains" {
+            if name == "hashset_insert" || name == "hashset_contains" || name == "hashset_remove" {
                 let s = emit_expr(&args[0], ctx, out);
                 let v = emit_expr(&args[1], ctx, out);
                 let op = name.strip_prefix("hashset_").unwrap();
@@ -12774,7 +12780,8 @@ fn emit_intent_hashset_i64_helpers_llvm(out: &mut String) {
          \x20 %r1 = insertvalue %intent_hashset_i64 %r0, i8* null, 1\n\
          \x20 %r2 = insertvalue %intent_hashset_i64 %r1, i64 0, 2\n\
          \x20 %r3 = insertvalue %intent_hashset_i64 %r2, i64 0, 3\n\
-         \x20 ret %intent_hashset_i64 %r3\n\
+         \x20 %r4 = insertvalue %intent_hashset_i64 %r3, i64 0, 4\n\
+         \x20 ret %intent_hashset_i64 %r4\n\
          }\n\
          define void @intent_hashset_i64_drop(%intent_hashset_i64* %s) {\n\
          \x20 %kpp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 0\n\
@@ -12800,6 +12807,8 @@ fn emit_intent_hashset_i64_helpers_llvm(out: &mut String) {
          \x20 store i64 0, i64* %lp\n\
          \x20 %cp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 3\n\
          \x20 store i64 0, i64* %cp\n\
+         \x20 %tp_drop = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 4\n\
+         \x20 store i64 0, i64* %tp_drop\n\
          \x20 ret void\n\
          }\n\
          define internal i64 @intent_hashset_i64__hash_key(i64 %k) {\n\
@@ -12887,6 +12896,9 @@ fn emit_intent_hashset_i64_helpers_llvm(out: &mut String) {
          \x20 store i8* %new_occ, i8** %opp\n\
          \x20 store i64 0, i64* %lp\n\
          \x20 store i64 %new_cap, i64* %cp\n\
+         \x20 ; Closure #342: rehash clears all tombstones.\n\
+         \x20 %tp_grow = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 4\n\
+         \x20 store i64 0, i64* %tp_grow\n\
          \x20 %i_p = alloca i64\n\
          \x20 store i64 0, i64* %i_p\n\
          \x20 br label %g_loop\n\
@@ -12927,11 +12939,15 @@ fn emit_intent_hashset_i64_helpers_llvm(out: &mut String) {
          define i1 @intent_hashset_i64_insert(%intent_hashset_i64* %s, i64 %k) {\n\
          \x20 %cp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 3\n\
          \x20 %lp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 2\n\
+         \x20 %tp_ins = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 4\n\
          \x20 %cap = load i64, i64* %cp\n\
          \x20 %len = load i64, i64* %lp\n\
+         \x20 %tomb = load i64, i64* %tp_ins\n\
          \x20 %cap_zero = icmp eq i64 %cap, 0\n\
-         \x20 %len2 = mul i64 %len, 2\n\
-         \x20 %need_grow_load = icmp uge i64 %len2, %cap\n\
+         \x20 ; Closure #342: load includes both occupied (len) and tombstones.\n\
+         \x20 %load_sum = add i64 %len, %tomb\n\
+         \x20 %load2 = mul i64 %load_sum, 2\n\
+         \x20 %need_grow_load = icmp uge i64 %load2, %cap\n\
          \x20 %need = or i1 %cap_zero, %need_grow_load\n\
          \x20 br i1 %need, label %ins_grow, label %ins_probe\n\
          ins_grow:\n\
@@ -12948,27 +12964,60 @@ fn emit_intent_hashset_i64_helpers_llvm(out: &mut String) {
          \x20 %i0 = and i64 %h, %mask\n\
          \x20 %i_p = alloca i64\n\
          \x20 store i64 %i0, i64* %i_p\n\
+         \x20 ; First-tombstone-or-empty placement: walk past tombstones in\n\
+         \x20 ; case the key already lives further down the probe chain;\n\
+         \x20 ; remember the first tombstone position (-1 = none).\n\
+         \x20 %first_tomb_p = alloca i64\n\
+         \x20 store i64 -1, i64* %first_tomb_p\n\
          \x20 br label %ins_loop\n\
          ins_loop:\n\
          \x20 %i = load i64, i64* %i_p\n\
          \x20 %ocell = getelementptr i8, i8* %occ, i64 %i\n\
          \x20 %oval = load i8, i8* %ocell\n\
          \x20 %is_empty = icmp eq i8 %oval, 0\n\
-         \x20 br i1 %is_empty, label %ins_store, label %ins_check_eq\n\
+         \x20 br i1 %is_empty, label %ins_place, label %ins_test_occ\n\
+         ins_test_occ:\n\
+         \x20 %is_occ = icmp eq i8 %oval, 1\n\
+         \x20 br i1 %is_occ, label %ins_check_eq, label %ins_test_tomb\n\
          ins_check_eq:\n\
          \x20 %kcell = getelementptr i64, i64* %keys, i64 %i\n\
          \x20 %kv = load i64, i64* %kcell\n\
          \x20 %eq = icmp eq i64 %kv, %k\n\
          \x20 br i1 %eq, label %ins_exists, label %ins_next\n\
+         ins_test_tomb:\n\
+         \x20 ; oval is 2 (tombstone); record first one seen and continue.\n\
+         \x20 %first_tomb_cur = load i64, i64* %first_tomb_p\n\
+         \x20 %tomb_unset = icmp eq i64 %first_tomb_cur, -1\n\
+         \x20 br i1 %tomb_unset, label %ins_record_tomb, label %ins_next\n\
+         ins_record_tomb:\n\
+         \x20 store i64 %i, i64* %first_tomb_p\n\
+         \x20 br label %ins_next\n\
          ins_next:\n\
          \x20 %i_p1 = add i64 %i, 1\n\
          \x20 %i_n = and i64 %i_p1, %mask\n\
          \x20 store i64 %i_n, i64* %i_p\n\
          \x20 br label %ins_loop\n\
-         ins_store:\n\
+         ins_place:\n\
+         \x20 ; Empty slot found and key wasn't already present. Place\n\
+         \x20 ; into first_tomb (if any) or into the empty slot.\n\
+         \x20 %first_tomb_f = load i64, i64* %first_tomb_p\n\
+         \x20 %use_tomb = icmp ne i64 %first_tomb_f, -1\n\
+         \x20 br i1 %use_tomb, label %ins_store_tomb, label %ins_store_empty\n\
+         ins_store_tomb:\n\
+         \x20 %tomb_kcell = getelementptr i64, i64* %keys, i64 %first_tomb_f\n\
+         \x20 store i64 %k, i64* %tomb_kcell\n\
+         \x20 %tomb_ocell = getelementptr i8, i8* %occ, i64 %first_tomb_f\n\
+         \x20 store i8 1, i8* %tomb_ocell\n\
+         \x20 %old_tomb = load i64, i64* %tp_ins\n\
+         \x20 %tomb_dec = sub i64 %old_tomb, 1\n\
+         \x20 store i64 %tomb_dec, i64* %tp_ins\n\
+         \x20 br label %ins_inc_len\n\
+         ins_store_empty:\n\
          \x20 %kcell2 = getelementptr i64, i64* %keys, i64 %i\n\
          \x20 store i64 %k, i64* %kcell2\n\
          \x20 store i8 1, i8* %ocell\n\
+         \x20 br label %ins_inc_len\n\
+         ins_inc_len:\n\
          \x20 %old_len = load i64, i64* %lp\n\
          \x20 %nl = add i64 %old_len, 1\n\
          \x20 store i64 %nl, i64* %lp\n\
@@ -12997,7 +13046,10 @@ fn emit_intent_hashset_i64_helpers_llvm(out: &mut String) {
          \x20 %ocell = getelementptr i8, i8* %occ, i64 %i\n\
          \x20 %oval = load i8, i8* %ocell\n\
          \x20 %empty = icmp eq i8 %oval, 0\n\
-         \x20 br i1 %empty, label %c_no, label %c_check\n\
+         \x20 br i1 %empty, label %c_no, label %c_test_occ\n\
+         c_test_occ:\n\
+         \x20 %is_occ_c = icmp eq i8 %oval, 1\n\
+         \x20 br i1 %is_occ_c, label %c_check, label %c_next\n\
          c_check:\n\
          \x20 %kcell = getelementptr i64, i64* %keys, i64 %i\n\
          \x20 %kv = load i64, i64* %kcell\n\
@@ -13011,6 +13063,59 @@ fn emit_intent_hashset_i64_helpers_llvm(out: &mut String) {
          c_yes:\n\
          \x20 ret i1 true\n\
          c_no:\n\
+         \x20 ret i1 false\n\
+         }\n\
+         ; Closure #342: remove a key. Probe past tombstones (state 2)\n\
+         ; until we hit a matching occupied slot (state 1) — mark as\n\
+         ; tombstone, decrement len, increment tombstones — or an empty\n\
+         ; slot (state 0) — key absent, return false.\n\
+         define i1 @intent_hashset_i64_remove(%intent_hashset_i64* %s, i64 %k) {\n\
+         \x20 %cp_rm = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 3\n\
+         \x20 %cap_rm = load i64, i64* %cp_rm\n\
+         \x20 %is_zero_rm = icmp eq i64 %cap_rm, 0\n\
+         \x20 br i1 %is_zero_rm, label %hsr_no, label %hsr_probe\n\
+         hsr_probe:\n\
+         \x20 %kpp_rm = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 0\n\
+         \x20 %opp_rm = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 1\n\
+         \x20 %lp_rm = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 2\n\
+         \x20 %tp_rm = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 4\n\
+         \x20 %mask_rm = sub i64 %cap_rm, 1\n\
+         \x20 %keys_rm = load i64*, i64** %kpp_rm\n\
+         \x20 %occ_rm = load i8*, i8** %opp_rm\n\
+         \x20 %h_rm = call i64 @intent_hashset_i64__hash_key(i64 %k)\n\
+         \x20 %i0_rm = and i64 %h_rm, %mask_rm\n\
+         \x20 %i_p_rm = alloca i64\n\
+         \x20 store i64 %i0_rm, i64* %i_p_rm\n\
+         \x20 br label %hsr_loop\n\
+         hsr_loop:\n\
+         \x20 %i_rm = load i64, i64* %i_p_rm\n\
+         \x20 %ocell_rm = getelementptr i8, i8* %occ_rm, i64 %i_rm\n\
+         \x20 %oval_rm = load i8, i8* %ocell_rm\n\
+         \x20 %empty_rm = icmp eq i8 %oval_rm, 0\n\
+         \x20 br i1 %empty_rm, label %hsr_no, label %hsr_test_occ\n\
+         hsr_test_occ:\n\
+         \x20 %is_occ_rm = icmp eq i8 %oval_rm, 1\n\
+         \x20 br i1 %is_occ_rm, label %hsr_check_eq, label %hsr_next\n\
+         hsr_check_eq:\n\
+         \x20 %kcell_rm = getelementptr i64, i64* %keys_rm, i64 %i_rm\n\
+         \x20 %kv_rm = load i64, i64* %kcell_rm\n\
+         \x20 %eq_rm = icmp eq i64 %kv_rm, %k\n\
+         \x20 br i1 %eq_rm, label %hsr_yes, label %hsr_next\n\
+         hsr_next:\n\
+         \x20 %i_p1_rm = add i64 %i_rm, 1\n\
+         \x20 %i_n_rm = and i64 %i_p1_rm, %mask_rm\n\
+         \x20 store i64 %i_n_rm, i64* %i_p_rm\n\
+         \x20 br label %hsr_loop\n\
+         hsr_yes:\n\
+         \x20 store i8 2, i8* %ocell_rm\n\
+         \x20 %old_len_rm = load i64, i64* %lp_rm\n\
+         \x20 %nl_rm = sub i64 %old_len_rm, 1\n\
+         \x20 store i64 %nl_rm, i64* %lp_rm\n\
+         \x20 %old_tomb_rm = load i64, i64* %tp_rm\n\
+         \x20 %nt_rm = add i64 %old_tomb_rm, 1\n\
+         \x20 store i64 %nt_rm, i64* %tp_rm\n\
+         \x20 ret i1 true\n\
+         hsr_no:\n\
          \x20 ret i1 false\n\
          }\n\
          define i64 @intent_hashset_i64_len(%intent_hashset_i64* %s) {\n\

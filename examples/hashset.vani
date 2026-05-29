@@ -3,17 +3,19 @@
 //   intentc run examples/hashset.vani --backend=c              # C backend
 //   intentc build examples/hashset.vani -o /tmp/hashset && /tmp/hashset
 
-intent "HashSet<i64> — open-addressing hash set (Level 2 #3)";
+intent "HashSet<i64> — open-addressing hash set (Level 2 #3 + closure #342)";
 
-// v1 design: open-addressing linear probing with empty/occupied
-// slot tags. Grow doubles capacity at 50% load factor. The
-// hash function is FNV-1a (matching the hash_i64 builtin).
-// v1: T = i64 only; hashset_remove deferred (queued as a
-// follow-up since it needs tombstone-or-rebuild logic).
+// v1 design: open-addressing linear probing with a 3-state slot
+// tag (empty / occupied / tombstone). The hash function is FNV-1a
+// (matching the hash_i64 builtin). Grow doubles capacity when
+// (len + tombstones) ≥ capacity / 2 — so remove-heavy workloads
+// eventually trigger a rehash that clears the tombstones.
+// v1: T = i64 only.
 //
 //   hashset_new() -> HashSet<i64>             empty
 //   hashset_insert(mut ref s, v) -> bool      true if newly inserted
 //   hashset_contains(ref s, v) -> bool
+//   hashset_remove(mut ref s, v) -> bool      true if removed (closure #342)
 //   hashset_len(ref s) -> i64
 //
 // Scope-exit Drop frees the keys + occupancy arrays.
@@ -56,6 +58,17 @@ fn main() -> i64 {
     j = j + 1;
   }
   print "duplicates rejected when re-inserting 0..30:", dup_count;
+
+  // Closure #342: remove. Tombstones the slot — re-inserting the
+  // same key reuses the tombstone position rather than appending.
+  print "remove 42:", s.remove(42);
+  print "remove 42 (again):", s.remove(42);
+  print "remove 999 (absent):", s.remove(999);
+  print "contains 42 after remove:", s.contains(42);
+  print "len after removes:", s.len();
+  // Re-insert: should reuse the tombstone created by remove.
+  print "re-insert 42:", s.insert(42);
+  print "contains 42 after re-insert:", s.contains(42);
 
   return 0;
 }

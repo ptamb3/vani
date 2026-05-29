@@ -12680,6 +12680,63 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn hashset_remove_typecheck() {
+        // Closure #342: hashset_remove must type-check as
+        // `mut ref HashSet<i64>, i64 -> bool` and reject by-ref.
+        let ok = r#"
+            fn main() -> i64 {
+              let s: HashSet<i64> = hashset_new();
+              let _: bool = hashset_remove(mut ref s, 5);
+              let _: bool = s.remove(5);
+              return 0;
+            }
+        "#;
+        compile_to_c(ok).expect("hashset_remove must type-check in C");
+        compile_to_llvm(ok).expect("hashset_remove must compile to LLVM");
+
+        let bad = r#"
+            fn main() -> i64 {
+              let s: HashSet<i64> = hashset_new();
+              let _: bool = hashset_remove(ref s, 5);
+              return 0;
+            }
+        "#;
+        let errors = compile(bad).expect_err("hashset_remove by-ref must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref HashSet")),
+            "expected mut-ref-HashSet diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn hashset_remove_emits_helpers_and_tombstone_field() {
+        // Pin both backends' output to catch struct-layout
+        // regressions: HashSet now has 5 fields incl. tombstones.
+        let source = r#"
+            fn main() -> i64 {
+              let s: HashSet<i64> = hashset_new();
+              let _: bool = hashset_remove(mut ref s, 1);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("hashset_remove C compile");
+        assert!(
+            c.contains("intent_hashset_i64_remove")
+                && c.contains("tombstones"),
+            "C output must include the remove helper + tombstones field"
+        );
+        let ll = compile_to_llvm(source).expect("hashset_remove LLVM compile");
+        assert!(
+            ll.contains("@intent_hashset_i64_remove")
+                && ll.contains("%intent_hashset_i64 = type { i64*, i8*, i64, i64, i64 }"),
+            "LLVM output must include the remove helper + the 5-field struct"
+        );
+    }
+
+    #[test]
     fn union_find_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {
