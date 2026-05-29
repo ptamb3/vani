@@ -13036,6 +13036,78 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn autofuse_filter_fold_chain() {
+        let source = r#"
+            pure fn is_even(x: i64) -> bool { return (x % 2) == 0; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              let m: Vec<i64> = vec_filter(ref xs, is_even);
+              let s: i64 = vec_fold(ref m, 0, add);
+              return s;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("filter+fold autofuse compiles");
+        assert!(
+            ll.contains("call i64 @intent_vec_i64__filter_fold"),
+            "filter+fold should fuse to __filter_fold"
+        );
+    }
+
+    #[test]
+    fn autofuse_map_filter_chain() {
+        let source = r#"
+            pure fn double(x: i64) -> i64 { return x + x; }
+            pure fn gt5(x: i64) -> bool { return x > 5; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              let m: Vec<i64> = vec_map(ref xs, double);
+              let r: Vec<i64> = vec_filter(ref m, gt5);
+              return r[0];
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("map+filter autofuse compiles");
+        assert!(
+            ll.contains("call %intent_vec_i64 @intent_vec_i64__map_filter("),
+            "map+filter should fuse to __map_filter"
+        );
+    }
+
+    #[test]
+    fn autofuse_three_stage_map_filter_fold() {
+        // map → filter → fold should iteratively fuse:
+        //   first map+filter → map_filter,
+        //   then map_filter+fold → map_filter_fold.
+        let source = r#"
+            pure fn double(x: i64) -> i64 { return x + x; }
+            pure fn gt5(x: i64) -> bool { return x > 5; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4, 5);
+              let m: Vec<i64> = vec_map(ref xs, double);
+              let r: Vec<i64> = vec_filter(ref m, gt5);
+              let s: i64 = vec_fold(ref r, 0, add);
+              return s;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("3-stage autofuse compiles");
+        assert!(
+            ll.contains("call i64 @intent_vec_i64__map_filter_fold"),
+            "3-stage chain should fuse to __map_filter_fold"
+        );
+        // Neither the intermediate __map nor the __filter call
+        // should appear at a call site.
+        assert!(
+            !ll.contains("call %intent_vec_i64 @intent_vec_i64__map("),
+            "intermediate __map call should be elided"
+        );
+        assert!(
+            !ll.contains("call %intent_vec_i64 @intent_vec_i64__filter("),
+            "intermediate __filter call should be elided"
+        );
+    }
+
+    #[test]
     fn autofuse_map_fold_fn_call_form_emits_fused_helper() {
         // `let m = vec_map(...); let s = vec_fold(ref m, ...);`
         // with `m` unused elsewhere should auto-fuse to a single

@@ -1593,82 +1593,182 @@ fn fuse_chains_in_block(body: &mut Vec<crate::ast::Stmt>) {
     for stmt in body.iter_mut() {
         fuse_chains_in_nested_stmt(stmt);
     }
-    // Scan for adjacent `Let m = vec_map(...)` + `Let t =
-    // vec_fold(ref m, ...)` (or method-call equivalents).
+    // Scan for adjacent producer+consumer combinator pairs and
+    // fuse them. Patterns recognized (closures #318 + #319):
+    //   map      + fold    → vec_map_fold
+    //   filter   + fold    → vec_filter_fold
+    //   map      + filter  → vec_map_filter
+    //   map_filter + fold  → vec_map_filter_fold
+    // The map+filter rewrite leaves the result as a Let-of-
+    // map_filter, which the next iteration may then chain with
+    // a following fold — yielding map_filter_fold for the
+    // 3-stage `map → filter → fold` pattern.
     let mut i: usize = 0;
     while i + 1 < body.len() {
-        // Try to extract a candidate (map_name, m, xs_ref, f).
-        let map_candidate = match &body[i] {
-            crate::ast::Stmt::Let { name: m, expr, .. } => {
-                extract_map_call(expr).map(|(xs_ref, f)| (m.clone(), xs_ref, f))
-            }
-            _ => None,
-        };
-        let Some((m_name, xs_ref, f_expr)) = map_candidate else {
-            i += 1;
-            continue;
-        };
-        // Check the next statement for a fold-of-m pattern.
-        let fold_pattern = match &body[i + 1] {
-            crate::ast::Stmt::Let { name: t, annotation, expr, span } => {
-                extract_fold_of_var(expr, &m_name)
-                    .map(|(init, g)| (t.clone(), annotation.clone(), *span, init, g, true))
-            }
-            crate::ast::Stmt::Return { expr, span } => {
-                extract_fold_of_var(expr, &m_name)
-                    .map(|(init, g)| (String::new(), None, *span, init, g, false))
-            }
-            _ => None,
-        };
-        let Some((t_name, t_anno, t_span, init, g_expr, is_let)) = fold_pattern else {
-            i += 1;
-            continue;
-        };
-        // Confirm `m` is not used in any subsequent statement
-        // (besides stmt i+1's fold call, which we've already
-        // identified). The fold call's Ref(Var(m)) doesn't
-        // count — we've already validated the only use site.
-        // Easiest: do a fresh scan of body[i+2..] for any
-        // reference to `m`. If any, bail.
-        let m_used_later = body[i + 2..]
-            .iter()
-            .any(|s| stmt_mentions_var(s, &m_name));
-        if m_used_later {
-            i += 1;
+        if try_fuse_pair(body, i) {
+            // Don't increment — the position now holds either
+            // a fused stmt (if both were consumed) or a
+            // partially-fused stmt (if a further fusion remains
+            // available). Retry from the same position.
             continue;
         }
-        // Build the fused call: `vec_map_fold(xs_ref, init, f, g)`.
-        // The xs_ref is the original receiver borrow from the
-        // map call. The fused call inherits the original fold's
-        // surrounding statement (Let or Return).
-        let fused_call_span = body[i].span().merge(body[i + 1].span());
-        let fused_call = crate::ast::Expr {
-            kind: ExprKind::Call {
-                name: "vec_map_fold".to_string(),
-                name_span: fused_call_span,
-                args: vec![xs_ref, init, f_expr, g_expr],
+        i += 1;
+    }
+}
+
+/// Try to fuse the pair at `body[i]` and `body[i+1]`. Returns
+/// true if a fusion happened (mutating `body` in place).
+fn try_fuse_pair(body: &mut Vec<crate::ast::Stmt>, i: usize) -> bool {
+    // The producer must be a Let-binding whose RHS is one of:
+    //   vec_map / vec_filter / vec_map_filter (or method-call form).
+    let producer = match &body[i] {
+        crate::ast::Stmt::Let { name, expr, .. } => {
+            extract_producer_call(expr).map(|p| (name.clone(), p))
+        }
+        _ => None,
+    };
+    let Some((m_name, producer_kind)) = producer else {
+        return false;
+    };
+    // The consumer must use `m` as its receiver borrow:
+    //   vec_fold(ref m, init, g)   — terminator (Let or Return)
+    //   vec_filter(ref m, p)       — chainable (Let)
+    let consumer_info = consumer_for_pair(&body[i + 1], &m_name);
+    let Some(consumer) = consumer_info else {
+        return false;
+    };
+    // Confirm `m` has no other uses anywhere after stmt i+1.
+    let m_used_later = body[i + 2..]
+        .iter()
+        .any(|s| stmt_mentions_var(s, &m_name));
+    if m_used_later {
+        return false;
+    }
+    // Resolve the fusion name + arg layout based on the
+    // (producer, consumer) combination. The arg order matches
+    // each fused builtin's checker signature.
+    let (fused_name, fused_args): (&str, Vec<crate::ast::Expr>) = match (&producer_kind, &consumer) {
+        (ProducerKind::Map { xs_ref, f }, ConsumerKind::Fold { init, g, .. }) => (
+            "vec_map_fold",
+            vec![xs_ref.clone(), init.clone(), f.clone(), g.clone()],
+        ),
+        (ProducerKind::Filter { xs_ref, p }, ConsumerKind::Fold { init, g, .. }) => (
+            "vec_filter_fold",
+            vec![xs_ref.clone(), init.clone(), p.clone(), g.clone()],
+        ),
+        (ProducerKind::MapFilter { xs_ref, f, p }, ConsumerKind::Fold { init, g, .. }) => (
+            "vec_map_filter_fold",
+            vec![
+                xs_ref.clone(),
+                init.clone(),
+                f.clone(),
+                p.clone(),
+                g.clone(),
+            ],
+        ),
+        (ProducerKind::Map { xs_ref, f }, ConsumerKind::Filter { p, .. }) => (
+            "vec_map_filter",
+            vec![xs_ref.clone(), f.clone(), p.clone()],
+        ),
+        // No other combinations are fusable in v1.
+        _ => return false,
+    };
+    let fused_call_span = body[i].span().merge(body[i + 1].span());
+    let fused_call = crate::ast::Expr {
+        kind: ExprKind::Call {
+            name: fused_name.to_string(),
+            name_span: fused_call_span,
+            args: fused_args,
+        },
+        span: fused_call_span,
+    };
+    let new_stmt = consumer.into_stmt_with_expr(fused_call);
+    body[i + 1] = new_stmt;
+    body.remove(i);
+    true
+}
+
+#[derive(Clone)]
+enum ProducerKind {
+    Map { xs_ref: crate::ast::Expr, f: crate::ast::Expr },
+    Filter { xs_ref: crate::ast::Expr, p: crate::ast::Expr },
+    MapFilter { xs_ref: crate::ast::Expr, f: crate::ast::Expr, p: crate::ast::Expr },
+}
+
+enum ConsumerKind {
+    Fold {
+        // Surrounding statement context so we can rebuild it
+        // with the fused call.
+        host: ConsumerHost,
+        init: crate::ast::Expr,
+        g: crate::ast::Expr,
+    },
+    Filter {
+        host: ConsumerHost,
+        p: crate::ast::Expr,
+    },
+}
+
+enum ConsumerHost {
+    Let { name: String, annotation: Option<Type>, span: Span },
+    Return { span: Span },
+}
+
+impl ConsumerKind {
+    fn into_stmt_with_expr(self, expr: crate::ast::Expr) -> crate::ast::Stmt {
+        let host = match self {
+            ConsumerKind::Fold { host, .. } => host,
+            ConsumerKind::Filter { host, .. } => host,
+        };
+        match host {
+            ConsumerHost::Let { name, annotation, span } => crate::ast::Stmt::Let {
+                name,
+                annotation,
+                expr,
+                span,
             },
-            span: fused_call_span,
-        };
-        let new_stmt = if is_let {
-            crate::ast::Stmt::Let {
-                name: t_name,
-                annotation: t_anno,
-                expr: fused_call,
-                span: t_span,
+            ConsumerHost::Return { span } => crate::ast::Stmt::Return { expr, span },
+        }
+    }
+}
+
+fn extract_producer_call(expr: &crate::ast::Expr) -> Option<ProducerKind> {
+    if let Some((xs_ref, f)) = extract_map_call(expr) {
+        return Some(ProducerKind::Map { xs_ref, f });
+    }
+    if let Some((xs_ref, p)) = extract_filter_call(expr) {
+        return Some(ProducerKind::Filter { xs_ref, p });
+    }
+    if let Some((xs_ref, f, p)) = extract_map_filter_call(expr) {
+        return Some(ProducerKind::MapFilter { xs_ref, f, p });
+    }
+    None
+}
+
+fn consumer_for_pair(stmt: &crate::ast::Stmt, m_name: &str) -> Option<ConsumerKind> {
+    match stmt {
+        crate::ast::Stmt::Let { name, annotation, expr, span } => {
+            let host = ConsumerHost::Let {
+                name: name.clone(),
+                annotation: annotation.clone(),
+                span: *span,
+            };
+            if let Some((init, g)) = extract_fold_of_var(expr, m_name) {
+                return Some(ConsumerKind::Fold { host, init, g });
             }
-        } else {
-            crate::ast::Stmt::Return {
-                expr: fused_call,
-                span: t_span,
+            if let Some(p) = extract_filter_of_var(expr, m_name) {
+                return Some(ConsumerKind::Filter { host, p });
             }
-        };
-        // Replace the two adjacent statements with the fused one.
-        body[i + 1] = new_stmt;
-        body.remove(i);
-        // Don't increment i — the next iteration revisits this
-        // position so we can catch a NEW fusion that may have
-        // opened up by elision (e.g. a 3-stage map → fold → fold).
+            None
+        }
+        crate::ast::Stmt::Return { expr, span } => {
+            let host = ConsumerHost::Return { span: *span };
+            if let Some((init, g)) = extract_fold_of_var(expr, m_name) {
+                return Some(ConsumerKind::Fold { host, init, g });
+            }
+            None
+        }
+        _ => None,
     }
 }
 
@@ -1713,6 +1813,94 @@ fn extract_map_call(expr: &crate::ast::Expr) -> Option<(crate::ast::Expr, crate:
             } else {
                 None
             }
+        }
+        _ => None,
+    }
+}
+
+/// Extract `(xs_ref, p)` if `expr` is a `vec_filter(ref xs, p)`
+/// or `xs.filter(p)` call. Closure #319.
+fn extract_filter_call(expr: &crate::ast::Expr) -> Option<(crate::ast::Expr, crate::ast::Expr)> {
+    match &expr.kind {
+        ExprKind::Call { name, args, .. } if name == "vec_filter" && args.len() == 2 => {
+            Some((args[0].clone(), args[1].clone()))
+        }
+        ExprKind::MethodCall { receiver, method, args, .. }
+            if method == "filter" && args.len() == 1 =>
+        {
+            if let ExprKind::Var(_) = &receiver.kind {
+                let xs_ref = crate::ast::Expr {
+                    kind: ExprKind::Ref {
+                        inner: Box::new((**receiver).clone()),
+                    },
+                    span: receiver.span,
+                };
+                Some((xs_ref, args[0].clone()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract `(xs_ref, f, p)` if `expr` is a `vec_map_filter(ref xs, f, p)`
+/// or `xs.map_filter(f, p)` call. Closure #319. The map_filter
+/// producer is what emerges after a prior `map → filter`
+/// fusion rewrote two statements into one; this extractor
+/// lets the next iteration chain it with a fold.
+fn extract_map_filter_call(
+    expr: &crate::ast::Expr,
+) -> Option<(crate::ast::Expr, crate::ast::Expr, crate::ast::Expr)> {
+    match &expr.kind {
+        ExprKind::Call { name, args, .. } if name == "vec_map_filter" && args.len() == 3 => {
+            Some((args[0].clone(), args[1].clone(), args[2].clone()))
+        }
+        ExprKind::MethodCall { receiver, method, args, .. }
+            if method == "map_filter" && args.len() == 2 =>
+        {
+            if let ExprKind::Var(_) = &receiver.kind {
+                let xs_ref = crate::ast::Expr {
+                    kind: ExprKind::Ref {
+                        inner: Box::new((**receiver).clone()),
+                    },
+                    span: receiver.span,
+                };
+                Some((xs_ref, args[0].clone(), args[1].clone()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract `p` if `expr` is a `vec_filter(ref Var(m), p)` or
+/// `m.filter(p)` call on the specific `m` binding. Closure #319.
+fn extract_filter_of_var(
+    expr: &crate::ast::Expr,
+    m_name: &str,
+) -> Option<crate::ast::Expr> {
+    match &expr.kind {
+        ExprKind::Call { name, args, .. } if name == "vec_filter" && args.len() == 2 => {
+            if let ExprKind::Ref { inner } = &args[0].kind {
+                if let ExprKind::Var(n) = &inner.kind {
+                    if n == m_name {
+                        return Some(args[1].clone());
+                    }
+                }
+            }
+            None
+        }
+        ExprKind::MethodCall { receiver, method, args, .. }
+            if method == "filter" && args.len() == 1 =>
+        {
+            if let ExprKind::Var(n) = &receiver.kind {
+                if n == m_name {
+                    return Some(args[0].clone());
+                }
+            }
+            None
         }
         _ => None,
     }

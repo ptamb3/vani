@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #318 — Level 3 transparent loop fusion: an AST-level peephole pass auto-detects `let m = xs.map(f); let t = m.fold(init, g);` patterns (both fn-call and method-call forms) and rewrites them to a single fused `vec_map_fold(ref xs, init, f, g)` call when the intermediate binding `m` has no other uses in the function. Eliminates the intermediate Vec allocation transparently — users get the fused-combinator perf benefit without rewriting source code. Conservative: when `m` IS used elsewhere, fusion is skipped (unfused `__map` + `__fold` calls remain). Also handles `return vec_fold(ref m, init, g)` position. 4 new lib tests verifying the fusion happens (or correctly doesn't) by inspecting emitted LLVM.)
-**Test totals:** 1171 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #319 — Level 3 auto-fusion phase 2: extends closure #318's peephole pass to recognize **all four** producer→consumer combinations. `filter→fold` fuses to `vec_filter_fold`; `map→filter` fuses to `vec_map_filter`; `map_filter→fold` fuses to `vec_map_filter_fold`. The 3-stage `map → filter → fold` chain fuses iteratively: first `map+filter` → `map_filter`, then `map_filter+fold` → `map_filter_fold` (single pass, zero intermediates). Refactored fusion logic via `ProducerKind` / `ConsumerKind` enums for cleaner dispatch. 3 new lib tests covering filter+fold, map+filter, and 3-stage chains.)
+**Test totals:** 1174 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -147,6 +147,52 @@ ref second-class closures; passing closures across function
 boundaries (needs closure-as-value type — likely a struct
 holding the env + fn-ptr pair); reassigning a closure
 binding; nested closure declarations.
+
+### Data-structures roadmap Level 3 — Auto-fusion phase 2 (shipped 2026-05-28, closure #319)
+
+✅ AFFINE — extension of closure #318's pure AST rewrite.
+
+The fusion peephole now recognizes **all four** producer +
+consumer combinations:
+
+| Producer    | Consumer | Fused builtin           |
+|-------------|----------|-------------------------|
+| `vec_map`   | `vec_fold`   | `vec_map_fold`      |
+| `vec_filter`| `vec_fold`   | `vec_filter_fold`   |
+| `vec_map`   | `vec_filter` | `vec_map_filter`    |
+| `vec_map_filter` | `vec_fold` | `vec_map_filter_fold` |
+
+The last two rows enable **3-stage `map → filter → fold`
+chains** to fuse iteratively: the pass first rewrites
+`map+filter` into `map_filter`, then the next iteration sees
+`map_filter+fold` and rewrites that into `map_filter_fold`.
+Net result: a 3-stage chain in user source compiles to a
+single tight loop with zero intermediate Vec allocations.
+
+**Refactor:** the fusion dispatcher now uses `ProducerKind` /
+`ConsumerKind` enums to classify the RHS shape of the
+producer Let and the consumer call, then a small match on
+the pair selects the fused name + arg order. Cleaner than
+the closure #318 one-pattern-at-a-time approach.
+
+Same surface guarantees as #318: handles both fn-call form
+and method-call form (and mixed); recurses into nested
+blocks; conservative use-count check (no fusion when the
+intermediate is referenced elsewhere); works in return
+position.
+
+**Tests:** 3 new lib tests verify each new pattern fuses
+(filter+fold, map+filter, 3-stage). The 3-stage test also
+asserts that NEITHER intermediate `__map` nor `__filter`
+call sites remain — the iterative fusion fully collapsed
+the chain.
+
+**Pending follow-ups:** chains across non-adjacent
+statements (e.g. `map → print(m) → fold`); auto-fusion for
+`vec_filter + vec_map` (filter then map — different from
+`map + filter`); cross-fn fusion (when a closure-bound
+helper consumes a Vec produced from the caller); type-
+changing fused stages.
 
 ### Data-structures roadmap Level 3 — Transparent loop fusion (shipped 2026-05-28, closure #318)
 
