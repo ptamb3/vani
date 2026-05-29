@@ -13686,6 +13686,60 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn skiplist_remove_typecheck() {
+        // Closure #339: skiplist_remove must type-check as
+        // `mut ref SkipList, i64 -> bool` and reject by-ref
+        // operands.
+        let ok = r#"
+            fn main() -> i64 {
+              let sl: SkipList = skiplist_new();
+              let _: bool = skiplist_remove(mut ref sl, 5);
+              let _: bool = sl.remove(5);
+              return 0;
+            }
+        "#;
+        compile_to_c(ok).expect("skiplist_remove must type-check in C");
+        compile_to_llvm(ok).expect("skiplist_remove must compile to LLVM");
+
+        let bad = r#"
+            fn main() -> i64 {
+              let sl: SkipList = skiplist_new();
+              let _: bool = skiplist_remove(ref sl, 5);
+              return 0;
+            }
+        "#;
+        let errors = compile(bad).expect_err("skiplist_remove by-ref must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref SkipList")),
+            "expected mut-ref-SkipList diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn skiplist_remove_emits_helpers() {
+        let source = r#"
+            fn main() -> i64 {
+              let sl: SkipList = skiplist_new();
+              let _: bool = skiplist_remove(mut ref sl, 1);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("skiplist_remove C compile");
+        assert!(
+            c.contains("intent_skiplist_i64_remove"),
+            "C output must include skiplist_remove helper"
+        );
+        let ll = compile_to_llvm(source).expect("skiplist_remove LLVM compile");
+        assert!(
+            ll.contains("@intent_skiplist_i64_remove"),
+            "LLVM output must include skiplist_remove helper"
+        );
+    }
+
+    #[test]
     fn btreemap_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

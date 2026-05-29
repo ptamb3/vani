@@ -368,7 +368,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "trie_contains" || name == "trie_starts_with"
                 || name == "trie_len" || name == "trie_node_count"
                 || name == "skiplist_new" || name == "skiplist_insert"
-                || name == "skiplist_contains" || name == "skiplist_len"
+                || name == "skiplist_contains" || name == "skiplist_remove"
+                || name == "skiplist_len"
                 || name == "skiplist_min" || name == "skiplist_max"
             {
                 return false;

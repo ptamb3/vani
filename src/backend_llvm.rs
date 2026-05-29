@@ -5569,7 +5569,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
-            if name == "skiplist_insert" || name == "skiplist_contains" {
+            if name == "skiplist_insert" || name == "skiplist_contains" || name == "skiplist_remove" {
                 let sl = emit_expr(&args[0], ctx, out);
                 let v = emit_expr(&args[1], ctx, out);
                 let dest = ctx.fresh_tmp();
@@ -12544,6 +12544,112 @@ fn emit_intent_skiplist_i64_helpers_llvm(out: &mut String, has_option_i64: bool)
          \x20 %match = icmp eq i64 %cand_k, %x\n\
          \x20 ret i1 %match\n\
          sc_false:\n\
+         \x20 ret i1 false\n\
+         }\n\
+         ; Closure #339: remove a key. Walk down recording update[]\n\
+         ; (nodes whose forward pointer might skip the candidate),\n\
+         ; then for each level where update[lvl]'s forward equals\n\
+         ; the candidate, redirect it past. Tombstones the slot.\n\
+         define i1 @intent_skiplist_i64_remove(%intent_skiplist_i64* %sl, i64 %x) {\n\
+         \x20 %kp_rm = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 0\n\
+         \x20 %fp_rm = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 1\n\
+         \x20 %nlp_rm = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 2\n\
+         \x20 %nkp_rm = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 6\n\
+         \x20 %update = alloca [8 x i32]\n\
+         \x20 %cur_p_rm = alloca i64\n\
+         \x20 store i64 0, i64* %cur_p_rm\n\
+         \x20 %lvl_p_rm = alloca i32\n\
+         \x20 store i32 7, i32* %lvl_p_rm\n\
+         \x20 br label %srm_lvl_loop\n\
+         srm_lvl_loop:\n\
+         \x20 %lvl_rm = load i32, i32* %lvl_p_rm\n\
+         \x20 %lvl_done_rm = icmp slt i32 %lvl_rm, 0\n\
+         \x20 br i1 %lvl_done_rm, label %srm_check_cand, label %srm_walk_loop\n\
+         srm_walk_loop:\n\
+         \x20 %cur_rm = load i64, i64* %cur_p_rm\n\
+         \x20 %fwd_rm = load i32*, i32** %fp_rm\n\
+         \x20 %lvl64_rm = sext i32 %lvl_rm to i64\n\
+         \x20 %base_rm = mul i64 %cur_rm, 8\n\
+         \x20 %off_rm = add i64 %base_rm, %lvl64_rm\n\
+         \x20 %next_slot_rm = getelementptr i32, i32* %fwd_rm, i64 %off_rm\n\
+         \x20 %next32_rm = load i32, i32* %next_slot_rm\n\
+         \x20 %next_none_rm = icmp eq i32 %next32_rm, -1\n\
+         \x20 br i1 %next_none_rm, label %srm_record, label %srm_check_key\n\
+         srm_check_key:\n\
+         \x20 %next_rm = sext i32 %next32_rm to i64\n\
+         \x20 %keys_rm = load i64*, i64** %kp_rm\n\
+         \x20 %k_slot_rm = getelementptr i64, i64* %keys_rm, i64 %next_rm\n\
+         \x20 %k_rm = load i64, i64* %k_slot_rm\n\
+         \x20 %is_ge_rm = icmp sge i64 %k_rm, %x\n\
+         \x20 br i1 %is_ge_rm, label %srm_record, label %srm_advance\n\
+         srm_advance:\n\
+         \x20 store i64 %next_rm, i64* %cur_p_rm\n\
+         \x20 br label %srm_walk_loop\n\
+         srm_record:\n\
+         \x20 %cur_r = load i64, i64* %cur_p_rm\n\
+         \x20 %cur_r_i32 = trunc i64 %cur_r to i32\n\
+         \x20 %upd_slot_rm = getelementptr [8 x i32], [8 x i32]* %update, i64 0, i64 %lvl64_rm\n\
+         \x20 store i32 %cur_r_i32, i32* %upd_slot_rm\n\
+         \x20 %lvl_dec_rm = sub i32 %lvl_rm, 1\n\
+         \x20 store i32 %lvl_dec_rm, i32* %lvl_p_rm\n\
+         \x20 br label %srm_lvl_loop\n\
+         srm_check_cand:\n\
+         \x20 %upd0_slot_rm = getelementptr [8 x i32], [8 x i32]* %update, i64 0, i64 0\n\
+         \x20 %upd0_rm = load i32, i32* %upd0_slot_rm\n\
+         \x20 %upd0_64_rm = sext i32 %upd0_rm to i64\n\
+         \x20 %fwd_c_rm = load i32*, i32** %fp_rm\n\
+         \x20 %c_base_rm = mul i64 %upd0_64_rm, 8\n\
+         \x20 %cand_slot_rm = getelementptr i32, i32* %fwd_c_rm, i64 %c_base_rm\n\
+         \x20 %cand_rm = load i32, i32* %cand_slot_rm\n\
+         \x20 %cand_none_rm = icmp eq i32 %cand_rm, -1\n\
+         \x20 br i1 %cand_none_rm, label %srm_false, label %srm_check_eq\n\
+         srm_check_eq:\n\
+         \x20 %cand64_rm = sext i32 %cand_rm to i64\n\
+         \x20 %keys_d_rm = load i64*, i64** %kp_rm\n\
+         \x20 %cand_k_slot_rm = getelementptr i64, i64* %keys_d_rm, i64 %cand64_rm\n\
+         \x20 %cand_k_rm = load i64, i64* %cand_k_slot_rm\n\
+         \x20 %match_rm = icmp eq i64 %cand_k_rm, %x\n\
+         \x20 br i1 %match_rm, label %srm_unlink_init, label %srm_false\n\
+         srm_unlink_init:\n\
+         \x20 %nl_rm = load i32*, i32** %nlp_rm\n\
+         \x20 %cand_lvl_slot = getelementptr i32, i32* %nl_rm, i64 %cand64_rm\n\
+         \x20 %cand_lvl = load i32, i32* %cand_lvl_slot\n\
+         \x20 %ui_p_rm = alloca i32\n\
+         \x20 store i32 0, i32* %ui_p_rm\n\
+         \x20 br label %srm_unlink_loop\n\
+         srm_unlink_loop:\n\
+         \x20 %ui_rm = load i32, i32* %ui_p_rm\n\
+         \x20 %ui_done_rm = icmp sge i32 %ui_rm, %cand_lvl\n\
+         \x20 br i1 %ui_done_rm, label %srm_finish, label %srm_unlink_body\n\
+         srm_unlink_body:\n\
+         \x20 %ui64_rm = sext i32 %ui_rm to i64\n\
+         \x20 %upd_i_slot_rm = getelementptr [8 x i32], [8 x i32]* %update, i64 0, i64 %ui64_rm\n\
+         \x20 %upd_i_rm = load i32, i32* %upd_i_slot_rm\n\
+         \x20 %upd_i_64_rm = sext i32 %upd_i_rm to i64\n\
+         \x20 %fwd_u_rm = load i32*, i32** %fp_rm\n\
+         \x20 %upd_base_rm = mul i64 %upd_i_64_rm, 8\n\
+         \x20 %upd_off_rm = add i64 %upd_base_rm, %ui64_rm\n\
+         \x20 %upd_slot_unlink = getelementptr i32, i32* %fwd_u_rm, i64 %upd_off_rm\n\
+         \x20 %upd_v_rm = load i32, i32* %upd_slot_unlink\n\
+         \x20 %is_cand_rm = icmp eq i32 %upd_v_rm, %cand_rm\n\
+         \x20 br i1 %is_cand_rm, label %srm_redirect, label %srm_unlink_next\n\
+         srm_redirect:\n\
+         \x20 %cand_base_rm = mul i64 %cand64_rm, 8\n\
+         \x20 %cand_off_rm = add i64 %cand_base_rm, %ui64_rm\n\
+         \x20 %cand_next_slot_rm = getelementptr i32, i32* %fwd_u_rm, i64 %cand_off_rm\n\
+         \x20 %cand_next_rm = load i32, i32* %cand_next_slot_rm\n\
+         \x20 store i32 %cand_next_rm, i32* %upd_slot_unlink\n\
+         \x20 br label %srm_unlink_next\n\
+         srm_unlink_next:\n\
+         \x20 %ui_inc_rm = add i32 %ui_rm, 1\n\
+         \x20 store i32 %ui_inc_rm, i32* %ui_p_rm\n\
+         \x20 br label %srm_unlink_loop\n\
+         srm_finish:\n\
+         \x20 %nk_rm = load i64, i64* %nkp_rm\n\
+         \x20 %nk_dec_rm = sub i64 %nk_rm, 1\n\
+         \x20 store i64 %nk_dec_rm, i64* %nkp_rm\n\
+         \x20 ret i1 true\n\
+         srm_false:\n\
          \x20 ret i1 false\n\
          }\n\
          define i64 @intent_skiplist_i64_len(%intent_skiplist_i64* %sl) {\n\

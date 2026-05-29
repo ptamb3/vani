@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "graph_has_cycle", "graph_mst_kruskal", "graph_mst_prim", "graph_astar", "graph_topo_sort", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_len", "trie_node_count", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_len", "skiplist_min", "skiplist_max", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "graph_has_cycle", "graph_mst_kruskal", "graph_mst_prim", "graph_astar", "graph_topo_sort", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_len", "trie_node_count", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_remove", "skiplist_len", "skiplist_min", "skiplist_max", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -10826,6 +10826,7 @@ fn check_expr(
                     Some(Type::SkipList) => match method.as_str() {
                         "insert" => ("skiplist_insert", true),
                         "contains" => ("skiplist_contains", false),
+                        "remove" => ("skiplist_remove", true),
                         "len" => ("skiplist_len", false),
                         "min" => ("skiplist_min", false),
                         "max" => ("skiplist_max", false),
@@ -13898,7 +13899,8 @@ fn check_call(
             );
         }
         "skiplist_new" | "skiplist_insert" | "skiplist_contains"
-        | "skiplist_len" | "skiplist_min" | "skiplist_max" => {
+        | "skiplist_remove" | "skiplist_len" | "skiplist_min"
+        | "skiplist_max" => {
             return check_skiplist_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
@@ -17392,13 +17394,15 @@ fn check_skiplist_builtin(
     let want_args = match name {
         "skiplist_new" => 0,
         "skiplist_len" | "skiplist_min" | "skiplist_max" => 1,
-        "skiplist_insert" | "skiplist_contains" => 2,
+        "skiplist_insert" | "skiplist_contains"
+        | "skiplist_remove" => 2,
         _ => unreachable!(),
     };
     let ret_ty = || -> Type {
         match name {
             "skiplist_new" => Type::SkipList,
-            "skiplist_insert" | "skiplist_contains" => Type::Bool,
+            "skiplist_insert" | "skiplist_contains"
+            | "skiplist_remove" => Type::Bool,
             "skiplist_min" | "skiplist_max" => {
                 Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
             }
@@ -17431,7 +17435,7 @@ fn check_skiplist_builtin(
         );
     }
     let sl = check_expr(&args[0], env, signatures, diagnostics);
-    let is_mut_op = matches!(name, "skiplist_insert");
+    let is_mut_op = matches!(name, "skiplist_insert" | "skiplist_remove");
     match sl.ty() {
         Type::Ref(inner) | Type::RefMut(inner) => {
             if !matches!(**inner, Type::SkipList) {
@@ -17471,7 +17475,7 @@ fn check_skiplist_builtin(
         ));
     }
     let mut typed_args = vec![sl.expr];
-    if matches!(name, "skiplist_insert" | "skiplist_contains") {
+    if matches!(name, "skiplist_insert" | "skiplist_contains" | "skiplist_remove") {
         let v_raw = check_expr(&args[1], env, signatures, diagnostics);
         let v = coerce_checked(
             v_raw, &Type::I64, args[1].span,

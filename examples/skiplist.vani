@@ -58,5 +58,24 @@ fn main() -> i64 {
   print "contains 1:", sl.contains(1);
   print "contains 8:", sl.contains(8);
 
+  // Closure #339: remove. Standard skip-list removal walks down the
+  // levels recording an `update[]` array and redirects every forward
+  // pointer that skipped over the candidate. Tombstones the slot.
+  print "remove 5:", sl.remove(5);
+  print "remove 99 (absent):", sl.remove(99);
+  print "len:", sl.len();
+  print "contains 5 after remove:", sl.contains(5);
+  print "min still 1:", unwrap_or(sl.min(), 0 - 1);
+  print "max still 8:", unwrap_or(sl.max(), 0 - 1);
+
+  // Drain by repeated removal.
+  let _ = sl.remove(1);
+  let _ = sl.remove(2);
+  let _ = sl.remove(3);
+  let _ = sl.remove(7);
+  let _ = sl.remove(8);
+  print "drained len:", sl.len();
+  print "drained min:", unwrap_or(sl.min(), 0 - 1);
+
   return 0;
 }

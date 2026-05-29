@@ -376,9 +376,16 @@ pointer (already in the language as of #279 FFI callbacks).
     min / max`. Method sugar: `sl.insert(x)` / `.contains(x)`
     / `.len()` / `.min()` / `.max()`. `min` is O(1) (level-0
     head pointer); `max` is O(n) level-0 walk in v1. Drop
-    frees all three arrays. Pending: `remove` (with proper
-    forward-pointer back-patching), tail-tracker for O(log n)
-    max, configurable MAX_LEVEL, non-i64 element types.
+    frees all three arrays.
+    *Remove shipped 2026-05-29 (closure #339).* Standard
+    skip-list removal: walk down recording update[] (nodes
+    whose forward pointer might skip the candidate), then
+    redirect every level-l forward that pointed at the
+    candidate to point at the candidate's own forward.
+    Tombstones the slot in the arena (no compaction).
+    Method sugar `sl.remove(x)`.
+    Pending: tail-tracker for O(log n) max; configurable
+    MAX_LEVEL; non-i64 element types; arena compaction.
 26. **Bloom filter** — ✅ AFFINE.
     Bit-vector over `Vec<u64>` + multi-hash via the #10
     Hash interface.
@@ -716,7 +723,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #338 — **reverse-CSR for Prim's undirected adjacency**. Three new struct fields (rev_adj_start / rev_adj_csr_src / rev_adj_csr_weight) appended at indices 9/10/11; byte_size 72 → 96. A new `intent_graph_build_rev_csr_if_needed` helper builds the reverse adjacency cache via the same two-pass count-prefix-scatter pattern as the forward CSR, but keyed on destination. Prim now builds both CSRs and iterates u's incident edges as the union of forward (u→v) and reverse (v→u) CSR walks — O(degree) per pop. With this change every graph algorithm except Kruskal (edge-sort-driven, not adjacency-driven) does O(V+E) adjacency iteration. No API changes; existing examples produce byte-identical output across both backends. 1244 lib + parity green across 90 examples. Closure #337 (CSR adoption for has_cycle/topo_sort/dijkstra/astar) shipped immediately before. **The graph CSR story is now complete.** Next focal area sequence: (#339) **Trie alphabet generalization** — per-node sparse children for arbitrary u8 alphabet, possibly a separate `BytesTrie` type. (#340) **SkipList remove + tail tracker** for O(log n) max. (#341) **Red-black variant on the Bst arena** (1-bit color flag can share the existing heights byte). (#342+) Closure-as-value type — unblocks A* path reconstruction, real Prim/Kruskal weight comparators, sort_by with closures, and the broader iterator-combinator work. After Level 4 extensions: tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-29, after closure #339 — **`skiplist_remove(mut ref sl, x) -> bool`**. Standard skip-list removal: walks down MAX_LEVEL-1..0 recording update[] (nodes whose forward pointer might skip the candidate), then redirects every level-l forward in update[] that pointed at the candidate to point at the candidate's own forward instead. Tombstones the slot (no arena compaction). Returns true iff a node was removed. Method sugar `sl.remove(x)`. New lib tests + extended `examples/skiplist.vani` exercise remove-present, remove-absent, and drain-by-repeated-remove on both backends with byte-identical output. 1246 lib + parity green across 90 examples. Closure #338 (reverse-CSR for Prim) shipped immediately before — the graph CSR story is complete. Next focal area sequence: (#340) **Red-black variant on the Bst arena** — RB rotations share the same arena pattern as AVL (closure #332), and the 1-bit color flag can occupy the top bit of the existing per-node heights byte (heights stay ≤ 127 in any AVL/RB tree fitting in i32 child indices). Smaller scope than full Trie generalization. (#341) **Trie alphabet generalization** — per-node sparse children for arbitrary u8 alphabet via `Vec<(u8, u32)>` or a radix-compressed variant; delete; ordered enumeration. Big — full type refactor. (#342) **SkipList tail-tracker** for O(log n) max via a per-level last-pointer cache invalidated on insert/remove. (#343+) Closure-as-value type — unblocks A* path reconstruction, real Prim/Kruskal weight comparators, sort_by with closures, and the broader iterator-combinator work. After Level 4 extensions: tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

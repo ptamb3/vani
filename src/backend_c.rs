@@ -2873,6 +2873,37 @@ fn emit_intent_skiplist_helpers_c_body(out: &mut String, has_option_i64: bool) {
          \x20 int32_t cand = sl->forward[cur * INTENT_SKIPLIST_MAX_LEVEL + 0];\n\
          \x20 return (cand != -1 && sl->keys[cand] == x);\n\
          }\n\
+         /* Closure #339: remove a key. Standard skip-list removal —\n\
+          * walk down the levels recording the update[] array (nodes\n\
+          * whose level-l forward pointer might need to skip past the\n\
+          * removed node), then for each level where update[lvl]'s\n\
+          * forward equals the candidate, redirect it to the\n\
+          * candidate's own forward. Returns true iff a node was\n\
+          * removed. Arena slots stay tombstoned (no compaction). */\n\
+         static INTENT_UNUSED bool intent_skiplist_i64_remove(intent_skiplist_i64* sl, int64_t x) {\n\
+         \x20 int32_t update[INTENT_SKIPLIST_MAX_LEVEL];\n\
+         \x20 int64_t cur = 0;\n\
+         \x20 for (int lvl = INTENT_SKIPLIST_MAX_LEVEL - 1; lvl >= 0; lvl--) {\n\
+         \x20   for (;;) {\n\
+         \x20     int32_t next = sl->forward[cur * INTENT_SKIPLIST_MAX_LEVEL + lvl];\n\
+         \x20     if (next == -1) break;\n\
+         \x20     if (sl->keys[next] >= x) break;\n\
+         \x20     cur = (int64_t)next;\n\
+         \x20   }\n\
+         \x20   update[lvl] = (int32_t)cur;\n\
+         \x20 }\n\
+         \x20 int32_t cand = sl->forward[(int64_t)update[0] * INTENT_SKIPLIST_MAX_LEVEL + 0];\n\
+         \x20 if (cand == -1 || sl->keys[cand] != x) return false;\n\
+         \x20 int32_t cand_lvl = sl->node_levels[cand];\n\
+         \x20 for (int lvl = 0; lvl < cand_lvl; lvl++) {\n\
+         \x20   if (sl->forward[(int64_t)update[lvl] * INTENT_SKIPLIST_MAX_LEVEL + lvl] == cand) {\n\
+         \x20     sl->forward[(int64_t)update[lvl] * INTENT_SKIPLIST_MAX_LEVEL + lvl] =\n\
+         \x20       sl->forward[(int64_t)cand * INTENT_SKIPLIST_MAX_LEVEL + lvl];\n\
+         \x20   }\n\
+         \x20 }\n\
+         \x20 sl->num_keys--;\n\
+         \x20 return true;\n\
+         }\n\
          static INTENT_UNUSED int64_t intent_skiplist_i64_len(const intent_skiplist_i64* sl) {\n\
          \x20 return sl->num_keys;\n\
          }\n",
@@ -8321,6 +8352,11 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         ),
         "skiplist_contains" => format!(
             "intent_skiplist_i64_contains({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "skiplist_remove" => format!(
+            "intent_skiplist_i64_remove({}, ({}))",
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
