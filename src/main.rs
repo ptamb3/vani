@@ -348,6 +348,9 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "union_find_new" || name == "union_find_union"
                 || name == "union_find_find" || name == "union_find_connected"
                 || name == "union_find_count"
+                || name == "binary_heap_new" || name == "binary_heap_push"
+                || name == "binary_heap_pop" || name == "binary_heap_peek"
+                || name == "binary_heap_len"
             {
                 return false;
             }

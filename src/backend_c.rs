@@ -552,6 +552,12 @@ pub fn emit_c(program: &TypedProgram) -> String {
     if program_uses_union_find(program) {
         emit_intent_union_find_helpers_c_body(&mut body);
     }
+    if program_uses_i64_binary_heap(program) {
+        let has_option_i64 = ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        emit_intent_binary_heap_helpers_c_body(&mut body, has_option_i64);
+    }
 
     for function in &program.functions {
         emit_prototype(function, &mut body);
@@ -1418,6 +1424,123 @@ fn emit_intent_union_find_helpers_c_body(out: &mut String) {
          \x20 return (int64_t)uf->sets;\n\
          }\n\n",
     );
+}
+
+/// Walk the program for any `BinaryHeap<i64>` type usage. Closure #326.
+pub(crate) fn program_uses_i64_binary_heap(program: &TypedProgram) -> bool {
+    fn ty_uses(ty: &Type) -> bool {
+        match ty {
+            Type::BinaryHeap(element) if matches!(**element, Type::I64) => true,
+            Type::Vec(inner) | Type::Ref(inner) | Type::RefMut(inner) => ty_uses(inner),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if ty_uses(&f.return_type) {
+            return true;
+        }
+        for p in &f.params {
+            if ty_uses(&p.ty) {
+                return true;
+            }
+        }
+        for s in &f.body {
+            if stmt_uses_i64_binary_heap(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn stmt_uses_i64_binary_heap(stmt: &crate::ir::TypedStmt) -> bool {
+    use crate::ir::TypedStmt as S;
+    fn ty_uses(ty: &Type) -> bool {
+        matches!(ty, Type::BinaryHeap(element) if matches!(**element, Type::I64))
+            || matches!(ty,
+                Type::Vec(i) | Type::Ref(i) | Type::RefMut(i) if ty_uses(i))
+    }
+    match stmt {
+        S::Let { ty, .. } | S::Reassign { ty, .. } | S::Drop { ty, .. } => ty_uses(ty),
+        S::If { then_body, else_body, .. } => {
+            then_body.iter().any(stmt_uses_i64_binary_heap)
+                || else_body.iter().any(stmt_uses_i64_binary_heap)
+        }
+        S::While { body, .. } | S::For { body, .. } | S::ForIter { body, .. } => {
+            body.iter().any(stmt_uses_i64_binary_heap)
+        }
+        _ => false,
+    }
+}
+
+/// Data-structures roadmap Level 4 #2 — BinaryHeap<i64> runtime
+/// helpers (closure #326). Heap-ordered single buffer + len +
+/// capacity. push sift-ups; pop sift-downs. Min-heap (root is
+/// smallest). pop / peek return `Option<i64>` — gated on the
+/// Option__i64 enum being registered. v1 i64 element only.
+fn emit_intent_binary_heap_helpers_c_body(out: &mut String, has_option_i64: bool) {
+    out.push_str(
+        "typedef struct { int64_t* data; uint64_t len; uint64_t capacity; } intent_binary_heap_i64;\n\
+         static INTENT_UNUSED intent_binary_heap_i64 intent_binary_heap_i64_new(void) {\n\
+         \x20 intent_binary_heap_i64 h; h.data = (int64_t*)0; h.len = 0; h.capacity = 0; return h;\n\
+         }\n\
+         static INTENT_UNUSED void intent_binary_heap_i64_drop(intent_binary_heap_i64* h) {\n\
+         \x20 if (h->data) free(h->data);\n\
+         \x20 h->data = (int64_t*)0; h->len = 0; h->capacity = 0;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_binary_heap_i64_push(intent_binary_heap_i64* h, int64_t v) {\n\
+         \x20 if (h->len >= h->capacity) {\n\
+         \x20   h->capacity = h->capacity ? h->capacity * 2 : 4;\n\
+         \x20   h->data = (int64_t*)realloc(h->data, h->capacity * sizeof(int64_t));\n\
+         \x20   if (!h->data) abort();\n\
+         \x20 }\n\
+         \x20 uint64_t i = h->len;\n\
+         \x20 h->data[i] = v;\n\
+         \x20 h->len++;\n\
+         \x20 /* Sift-up. */\n\
+         \x20 while (i > 0) {\n\
+         \x20   uint64_t p = (i - 1) / 2;\n\
+         \x20   if (h->data[i] >= h->data[p]) break;\n\
+         \x20   int64_t t = h->data[i]; h->data[i] = h->data[p]; h->data[p] = t;\n\
+         \x20   i = p;\n\
+         \x20 }\n\
+         \x20 return (int64_t)h->len;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_binary_heap_i64_len(const intent_binary_heap_i64* h) {\n\
+         \x20 return (int64_t)h->len;\n\
+         }\n",
+    );
+    if has_option_i64 {
+        out.push_str(
+            "static INTENT_UNUSED Enum_Option__i64 intent_binary_heap_i64_peek(const intent_binary_heap_i64* h) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (h->len == 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 r.tag = 0; r.payload = h->data[0]; return r;\n\
+             }\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_binary_heap_i64_pop(intent_binary_heap_i64* h) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (h->len == 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 r.tag = 0; r.payload = h->data[0];\n\
+             \x20 h->len--;\n\
+             \x20 if (h->len > 0) {\n\
+             \x20   h->data[0] = h->data[h->len];\n\
+             \x20   /* Sift-down. */\n\
+             \x20   uint64_t i = 0;\n\
+             \x20   while (1) {\n\
+             \x20     uint64_t l = 2 * i + 1;\n\
+             \x20     uint64_t r2 = 2 * i + 2;\n\
+             \x20     uint64_t smallest = i;\n\
+             \x20     if (l < h->len && h->data[l] < h->data[smallest]) smallest = l;\n\
+             \x20     if (r2 < h->len && h->data[r2] < h->data[smallest]) smallest = r2;\n\
+             \x20     if (smallest == i) break;\n\
+             \x20     int64_t t = h->data[i]; h->data[i] = h->data[smallest]; h->data[smallest] = t;\n\
+             \x20     i = smallest;\n\
+             \x20   }\n\
+             \x20 }\n\
+             \x20 return r;\n\
+             }\n\n",
+        );
+    }
 }
 
 /// Data-structures roadmap Level 1 — FNV-1a hash helpers.
@@ -4036,6 +4159,11 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 out.push_str(&local_name(name));
                 out.push_str(");\n");
             }
+            Type::BinaryHeap(_) => {
+                out.push_str("  intent_binary_heap_i64_drop(&");
+                out.push_str(&local_name(name));
+                out.push_str(");\n");
+            }
             Type::Struct(struct_name) => {
                 // Auto-call the user's `Drop` impl when one
                 // exists. Two flavors:
@@ -6645,6 +6773,25 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_union_find_count({})",
             emit_expr(&args[0])
         ),
+        // Closure #326: BinaryHeap dispatch.
+        "binary_heap_new" => "intent_binary_heap_i64_new()".to_string(),
+        "binary_heap_push" => format!(
+            "intent_binary_heap_i64_push({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "binary_heap_pop" => format!(
+            "intent_binary_heap_i64_pop({})",
+            emit_expr(&args[0])
+        ),
+        "binary_heap_peek" => format!(
+            "intent_binary_heap_i64_peek({})",
+            emit_expr(&args[0])
+        ),
+        "binary_heap_len" => format!(
+            "intent_binary_heap_i64_len({})",
+            emit_expr(&args[0])
+        ),
         "hashmap_new" => "intent_hashmap_i64_i64_new()".to_string(),
         "hashmap_insert" => format!(
             "intent_hashmap_i64_i64_insert({}, ({}), ({}))",
@@ -7208,6 +7355,8 @@ pub(crate) fn c_leaf_type(ty: &Type) -> &'static str {
         Type::BTreeMap(_, _) => "intent_btreemap_i64_i64",
         // `UnionFind` — Level 4 #1 arena-based disjoint-set.
         Type::UnionFind => "intent_union_find",
+        // `BinaryHeap<T>` — Level 4 #2 dedicated min-heap. v1 i64.
+        Type::BinaryHeap(_) => "intent_binary_heap_i64",
         // `fn(T1, T2) -> R` has no fixed leaf spelling in C —
         // function-pointer types are declarator-shaped
         // (`R (*name)(T1, T2)`). Callers that need to emit a
@@ -7539,7 +7688,7 @@ fn divisor_helper(ty: &Type) -> &'static str {
         Type::U64 => "intent_check_u64_divisor",
         Type::F32 => "intent_check_f32_divisor",
         Type::F64 => "intent_check_f64_divisor",
-        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
+        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
             unreachable!("non-numeric type cannot be a divisor")
         }
     }
@@ -7576,6 +7725,7 @@ fn shift_helper(ty: &Type) -> &'static str {
         | Type::BTreeSet(_)
         | Type::BTreeMap(_, _)
         | Type::UnionFind
+        | Type::BinaryHeap(_)
         | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => unreachable!("shift count must be an integer"),
     }
 }

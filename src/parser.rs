@@ -1614,6 +1614,13 @@ impl Parser {
                 self.bump();
                 return Ok(Type::UnionFind);
             }
+            if name == "BinaryHeap" {
+                self.bump();
+                self.expect_keyword("'<'", |kind| matches!(kind, TokenKind::Less))?;
+                let element = self.parse_type()?;
+                self.expect_close_angle()?;
+                return Ok(Type::BinaryHeap(Box::new(element)));
+            }
             if name == "Atomic" {
                 self.bump();
                 self.expect_keyword("'<'", |kind| matches!(kind, TokenKind::Less))?;

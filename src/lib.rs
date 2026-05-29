@@ -12777,6 +12777,112 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn binary_heap_basics_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let h: BinaryHeap<i64> = binary_heap_new();
+              let _: i64 = binary_heap_push(mut ref h, 5);
+              let _: Option<i64> = binary_heap_pop(mut ref h);
+              let _: Option<i64> = binary_heap_peek(ref h);
+              let n: i64 = binary_heap_len(ref h);
+              return n;
+            }
+        "#;
+        compile_to_c(source).expect("binary_heap basics must type-check in C");
+        compile_to_llvm(source).expect("binary_heap basics must compile to LLVM");
+    }
+
+    #[test]
+    fn binary_heap_push_rejects_non_mut_ref() {
+        let source = r#"
+            fn main() -> i64 {
+              let h: BinaryHeap<i64> = binary_heap_new();
+              let _: i64 = binary_heap_push(ref h, 1);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("binary_heap_push by-ref must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref BinaryHeap")),
+            "expected mut-ref-BinaryHeap diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn binary_heap_reserves_name_against_user_struct() {
+        let source = r#"
+            struct BinaryHeap { x: i64 }
+            fn main() -> i64 { return 0; }
+        "#;
+        let errors = compile(source).expect_err("`struct BinaryHeap` must collide");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("BinaryHeap") && e.message.contains("reserved")),
+            "expected reserved-name diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn binary_heap_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let h: BinaryHeap<i64> = binary_heap_new();
+              let _: i64 = h.push(3);
+              let _: Option<i64> = h.peek();
+              let _: Option<i64> = h.pop();
+              return h.len();
+            }
+        "#;
+        compile_to_c(source).expect("binary_heap method sugar must type-check in C");
+        compile_to_llvm(source).expect("binary_heap method sugar must compile to LLVM");
+    }
+
+    #[test]
+    fn binary_heap_emits_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let h: BinaryHeap<i64> = binary_heap_new();
+              let _: i64 = binary_heap_push(mut ref h, 1);
+              let _: Option<i64> = binary_heap_pop(mut ref h);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("binary_heap program compiles");
+        assert!(
+            c.contains("intent_binary_heap_i64")
+                && c.contains("intent_binary_heap_i64_push")
+                && c.contains("intent_binary_heap_i64_pop")
+                && c.contains("intent_binary_heap_i64_drop"),
+            "C output must include the BinaryHeap runtime; got snippet:\n{}",
+            &c[..c.len().min(800)]
+        );
+    }
+
+    #[test]
+    fn binary_heap_emits_helpers_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let h: BinaryHeap<i64> = binary_heap_new();
+              let _: i64 = binary_heap_push(mut ref h, 1);
+              let _: Option<i64> = binary_heap_pop(mut ref h);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("binary_heap LLVM compile");
+        assert!(
+            ll.contains("%intent_binary_heap_i64 = type")
+                && ll.contains("@intent_binary_heap_i64_push")
+                && ll.contains("@intent_binary_heap_i64_pop"),
+            "LLVM output must include the BinaryHeap typedef + helpers"
+        );
+    }
+
+    #[test]
     fn btreemap_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

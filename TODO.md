@@ -236,9 +236,9 @@ pointer (already in the language as of #279 FFI callbacks).
     `Vec<Node>` for vertex data + `Vec<Vec<u32>>` adjacency
     list. Indices not pointers. Cycles are fine — the cycle
     is in the *indices*, not in the ownership graph.
-    Algorithms: BFS, DFS, Dijkstra (needs BinaryHeap from #16),
-    A*, topological sort, Kruskal / Prim (needs Union-Find,
-    queued below).
+    Algorithms: BFS, DFS, Dijkstra (needs `BinaryHeap<T>`, now
+    shipped at #326), A*, topological sort, Kruskal / Prim
+    (Kruskal unblocked by `UnionFind` #325).
 24. **Union-Find / Disjoint-Set** — ✅ AFFINE.
     `Vec<u32>` parent + `Vec<u32>` rank. Path compression
     works under affine because mutation goes through
@@ -261,6 +261,21 @@ pointer (already in the language as of #279 FFI callbacks).
 26. **Bloom filter** — ✅ AFFINE.
     Bit-vector over `Vec<u64>` + multi-hash via the #10
     Hash interface.
+27. **`BinaryHeap<T>` dedicated wrapper type** — ✅ AFFINE.
+    First-class affine handle that promotes the Vec<i64>-backed
+    heap (closure #302 / `heap_push` etc.) to a typed wrapper.
+    Backing: `i64*` + `len` + `cap`, identical sift-up /
+    sift-down semantics. 5 builtins: `binary_heap_new()` /
+    `push(mut ref, v) -> i64` (new len) / `pop(mut ref) ->
+    Option<i64>` / `peek(ref) -> Option<i64>` / `len(ref) ->
+    i64`. Method sugar: `h.push(v)` / `h.pop()` / `h.peek()` /
+    `h.len()`. Drop frees the backing buffer.
+    *Shipped 2026-05-28 (closure #326) — Level 4 #2.*
+    Cross-backend parity green; 6 new lib tests; new
+    `examples/binary_heap.vani`. Pending: non-i64 element
+    types (parameterized `BinaryHeap<T>`); `peek_min` /
+    `peek_max` polarity flip via comparator closure;
+    bulk-build O(n) heapify path on the wrapper.
 
 ### Deferred / non-compliant (flagged with reasoning)
 
@@ -564,7 +579,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #325 — **Level 4 #1** Union-Find / disjoint-set: first arena-based container. `UnionFind` affine handle + parallel `parent`/`rank` i64 arrays; path-compressed find + union-by-rank. 5 builtins + method sugar + new `examples/union_find.vani` + 6 new lib tests. Between #321 and #325 the Level 3 closures #322 (reductions sum/product/min/max/count/any/all), #323 (non-adjacent auto-fusion), and #324 (vec_chain) also shipped. **Level 4 is now open** — arena-based data structures are the rest of the roadmap. Next focal area sequence: (#326) **BinaryHeap<T> dedicated wrapper type** (Level 4 #2) — promote the Vec<i64>-backed heap to a first-class handle. (#327) **Bloom filter** (Level 4 #6) — fixed bit-vector. (#328) **BST/AVL via node arena** (Level 4 #3) — child-index i32s, first arena-based ordered container. (#329) **Graph + algorithms** (BFS / DFS / Dijkstra / topo / Kruskal — Kruskal now unblocked by UnionFind). (#330) Trie; (#331) Skip list. After Level 4: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-28, after closure #326 — **Level 4 #2** `BinaryHeap<T>` dedicated wrapper type: promotes the Vec<i64>-backed heap (closure #302) to a first-class affine handle. Backing `i64*` + `len` + `cap`; 5 builtins (`binary_heap_new` / `push` / `pop` / `peek` / `len`) + method sugar `h.push(v)` / `h.pop()` / `h.peek()` / `h.len()`. Sift-up in `push`, sift-down in `pop`. `pop` and `peek` return `Option<i64>` (auto-monomorphized via the existing payload registry). Drop frees the backing buffer. New `examples/binary_heap.vani` priority-queue drain demo; 6 new lib tests. Closure #325 (Level 4 #1) Union-Find shipped immediately before. **Level 4 is now 2/9 complete.** Next focal area sequence: (#327) **Bloom filter** (Level 4 #6) — fixed bit-vector over `Vec<u64>` + multi-hash via the FNV-1a `Hash` interface. (#328) **BST/AVL via node arena** (Level 4 #3) — child-index i32s, first arena-based ordered container. (#329) **Graph + algorithms** (BFS / DFS / Dijkstra now unblocked by `BinaryHeap<T>`; Kruskal unblocked by UnionFind; topo). (#330) Trie; (#331) Skip list. After Level 4: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

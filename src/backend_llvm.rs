@@ -256,6 +256,7 @@ fn llvm_byte_size(ty: &Type) -> u64 {
         Type::BTreeSet(_) => 24, // {keys ptr, len, capacity}
         Type::BTreeMap(_, _) => 32, // {keys ptr, values ptr, len, capacity}
         Type::UnionFind => 32, // {parent ptr, rank ptr, n, sets}
+        Type::BinaryHeap(_) => 24, // {data ptr, len, capacity}
         Type::Object(_) => 16, // fat pointer: vtable + data
         Type::Vec(_) => 24, // {data, len, cap} on 64-bit
         Type::Array { element, length } => llvm_byte_size(element) * length,
@@ -635,7 +636,9 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // BTreeMap<i64, i64> (closure #307): { keys*, values*, len, cap } — sorted-Vec backed.
     out.push_str("%intent_btreemap_i64_i64 = type { i64*, i64*, i64, i64 }\n");
     // UnionFind (closure #325): { parent*, rank*, n, sets } — disjoint-set arena.
-    out.push_str("%intent_union_find = type { i64*, i64*, i64, i64 }\n\n");
+    out.push_str("%intent_union_find = type { i64*, i64*, i64, i64 }\n");
+    // BinaryHeap<i64> (closure #326): { data*, len, capacity } — min-heap.
+    out.push_str("%intent_binary_heap_i64 = type { i64*, i64, i64 }\n\n");
 
     emit_intent_str_concat_definition(&mut out);
 
@@ -867,6 +870,16 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // UnionFind helpers (closure #325, Level 4 #1).
     if crate::backend_c::program_uses_union_find(program) {
         emit_intent_union_find_helpers_llvm(&mut out);
+    }
+
+    // BinaryHeap<i64> helpers (closure #326, Level 4 #2).
+    // pop/peek are Option-returning so they're gated on the
+    // Option__i64 enum being registered.
+    if crate::backend_c::program_uses_i64_binary_heap(program) {
+        let has_option_i64 = LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        emit_intent_binary_heap_i64_helpers_llvm(&mut out, has_option_i64);
     }
 
     for function in &program.functions {
@@ -1590,6 +1603,15 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 if let Some((_, addr)) = ctx.locals.get(name).cloned() {
                     out.push_str(&format!(
                         "  call void @intent_union_find_drop(%intent_union_find* {})\n",
+                        addr
+                    ));
+                }
+                return;
+            }
+            if matches!(ty, Type::BinaryHeap(_)) {
+                if let Some((_, addr)) = ctx.locals.get(name).cloned() {
+                    out.push_str(&format!(
+                        "  call void @intent_binary_heap_i64_drop(%intent_binary_heap_i64* {})\n",
                         addr
                     ));
                 }
@@ -5141,6 +5163,52 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // BinaryHeap<i64> builtins (closure #326).
+            if name == "binary_heap_new" {
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_binary_heap_i64 @intent_binary_heap_i64_new()\n",
+                    dest
+                ));
+                return dest;
+            }
+            if name == "binary_heap_push" {
+                let h = emit_expr(&args[0], ctx, out);
+                let v = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_binary_heap_i64_push(%intent_binary_heap_i64* {}, i64 {})\n",
+                    dest, h, v
+                ));
+                return dest;
+            }
+            if name == "binary_heap_pop" {
+                let h = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %Enum_Option__i64 @intent_binary_heap_i64_pop(%intent_binary_heap_i64* {})\n",
+                    dest, h
+                ));
+                return dest;
+            }
+            if name == "binary_heap_peek" {
+                let h = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %Enum_Option__i64 @intent_binary_heap_i64_peek(%intent_binary_heap_i64* {})\n",
+                    dest, h
+                ));
+                return dest;
+            }
+            if name == "binary_heap_len" {
+                let h = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_binary_heap_i64_len(%intent_binary_heap_i64* {})\n",
+                    dest, h
+                ));
+                return dest;
+            }
             // HashSet<i64> builtins (closure #304). Call
             // outlined helpers emitted at module scope.
             if name == "hashset_new" {
@@ -8489,6 +8557,193 @@ fn emit_intent_union_find_helpers_llvm(out: &mut String) {
          \x20 ret i64 %sets\n\
          }\n\n",
     );
+}
+
+/// Data-structures roadmap Level 4 #2 — BinaryHeap<i64> runtime
+/// helpers (closure #326). Min-heap on a single `i64*` buffer.
+/// push grows via realloc + sift-up; pop swaps last-to-root +
+/// sift-down. pop/peek return `%Enum_Option__i64`, so those
+/// helpers are gated on the Option__i64 enum being registered.
+fn emit_intent_binary_heap_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
+    out.push_str(
+        "define %intent_binary_heap_i64 @intent_binary_heap_i64_new() {\n\
+         \x20 %r0 = insertvalue %intent_binary_heap_i64 undef, i64* null, 0\n\
+         \x20 %r1 = insertvalue %intent_binary_heap_i64 %r0, i64 0, 1\n\
+         \x20 %r2 = insertvalue %intent_binary_heap_i64 %r1, i64 0, 2\n\
+         \x20 ret %intent_binary_heap_i64 %r2\n\
+         }\n\
+         define void @intent_binary_heap_i64_drop(%intent_binary_heap_i64* %h) {\n\
+         \x20 %dpp = getelementptr %intent_binary_heap_i64, %intent_binary_heap_i64* %h, i32 0, i32 0\n\
+         \x20 %data = load i64*, i64** %dpp\n\
+         \x20 %is_null = icmp eq i64* %data, null\n\
+         \x20 br i1 %is_null, label %d_done, label %d_free\n\
+         d_free:\n\
+         \x20 %d_i8 = bitcast i64* %data to i8*\n\
+         \x20 call void @free(i8* %d_i8)\n\
+         \x20 br label %d_done\n\
+         d_done:\n\
+         \x20 store i64* null, i64** %dpp\n\
+         \x20 %lp = getelementptr %intent_binary_heap_i64, %intent_binary_heap_i64* %h, i32 0, i32 1\n\
+         \x20 %cp = getelementptr %intent_binary_heap_i64, %intent_binary_heap_i64* %h, i32 0, i32 2\n\
+         \x20 store i64 0, i64* %lp\n\
+         \x20 store i64 0, i64* %cp\n\
+         \x20 ret void\n\
+         }\n\
+         define i64 @intent_binary_heap_i64_push(%intent_binary_heap_i64* %h, i64 %v) {\n\
+         \x20 %dpp = getelementptr %intent_binary_heap_i64, %intent_binary_heap_i64* %h, i32 0, i32 0\n\
+         \x20 %lp = getelementptr %intent_binary_heap_i64, %intent_binary_heap_i64* %h, i32 0, i32 1\n\
+         \x20 %cp = getelementptr %intent_binary_heap_i64, %intent_binary_heap_i64* %h, i32 0, i32 2\n\
+         \x20 %len_pre = load i64, i64* %lp\n\
+         \x20 %cap_pre = load i64, i64* %cp\n\
+         \x20 %need_grow = icmp uge i64 %len_pre, %cap_pre\n\
+         \x20 br i1 %need_grow, label %p_grow, label %p_store\n\
+         p_grow:\n\
+         \x20 %cap_zero = icmp eq i64 %cap_pre, 0\n\
+         \x20 %cap_d = mul i64 %cap_pre, 2\n\
+         \x20 %new_cap = select i1 %cap_zero, i64 4, i64 %cap_d\n\
+         \x20 %nb = mul i64 %new_cap, 8\n\
+         \x20 %old = load i64*, i64** %dpp\n\
+         \x20 %old_i8 = bitcast i64* %old to i8*\n\
+         \x20 %new_i8 = call i8* @realloc(i8* %old_i8, i64 %nb)\n\
+         \x20 %new = bitcast i8* %new_i8 to i64*\n\
+         \x20 store i64* %new, i64** %dpp\n\
+         \x20 store i64 %new_cap, i64* %cp\n\
+         \x20 br label %p_store\n\
+         p_store:\n\
+         \x20 %data = load i64*, i64** %dpp\n\
+         \x20 %slot = getelementptr i64, i64* %data, i64 %len_pre\n\
+         \x20 store i64 %v, i64* %slot\n\
+         \x20 %new_len = add i64 %len_pre, 1\n\
+         \x20 store i64 %new_len, i64* %lp\n\
+         \x20 ; Sift-up from index = len_pre.\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 store i64 %len_pre, i64* %i_p\n\
+         \x20 br label %su_loop\n\
+         su_loop:\n\
+         \x20 %i = load i64, i64* %i_p\n\
+         \x20 %i_gt0 = icmp ugt i64 %i, 0\n\
+         \x20 br i1 %i_gt0, label %su_body, label %su_done\n\
+         su_body:\n\
+         \x20 %i_m1 = sub i64 %i, 1\n\
+         \x20 %p_idx = lshr i64 %i_m1, 1\n\
+         \x20 %i_slot = getelementptr i64, i64* %data, i64 %i\n\
+         \x20 %p_slot = getelementptr i64, i64* %data, i64 %p_idx\n\
+         \x20 %iv = load i64, i64* %i_slot\n\
+         \x20 %pv = load i64, i64* %p_slot\n\
+         \x20 %ok = icmp sge i64 %iv, %pv\n\
+         \x20 br i1 %ok, label %su_done, label %su_swap\n\
+         su_swap:\n\
+         \x20 store i64 %pv, i64* %i_slot\n\
+         \x20 store i64 %iv, i64* %p_slot\n\
+         \x20 store i64 %p_idx, i64* %i_p\n\
+         \x20 br label %su_loop\n\
+         su_done:\n\
+         \x20 ret i64 %new_len\n\
+         }\n\
+         define i64 @intent_binary_heap_i64_len(%intent_binary_heap_i64* %h) {\n\
+         \x20 %lp = getelementptr %intent_binary_heap_i64, %intent_binary_heap_i64* %h, i32 0, i32 1\n\
+         \x20 %len = load i64, i64* %lp\n\
+         \x20 ret i64 %len\n\
+         }\n",
+    );
+    if has_option_i64 {
+        out.push_str(
+            "define %Enum_Option__i64 @intent_binary_heap_i64_peek(%intent_binary_heap_i64* %h) {\n\
+             \x20 %lp = getelementptr %intent_binary_heap_i64, %intent_binary_heap_i64* %h, i32 0, i32 1\n\
+             \x20 %len = load i64, i64* %lp\n\
+             \x20 %empty = icmp eq i64 %len, 0\n\
+             \x20 br i1 %empty, label %pk_none, label %pk_some\n\
+             pk_some:\n\
+             \x20 %dpp = getelementptr %intent_binary_heap_i64, %intent_binary_heap_i64* %h, i32 0, i32 0\n\
+             \x20 %data = load i64*, i64** %dpp\n\
+             \x20 %top = load i64, i64* %data\n\
+             \x20 %s0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %s1 = insertvalue %Enum_Option__i64 %s0, i64 %top, 1\n\
+             \x20 ret %Enum_Option__i64 %s1\n\
+             pk_none:\n\
+             \x20 %n0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %n1 = insertvalue %Enum_Option__i64 %n0, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %n1\n\
+             }\n\
+             define %Enum_Option__i64 @intent_binary_heap_i64_pop(%intent_binary_heap_i64* %h) {\n\
+             \x20 %lp = getelementptr %intent_binary_heap_i64, %intent_binary_heap_i64* %h, i32 0, i32 1\n\
+             \x20 %len_pre = load i64, i64* %lp\n\
+             \x20 %empty = icmp eq i64 %len_pre, 0\n\
+             \x20 br i1 %empty, label %pp_none, label %pp_do\n\
+             pp_do:\n\
+             \x20 %dpp = getelementptr %intent_binary_heap_i64, %intent_binary_heap_i64* %h, i32 0, i32 0\n\
+             \x20 %data = load i64*, i64** %dpp\n\
+             \x20 %top = load i64, i64* %data\n\
+             \x20 %new_len = sub i64 %len_pre, 1\n\
+             \x20 %need_sift = icmp ugt i64 %new_len, 0\n\
+             \x20 br i1 %need_sift, label %pp_swap, label %pp_finish\n\
+             pp_swap:\n\
+             \x20 %last_slot = getelementptr i64, i64* %data, i64 %new_len\n\
+             \x20 %lastv = load i64, i64* %last_slot\n\
+             \x20 store i64 %lastv, i64* %data\n\
+             \x20 ; Sift-down from index 0.\n\
+             \x20 %i_p = alloca i64\n\
+             \x20 store i64 0, i64* %i_p\n\
+             \x20 br label %sd_loop\n\
+             sd_loop:\n\
+             \x20 %i = load i64, i64* %i_p\n\
+             \x20 %l_idx = mul i64 %i, 2\n\
+             \x20 %l = add i64 %l_idx, 1\n\
+             \x20 %r = add i64 %l_idx, 2\n\
+             \x20 %sm_p = alloca i64\n\
+             \x20 store i64 %i, i64* %sm_p\n\
+             \x20 %l_in = icmp ult i64 %l, %new_len\n\
+             \x20 br i1 %l_in, label %sd_l_cmp, label %sd_check_r\n\
+             sd_l_cmp:\n\
+             \x20 %sm0 = load i64, i64* %sm_p\n\
+             \x20 %sm0_slot = getelementptr i64, i64* %data, i64 %sm0\n\
+             \x20 %l_slot = getelementptr i64, i64* %data, i64 %l\n\
+             \x20 %sm0_v = load i64, i64* %sm0_slot\n\
+             \x20 %lv = load i64, i64* %l_slot\n\
+             \x20 %l_lt = icmp slt i64 %lv, %sm0_v\n\
+             \x20 br i1 %l_lt, label %sd_l_smaller, label %sd_check_r\n\
+             sd_l_smaller:\n\
+             \x20 store i64 %l, i64* %sm_p\n\
+             \x20 br label %sd_check_r\n\
+             sd_check_r:\n\
+             \x20 %r_in = icmp ult i64 %r, %new_len\n\
+             \x20 br i1 %r_in, label %sd_r_cmp, label %sd_finish_iter\n\
+             sd_r_cmp:\n\
+             \x20 %sm1 = load i64, i64* %sm_p\n\
+             \x20 %sm1_slot = getelementptr i64, i64* %data, i64 %sm1\n\
+             \x20 %r_slot = getelementptr i64, i64* %data, i64 %r\n\
+             \x20 %sm1_v = load i64, i64* %sm1_slot\n\
+             \x20 %rv = load i64, i64* %r_slot\n\
+             \x20 %r_lt = icmp slt i64 %rv, %sm1_v\n\
+             \x20 br i1 %r_lt, label %sd_r_smaller, label %sd_finish_iter\n\
+             sd_r_smaller:\n\
+             \x20 store i64 %r, i64* %sm_p\n\
+             \x20 br label %sd_finish_iter\n\
+             sd_finish_iter:\n\
+             \x20 %sm = load i64, i64* %sm_p\n\
+             \x20 %eq = icmp eq i64 %sm, %i\n\
+             \x20 br i1 %eq, label %pp_finish, label %sd_swap\n\
+             sd_swap:\n\
+             \x20 %i_slot = getelementptr i64, i64* %data, i64 %i\n\
+             \x20 %sm_slot = getelementptr i64, i64* %data, i64 %sm\n\
+             \x20 %iv = load i64, i64* %i_slot\n\
+             \x20 %smv = load i64, i64* %sm_slot\n\
+             \x20 store i64 %smv, i64* %i_slot\n\
+             \x20 store i64 %iv, i64* %sm_slot\n\
+             \x20 store i64 %sm, i64* %i_p\n\
+             \x20 br label %sd_loop\n\
+             pp_finish:\n\
+             \x20 store i64 %new_len, i64* %lp\n\
+             \x20 %s0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %s1 = insertvalue %Enum_Option__i64 %s0, i64 %top, 1\n\
+             \x20 ret %Enum_Option__i64 %s1\n\
+             pp_none:\n\
+             \x20 %n0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %n1 = insertvalue %Enum_Option__i64 %n0, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %n1\n\
+             }\n\n",
+        );
+    }
 }
 
 /// Data-structures roadmap Level 2 — HashSet<i64> runtime
@@ -13520,7 +13775,7 @@ fn is_scalar(ty: &Type) -> bool {
         // <ty> <v>, <ty>* …` work uniformly. The builtins
         // (channel_new, mutex_new, mutex_lock) return SSA
         // values of these struct types.
-        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind)
+        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_))
         // Function pointers are pointer-sized scalars. The
         // alloca holds a single value of fn-ptr type (the
         // load returns a function-pointer SSA value the
@@ -13576,6 +13831,7 @@ pub(crate) fn llvm_type(ty: &Type) -> &'static str {
         Type::BTreeSet(_) => "%intent_btreeset_i64",
         Type::BTreeMap(_, _) => "%intent_btreemap_i64_i64",
         Type::UnionFind => "%intent_union_find",
+        Type::BinaryHeap(_) => "%intent_binary_heap_i64",
         // Enums lower to a 32-bit tag — see `llvm_type_string`
         // for the same. T1.3.
         Type::Enum(_) => "i32",

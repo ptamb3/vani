@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -461,7 +461,7 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // built-in `Type::Task`, leading to confusing
     // "got Task" errors deep in the pipeline.
     const RESERVED_TYPE_NAMES: &[&str] = &[
-        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "HashSet", "HashMap", "BTreeSet", "BTreeMap", "UnionFind", "OwnedStr", "Self",
+        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "HashSet", "HashMap", "BTreeSet", "BTreeMap", "UnionFind", "BinaryHeap", "OwnedStr", "Self",
     ];
     for decl in &program.structs {
         if RESERVED_TYPE_NAMES.contains(&decl.name.as_str()) {
@@ -5797,7 +5797,8 @@ fn monomorphize_type_decls_in_program(
                 | "deque_pop_back" | "deque_pop_front"
                 | "deque_peek_back" | "deque_peek_front"
                 | "hashmap_get" | "hashmap_insert"
-                | "btreemap_get" | "btreemap_insert" | "btreemap_remove" => Some(Type::I64),
+                | "btreemap_get" | "btreemap_insert" | "btreemap_remove"
+                | "binary_heap_pop" | "binary_heap_peek" => Some(Type::I64),
                 "parse_float" => Some(Type::F64),
                 _ => None,
             };
@@ -10772,6 +10773,13 @@ fn check_expr(
                         "count" => ("union_find_count", false),
                         _ => ("", false),
                     },
+                    Some(Type::BinaryHeap(_)) => match method.as_str() {
+                        "push" => ("binary_heap_push", true),
+                        "pop" => ("binary_heap_pop", true),
+                        "peek" => ("binary_heap_peek", false),
+                        "len" => ("binary_heap_len", false),
+                        _ => ("", false),
+                    },
                     _ => ("", false),
                 };
                 if !builtin_name.is_empty() {
@@ -13804,6 +13812,12 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "binary_heap_new" | "binary_heap_push" | "binary_heap_pop"
+        | "binary_heap_peek" | "binary_heap_len" => {
+            return check_binary_heap_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "reverse" | "dedup" => {
             return check_reverse_dedup_builtin(
                 name, args, env, signatures, span, diagnostics,
@@ -16548,6 +16562,138 @@ fn check_union_find_builtin(
             "union-find index", diagnostics,
         );
         typed_args.push(coerced.expr);
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        ret_ty(),
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 4 #2 — BinaryHeap<T> wrapper
+/// type (closure #326). A dedicated affine handle that owns its
+/// own heap-ordered i64 buffer. v1: T = i64 only.
+///
+///   binary_heap_new() -> BinaryHeap<i64>
+///       empty.
+///   binary_heap_push(mut ref h, v: i64) -> i64
+///       sift-up; returns the new len.
+///   binary_heap_pop(mut ref h) -> Option<i64>
+///       sift-down; returns the popped min, or None when empty.
+///   binary_heap_peek(ref h) -> Option<i64>
+///       Some(top) without removing it, or None when empty.
+///   binary_heap_len(ref h) -> i64
+fn check_binary_heap_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args = match name {
+        "binary_heap_new" => 0,
+        "binary_heap_len" | "binary_heap_pop" | "binary_heap_peek" => 1,
+        "binary_heap_push" => 2,
+        _ => unreachable!(),
+    };
+    let ret_ty = || -> Type {
+        match name {
+            "binary_heap_new" => Type::BinaryHeap(Box::new(Type::I64)),
+            "binary_heap_pop" | "binary_heap_peek" => {
+                Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+            }
+            _ => Type::I64,
+        }
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}() expects {} argument{}, got {}",
+                name,
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback(ret_ty(), span);
+    }
+    if name == "binary_heap_new" {
+        return CheckedExpr::new(
+            TypedExprKind::Call {
+                name: "binary_heap_new".to_string(),
+                name_span: span,
+                args: Vec::new(),
+            },
+            Type::BinaryHeap(Box::new(Type::I64)),
+            None,
+            span,
+        );
+    }
+    let h = check_expr(&args[0], env, signatures, diagnostics);
+    let is_mut_op = matches!(name, "binary_heap_push" | "binary_heap_pop");
+    let element_type = match h.ty() {
+        Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
+            Type::BinaryHeap(element) => (**element).clone(),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "{}() requires a `{}BinaryHeap<i64>` argument, got {}",
+                        name,
+                        if is_mut_op { "mut ref " } else { "ref " },
+                        h.ty()
+                    ),
+                ));
+                return CheckedExpr::fallback(ret_ty(), span);
+            }
+        },
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "{}() requires a `{}BinaryHeap<i64>` argument, got {}",
+                    name,
+                    if is_mut_op { "mut ref " } else { "ref " },
+                    other
+                ),
+            ));
+            return CheckedExpr::fallback(ret_ty(), span);
+        }
+    };
+    if is_mut_op && !matches!(h.ty(), Type::RefMut(_)) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() requires a `mut ref BinaryHeap<i64>` argument, got {}",
+                name,
+                h.ty()
+            ),
+        ));
+    }
+    if !matches!(element_type, Type::I64) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() only supports `BinaryHeap<i64>` in v1, got BinaryHeap<{}>",
+                name, element_type
+            ),
+        ));
+    }
+    let mut typed_args = vec![h.expr];
+    if name == "binary_heap_push" {
+        let v_raw = check_expr(&args[1], env, signatures, diagnostics);
+        let v = coerce_checked(
+            v_raw, &Type::I64, args[1].span,
+            "binary_heap value", diagnostics,
+        );
+        typed_args.push(v.expr);
     }
     CheckedExpr::new(
         TypedExprKind::Call {

@@ -1,0 +1,53 @@
+// build & run:
+//   intentc run examples/binary_heap.vani                          # LLVM backend
+//   intentc run examples/binary_heap.vani --backend=c              # C backend
+//   intentc build examples/binary_heap.vani -o /tmp/bh && /tmp/bh
+
+intent "BinaryHeap<i64> — dedicated min-heap wrapper type (Level 4 #2)";
+
+// `BinaryHeap<T>` is an affine handle type: scope-exit drops the
+// backing buffer, ownership transfers move the handle, and method
+// sugar gives an ergonomic priority-queue surface:
+//
+//   binary_heap_new()                  -> BinaryHeap<i64>
+//   h.push(v)   / binary_heap_push(mut ref h, v)   -> i64 (new len)
+//   h.pop()     / binary_heap_pop(mut ref h)       -> Option<i64>
+//   h.peek()    / binary_heap_peek(ref h)          -> Option<i64>
+//   h.len()     / binary_heap_len(ref h)           -> i64
+//
+// This is the same min-heap semantics as the Vec-backed heap_push/
+// heap_pop combinators (examples/heap.vani), but as a first-class
+// handle type instead of borrowing on top of Vec<i64>.
+
+fn unwrap_or(o: Option<i64>, def: i64) -> i64 {
+  return match o {
+    Option.Some(v) then v,
+    Option.None then def,
+  };
+}
+
+fn main() -> i64 {
+  let h: BinaryHeap<i64> = binary_heap_new();
+
+  // Build a priority queue using method-call sugar.
+  let _ = h.push(5);
+  let _ = h.push(1);
+  let _ = h.push(3);
+  let _ = h.push(8);
+  let _ = h.push(2);
+  let _ = h.push(7);
+
+  print "len:", h.len();
+  print "min:", unwrap_or(h.peek(), 0 - 1);
+
+  // Drain in sorted order.
+  print "drain:";
+  while h.len() > 0 {
+    print unwrap_or(h.pop(), 0 - 1);
+  }
+
+  // Pop from empty heap returns None.
+  print "empty pop:", unwrap_or(h.pop(), 0 - 1);
+
+  return 0;
+}

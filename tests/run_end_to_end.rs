@@ -824,6 +824,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "assert_messages.vani",
         "atomics.vani",
         "basics.vani",
+        "binary_heap.vani",
         "block_expressions.vani",
         "borrows.vani",
         "bounded_generics.vani",
