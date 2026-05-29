@@ -636,6 +636,7 @@ pub fn emit_c(program: &TypedProgram) -> String {
     emit_intent_thread_wrappers_c(&mut out);
     emit_runtime_helpers(&mut out, &body);
     emit_intent_str_concat_c(&mut out);
+    emit_intent_str_trim_c(&mut out);
     emit_concurrency_runtime_helpers(&mut out, &body, &channel_specs);
     emit_intent_rng_helpers_c(&mut out, &body);
     emit_intent_hash_helpers_c(&mut out, &body);
@@ -4085,6 +4086,40 @@ pub(crate) fn emit_intent_str_concat_c(out: &mut String) {
          \x20 out[ln + rn] = 0;\n\
          \x20 if (l_owned) free((void*)l);\n\
          \x20 if (r_owned) free((void*)r);\n\
+         \x20 return out;\n\
+         }\n\n",
+    );
+}
+
+/// Closure #348: heap-allocating `str_trim`. Returns a fresh
+/// OwnedStr with leading and trailing ASCII whitespace (the
+/// standard `isspace()` set: space, \\t, \\n, \\v, \\f, \\r)
+/// stripped. The output buffer is always freshly malloc'd so
+/// the OwnedStr scope-exit Drop is well-defined; even when no
+/// trimming is needed and even on an empty input, we still
+/// hand back a heap-owned copy.
+pub(crate) fn emit_intent_str_trim_c(out: &mut String) {
+    out.push_str(
+        "static char* intent_str_trim(const char* s) INTENT_UNUSED;\n\
+         static char* intent_str_trim(const char* s) {\n\
+         \x20 if (!s) {\n\
+         \x20   char* e = (char*)malloc(1);\n\
+         \x20   if (!e) abort();\n\
+         \x20   e[0] = 0;\n\
+         \x20   return e;\n\
+         \x20 }\n\
+         \x20 const char* lo = s;\n\
+         \x20 while (*lo == ' ' || *lo == '\\t' || *lo == '\\n' || *lo == '\\v' || *lo == '\\f' || *lo == '\\r') lo++;\n\
+         \x20 size_t n = strlen(lo);\n\
+         \x20 while (n > 0) {\n\
+         \x20   char c = lo[n - 1];\n\
+         \x20   if (c == ' ' || c == '\\t' || c == '\\n' || c == '\\v' || c == '\\f' || c == '\\r') n--;\n\
+         \x20   else break;\n\
+         \x20 }\n\
+         \x20 char* out = (char*)malloc(n + 1);\n\
+         \x20 if (!out) abort();\n\
+         \x20 if (n > 0) memcpy(out, lo, n);\n\
+         \x20 out[n] = 0;\n\
          \x20 return out;\n\
          }\n\n",
     );
@@ -8340,6 +8375,9 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 s = emit_expr(&args[0]),
                 u = emit_expr(&args[1]),
             )
+        }
+        "str_trim" => {
+            format!("intent_str_trim(({}))", emit_expr(&args[0]))
         }
         "parse_int" => {
             // strtoll converts the prefix; we require the

@@ -12324,6 +12324,59 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_trim_returns_owned_str_typecheck() {
+        // Closure #348: str_trim(s: Str) -> OwnedStr — first
+        // heap-allocating string builtin. The result must be a
+        // sized-affine OwnedStr so the scope-exit Drop fires.
+        let source = r#"
+            fn main() -> i64 {
+              let t: OwnedStr = str_trim("  hello  ");
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str_trim must type-check in C");
+        compile_to_llvm(source).expect("str_trim must compile to LLVM");
+    }
+
+    #[test]
+    fn str_trim_inferred_type_is_owned_str() {
+        // Closure #348: returning OwnedStr means subsequent
+        // uses see the affine handle. Round-tripping it through
+        // an immediate concat (`a + b`) — which itself expects
+        // OwnedStr on both sides — is a good smoke for the
+        // typing. Both invocations are heap-owned; the runtime
+        // is responsible for freeing both temporaries.
+        let source = r#"
+            fn main() -> i64 {
+              let combined: OwnedStr = str_trim("  hi  ") + str_trim("  there  ");
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str_trim must produce a concat-compatible OwnedStr");
+        compile_to_llvm(source).expect("LLVM ditto");
+    }
+
+    #[test]
+    fn str_trim_emits_helper_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let t: OwnedStr = str_trim("  abc  ");
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("str_trim C compile");
+        assert!(
+            c.contains("intent_str_trim"),
+            "C output must include the intent_str_trim helper"
+        );
+        let ll = compile_to_llvm(source).expect("str_trim LLVM compile");
+        assert!(
+            ll.contains("define i8* @intent_str_trim("),
+            "LLVM output must include the @intent_str_trim define"
+        );
+    }
+
+    #[test]
     fn parse_int_returns_option_i64() {
         let source = r#"
             fn main() -> i64 {

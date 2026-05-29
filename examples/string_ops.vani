@@ -3,24 +3,26 @@
 //   intentc run examples/string_ops.vani --backend=c              # C backend
 //   intentc build examples/string_ops.vani -o /tmp/string_ops && /tmp/string_ops
 
-intent "String surface — search predicates and Option-returning parsers";
+intent "String surface — search predicates, parsers, and trim";
 
-// Five builtins for working with borrowed `Str` values. All
-// are read-only; none allocate. v1 returns `bool` for the
-// boolean predicates and `Option<i64>` / `Option<f64>` for
-// the parsers.
+// Six builtins for working with borrowed `Str` values. Most
+// are read-only and allocation-free; `str_trim` (closure #348)
+// is the first heap-allocating member, returning a fresh
+// `OwnedStr` (drop fires at scope exit).
 //
 //   str_contains(s, needle) -> bool
 //   str_starts_with(s, prefix) -> bool
 //   str_ends_with(s, suffix) -> bool
+//   str_trim(s) -> OwnedStr         [closure #348]
 //   parse_int(s) -> Option<i64>
 //   parse_float(s) -> Option<f64>
 //
 // Lower to libc primitives (strstr / strncmp / strcmp /
-// strtoll / strtod) in both backends. Future heap-allocating
-// string ops (split / trim / replace returning `OwnedStr`)
-// are queued as a follow-up since they need explicit
-// affine-handle wiring for the produced `Vec<OwnedStr>`.
+// strtoll / strtod) in both backends. `str_trim` mallocs a
+// fresh buffer, copies the non-whitespace span, and NUL-
+// terminates. Future heap-allocating string ops (split /
+// replace returning `OwnedStr` or `Vec<OwnedStr>`) remain
+// queued.
 
 fn main() -> i64 {
   let s: Str = "hello world";
@@ -70,6 +72,26 @@ fn main() -> i64 {
     Option.None then 0.0 - 1.0,
   };
   print "parse xyz:", f_fail_x;
+
+  // Closure #348: str_trim. Returns a fresh OwnedStr; the
+  // scope-exit Drop frees the buffer automatically. Strips
+  // ASCII whitespace (space / tab / newline / vtab / formfeed
+  // / CR) on both sides while preserving internal whitespace
+  // and UTF-8 byte sequences.
+  let padded: Str = "  vāṇī  ";
+  let trimmed: OwnedStr = str_trim(padded);
+  print "trim padded:", trimmed;
+
+  let mixed: OwnedStr = str_trim("\t\n  foo   bar  \n\t");
+  print "trim mixed (internal ws preserved):", mixed;
+
+  // No-op trim still hands back a fresh OwnedStr.
+  let pristine: OwnedStr = str_trim("clean");
+  print "trim no-op:", pristine;
+
+  // All-whitespace input → empty OwnedStr.
+  let all_ws: OwnedStr = str_trim("   \t\n   ");
+  print "trim all-ws (empty):", all_ws;
 
   return 0;
 }

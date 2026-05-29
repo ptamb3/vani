@@ -688,6 +688,7 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("%intent_skiplist_i64 = type { i64*, i32*, i32*, i64, i64, i64, i64, i64 }\n\n");
 
     emit_intent_str_concat_definition(&mut out);
+    emit_intent_str_trim_definition(&mut out);
 
     // Format-string globals used by `print`. We emit them all
     // unconditionally; they're tiny and `lli` will optimize away
@@ -5848,6 +5849,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             // str_starts_with / str_ends_with / parse_int /
             // parse_float. Inline calls to libc helpers
             // declared in the preamble.
+            if name == "str_trim" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i8* @intent_str_trim(i8* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
             if name == "str_contains" {
                 let s = emit_expr(&args[0], ctx, out);
                 let n = emit_expr(&args[1], ctx, out);
@@ -7775,6 +7785,95 @@ pub(crate) fn emit_intent_str_concat_definition(out: &mut String) {
     out.push_str("  br label %done\n");
     out.push_str("done:\n");
     out.push_str("  ret i8* %buf\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #348: heap-allocating `str_trim`. Returns a fresh
+/// OwnedStr with leading and trailing ASCII whitespace
+/// (space, \\t, \\n, \\v, \\f, \\r) stripped. NULL input
+/// returns a fresh empty heap-allocated string.
+pub(crate) fn emit_intent_str_trim_definition(out: &mut String) {
+    // A helper `intent_is_space` would be cleanest but inlining
+    // the 6-byte check keeps the IR self-contained and avoids
+    // an extra symbol.
+    out.push_str("define i8* @intent_str_trim(i8* %s) {\n");
+    out.push_str("  %s_null = icmp eq i8* %s, null\n");
+    out.push_str("  br i1 %s_null, label %tr_empty, label %tr_scan_lo\n");
+    out.push_str("tr_empty:\n");
+    out.push_str("  %empty = call i8* @malloc(i64 1)\n");
+    out.push_str("  store i8 0, i8* %empty\n");
+    out.push_str("  ret i8* %empty\n");
+    // Scan forward for the first non-whitespace byte.
+    out.push_str("tr_scan_lo:\n");
+    out.push_str("  %lo_p = alloca i8*\n");
+    out.push_str("  store i8* %s, i8** %lo_p\n");
+    out.push_str("  br label %tr_lo_loop\n");
+    out.push_str("tr_lo_loop:\n");
+    out.push_str("  %p_lo = load i8*, i8** %lo_p\n");
+    out.push_str("  %c_lo = load i8, i8* %p_lo\n");
+    out.push_str("  %is_sp = icmp eq i8 %c_lo, 32\n");
+    out.push_str("  %is_t  = icmp eq i8 %c_lo, 9\n");
+    out.push_str("  %is_n  = icmp eq i8 %c_lo, 10\n");
+    out.push_str("  %is_v  = icmp eq i8 %c_lo, 11\n");
+    out.push_str("  %is_f  = icmp eq i8 %c_lo, 12\n");
+    out.push_str("  %is_r  = icmp eq i8 %c_lo, 13\n");
+    out.push_str("  %ws1 = or i1 %is_sp, %is_t\n");
+    out.push_str("  %ws2 = or i1 %ws1, %is_n\n");
+    out.push_str("  %ws3 = or i1 %ws2, %is_v\n");
+    out.push_str("  %ws4 = or i1 %ws3, %is_f\n");
+    out.push_str("  %is_ws_lo = or i1 %ws4, %is_r\n");
+    out.push_str("  br i1 %is_ws_lo, label %tr_lo_inc, label %tr_after_lo\n");
+    out.push_str("tr_lo_inc:\n");
+    out.push_str("  %p_lo_n = getelementptr i8, i8* %p_lo, i64 1\n");
+    out.push_str("  store i8* %p_lo_n, i8** %lo_p\n");
+    out.push_str("  br label %tr_lo_loop\n");
+    // %lo now points at the first non-whitespace byte (or at
+    // the trailing NUL if the string was all-whitespace).
+    out.push_str("tr_after_lo:\n");
+    out.push_str("  %lo_final = load i8*, i8** %lo_p\n");
+    out.push_str("  %n0 = call i64 @strlen(i8* %lo_final)\n");
+    out.push_str("  %n_p = alloca i64\n");
+    out.push_str("  store i64 %n0, i64* %n_p\n");
+    out.push_str("  br label %tr_hi_loop\n");
+    // Trim trailing whitespace by shrinking %n from the right.
+    out.push_str("tr_hi_loop:\n");
+    out.push_str("  %n_cur = load i64, i64* %n_p\n");
+    out.push_str("  %n_zero = icmp eq i64 %n_cur, 0\n");
+    out.push_str("  br i1 %n_zero, label %tr_alloc, label %tr_hi_check\n");
+    out.push_str("tr_hi_check:\n");
+    out.push_str("  %n_m1 = sub i64 %n_cur, 1\n");
+    out.push_str("  %back = getelementptr i8, i8* %lo_final, i64 %n_m1\n");
+    out.push_str("  %c_hi = load i8, i8* %back\n");
+    out.push_str("  %h_sp = icmp eq i8 %c_hi, 32\n");
+    out.push_str("  %h_t  = icmp eq i8 %c_hi, 9\n");
+    out.push_str("  %h_n  = icmp eq i8 %c_hi, 10\n");
+    out.push_str("  %h_v  = icmp eq i8 %c_hi, 11\n");
+    out.push_str("  %h_f  = icmp eq i8 %c_hi, 12\n");
+    out.push_str("  %h_r  = icmp eq i8 %c_hi, 13\n");
+    out.push_str("  %hw1 = or i1 %h_sp, %h_t\n");
+    out.push_str("  %hw2 = or i1 %hw1, %h_n\n");
+    out.push_str("  %hw3 = or i1 %hw2, %h_v\n");
+    out.push_str("  %hw4 = or i1 %hw3, %h_f\n");
+    out.push_str("  %is_ws_hi = or i1 %hw4, %h_r\n");
+    out.push_str("  br i1 %is_ws_hi, label %tr_hi_dec, label %tr_alloc\n");
+    out.push_str("tr_hi_dec:\n");
+    out.push_str("  store i64 %n_m1, i64* %n_p\n");
+    out.push_str("  br label %tr_hi_loop\n");
+    // %n now holds the trimmed length. Allocate n+1, copy if
+    // non-empty, NUL-terminate.
+    out.push_str("tr_alloc:\n");
+    out.push_str("  %n_final = load i64, i64* %n_p\n");
+    out.push_str("  %total_tr = add i64 %n_final, 1\n");
+    out.push_str("  %buf_tr = call i8* @malloc(i64 %total_tr)\n");
+    out.push_str("  %n_pos = icmp ugt i64 %n_final, 0\n");
+    out.push_str("  br i1 %n_pos, label %tr_copy, label %tr_term\n");
+    out.push_str("tr_copy:\n");
+    out.push_str("  %_mc = call i8* @memcpy(i8* %buf_tr, i8* %lo_final, i64 %n_final)\n");
+    out.push_str("  br label %tr_term\n");
+    out.push_str("tr_term:\n");
+    out.push_str("  %nul_tr = getelementptr i8, i8* %buf_tr, i64 %n_final\n");
+    out.push_str("  store i8 0, i8* %nul_tr\n");
+    out.push_str("  ret i8* %buf_tr\n");
     out.push_str("}\n\n");
 }
 
