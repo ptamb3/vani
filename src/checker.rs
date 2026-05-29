@@ -1616,8 +1616,19 @@ fn fuse_chains_in_block(body: &mut Vec<crate::ast::Stmt>) {
     }
 }
 
-/// Try to fuse the pair at `body[i]` and `body[i+1]`. Returns
-/// true if a fusion happened (mutating `body` in place).
+/// Try to fuse a producer at `body[i]` with a consumer somewhere
+/// later in `body`. Returns true if a fusion happened (mutating
+/// `body` in place).
+///
+/// Closures #318 + #319 detected only adjacent pairs (consumer
+/// directly at `body[i+1]`). Closure #323 extends this to
+/// **non-adjacent** chains: the consumer may live at any
+/// `body[j]` (j > i) where every intervening statement is
+/// "neutral" — neither references the intermediate `m` (since
+/// we want m to be unused outside the chain) NOR references the
+/// source binding `xs` (to prevent its mutation between
+/// producer and consumer changing the fused result vs the
+/// unfused one).
 fn try_fuse_pair(body: &mut Vec<crate::ast::Stmt>, i: usize) -> bool {
     // The producer must be a Let-binding whose RHS is one of:
     //   vec_map / vec_filter / vec_map_filter (or method-call form).
@@ -1630,15 +1641,54 @@ fn try_fuse_pair(body: &mut Vec<crate::ast::Stmt>, i: usize) -> bool {
     let Some((m_name, producer_kind)) = producer else {
         return false;
     };
-    // The consumer must use `m` as its receiver borrow:
-    //   vec_fold(ref m, init, g)   — terminator (Let or Return)
-    //   vec_filter(ref m, p)       — chainable (Let)
-    let consumer_info = consumer_for_pair(&body[i + 1], &m_name);
+    // The original source binding name (`xs` in `vec_map(ref xs, f)`).
+    // None when the producer's first arg isn't a simple
+    // `ref Var(name)` (e.g. `ref t.field` paths — those are
+    // sufficiently uncommon in combinator chains that we just
+    // bail out of non-adjacent fusion when we can't pin the
+    // source name).
+    let source_var_name: Option<String> = match &producer_kind {
+        ProducerKind::Map { xs_ref, .. }
+        | ProducerKind::Filter { xs_ref, .. }
+        | ProducerKind::MapFilter { xs_ref, .. } => extract_var_from_ref(xs_ref),
+    };
+    // Find the first statement after `i` that references `m`.
+    // If we find it AND it's a fusable consumer AND every
+    // intervening statement is neutral (doesn't reference `m`
+    // OR `xs`), proceed.
+    let mut j = i + 1;
+    let mut consumer_idx: Option<usize> = None;
+    while j < body.len() {
+        if stmt_mentions_var(&body[j], &m_name) {
+            consumer_idx = Some(j);
+            break;
+        }
+        // The intervening statement doesn't reference m — but
+        // it might reference / mutate xs, which would make the
+        // fusion observe a different snapshot of xs than the
+        // unfused chain. Bail if it touches xs.
+        if let Some(ref name) = source_var_name {
+            if stmt_mentions_var(&body[j], name) {
+                return false;
+            }
+        } else {
+            // No pinnable source name → only adjacent fusion
+            // is safe.
+            if j > i + 1 {
+                return false;
+            }
+        }
+        j += 1;
+    }
+    let Some(j) = consumer_idx else {
+        return false;
+    };
+    let consumer_info = consumer_for_pair(&body[j], &m_name);
     let Some(consumer) = consumer_info else {
         return false;
     };
-    // Confirm `m` has no other uses anywhere after stmt i+1.
-    let m_used_later = body[i + 2..]
+    // Confirm `m` has no other uses anywhere AFTER stmt j.
+    let m_used_later = body[j + 1..]
         .iter()
         .any(|s| stmt_mentions_var(s, &m_name));
     if m_used_later {
@@ -1673,7 +1723,7 @@ fn try_fuse_pair(body: &mut Vec<crate::ast::Stmt>, i: usize) -> bool {
         // No other combinations are fusable in v1.
         _ => return false,
     };
-    let fused_call_span = body[i].span().merge(body[i + 1].span());
+    let fused_call_span = body[i].span().merge(body[j].span());
     let fused_call = crate::ast::Expr {
         kind: ExprKind::Call {
             name: fused_name.to_string(),
@@ -1683,9 +1733,24 @@ fn try_fuse_pair(body: &mut Vec<crate::ast::Stmt>, i: usize) -> bool {
         span: fused_call_span,
     };
     let new_stmt = consumer.into_stmt_with_expr(fused_call);
-    body[i + 1] = new_stmt;
+    body[j] = new_stmt;
     body.remove(i);
     true
+}
+
+/// Extract the underlying `Var(name)` from a `ref X` expression.
+/// Returns None for non-Var bodies (`ref t.field`, etc.).
+fn extract_var_from_ref(expr: &crate::ast::Expr) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ref { inner } | ExprKind::RefMut { inner } => {
+            if let ExprKind::Var(name) = &inner.kind {
+                Some(name.clone())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 #[derive(Clone)]

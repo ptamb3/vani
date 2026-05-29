@@ -13036,6 +13036,55 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn autofuse_non_adjacent_chain_through_neutral_stmt() {
+        // print is "neutral" — touches neither `m` nor `xs`,
+        // so the chain should still fuse across it.
+        let source = r#"
+            pure fn double(x: i64) -> i64 { return x + x; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let m: Vec<i64> = vec_map(ref xs, double);
+              print "intermediate";
+              let s: i64 = vec_fold(ref m, 0, add);
+              return s;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("non-adjacent fusion compiles");
+        assert!(
+            ll.contains("call i64 @intent_vec_i64__map_fold"),
+            "non-adjacent map+fold should fuse over neutral print"
+        );
+    }
+
+    #[test]
+    fn autofuse_skipped_when_intervening_stmt_touches_source() {
+        // The intervening `xs.len()` reads xs — fusion would
+        // observe a different snapshot of xs if it were mutated,
+        // so the pass must conservatively bail.
+        let source = r#"
+            pure fn double(x: i64) -> i64 { return x + x; }
+            pure fn add(a: i64, b: i64) -> i64 { return a + b; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let m: Vec<i64> = vec_map(ref xs, double);
+              let n: i64 = xs.len() as i64;  // touches xs — fusion unsafe
+              let s: i64 = vec_fold(ref m, 0, add);
+              return s + n;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("conservative case compiles");
+        assert!(
+            ll.contains("call %intent_vec_i64 @intent_vec_i64__map("),
+            "unfused __map must remain when intervening stmt touches xs"
+        );
+        assert!(
+            ll.contains("call i64 @intent_vec_i64__fold("),
+            "unfused __fold must remain when intervening stmt touches xs"
+        );
+    }
+
+    #[test]
     fn autofuse_filter_fold_chain() {
         let source = r#"
             pure fn is_even(x: i64) -> bool { return (x % 2) == 0; }
