@@ -3,16 +3,23 @@
 //   intentc run examples/hash.vani --backend=c              # C backend
 //   intentc build examples/hash.vani -o /tmp/hash && /tmp/hash
 
-intent "Hash builtins — FNV-1a over i64 / Str + boost-style combine";
+intent "Hash builtins — FNV-1a over i64 / f64 / Str + boost-style combine";
 
-// Three builtins for hashing scalar values and strings.
+// Four builtins for hashing scalar values and strings.
 // All return u64 and are pure + deterministic (same input
 // always produces the same output, identical across both
 // backends).
 //
 //   hash_i64(x: i64) -> u64       — FNV-1a over 8 bytes
+//   hash_f64(x: f64) -> u64       — FNV-1a on IEEE-754 bits   [closure #347]
 //   hash_str(s: Str) -> u64       — FNV-1a until NUL
 //   hash_combine(a, b: u64) -> u64 — boost::hash_combine mixer
+//
+// `hash_f64` folds -0.0 to +0.0 so the two values (which
+// compare equal under ==) share a hash. NaN payloads are NOT
+// normalized — per IEEE-754, NaN != NaN, so users that need
+// NaN-aware membership should compare via isnan() rather than
+// rely on a single canonical hash for NaN.
 //
 // These are the building blocks for HashSet<T> / HashMap<K, V>
 // in Level 2 of the data-structures roadmap. v1 ships FNV-1a;
@@ -48,6 +55,24 @@ fn main() -> i64 {
   // offset basis).
   let empty: u64 = hash_str("");
   print "empty string hash is the FNV offset basis";
+
+  // Closure #347: hash_f64. Same determinism contract as the
+  // other scalars; bitcasts to the IEEE-754 bit pattern first.
+  let f1: u64 = hash_f64(3.14);
+  let f2: u64 = hash_f64(3.14);
+  if f1 == f2 { print "hash_f64 deterministic: ok"; }
+
+  let f3: u64 = hash_f64(2.718);
+  if f1 != f3 { print "hash_f64(3.14) != hash_f64(2.718)"; }
+
+  // -0.0 and +0.0 compare equal under == , so they get the same
+  // hash. We construct -0.0 as `0.0 - 0.0` which on IEEE-754
+  // yields +0.0 in vāṇī (subtraction normalizes the sign here);
+  // an explicit `(0 - 1) * 0.0` would give a true -0.0 bit
+  // pattern, and the fold still applies.
+  let zp: u64 = hash_f64(0.0);
+  let zn: u64 = hash_f64((0 - 1) as f64 * 0.0);
+  if zp == zn { print "hash_f64 folds -0.0 to +0.0"; }
 
   return 0;
 }

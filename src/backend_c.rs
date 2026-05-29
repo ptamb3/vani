@@ -3186,6 +3186,22 @@ fn emit_intent_hash_helpers_c(out: &mut String, body: &str) {
          \x20 /* boost::hash_combine-style mixer, FNV-tuned. */\n\
          \x20 a ^= b + 0x9e3779b97f4a7c15ULL + (a << 6) + (a >> 2);\n\
          \x20 return a;\n\
+         }\n\
+         /* Closure #347: hash_f64 — FNV-1a on the raw IEEE-754 bit\n\
+         \x20  pattern. Normalizes -0.0 to +0.0 (same hash) since the\n\
+         \x20  two values compare equal in == . NaNs are NOT normalized:\n\
+         \x20  per IEEE-754, NaN != NaN, so users should compare via\n\
+         \x20  isnan() rather than rely on hash collisions for them. */\n\
+         static INTENT_UNUSED uint64_t intent_hash_f64(double x) {\n\
+         \x20 if (x == 0.0) x = 0.0;  /* fold -0.0 → +0.0 */\n\
+         \x20 uint64_t u;\n\
+         \x20 memcpy(&u, &x, sizeof(u));\n\
+         \x20 uint64_t h = 0xcbf29ce484222325ULL;\n\
+         \x20 for (int i = 0; i < 8; i++) {\n\
+         \x20   h ^= (u >> (i * 8)) & 0xffULL;\n\
+         \x20   h *= 0x100000001b3ULL;\n\
+         \x20 }\n\
+         \x20 return h;\n\
          }\n\n",
     );
 }
@@ -8723,6 +8739,9 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         }
         "hash_i64" => {
             format!("intent_hash_i64(({}))", emit_expr(&args[0]))
+        }
+        "hash_f64" => {
+            format!("intent_hash_f64(({}))", emit_expr(&args[0]))
         }
         "hash_str" => {
             format!("intent_hash_str(({}))", emit_expr(&args[0]))

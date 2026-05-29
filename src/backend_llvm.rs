@@ -5743,6 +5743,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            if name == "hash_f64" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hash_f64(double {})\n",
+                    dest, x
+                ));
+                return dest;
+            }
             if name == "hash_str" {
                 let s = emit_expr(&args[0], ctx, out);
                 let dest = ctx.fresh_tmp();
@@ -7903,7 +7912,7 @@ fn program_uses_hash(program: &TypedProgram) -> bool {
             E::Call { name, args, .. } => {
                 if matches!(
                     name.as_str(),
-                    "hash_i64" | "hash_str" | "hash_combine"
+                    "hash_i64" | "hash_f64" | "hash_str" | "hash_combine"
                 ) {
                     return true;
                 }
@@ -8042,6 +8051,17 @@ fn emit_intent_hash_helpers_llvm(out: &mut String) {
          \x20 %sum2 = add i64 %sum, %sh_r\n\
          \x20 %r = xor i64 %a, %sum2\n\
          \x20 ret i64 %r\n\
+         }\n\
+         ; Closure #347: hash_f64 — bitcast to i64, then FNV-1a on\n\
+         ; the 8 raw IEEE-754 bytes. -0.0 is folded to +0.0 so the\n\
+         ; two values (which compare equal under ==) share a hash.\n\
+         ; NaN payloads are NOT normalized — see the C helper note.\n\
+         define i64 @intent_hash_f64(double %x) {\n\
+         \x20 %is_neg_zero = fcmp oeq double %x, 0.0\n\
+         \x20 %xn = select i1 %is_neg_zero, double 0.0, double %x\n\
+         \x20 %xi = bitcast double %xn to i64\n\
+         \x20 %hf = call i64 @intent_hash_i64(i64 %xi)\n\
+         \x20 ret i64 %hf\n\
          }\n\n",
     );
 }
