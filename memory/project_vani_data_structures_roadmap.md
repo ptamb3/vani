@@ -75,20 +75,56 @@ Arc (→ index graphs + Channel + Mutex); iterators yielding owned
 T (→ by-ref iteration / .fold / .collect); Pin self-references (→
 arena pattern); GC (→ affine + scope-Drop).
 
-**How to apply:**
+**Shipped status (2026-05-29, through closure #351):**
 
-- When the user says "next" after 2026-05-27, the next focal
-  area is **Level 1** of this roadmap — start with `Vec.sort` +
-  `Vec.sort_by` (the most-requested algorithm; in-place
-  quicksort + insertion-sort small-N cutoff). Files:
-  `src/checker.rs` (builtin recognizer) + both backends + 2 lib
-  tests + 1 example.
-- Level 1 items can ship in any order — none have hard
-  inter-dependencies within Level 1.
-- Level 2 (HashMap etc.) needs the Level 1 Hash interface (item
-  4j) PLUS the generic decls infrastructure shipped via #281.
-- Level 3 closures is the prerequisite for the async arc
-  ([[project-vani-async-design]]).
+- **Level 1 — ✅ COMPLETE.** All operations on existing
+  primitives shipped through closures #293–#301, with
+  heap-allocating string ops added in #348 (`str_trim`) /
+  #349 (`str_replace`) / #350 (`str_split`). Hash family
+  rounded out with `hash_f64` (#347) and SipHash-2-4
+  (`siphash_i64` / `siphash_str`, #351).
+- **Level 2 — ✅ COMPLETE.** Containers shipped through
+  #302–#307, plus tombstone-aware `hashset_remove` (#342) and
+  `hashmap_remove` (#343), and BTreeSet/BTreeMap range queries
+  (#346).
+- **Level 3 — ✅ COMPLETE** (modulo richer closure-as-value
+  follow-ups). Anonymous fns (#308), eager `vec_map` / `_fold`
+  / `_filter` (#309–#310), method-call sugar across containers
+  (#311–#312), closures with captures (#314 + #315), fused
+  single-pass combinators (#316–#317), auto-fusion (#318).
+  Richer closure work (capture-by-ref, non-Copy captures,
+  passing closures across function boundaries, `.collect()`,
+  non-i64 element types) is queued under closure
+  #354+ in TODO.md.
+- **Level 4 — ✅ all 8 items shipped.** UnionFind (#325),
+  BinaryHeap (#326), BloomFilter (#327), AVL Bst (#328 +
+  #332), Graph + BFS/DFS/Dijkstra/A*/topo/Kruskal/Prim
+  (#329 + #333–#338), Trie + delete + arena compaction + u8
+  alphabet (#330 + #340 + #344 + #345), SkipList + remove +
+  tail tracker (#331 + #339 + #341).
+
+**How to apply (current state, 2026-05-29):**
+
+- Levels 1–4 of this roadmap are done. The next focal area is
+  the **post-Level-4 extensions** captured in TODO.md's
+  *Granular queue (2026-05-29, after #351)* subsection:
+  1. **#352 — `Hash`/`Ord` interface for user struct keys**
+     (lets users put their own structs into HashSet/HashMap/
+     BTreeSet/BTreeMap by implementing the trait). Routes
+     through the existing interface-dispatch machinery
+     (#220-#228) — *the natural next step*.
+  2. #353 — Anonymous-fn shorthand `|x| x + 1`.
+  3. #354+ — Richer closure-as-value support (multi-session).
+  4. #355 — Trie sparse children (memory optimization).
+  5. #356 — `btreeset_min/max`, `btreemap_min_key/max_key`.
+  6. #357 — `vec_zip` (depends on tuple-element Vec).
+- When the user says "continue" / "next" after closure #351,
+  the next focal item is **#352 Hash/Ord interface** unless
+  they specify otherwise.
+- Deferred (intent recorded, not actively queued): non-Copy V
+  AFFINE-TENSION shift; wider K/V widths; async; Kosh; SSA-LLVM
+  atomicrmw multi-block; Devanagari SOV. See TODO.md
+  *Deferred* subsection for the canonical list.
 
 Cross-references: [[project-vani-affine-standing]],
 [[project-vani-container-affine-contract]],

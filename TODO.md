@@ -739,7 +739,81 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #351 — **SipHash-2-4 keyed hash family**. `siphash_i64(k0, k1, x)` and `siphash_str(k0, k1, s)` join the FNV-1a family with an adversarial-resistant alternative. Canonical SipHash-2-4 with 2 compression rounds per 8-byte block and 4 finalization rounds; initial state derives from the standard "somepseudorandomlygeneratedbytes" constants XOR with `(k0, k1)`. Shared `intent_siphash24_bytes(k0, k1, ptr, n)` core in both backends; thin `_i64` and `_str` wrappers stage the bytes / call strlen. **Spec vector verified**: empty message with key `0x000102…0f` → `0x726fdb47dd0e0e31` = `8246050544436514353` on both backends. C uses an `INTENT_SIP_ROUND` macro for compactness; LLVM uses a per-round-tagged IR generator (`emit_sipround_llvm`) so 8 chained rounds get unique SSA names. Gating: new `program_uses_siphash` walker in LLVM; C piggybacks on the loose `intent_siphash` substring check inside `emit_intent_hash_helpers_c`. Extended `examples/hash.vani` covers determinism, key sensitivity, spec vector, and input distinction. 4 new lib tests pin 3-arg typecheck, arity diagnostic, and helper-name emission. 1276 lib + 54 parity green across 90 examples. Closure #350 (`str_split`) shipped immediately before. Next focal area sequence: (#352+) **`Hash`/`Ord` interface for user struct keys** — let users put their own struct types into HashSet/HashMap/BTreeSet/BTreeMap by implementing a trait. Probably ships as a `Hash` interface with `fn hash(self: ref T, seed: u64) -> u64` and an `Ord` interface with `fn cmp(self: ref T, other: ref T) -> i64`. Further out: **Closure-as-value type richer support** — capture-by-ref, non-Copy captures, `.collect()`, lazy iterators, non-i64 element types in combinators, tuple-element `vec_zip`. Future Trie work: sparse per-node children via `Vec<(u8, u32)>` for memory efficiency, ordered enumeration. Deferred: non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, expression-body anon-fn shorthand, generic anon fns, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-29, after closure #351 — **SipHash-2-4 keyed hash family**. `siphash_i64(k0, k1, x)` and `siphash_str(k0, k1, s)` join the FNV-1a family with an adversarial-resistant alternative. Canonical SipHash-2-4 with 2 compression rounds per 8-byte block and 4 finalization rounds; initial state derives from the standard "somepseudorandomlygeneratedbytes" constants XOR with `(k0, k1)`. Shared `intent_siphash24_bytes(k0, k1, ptr, n)` core in both backends; thin `_i64` and `_str` wrappers stage the bytes / call strlen. **Spec vector verified**: empty message with key `0x000102…0f` → `0x726fdb47dd0e0e31` = `8246050544436514353` on both backends. C uses an `INTENT_SIP_ROUND` macro for compactness; LLVM uses a per-round-tagged IR generator (`emit_sipround_llvm`) so 8 chained rounds get unique SSA names. Gating: new `program_uses_siphash` walker in LLVM; C piggybacks on the loose `intent_siphash` substring check inside `emit_intent_hash_helpers_c`. Extended `examples/hash.vani` covers determinism, key sensitivity, spec vector, and input distinction. 4 new lib tests pin 3-arg typecheck, arity diagnostic, and helper-name emission. 1276 lib + 54 parity green across 90 examples. Closure #350 (`str_split`) shipped immediately before.)
+
+### Granular queue (2026-05-29, after #351)
+
+Ordered by tractability + value. Each item is one or more
+closures; pick top-of-queue when the previous one ships.
+
+1. **#352 — `Hash` / `Ord` interface for user struct keys.**
+   Lets users put their own struct types into `HashSet<T>` /
+   `HashMap<K, V>` / `BTreeSet<T>` / `BTreeMap<K, V>` by
+   implementing a trait. Probably ships as:
+   - `interface Hash { fn hash(self: ref T, seed: u64) -> u64 }`
+     — calls into FNV or SipHash internally for the default
+     `impl Hash for i64` / `impl Hash for Str`.
+   - `interface Ord { fn cmp(self: ref T, other: ref T) -> i64 }`
+     — Cmp-style total order for B-tree containers. Returns
+     a signed i64 (negative=less, zero=equal, positive=greater).
+   Container builtins gain `where T is Hash` (HashSet/HashMap)
+   and `where T is Ord` (BTreeSet/BTreeMap) bounds; per-element
+   `hash()` / `cmp()` calls route through the existing
+   interface-dispatch machinery (#220-#228). Scope: medium-
+   large — interface decls + container monomorphization plumbing
+   in both backends.
+
+2. **#353 — Anonymous-fn shorthand `|x| x + 1`.** Parser sugar
+   that desugars to the existing AnonFn AST node (closure #308).
+   The body desugars to `fn(x: i64) -> i64 { return x + 1; }`
+   with the parameter type and return type inferred from
+   context. Independent of #352 — can interleave.
+
+3. **#354+ — Closure-as-value richer support (multi-session).**
+   Decomposes into:
+   - 3a: Capture-by-ref second-class closures (callable only
+     within the captured ref's lifetime).
+   - 3b: Non-Copy captures with move semantics (needs affine
+     analysis on the captured environment).
+   - 3c: Passing closures across function boundaries — env-
+     struct + fn-ptr pair as the value representation.
+   - 3d: `.collect()` to materialize lazy iterators into a Vec.
+   - 3e: Non-i64 element types in `vec_map` / `vec_filter` /
+     `vec_fold` (currently all i64).
+   - 3f: Tuple-element Vec — needed for `vec_zip(xs, ys) ->
+     Vec<(T, U)>`.
+
+4. **#355 — Trie sparse children.** Replace the 1024-byte-per-
+   node fixed alphabet (closure #345 generalized 26-wide to
+   256-wide) with `Vec<(u8, u32)>` per node + binary search on
+   character lookup. Trades memory (most nodes have ≤10
+   children) for slightly slower lookup. Possibly two closures:
+   the refactor, then ordered-enumeration helper.
+
+5. **#356 — `btreeset_min` / `btreeset_max` / `btreemap_min_key`
+   / `btreemap_max_key`.** Parallel to `skiplist_min`/`max`
+   (#341). O(1) since the sorted-Vec backing stores them at
+   index 0 and len-1.
+
+6. **#357 — `vec_zip(xs, ys) -> Vec<(T, U)>`.** Depends on
+   tuple-element Vec from 3f.
+
+#### Deferred (intent recorded, not actively queued)
+
+- Non-Copy V `Option<ref V>` AFFINE-TENSION shift for
+  `hashmap_get` (would let users put Vec / OwnedStr values in
+  a HashMap, with the map retaining ownership and returning a
+  borrowed view).
+- Wider K/V widths: `HashMap<Str, V>` / `HashMap<i64, Str>`.
+- Expression-body anon-fn shorthand (depends on #353).
+- `async` (deferred until concrete need; coroutines vs poll
+  + runtime undecided).
+- **Kosh** package-manager arc (`kosh.toml`, resolver +
+  lockfile, registry + CLI, stdlib-as-kosh) — multi-session.
+- Devanagari SOV word order + 3-way Sanskrit/Hindi/Marathi
+  alias parity (blocked on grammar review).
+- SSA-LLVM multi-block atomicrmw emit (Phi-traceback; tree-
+  LLVM is the correctness fallback today).
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)
