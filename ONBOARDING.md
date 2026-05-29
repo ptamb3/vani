@@ -36,7 +36,7 @@ non-proof code changes. Don't set it in CI.
 
 ```bash
 cargo build                         # Quick build
-cargo test                          # Full suite (978 lib + 47 e2e + 14 other, ~60s)
+cargo test                          # Full suite (1255 lib + 54 e2e + 14 other, ~90s)
 cargo test smt_                     # Subset matching a prefix
 cargo test --release                # Faster compile, same coverage
 cargo clippy                        # Lints
@@ -168,18 +168,41 @@ docs/namespaces_design.md  Design rationale for the namespaces feature
 
 ## What's still ahead
 
-See README's "Growth Path" section for the longer roadmap and
-TODO.md for the canonical queue. As of 2026-05-26 the heavy
-lifts that **have** landed (originally listed here as ahead) —
-the CFG/SSA IR refactor, parallelism (`parallel for` /
-reductions / atomics / channels / mutexes / tasks),
-ownership-in-verifier (affine types, Drop, vec/owned-str
-heap tracking), payloaded enums + match, vtables for dynamic
-dispatch, namespaces (modules with visibility / `use` /
-re-exports / `pub(kosh)`), and Str + OwnedStr — are
-representative of what's now in the language.
+See README's *Roadmap* section for the longer arc and
+[TODO.md](TODO.md) for the canonical queue. As of 2026-05-29 the
+heavy lifts that **have** landed (some originally listed here
+as ahead) include:
+
+- CFG/SSA IR refactor.
+- Parallelism (`parallel for` / reductions / atomics / channels
+  / mutexes / tasks / `Condvar`).
+- Ownership-in-verifier (affine types, Drop, vec/owned-str heap
+  tracking).
+- Payloaded enums + match (incl. mixed-payload enums).
+- Vtables for dynamic dispatch (`dyn Iface`).
+- Namespaces (modules with visibility, `use`, re-exports,
+  `pub(kosh)`).
+- `Str` + `OwnedStr`.
+- FFI v1–v8 (`extern "C" fn`, `--link-with`, FFI callbacks).
+- **Data-structures + algorithms roadmap, Levels 1–4** (closures
+  #293–#345): `Vec` sort / search / mutator builtins, math / RNG /
+  hash, `BinaryHeap` / `Deque` / `HashSet` (with tombstone
+  remove) / `HashMap` (with tombstone remove) / `BTreeSet` /
+  `BTreeMap`, anonymous fns + closures with captures + iterator
+  combinators + method-call sugar, `UnionFind` / `BloomFilter` /
+  AVL `Bst` / weighted `Graph` + BFS/DFS/Dijkstra/A*/topo-sort/
+  Kruskal/Prim, `Trie` with delete + arena compaction + full u8
+  alphabet, `SkipList` with O(1) `max` via maintained `tail_node`.
+  See [STATUS.md](STATUS.md) for the closure-by-closure history.
 
 Currently pending:
+- Closure-as-value richer support (capture-by-ref, non-Copy
+  captures, `.collect()`, lazy iterators, non-i64 element types
+  in combinators, tuple-element `vec_zip`).
+- `BTreeSet`/`BTreeMap` range queries.
+- Sparse per-node children for `Trie` (memory optimization;
+  currently fixed 256-wide after closure #345).
+- Hash / Ord trait for user struct keys; SipHash; `hash_f64`.
 - SSA-LLVM multi-block atomicrmw emit (Phi-traceback; tree-LLVM
   is the correctness fallback today).
 - The **kosh** (कोश) package-manager arc: manifest (`kosh.toml`),
@@ -187,3 +210,5 @@ Currently pending:
   Currently single-kosh; `pub(kosh)` already records intent.
 - Devanagari SOV word order and 3-way Sanskrit/Hindi/Marathi
   alias parity (both blocked on grammar review).
+- `async` (deferred until concrete need; coroutines or
+  poll-and-runtime are both possible, decision deferred).
