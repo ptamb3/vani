@@ -919,7 +919,8 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         let has_option_i64 = LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
             r.borrow().contains_key("Option__i64")
         });
-        emit_intent_graph_helpers_llvm(&mut out, has_option_i64);
+        let emit_vec_dep = crate::backend_c::program_uses_graph_vec_builtin(program);
+        emit_intent_graph_helpers_llvm(&mut out, has_option_i64, emit_vec_dep);
     }
 
     // Trie helpers (closure #330, Level 4 #4).
@@ -5494,6 +5495,28 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            if name == "graph_astar" {
+                let g = emit_expr(&args[0], ctx, out);
+                let src = emit_expr(&args[1], ctx, out);
+                let dst = emit_expr(&args[2], ctx, out);
+                let h = emit_expr(&args[3], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %Enum_Option__i64 @intent_graph_astar(%intent_graph* {}, i64 {}, i64 {}, %intent_vec_i64* {})\n",
+                    dest, g, src, dst, h
+                ));
+                return dest;
+            }
+            if name == "graph_topo_sort" {
+                let g = emit_expr(&args[0], ctx, out);
+                let out_v = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_graph_topo_sort(%intent_graph* {}, %intent_vec_i64* {})\n",
+                    dest, g, out_v
+                ));
+                return dest;
+            }
             // Trie builtins (closure #330, Level 4 #4).
             if name == "trie_new" {
                 let dest = ctx.fresh_tmp();
@@ -10033,7 +10056,7 @@ fn emit_intent_bst_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
 /// loop (linear scan for next-min) — no dependency on
 /// BinaryHeap. graph_dijkstra returns Option<i64>, gated on
 /// Option__i64 being registered.
-fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool) {
+fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_vec_dep: bool) {
     out.push_str(
         "define %intent_graph @intent_graph_new(i64 %n_in) {\n\
          \x20 %neg = icmp slt i64 %n_in, 0\n\
@@ -10464,6 +10487,193 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool) {
          \x20 ret i1 false\n\
          }\n",
     );
+    if emit_vec_dep {
+        out.push_str(
+            "; Closure #335: topological sort writing into a user Vec<i64>.\n\
+         ; `out` is a mut ref to a Vec<i64> struct value; we update its\n\
+         ; data / len / capacity fields in place and return the count\n\
+         ; of nodes appended (== num_nodes for a DAG, less on cycle).\n\
+         define i64 @intent_graph_topo_sort(%intent_graph* %g, %intent_vec_i64* %out) {\n\
+         \x20 %nnp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 0\n\
+         \x20 %spp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
+         \x20 %dpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
+         \x20 %nep = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 4\n\
+         \x20 %nn = load i64, i64* %nnp\n\
+         \x20 %ne = load i64, i64* %nep\n\
+         \x20 %nn_zero = icmp sle i64 %nn, 0\n\
+         \x20 br i1 %nn_zero, label %ts_zero, label %ts_init\n\
+         ts_zero:\n\
+         \x20 ret i64 0\n\
+         ts_init:\n\
+         \x20 %in_deg_i8 = call i8* @calloc(i64 %nn, i64 8)\n\
+         \x20 %in_deg = bitcast i8* %in_deg_i8 to i64*\n\
+         \x20 %q_bytes = mul i64 %nn, 8\n\
+         \x20 %queue_i8 = call i8* @malloc(i64 %q_bytes)\n\
+         \x20 %queue = bitcast i8* %queue_i8 to i64*\n\
+         \x20 ; Count in-degrees.\n\
+         \x20 %ic_p = alloca i64\n\
+         \x20 store i64 0, i64* %ic_p\n\
+         \x20 br label %ts_indeg_loop\n\
+         ts_indeg_loop:\n\
+         \x20 %ic = load i64, i64* %ic_p\n\
+         \x20 %ic_done = icmp sge i64 %ic, %ne\n\
+         \x20 br i1 %ic_done, label %ts_grow_decide, label %ts_indeg_body\n\
+         ts_indeg_body:\n\
+         \x20 %dst_arr_ts = load i32*, i32** %dpp\n\
+         \x20 %dst_slot_ts = getelementptr i32, i32* %dst_arr_ts, i64 %ic\n\
+         \x20 %dst32_ts = load i32, i32* %dst_slot_ts\n\
+         \x20 %dst64_ts = sext i32 %dst32_ts to i64\n\
+         \x20 %dst_lo_ts = icmp slt i64 %dst64_ts, 0\n\
+         \x20 %dst_hi_ts = icmp sge i64 %dst64_ts, %nn\n\
+         \x20 %dst_bad_ts = or i1 %dst_lo_ts, %dst_hi_ts\n\
+         \x20 br i1 %dst_bad_ts, label %ts_indeg_next, label %ts_indeg_incr\n\
+         ts_indeg_incr:\n\
+         \x20 %in_deg_slot = getelementptr i64, i64* %in_deg, i64 %dst64_ts\n\
+         \x20 %in_deg_v = load i64, i64* %in_deg_slot\n\
+         \x20 %in_deg_v_inc = add i64 %in_deg_v, 1\n\
+         \x20 store i64 %in_deg_v_inc, i64* %in_deg_slot\n\
+         \x20 br label %ts_indeg_next\n\
+         ts_indeg_next:\n\
+         \x20 %ic_inc = add i64 %ic, 1\n\
+         \x20 store i64 %ic_inc, i64* %ic_p\n\
+         \x20 br label %ts_indeg_loop\n\
+         ts_grow_decide:\n\
+         \x20 ; Ensure `out` has room for nn more entries.\n\
+         \x20 %out_data_p = getelementptr %intent_vec_i64, %intent_vec_i64* %out, i32 0, i32 0\n\
+         \x20 %out_len_p  = getelementptr %intent_vec_i64, %intent_vec_i64* %out, i32 0, i32 1\n\
+         \x20 %out_cap_p  = getelementptr %intent_vec_i64, %intent_vec_i64* %out, i32 0, i32 2\n\
+         \x20 %out_len0 = load i64, i64* %out_len_p\n\
+         \x20 %out_cap0 = load i64, i64* %out_cap_p\n\
+         \x20 %need = add i64 %out_len0, %nn\n\
+         \x20 %enough = icmp uge i64 %out_cap0, %need\n\
+         \x20 br i1 %enough, label %ts_seed_init, label %ts_grow\n\
+         ts_grow:\n\
+         \x20 %cap_zero = icmp eq i64 %out_cap0, 0\n\
+         \x20 %cap_initial = select i1 %cap_zero, i64 8, i64 %out_cap0\n\
+         \x20 %new_cap_p = alloca i64\n\
+         \x20 store i64 %cap_initial, i64* %new_cap_p\n\
+         \x20 br label %ts_grow_loop\n\
+         ts_grow_loop:\n\
+         \x20 %nc = load i64, i64* %new_cap_p\n\
+         \x20 %big_enough = icmp uge i64 %nc, %need\n\
+         \x20 br i1 %big_enough, label %ts_grow_alloc, label %ts_grow_dbl\n\
+         ts_grow_dbl:\n\
+         \x20 %nc_mul = mul i64 %nc, 2\n\
+         \x20 store i64 %nc_mul, i64* %new_cap_p\n\
+         \x20 br label %ts_grow_loop\n\
+         ts_grow_alloc:\n\
+         \x20 %nc_final = load i64, i64* %new_cap_p\n\
+         \x20 %nc_bytes = mul i64 %nc_final, 8\n\
+         \x20 %old_data = load i64*, i64** %out_data_p\n\
+         \x20 %old_data_i8 = bitcast i64* %old_data to i8*\n\
+         \x20 %new_data_i8 = call i8* @realloc(i8* %old_data_i8, i64 %nc_bytes)\n\
+         \x20 %new_data = bitcast i8* %new_data_i8 to i64*\n\
+         \x20 store i64* %new_data, i64** %out_data_p\n\
+         \x20 store i64 %nc_final, i64* %out_cap_p\n\
+         \x20 br label %ts_seed_init\n\
+         ts_seed_init:\n\
+         \x20 %qh_p = alloca i64\n\
+         \x20 %qt_p = alloca i64\n\
+         \x20 store i64 0, i64* %qh_p\n\
+         \x20 store i64 0, i64* %qt_p\n\
+         \x20 %sd_p = alloca i64\n\
+         \x20 store i64 0, i64* %sd_p\n\
+         \x20 br label %ts_seed_loop\n\
+         ts_seed_loop:\n\
+         \x20 %sd = load i64, i64* %sd_p\n\
+         \x20 %sd_done = icmp sge i64 %sd, %nn\n\
+         \x20 br i1 %sd_done, label %ts_process_init, label %ts_seed_test\n\
+         ts_seed_test:\n\
+         \x20 %sd_slot = getelementptr i64, i64* %in_deg, i64 %sd\n\
+         \x20 %sd_v = load i64, i64* %sd_slot\n\
+         \x20 %sd_is_zero = icmp eq i64 %sd_v, 0\n\
+         \x20 br i1 %sd_is_zero, label %ts_seed_push, label %ts_seed_next\n\
+         ts_seed_push:\n\
+         \x20 %qt_seed = load i64, i64* %qt_p\n\
+         \x20 %q_seed_slot = getelementptr i64, i64* %queue, i64 %qt_seed\n\
+         \x20 store i64 %sd, i64* %q_seed_slot\n\
+         \x20 %qt_seed_inc = add i64 %qt_seed, 1\n\
+         \x20 store i64 %qt_seed_inc, i64* %qt_p\n\
+         \x20 br label %ts_seed_next\n\
+         ts_seed_next:\n\
+         \x20 %sd_inc = add i64 %sd, 1\n\
+         \x20 store i64 %sd_inc, i64* %sd_p\n\
+         \x20 br label %ts_seed_loop\n\
+         ts_process_init:\n\
+         \x20 %proc_p = alloca i64\n\
+         \x20 store i64 0, i64* %proc_p\n\
+         \x20 br label %ts_outer\n\
+         ts_outer:\n\
+         \x20 %qh = load i64, i64* %qh_p\n\
+         \x20 %qt = load i64, i64* %qt_p\n\
+         \x20 %any = icmp slt i64 %qh, %qt\n\
+         \x20 br i1 %any, label %ts_pop, label %ts_finish\n\
+         ts_pop:\n\
+         \x20 %u_slot_ts = getelementptr i64, i64* %queue, i64 %qh\n\
+         \x20 %u_ts = load i64, i64* %u_slot_ts\n\
+         \x20 %qh_next = add i64 %qh, 1\n\
+         \x20 store i64 %qh_next, i64* %qh_p\n\
+         \x20 ; Append u_ts to out->data[out->len], inc out->len.\n\
+         \x20 %out_len_now = load i64, i64* %out_len_p\n\
+         \x20 %out_data_ts = load i64*, i64** %out_data_p\n\
+         \x20 %out_write_slot = getelementptr i64, i64* %out_data_ts, i64 %out_len_now\n\
+         \x20 store i64 %u_ts, i64* %out_write_slot\n\
+         \x20 %out_len_inc = add i64 %out_len_now, 1\n\
+         \x20 store i64 %out_len_inc, i64* %out_len_p\n\
+         \x20 %proc_now = load i64, i64* %proc_p\n\
+         \x20 %proc_inc = add i64 %proc_now, 1\n\
+         \x20 store i64 %proc_inc, i64* %proc_p\n\
+         \x20 %ep_ts = alloca i64\n\
+         \x20 store i64 0, i64* %ep_ts\n\
+         \x20 br label %ts_edge_loop\n\
+         ts_edge_loop:\n\
+         \x20 %e_ts = load i64, i64* %ep_ts\n\
+         \x20 %e_done_ts = icmp sge i64 %e_ts, %ne\n\
+         \x20 br i1 %e_done_ts, label %ts_outer, label %ts_edge_body\n\
+         ts_edge_body:\n\
+         \x20 %src_arr_ts = load i32*, i32** %spp\n\
+         \x20 %src_slot_ts = getelementptr i32, i32* %src_arr_ts, i64 %e_ts\n\
+         \x20 %src32_ts = load i32, i32* %src_slot_ts\n\
+         \x20 %src64_ts = sext i32 %src32_ts to i64\n\
+         \x20 %is_src_ts = icmp eq i64 %src64_ts, %u_ts\n\
+         \x20 br i1 %is_src_ts, label %ts_edge_check_v, label %ts_edge_next\n\
+         ts_edge_check_v:\n\
+         \x20 %dst_arr_ts2 = load i32*, i32** %dpp\n\
+         \x20 %dst_slot_ts2 = getelementptr i32, i32* %dst_arr_ts2, i64 %e_ts\n\
+         \x20 %dst32_ts2 = load i32, i32* %dst_slot_ts2\n\
+         \x20 %v_ts = sext i32 %dst32_ts2 to i64\n\
+         \x20 %v_lo_ts = icmp slt i64 %v_ts, 0\n\
+         \x20 %v_hi_ts = icmp sge i64 %v_ts, %nn\n\
+         \x20 %v_bad_ts = or i1 %v_lo_ts, %v_hi_ts\n\
+         \x20 br i1 %v_bad_ts, label %ts_edge_next, label %ts_edge_dec\n\
+         ts_edge_dec:\n\
+         \x20 %v_in_slot = getelementptr i64, i64* %in_deg, i64 %v_ts\n\
+         \x20 %v_in = load i64, i64* %v_in_slot\n\
+         \x20 %v_in_dec = sub i64 %v_in, 1\n\
+         \x20 store i64 %v_in_dec, i64* %v_in_slot\n\
+         \x20 %v_zero_ts = icmp eq i64 %v_in_dec, 0\n\
+         \x20 br i1 %v_zero_ts, label %ts_edge_push, label %ts_edge_next\n\
+         ts_edge_push:\n\
+         \x20 %qt_cur_ts = load i64, i64* %qt_p\n\
+         \x20 %q_push_ts = getelementptr i64, i64* %queue, i64 %qt_cur_ts\n\
+         \x20 store i64 %v_ts, i64* %q_push_ts\n\
+         \x20 %qt_inc_ts = add i64 %qt_cur_ts, 1\n\
+         \x20 store i64 %qt_inc_ts, i64* %qt_p\n\
+         \x20 br label %ts_edge_next\n\
+         ts_edge_next:\n\
+         \x20 %e_inc_ts = add i64 %e_ts, 1\n\
+         \x20 store i64 %e_inc_ts, i64* %ep_ts\n\
+         \x20 br label %ts_edge_loop\n\
+         ts_finish:\n\
+         \x20 %in_deg_free_ts = bitcast i64* %in_deg to i8*\n\
+         \x20 call void @free(i8* %in_deg_free_ts)\n\
+         \x20 %queue_free_ts = bitcast i64* %queue to i8*\n\
+         \x20 call void @free(i8* %queue_free_ts)\n\
+         \x20 %final_proc_ts = load i64, i64* %proc_p\n\
+         \x20 ret i64 %final_proc_ts\n\
+         }\n",
+        );
+    }
     if has_option_i64 {
         out.push_str(
             "define %Enum_Option__i64 @intent_graph_dijkstra(%intent_graph* %g, i64 %src, i64 %dst) {\n\
@@ -11012,8 +11222,185 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool) {
              \x20 %pn0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
              \x20 %pn1 = insertvalue %Enum_Option__i64 %pn0, i64 0, 1\n\
              \x20 ret %Enum_Option__i64 %pn1\n\
-             }\n\n",
+             }\n",
         );
+        if emit_vec_dep {
+            out.push_str(
+                "define %Enum_Option__i64 @intent_graph_astar(%intent_graph* %g, i64 %src, i64 %dst, %intent_vec_i64* %h) {\n\
+             \x20 %nnp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 0\n\
+             \x20 %spp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
+             \x20 %dpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
+             \x20 %wpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 3\n\
+             \x20 %nep = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 4\n\
+             \x20 %nn = load i64, i64* %nnp\n\
+             \x20 %ne = load i64, i64* %nep\n\
+             \x20 %nn_zero = icmp sle i64 %nn, 0\n\
+             \x20 %src_lo = icmp slt i64 %src, 0\n\
+             \x20 %src_hi = icmp sge i64 %src, %nn\n\
+             \x20 %dst_lo = icmp slt i64 %dst, 0\n\
+             \x20 %dst_hi = icmp sge i64 %dst, %nn\n\
+             \x20 %b1_as = or i1 %nn_zero, %src_lo\n\
+             \x20 %b2_as = or i1 %b1_as, %src_hi\n\
+             \x20 %b3_as = or i1 %b2_as, %dst_lo\n\
+             \x20 %bad_as = or i1 %b3_as, %dst_hi\n\
+             \x20 br i1 %bad_as, label %as_none, label %as_check_len\n\
+             as_check_len:\n\
+             \x20 %h_len_p = getelementptr %intent_vec_i64, %intent_vec_i64* %h, i32 0, i32 1\n\
+             \x20 %h_len = load i64, i64* %h_len_p\n\
+             \x20 %len_mismatch = icmp ne i64 %h_len, %nn\n\
+             \x20 br i1 %len_mismatch, label %as_none, label %as_check_eq\n\
+             as_check_eq:\n\
+             \x20 %same_as = icmp eq i64 %src, %dst\n\
+             \x20 br i1 %same_as, label %as_zero, label %as_init\n\
+             as_zero:\n\
+             \x20 %z0_as = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %z1_as = insertvalue %Enum_Option__i64 %z0_as, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %z1_as\n\
+             as_init:\n\
+             \x20 %h_data_p = getelementptr %intent_vec_i64, %intent_vec_i64* %h, i32 0, i32 0\n\
+             \x20 %h_data = load i64*, i64** %h_data_p\n\
+             \x20 %gs_bytes = mul i64 %nn, 8\n\
+             \x20 %gs_i8 = call i8* @malloc(i64 %gs_bytes)\n\
+             \x20 %gs = bitcast i8* %gs_i8 to i64*\n\
+             \x20 %done_as = call i8* @calloc(i64 %nn, i64 1)\n\
+             \x20 %ai_p = alloca i64\n\
+             \x20 store i64 0, i64* %ai_p\n\
+             \x20 br label %as_init_loop\n\
+             as_init_loop:\n\
+             \x20 %ai = load i64, i64* %ai_p\n\
+             \x20 %ai_done = icmp sge i64 %ai, %nn\n\
+             \x20 br i1 %ai_done, label %as_seed_src, label %as_init_body\n\
+             as_init_body:\n\
+             \x20 %gs_slot = getelementptr i64, i64* %gs, i64 %ai\n\
+             \x20 store i64 9223372036854775807, i64* %gs_slot\n\
+             \x20 %ai_inc = add i64 %ai, 1\n\
+             \x20 store i64 %ai_inc, i64* %ai_p\n\
+             \x20 br label %as_init_loop\n\
+             as_seed_src:\n\
+             \x20 %gs_src_slot = getelementptr i64, i64* %gs, i64 %src\n\
+             \x20 store i64 0, i64* %gs_src_slot\n\
+             \x20 %as_iter_p = alloca i64\n\
+             \x20 store i64 0, i64* %as_iter_p\n\
+             \x20 br label %as_outer\n\
+             as_outer:\n\
+             \x20 %as_iter = load i64, i64* %as_iter_p\n\
+             \x20 %iter_done_as = icmp sge i64 %as_iter, %nn\n\
+             \x20 br i1 %iter_done_as, label %as_read_result, label %as_pick\n\
+             as_pick:\n\
+             \x20 %u_p_as = alloca i64\n\
+             \x20 store i64 -1, i64* %u_p_as\n\
+             \x20 %best_p_as = alloca i64\n\
+             \x20 store i64 9223372036854775807, i64* %best_p_as\n\
+             \x20 %pi_as = alloca i64\n\
+             \x20 store i64 0, i64* %pi_as\n\
+             \x20 br label %as_pick_loop\n\
+             as_pick_loop:\n\
+             \x20 %as_p = load i64, i64* %pi_as\n\
+             \x20 %as_p_done = icmp sge i64 %as_p, %nn\n\
+             \x20 br i1 %as_p_done, label %as_pick_check, label %as_pick_body\n\
+             as_pick_body:\n\
+             \x20 %as_done_slot = getelementptr i8, i8* %done_as, i64 %as_p\n\
+             \x20 %as_done_v = load i8, i8* %as_done_slot\n\
+             \x20 %as_done_set = icmp ne i8 %as_done_v, 0\n\
+             \x20 br i1 %as_done_set, label %as_pick_next, label %as_pick_check_inf\n\
+             as_pick_check_inf:\n\
+             \x20 %gs_pi_slot = getelementptr i64, i64* %gs, i64 %as_p\n\
+             \x20 %gs_pi = load i64, i64* %gs_pi_slot\n\
+             \x20 %gs_inf = icmp eq i64 %gs_pi, 9223372036854775807\n\
+             \x20 br i1 %gs_inf, label %as_pick_next, label %as_pick_compute_f\n\
+             as_pick_compute_f:\n\
+             \x20 %h_pi_slot = getelementptr i64, i64* %h_data, i64 %as_p\n\
+             \x20 %h_pi = load i64, i64* %h_pi_slot\n\
+             \x20 ; f = gs + h (clamp on overflow)\n\
+             \x20 %inf_minus_h = sub i64 9223372036854775807, %h_pi\n\
+             \x20 %overflow = icmp sgt i64 %gs_pi, %inf_minus_h\n\
+             \x20 %f_sum = add i64 %gs_pi, %h_pi\n\
+             \x20 %f = select i1 %overflow, i64 9223372036854775807, i64 %f_sum\n\
+             \x20 %best_cur = load i64, i64* %best_p_as\n\
+             \x20 %lt_f = icmp slt i64 %f, %best_cur\n\
+             \x20 br i1 %lt_f, label %as_pick_set, label %as_pick_next\n\
+             as_pick_set:\n\
+             \x20 store i64 %f, i64* %best_p_as\n\
+             \x20 store i64 %as_p, i64* %u_p_as\n\
+             \x20 br label %as_pick_next\n\
+             as_pick_next:\n\
+             \x20 %pi_inc_as = add i64 %as_p, 1\n\
+             \x20 store i64 %pi_inc_as, i64* %pi_as\n\
+             \x20 br label %as_pick_loop\n\
+             as_pick_check:\n\
+             \x20 %u_as = load i64, i64* %u_p_as\n\
+             \x20 %u_none_as = icmp eq i64 %u_as, -1\n\
+             \x20 br i1 %u_none_as, label %as_read_result, label %as_pick_take\n\
+             as_pick_take:\n\
+             \x20 %u_done_slot = getelementptr i8, i8* %done_as, i64 %u_as\n\
+             \x20 store i8 1, i8* %u_done_slot\n\
+             \x20 %u_is_dst_as = icmp eq i64 %u_as, %dst\n\
+             \x20 br i1 %u_is_dst_as, label %as_read_result, label %as_relax_init\n\
+             as_relax_init:\n\
+             \x20 %gs_u_slot = getelementptr i64, i64* %gs, i64 %u_as\n\
+             \x20 %gs_u = load i64, i64* %gs_u_slot\n\
+             \x20 %ep_as = alloca i64\n\
+             \x20 store i64 0, i64* %ep_as\n\
+             \x20 br label %as_relax_loop\n\
+             as_relax_loop:\n\
+             \x20 %e_as = load i64, i64* %ep_as\n\
+             \x20 %e_done_as = icmp sge i64 %e_as, %ne\n\
+             \x20 br i1 %e_done_as, label %as_iter_inc, label %as_relax_body\n\
+             as_relax_body:\n\
+             \x20 %src_arr_as = load i32*, i32** %spp\n\
+             \x20 %src_slot_as = getelementptr i32, i32* %src_arr_as, i64 %e_as\n\
+             \x20 %src32_as = load i32, i32* %src_slot_as\n\
+             \x20 %src64_as = sext i32 %src32_as to i64\n\
+             \x20 %is_src_as = icmp eq i64 %src64_as, %u_as\n\
+             \x20 br i1 %is_src_as, label %as_relax_apply, label %as_relax_next\n\
+             as_relax_apply:\n\
+             \x20 %dst_arr_as = load i32*, i32** %dpp\n\
+             \x20 %dst_slot_as = getelementptr i32, i32* %dst_arr_as, i64 %e_as\n\
+             \x20 %dst32_as = load i32, i32* %dst_slot_as\n\
+             \x20 %v_as = sext i32 %dst32_as to i64\n\
+             \x20 %v_lo_as = icmp slt i64 %v_as, 0\n\
+             \x20 %v_hi_as = icmp sge i64 %v_as, %nn\n\
+             \x20 %v_bad_as = or i1 %v_lo_as, %v_hi_as\n\
+             \x20 br i1 %v_bad_as, label %as_relax_next, label %as_relax_inner\n\
+             as_relax_inner:\n\
+             \x20 %wpp_as = load i64*, i64** %wpp\n\
+             \x20 %w_slot_as = getelementptr i64, i64* %wpp_as, i64 %e_as\n\
+             \x20 %w_v_as = load i64, i64* %w_slot_as\n\
+             \x20 %nd_as = add i64 %gs_u, %w_v_as\n\
+             \x20 %gs_v_slot = getelementptr i64, i64* %gs, i64 %v_as\n\
+             \x20 %gs_v = load i64, i64* %gs_v_slot\n\
+             \x20 %improves_as = icmp slt i64 %nd_as, %gs_v\n\
+             \x20 br i1 %improves_as, label %as_relax_set, label %as_relax_next\n\
+             as_relax_set:\n\
+             \x20 store i64 %nd_as, i64* %gs_v_slot\n\
+             \x20 br label %as_relax_next\n\
+             as_relax_next:\n\
+             \x20 %e_inc_as = add i64 %e_as, 1\n\
+             \x20 store i64 %e_inc_as, i64* %ep_as\n\
+             \x20 br label %as_relax_loop\n\
+             as_iter_inc:\n\
+             \x20 %iter_inc_as = add i64 %as_iter, 1\n\
+             \x20 store i64 %iter_inc_as, i64* %as_iter_p\n\
+             \x20 br label %as_outer\n\
+             as_read_result:\n\
+             \x20 %dst_d_slot_as = getelementptr i64, i64* %gs, i64 %dst\n\
+             \x20 %dst_d_as = load i64, i64* %dst_d_slot_as\n\
+             \x20 %gs_free = bitcast i64* %gs to i8*\n\
+             \x20 call void @free(i8* %gs_free)\n\
+             \x20 call void @free(i8* %done_as)\n\
+             \x20 %is_inf_as = icmp eq i64 %dst_d_as, 9223372036854775807\n\
+             \x20 br i1 %is_inf_as, label %as_none, label %as_some\n\
+             as_some:\n\
+             \x20 %as_s0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %as_s1 = insertvalue %Enum_Option__i64 %as_s0, i64 %dst_d_as, 1\n\
+             \x20 ret %Enum_Option__i64 %as_s1\n\
+             as_none:\n\
+             \x20 %as_n0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %as_n1 = insertvalue %Enum_Option__i64 %as_n0, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %as_n1\n\
+             }\n\n",
+            );
+        }
     }
 }
 

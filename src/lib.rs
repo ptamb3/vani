@@ -13338,6 +13338,105 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn graph_astar_and_topo_sort_typecheck() {
+        // Closure #334 (A*) + #335 (topo sort).
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(3);
+              let h: Vec<i64> = vec(0, 0, 0);
+              let _: Option<i64> = graph_astar(ref g, 0, 1, ref h);
+              let order: Vec<i64> = vec();
+              let _: i64 = graph_topo_sort(ref g, mut ref order);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("astar+topo must type-check in C");
+        compile_to_llvm(source).expect("astar+topo must compile to LLVM");
+    }
+
+    #[test]
+    fn graph_astar_rejects_non_vec_heuristic() {
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(3);
+              let _: Option<i64> = graph_astar(ref g, 0, 1, 0);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("astar with scalar heuristic must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("ref Vec<i64>")),
+            "expected ref-Vec diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn graph_topo_sort_rejects_ref_output() {
+        // topo_sort's out-buffer must be `mut ref Vec<i64>`.
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(3);
+              let order: Vec<i64> = vec();
+              let _: i64 = graph_topo_sort(ref g, ref order);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("topo_sort with ref out must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref Vec<i64>")),
+            "expected mut-ref-Vec diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn graph_astar_topo_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(3);
+              let h: Vec<i64> = vec(0, 0, 0);
+              let order: Vec<i64> = vec();
+              let _: Option<i64> = g.astar(0, 1, ref h);
+              let _: i64 = g.topo_sort(mut ref order);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("astar+topo sugar must type-check in C");
+        compile_to_llvm(source).expect("astar+topo sugar must compile to LLVM");
+    }
+
+    #[test]
+    fn graph_astar_topo_emit_helpers() {
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(3);
+              let h: Vec<i64> = vec(0, 0, 0);
+              let order: Vec<i64> = vec();
+              let _: Option<i64> = graph_astar(ref g, 0, 1, ref h);
+              let _: i64 = graph_topo_sort(ref g, mut ref order);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("astar+topo C compile");
+        assert!(
+            c.contains("intent_graph_astar")
+                && c.contains("intent_graph_topo_sort"),
+            "C output must include astar+topo helpers"
+        );
+        let ll = compile_to_llvm(source).expect("astar+topo LLVM compile");
+        assert!(
+            ll.contains("@intent_graph_astar")
+                && ll.contains("@intent_graph_topo_sort"),
+            "LLVM output must include astar+topo helpers"
+        );
+    }
+
+    #[test]
     fn trie_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

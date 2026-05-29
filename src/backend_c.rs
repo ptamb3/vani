@@ -571,7 +571,8 @@ pub fn emit_c(program: &TypedProgram) -> String {
         let has_option_i64 = ENUM_PAYLOAD_REGISTRY.with(|r| {
             r.borrow().contains_key("Option__i64")
         });
-        emit_intent_graph_helpers_c_body(&mut body, has_option_i64);
+        let emit_vec_dep = program_uses_graph_vec_builtin(program);
+        emit_intent_graph_helpers_c_body(&mut body, has_option_i64, emit_vec_dep);
     }
     if program_uses_trie(program) {
         emit_intent_trie_helpers_c_body(&mut body);
@@ -2002,6 +2003,84 @@ pub(crate) fn program_uses_graph(program: &TypedProgram) -> bool {
     false
 }
 
+/// Walk the program for a call to either `graph_astar` or
+/// `graph_topo_sort` (closures #334 / #335). These two helpers
+/// reference the Vec<i64> runtime struct, so we only emit them
+/// when the program actually uses them — otherwise programs
+/// that use Graph without Vec<i64> would fail to compile.
+pub(crate) fn program_uses_graph_vec_builtin(program: &TypedProgram) -> bool {
+    use crate::ir::TypedExprKind as E;
+    use crate::ir::TypedStmt as S;
+    fn expr_uses(expr: &crate::ir::TypedExpr) -> bool {
+        match &expr.kind {
+            E::Call { name, args, .. } => {
+                if name == "graph_astar" || name == "graph_topo_sort" {
+                    return true;
+                }
+                args.iter().any(expr_uses)
+            }
+            E::Unary { expr, .. } | E::Cast { expr, .. } => expr_uses(expr),
+            E::Len { array, .. } => expr_uses(array),
+            E::Binary { left, right, .. } => expr_uses(left) || expr_uses(right),
+            E::CallIndirect { callee, args } => {
+                expr_uses(callee) || args.iter().any(expr_uses)
+            }
+            E::ArrayLit { elements } => elements.iter().any(expr_uses),
+            E::Index { array, index, .. } => expr_uses(array) || expr_uses(index),
+            E::Tuple { elements } => elements.iter().any(expr_uses),
+            E::TupleAccess { tuple, .. } => expr_uses(tuple),
+            E::StructLit { fields, .. } => fields.iter().any(|(_, v)| expr_uses(v)),
+            E::FieldAccess { object, .. } => expr_uses(object),
+            E::EnumVariantWithPayload { payload, .. } => expr_uses(payload),
+            E::IfExpr { cond, then_value, else_value } => {
+                expr_uses(cond) || expr_uses(then_value) || expr_uses(else_value)
+            }
+            E::Match { scrutinee, arms } => {
+                expr_uses(scrutinee) || arms.iter().any(|a| expr_uses(&a.body))
+            }
+            E::Block { stmts, tail } => {
+                stmts.iter().any(stmt_walk) || expr_uses(tail)
+            }
+            _ => false,
+        }
+    }
+    fn stmt_walk(s: &S) -> bool {
+        match s {
+            S::Let { expr, .. }
+            | S::Reassign { expr, .. }
+            | S::Return { expr }
+            | S::Assert { expr, .. }
+            | S::Prove { expr } => expr_uses(expr),
+            S::Discard { expr } => expr_uses(expr),
+            S::Print { items } => items.iter().any(|it| match it {
+                crate::ir::TypedPrintItem::Expr(e) => expr_uses(e),
+                _ => false,
+            }),
+            S::If { cond, then_body, else_body, .. } => {
+                expr_uses(cond)
+                    || then_body.iter().any(stmt_walk)
+                    || else_body.iter().any(stmt_walk)
+            }
+            S::While { cond, body, .. } => {
+                expr_uses(cond) || body.iter().any(stmt_walk)
+            }
+            S::For { start, end, body, .. } => {
+                expr_uses(start) || expr_uses(end) || body.iter().any(stmt_walk)
+            }
+            S::ForIter { body, .. } => {
+                body.iter().any(stmt_walk)
+            }
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if f.body.iter().any(stmt_walk) {
+            return true;
+        }
+    }
+    false
+}
+
 fn stmt_uses_graph(stmt: &crate::ir::TypedStmt) -> bool {
     use crate::ir::TypedStmt as S;
     fn ty_uses(ty: &Type) -> bool {
@@ -2029,7 +2108,7 @@ fn stmt_uses_graph(stmt: &crate::ir::TypedStmt) -> bool {
 /// arrays. Dijkstra uses an O(V^2) inner loop (linear scan for
 /// next-min) — no dependency on BinaryHeap. graph_dijkstra
 /// returns Option<i64>, gated on Option__i64 being registered.
-fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool) {
+fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit_vec_dep: bool) {
     out.push_str(
         "typedef struct { int64_t num_nodes; int32_t* edge_src; int32_t* edge_dst; int64_t* edge_weight; int64_t num_edges; int64_t edge_capacity; } intent_graph;\n\
          static INTENT_UNUSED intent_graph intent_graph_new(int64_t n) {\n\
@@ -2136,6 +2215,56 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool) {
          \x20 return processed < g->num_nodes;\n\
          }\n",
     );
+    if emit_vec_dep {
+        out.push_str(
+            "/* Closure #335: topological sort. Pushes node indices\n\
+          * into `out` in Kahn-order; returns the count of nodes\n\
+          * actually appended (== num_nodes for a DAG, less if\n\
+          * the graph has a cycle). The caller usually checks\n\
+          * `graph_has_cycle` separately before relying on the\n\
+          * order. We grow `out->data` via realloc rather than\n\
+          * depending on the per-element `__push` helper so the\n\
+          * gate logic stays simple. */\n\
+         static INTENT_UNUSED int64_t intent_graph_topo_sort(const intent_graph* g, intent_vec_int64_t* out) {\n\
+         \x20 if (g->num_nodes <= 0) return 0;\n\
+         \x20 int64_t* in_deg = (int64_t*)calloc((size_t)g->num_nodes, sizeof(int64_t));\n\
+         \x20 int64_t* queue  = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
+         \x20 if (!in_deg || !queue) abort();\n\
+         \x20 for (int64_t e = 0; e < g->num_edges; e++) {\n\
+         \x20   int32_t d = g->edge_dst[e];\n\
+         \x20   if (d >= 0 && (int64_t)d < g->num_nodes) in_deg[d]++;\n\
+         \x20 }\n\
+         \x20 int64_t qh = 0, qt = 0;\n\
+         \x20 for (int64_t i = 0; i < g->num_nodes; i++) {\n\
+         \x20   if (in_deg[i] == 0) queue[qt++] = i;\n\
+         \x20 }\n\
+         \x20 /* Reserve space in `out` for up to num_nodes new entries. */\n\
+         \x20 uint64_t needed = out->len + (uint64_t)g->num_nodes;\n\
+         \x20 if (out->capacity < needed) {\n\
+         \x20   uint64_t new_cap = out->capacity == 0 ? 8 : out->capacity;\n\
+         \x20   while (new_cap < needed) new_cap *= 2;\n\
+         \x20   out->data = (int64_t*)realloc(out->data, (size_t)new_cap * sizeof(int64_t));\n\
+         \x20   if (!out->data) abort();\n\
+         \x20   out->capacity = new_cap;\n\
+         \x20 }\n\
+         \x20 int64_t processed = 0;\n\
+         \x20 while (qh < qt) {\n\
+         \x20   int64_t u = queue[qh++];\n\
+         \x20   out->data[out->len++] = u;\n\
+         \x20   processed++;\n\
+         \x20   for (int64_t e = 0; e < g->num_edges; e++) {\n\
+         \x20     if ((int64_t)g->edge_src[e] != u) continue;\n\
+         \x20     int64_t v = (int64_t)g->edge_dst[e];\n\
+         \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
+         \x20     in_deg[v]--;\n\
+         \x20     if (in_deg[v] == 0) queue[qt++] = v;\n\
+         \x20   }\n\
+         \x20 }\n\
+         \x20 free(in_deg); free(queue);\n\
+         \x20 return processed;\n\
+         }\n",
+        );
+    }
     if has_option_i64 {
         out.push_str(
             "static INTENT_UNUSED Enum_Option__i64 intent_graph_dijkstra(const intent_graph* g, int64_t src, int64_t dst) {\n\
@@ -2261,8 +2390,62 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool) {
              \x20 if (added == g->num_nodes) { r.tag = 0; r.payload = total; }\n\
              \x20 else { r.tag = 1; r.payload = 0; }\n\
              \x20 return r;\n\
-             }\n\n",
+             }\n",
         );
+        if emit_vec_dep {
+            out.push_str(
+                "/* Closure #334: A* shortest path with user-provided\n\
+              * heuristic vector. `h->data[i]` is the heuristic\n\
+              * estimate of the remaining cost from node i to dst.\n\
+              * Admissibility (h(i) <= true cost to dst) is the\n\
+              * caller's responsibility — a zero heuristic reduces\n\
+              * A* to Dijkstra. Returns None on size mismatch or\n\
+              * unreachable. O(V^2) inner loop (no BinaryHeap dep). */\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_graph_astar(const intent_graph* g, int64_t src, int64_t dst, const intent_vec_int64_t* h) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (g->num_nodes <= 0 || src < 0 || src >= g->num_nodes || dst < 0 || dst >= g->num_nodes) {\n\
+             \x20   r.tag = 1; r.payload = 0; return r;\n\
+             \x20 }\n\
+             \x20 if (h->len != (uint64_t)g->num_nodes) {\n\
+             \x20   r.tag = 1; r.payload = 0; return r;\n\
+             \x20 }\n\
+             \x20 if (src == dst) { r.tag = 0; r.payload = 0; return r; }\n\
+             \x20 int64_t INF = 0x7fffffffffffffffLL;\n\
+             \x20 int64_t* gs = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
+             \x20 uint8_t* done = (uint8_t*)calloc((size_t)g->num_nodes, 1);\n\
+             \x20 if (!gs || !done) abort();\n\
+             \x20 for (int64_t i = 0; i < g->num_nodes; i++) gs[i] = INF;\n\
+             \x20 gs[src] = 0;\n\
+             \x20 for (int64_t iter = 0; iter < g->num_nodes; iter++) {\n\
+             \x20   int64_t u = -1; int64_t best = INF;\n\
+             \x20   for (int64_t i = 0; i < g->num_nodes; i++) {\n\
+             \x20     if (done[i] || gs[i] == INF) continue;\n\
+             \x20     int64_t hi = h->data[i];\n\
+             \x20     int64_t f;\n\
+             \x20     if (gs[i] > INF - hi) f = INF;\n\
+             \x20     else f = gs[i] + hi;\n\
+             \x20     if (f < best) { best = f; u = i; }\n\
+             \x20   }\n\
+             \x20   if (u == -1) break;\n\
+             \x20   done[u] = 1;\n\
+             \x20   if (u == dst) break;\n\
+             \x20   int64_t gu = gs[u];\n\
+             \x20   for (int64_t e = 0; e < g->num_edges; e++) {\n\
+             \x20     if ((int64_t)g->edge_src[e] != u) continue;\n\
+             \x20     int64_t v = (int64_t)g->edge_dst[e];\n\
+             \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
+             \x20     int64_t nd = gu + g->edge_weight[e];\n\
+             \x20     if (nd < gs[v]) gs[v] = nd;\n\
+             \x20   }\n\
+             \x20 }\n\
+             \x20 int64_t d = gs[dst];\n\
+             \x20 free(gs); free(done);\n\
+             \x20 if (d == INF) { r.tag = 1; r.payload = 0; }\n\
+             \x20 else { r.tag = 0; r.payload = d; }\n\
+             \x20 return r;\n\
+             }\n\n",
+            );
+        }
     }
 }
 
@@ -7953,6 +8136,18 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         "graph_mst_prim" => format!(
             "intent_graph_mst_prim({})",
             emit_expr(&args[0])
+        ),
+        "graph_astar" => format!(
+            "intent_graph_astar({}, ({}), ({}), {})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2]),
+            emit_expr(&args[3])
+        ),
+        "graph_topo_sort" => format!(
+            "intent_graph_topo_sort({}, {})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
         ),
         // Closure #330: Trie dispatch.
         "trie_new" => "intent_trie_new()".to_string(),

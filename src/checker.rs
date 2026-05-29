@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "graph_has_cycle", "graph_mst_kruskal", "graph_mst_prim", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_len", "trie_node_count", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_len", "skiplist_min", "skiplist_max", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "graph_has_cycle", "graph_mst_kruskal", "graph_mst_prim", "graph_astar", "graph_topo_sort", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_len", "trie_node_count", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_len", "skiplist_min", "skiplist_max", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -5802,6 +5802,7 @@ fn monomorphize_type_decls_in_program(
                 | "bst_min" | "bst_max"
                 | "graph_dijkstra"
                 | "graph_mst_kruskal" | "graph_mst_prim"
+                | "graph_astar"
                 | "skiplist_min" | "skiplist_max" => Some(Type::I64),
                 "parse_float" => Some(Type::F64),
                 _ => None,
@@ -10810,6 +10811,8 @@ fn check_expr(
                         "has_cycle" => ("graph_has_cycle", false),
                         "mst_kruskal" => ("graph_mst_kruskal", false),
                         "mst_prim" => ("graph_mst_prim", false),
+                        "astar" => ("graph_astar", false),
+                        "topo_sort" => ("graph_topo_sort", false),
                         _ => ("", false),
                     },
                     Some(Type::Trie) => match method.as_str() {
@@ -13882,7 +13885,8 @@ fn check_call(
         "graph_new" | "graph_add_edge" | "graph_num_nodes"
         | "graph_num_edges" | "graph_bfs_reach" | "graph_dfs_reach"
         | "graph_dijkstra" | "graph_has_cycle"
-        | "graph_mst_kruskal" | "graph_mst_prim" => {
+        | "graph_mst_kruskal" | "graph_mst_prim"
+        | "graph_astar" | "graph_topo_sort" => {
             return check_graph_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
@@ -17096,16 +17100,18 @@ fn check_graph_builtin(
         "graph_has_cycle" | "graph_mst_kruskal"
         | "graph_mst_prim" => 1,
         "graph_bfs_reach" | "graph_dfs_reach" => 2,
+        "graph_topo_sort" => 2,
         "graph_add_edge" | "graph_dijkstra" => {
             if name == "graph_add_edge" { 4 } else { 3 }
         }
+        "graph_astar" => 4,
         _ => unreachable!(),
     };
     let ret_ty = || -> Type {
         match name {
             "graph_new" => Type::Graph,
             "graph_dijkstra" | "graph_mst_kruskal"
-            | "graph_mst_prim" => {
+            | "graph_mst_prim" | "graph_astar" => {
                 Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
             }
             "graph_has_cycle" => Type::Bool,
@@ -17184,12 +17190,58 @@ fn check_graph_builtin(
     }
     let mut typed_args = vec![g.expr];
     for (i, arg) in args.iter().enumerate().skip(1) {
-        let raw = check_expr(arg, env, signatures, diagnostics);
-        let coerced = coerce_checked(
-            raw, &Type::I64, arg.span,
-            &format!("graph arg {}", i), diagnostics,
+        // Closure #334/#335: A* takes a `ref Vec<i64>` heuristic
+        // table as arg[3]; topo_sort takes a `mut ref Vec<i64>`
+        // out-buffer as arg[1]. Everything else is i64.
+        let want_vec = matches!(
+            (name, i),
+            ("graph_astar", 3) | ("graph_topo_sort", 1)
         );
-        typed_args.push(coerced.expr);
+        let want_mut_vec = matches!((name, i), ("graph_topo_sort", 1));
+        if want_vec {
+            let raw = check_expr(arg, env, signatures, diagnostics);
+            let ok = match raw.ty() {
+                Type::Ref(inner) => {
+                    !want_mut_vec
+                        && matches!(&**inner, Type::Vec(el) if matches!(**el, Type::I64))
+                }
+                Type::RefMut(inner) => {
+                    matches!(&**inner, Type::Vec(el) if matches!(**el, Type::I64))
+                }
+                _ => false,
+            };
+            if !ok {
+                diagnostics.push(Diagnostic::new(
+                    arg.span,
+                    format!(
+                        "{}() arg {} must be a `{}Vec<i64>`, got {}",
+                        name,
+                        i,
+                        if want_mut_vec { "mut ref " } else { "ref " },
+                        raw.ty()
+                    ),
+                ));
+            }
+            if want_mut_vec && matches!(raw.ty(), Type::Ref(_)) {
+                diagnostics.push(Diagnostic::new(
+                    arg.span,
+                    format!(
+                        "{}() arg {} must be a `mut ref Vec<i64>`, got {}",
+                        name,
+                        i,
+                        raw.ty()
+                    ),
+                ));
+            }
+            typed_args.push(raw.expr);
+        } else {
+            let raw = check_expr(arg, env, signatures, diagnostics);
+            let coerced = coerce_checked(
+                raw, &Type::I64, arg.span,
+                &format!("graph arg {}", i), diagnostics,
+            );
+            typed_args.push(coerced.expr);
+        }
     }
     CheckedExpr::new(
         TypedExprKind::Call {

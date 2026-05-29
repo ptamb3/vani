@@ -303,13 +303,24 @@ pointer (already in the language as of #279 FFI callbacks).
     sugar added: `g.has_cycle()` / `.mst_kruskal()` / `.mst_prim()`.
     New `examples/graph_algo.vani` exercises DAG / cycle /
     connected-weighted / disconnected / single-node cases.
-    Pending: A* (path tracker on top of Dijkstra, needs the
-    closure-as-value type for the heuristic fn), topological
-    sort returning a `Vec<i64>` order (currently we only expose
-    has_cycle, which uses topo internally), CSR-style adjacency
-    cache invalidated on add_edge for O(V+E) BFS/DFS instead of
-    O((V+E)·E), undirected variant, edges visiting via closures,
-    generic weight types.
+    *A* shipped 2026-05-29 (closure #334).* Side-steps the
+    closure-as-value blocker by passing the heuristic as a
+    plain `Vec<i64>` lookup table — one entry per node, the
+    caller's responsibility to keep admissible. Same O(V²)
+    inner loop as Dijkstra, just selecting on f = g + h
+    instead of g. Size-mismatched heuristic vectors return
+    None. *Topological sort shipped 2026-05-29 (closure #335).*
+    `graph_topo_sort(ref g, mut ref out: Vec<i64>) -> i64`
+    appends nodes in Kahn-order to the user-provided Vec and
+    returns the count appended (== num_nodes iff DAG). Both
+    helpers are gated on `program_uses_graph_vec_builtin` so
+    Graph users that don't touch A*/topo_sort don't get
+    spurious `intent_vec_int64_t` references.
+    Pending: A* path reconstruction (currently returns just
+    the total cost, not the path); CSR-style adjacency cache
+    invalidated on add_edge for O(V+E) BFS/DFS instead of
+    O((V+E)·E); undirected variant; edges visiting via
+    closures; generic weight types.
 24. **Union-Find / Disjoint-Set** — ✅ AFFINE.
     `Vec<u32>` parent + `Vec<u32>` rank. Path compression
     works under affine because mutation goes through
@@ -679,7 +690,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #333 — **Graph algorithm extensions: has_cycle / mst_kruskal / mst_prim** on the existing `Graph` type from closure #329, no new struct fields. `graph_has_cycle(ref) -> bool` via Kahn's algorithm; `graph_mst_kruskal(ref) -> Option<i64>` via insertion-sort + path-compressed Union-Find inlined within the helper (no `UnionFind` type dependency); `graph_mst_prim(ref) -> Option<i64>` via O(V²) linear-scan inner loop (no BinaryHeap dependency). Both MST helpers treat edges as undirected. Method sugar `g.has_cycle()` / `.mst_kruskal()` / `.mst_prim()`. New `examples/graph_algo.vani` exercises DAG / cycle / connected-weighted / disconnected / single-node cases on both backends with identical output. 4 new lib tests. Closure #332 (AVL on Bst) shipped immediately before. **Level 4 of the data-structures roadmap is fully closed under v1; graph extensions are now well underway.** Next focal area sequence: (#334) **A*** — path tracker on top of Dijkstra; needs the closure-as-value type for the heuristic fn so partially blocked on the post-Level-4 closure-as-value work; minimum-priority queue could also be lifted to use `BinaryHeap<i64>` now that #326 ships. (#335) **Topological sort returning `Vec<i64>`** — useful for scheduling / dependency orders. (#336) **CSR-style adjacency cache** on Graph invalidated on add_edge for O(V+E) BFS/DFS / Dijkstra instead of the current O((V+E)·E) — biggest perf win for larger graphs. (#337) **Trie alphabet generalization** (per-node sparse children for arbitrary u8 alphabet; radix-compressed variant; delete; ordered enumeration). (#338) **SkipList remove + tail tracker** for O(log n) max. (#339) **Red-black variant on the Bst arena** (1-bit color flag can share the existing heights byte). After Level 4 extensions: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-29, after closures #334 + #335 — **A* with a user heuristic Vec + topological sort writing into a `mut ref Vec<i64>`**, both on the existing Graph type, no new struct fields. (#334) `graph_astar(ref g, src, dst, ref h: Vec<i64>) -> Option<i64>` side-steps the closure-as-value blocker by taking the heuristic as a `Vec<i64>` table; same O(V²) inner loop as Dijkstra but ordered by f = g + h; size-mismatched table returns None. (#335) `graph_topo_sort(ref g, mut ref out: Vec<i64>) -> i64` appends nodes in Kahn-order to `out` and returns the count appended (== num_nodes iff DAG). Both helpers are gated on `program_uses_graph_vec_builtin` so plain Graph users don't get spurious Vec runtime references. Method sugar `g.astar(s,d,ref h)` / `.topo_sort(mut ref out)`. New `examples/graph_algo2.vani` exercises both with cross-backend identical output. 5 new lib tests. Closure #333 (has_cycle / mst_kruskal / mst_prim) shipped immediately before. Next focal area sequence: (#336) **CSR-style adjacency cache** on Graph invalidated on add_edge for O(V+E) BFS/DFS / Dijkstra / A* / topo_sort instead of the current O((V+E)·E) — biggest perf win for larger graphs; needs additional struct fields + a lazy build step. (#337) **Trie alphabet generalization** (per-node sparse children for arbitrary u8 alphabet; radix-compressed variant; delete; ordered enumeration). (#338) **SkipList remove + tail tracker** for O(log n) max. (#339) **Red-black variant on the Bst arena** (1-bit color flag can share the existing heights byte). After Level 4 extensions: closure-as-value type for passing let-bound closures with captures to combinators (would also unblock A* path reconstruction, real Prim/Kruskal weight comparators, etc.); tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)
