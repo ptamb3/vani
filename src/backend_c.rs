@@ -2244,17 +2244,23 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
          \x20 free(visited); free(stack);\n\
          \x20 return count;\n\
          }\n\
-         /* Closure #333: Kahn's topological sort, returning true if\n\
-          * a directed cycle is detected (i.e., not all nodes can be\n\
-          * peeled off in zero-in-degree order). */\n\
+         /* Closure #333 + #337: Kahn's topological sort via the CSR\n\
+          * adjacency cache. Returns true iff not all nodes can be\n\
+          * peeled off (i.e., a directed cycle exists). */\n\
          static INTENT_UNUSED bool intent_graph_has_cycle(const intent_graph* g) {\n\
          \x20 if (g->num_nodes <= 0) return false;\n\
+         \x20 intent_graph_build_csr_if_needed(g);\n\
          \x20 int64_t* in_deg = (int64_t*)calloc((size_t)g->num_nodes, sizeof(int64_t));\n\
          \x20 int64_t* queue  = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
          \x20 if (!in_deg || !queue) abort();\n\
-         \x20 for (int64_t e = 0; e < g->num_edges; e++) {\n\
-         \x20   int32_t d = g->edge_dst[e];\n\
-         \x20   if (d >= 0 && (int64_t)d < g->num_nodes) in_deg[d]++;\n\
+         \x20 /* Walk CSR neighbor list of every source to count in-degrees. */\n\
+         \x20 for (int64_t s = 0; s < g->num_nodes; s++) {\n\
+         \x20   int32_t k0 = g->adj_start[s];\n\
+         \x20   int32_t k1 = g->adj_start[s + 1];\n\
+         \x20   for (int32_t k = k0; k < k1; k++) {\n\
+         \x20     int32_t d = g->adj_csr_dst[k];\n\
+         \x20     if (d >= 0 && (int64_t)d < g->num_nodes) in_deg[d]++;\n\
+         \x20   }\n\
          \x20 }\n\
          \x20 int64_t qh = 0, qt = 0;\n\
          \x20 for (int64_t i = 0; i < g->num_nodes; i++) {\n\
@@ -2264,9 +2270,10 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
          \x20 while (qh < qt) {\n\
          \x20   int64_t u = queue[qh++];\n\
          \x20   processed++;\n\
-         \x20   for (int64_t e = 0; e < g->num_edges; e++) {\n\
-         \x20     if ((int64_t)g->edge_src[e] != u) continue;\n\
-         \x20     int64_t v = (int64_t)g->edge_dst[e];\n\
+         \x20   int32_t k0 = g->adj_start[u];\n\
+         \x20   int32_t k1 = g->adj_start[u + 1];\n\
+         \x20   for (int32_t k = k0; k < k1; k++) {\n\
+         \x20     int64_t v = (int64_t)g->adj_csr_dst[k];\n\
          \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
          \x20     in_deg[v]--;\n\
          \x20     if (in_deg[v] == 0) queue[qt++] = v;\n\
@@ -2288,12 +2295,17 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
           * gate logic stays simple. */\n\
          static INTENT_UNUSED int64_t intent_graph_topo_sort(const intent_graph* g, intent_vec_int64_t* out) {\n\
          \x20 if (g->num_nodes <= 0) return 0;\n\
+         \x20 intent_graph_build_csr_if_needed(g);\n\
          \x20 int64_t* in_deg = (int64_t*)calloc((size_t)g->num_nodes, sizeof(int64_t));\n\
          \x20 int64_t* queue  = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
          \x20 if (!in_deg || !queue) abort();\n\
-         \x20 for (int64_t e = 0; e < g->num_edges; e++) {\n\
-         \x20   int32_t d = g->edge_dst[e];\n\
-         \x20   if (d >= 0 && (int64_t)d < g->num_nodes) in_deg[d]++;\n\
+         \x20 for (int64_t s = 0; s < g->num_nodes; s++) {\n\
+         \x20   int32_t k0 = g->adj_start[s];\n\
+         \x20   int32_t k1 = g->adj_start[s + 1];\n\
+         \x20   for (int32_t k = k0; k < k1; k++) {\n\
+         \x20     int32_t d = g->adj_csr_dst[k];\n\
+         \x20     if (d >= 0 && (int64_t)d < g->num_nodes) in_deg[d]++;\n\
+         \x20   }\n\
          \x20 }\n\
          \x20 int64_t qh = 0, qt = 0;\n\
          \x20 for (int64_t i = 0; i < g->num_nodes; i++) {\n\
@@ -2313,9 +2325,10 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
          \x20   int64_t u = queue[qh++];\n\
          \x20   out->data[out->len++] = u;\n\
          \x20   processed++;\n\
-         \x20   for (int64_t e = 0; e < g->num_edges; e++) {\n\
-         \x20     if ((int64_t)g->edge_src[e] != u) continue;\n\
-         \x20     int64_t v = (int64_t)g->edge_dst[e];\n\
+         \x20   int32_t k0 = g->adj_start[u];\n\
+         \x20   int32_t k1 = g->adj_start[u + 1];\n\
+         \x20   for (int32_t k = k0; k < k1; k++) {\n\
+         \x20     int64_t v = (int64_t)g->adj_csr_dst[k];\n\
          \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
          \x20     in_deg[v]--;\n\
          \x20     if (in_deg[v] == 0) queue[qt++] = v;\n\
@@ -2334,6 +2347,7 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
              \x20   r.tag = 1; r.payload = 0; return r;\n\
              \x20 }\n\
              \x20 if (src == dst) { r.tag = 0; r.payload = 0; return r; }\n\
+             \x20 intent_graph_build_csr_if_needed(g);\n\
              \x20 int64_t INF = 0x7fffffffffffffffLL;\n\
              \x20 int64_t* dist = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
              \x20 uint8_t* done = (uint8_t*)calloc((size_t)g->num_nodes, 1);\n\
@@ -2348,11 +2362,12 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
              \x20   if (u == -1 || best == INF) break;\n\
              \x20   done[u] = 1;\n\
              \x20   if (u == dst) break;\n\
-             \x20   for (int64_t e = 0; e < g->num_edges; e++) {\n\
-             \x20     if ((int64_t)g->edge_src[e] != u) continue;\n\
-             \x20     int64_t v = (int64_t)g->edge_dst[e];\n\
+             \x20   int32_t k0 = g->adj_start[u];\n\
+             \x20   int32_t k1 = g->adj_start[u + 1];\n\
+             \x20   for (int32_t k = k0; k < k1; k++) {\n\
+             \x20     int64_t v = (int64_t)g->adj_csr_dst[k];\n\
              \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
-             \x20     int64_t nd = best + g->edge_weight[e];\n\
+             \x20     int64_t nd = best + g->adj_csr_weight[k];\n\
              \x20     if (nd < dist[v]) dist[v] = nd;\n\
              \x20   }\n\
              \x20 }\n\
@@ -2455,13 +2470,13 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
         );
         if emit_vec_dep {
             out.push_str(
-                "/* Closure #334: A* shortest path with user-provided\n\
-              * heuristic vector. `h->data[i]` is the heuristic\n\
+                "/* Closure #334 + #337: A* shortest path with user-provided\n\
+              * heuristic vector, iterating neighbors via the CSR\n\
+              * cache from closure #336. `h->data[i]` is the heuristic\n\
               * estimate of the remaining cost from node i to dst.\n\
-              * Admissibility (h(i) <= true cost to dst) is the\n\
-              * caller's responsibility — a zero heuristic reduces\n\
-              * A* to Dijkstra. Returns None on size mismatch or\n\
-              * unreachable. O(V^2) inner loop (no BinaryHeap dep). */\n\
+              * Admissibility is the caller's responsibility — a zero\n\
+              * heuristic reduces A* to Dijkstra. Returns None on size\n\
+              * mismatch or unreachable. */\n\
              static INTENT_UNUSED Enum_Option__i64 intent_graph_astar(const intent_graph* g, int64_t src, int64_t dst, const intent_vec_int64_t* h) {\n\
              \x20 Enum_Option__i64 r;\n\
              \x20 if (g->num_nodes <= 0 || src < 0 || src >= g->num_nodes || dst < 0 || dst >= g->num_nodes) {\n\
@@ -2471,6 +2486,7 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
              \x20   r.tag = 1; r.payload = 0; return r;\n\
              \x20 }\n\
              \x20 if (src == dst) { r.tag = 0; r.payload = 0; return r; }\n\
+             \x20 intent_graph_build_csr_if_needed(g);\n\
              \x20 int64_t INF = 0x7fffffffffffffffLL;\n\
              \x20 int64_t* gs = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
              \x20 uint8_t* done = (uint8_t*)calloc((size_t)g->num_nodes, 1);\n\
@@ -2491,11 +2507,12 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
              \x20   done[u] = 1;\n\
              \x20   if (u == dst) break;\n\
              \x20   int64_t gu = gs[u];\n\
-             \x20   for (int64_t e = 0; e < g->num_edges; e++) {\n\
-             \x20     if ((int64_t)g->edge_src[e] != u) continue;\n\
-             \x20     int64_t v = (int64_t)g->edge_dst[e];\n\
+             \x20   int32_t k0 = g->adj_start[u];\n\
+             \x20   int32_t k1 = g->adj_start[u + 1];\n\
+             \x20   for (int32_t k = k0; k < k1; k++) {\n\
+             \x20     int64_t v = (int64_t)g->adj_csr_dst[k];\n\
              \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
-             \x20     int64_t nd = gu + g->edge_weight[e];\n\
+             \x20     int64_t nd = gu + g->adj_csr_weight[k];\n\
              \x20     if (nd < gs[v]) gs[v] = nd;\n\
              \x20   }\n\
              \x20 }\n\

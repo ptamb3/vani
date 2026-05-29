@@ -10574,48 +10574,68 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
          \x20 %result = load i64, i64* %count_p\n\
          \x20 ret i64 %result\n\
          }\n\
+         ; Closure #333 + #337: has_cycle via CSR (O(V+E)).\n\
          define i1 @intent_graph_has_cycle(%intent_graph* %g) {\n\
          \x20 %nnp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 0\n\
-         \x20 %spp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
-         \x20 %dpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
-         \x20 %nep = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 4\n\
          \x20 %nn = load i64, i64* %nnp\n\
-         \x20 %ne = load i64, i64* %nep\n\
          \x20 %nn_zero = icmp sle i64 %nn, 0\n\
-         \x20 br i1 %nn_zero, label %hc_false, label %hc_init\n\
-         hc_init:\n\
-         \x20 %in_deg_bytes = mul i64 %nn, 8\n\
+         \x20 br i1 %nn_zero, label %hc_false, label %hc_build\n\
+         hc_build:\n\
+         \x20 call void @intent_graph_build_csr_if_needed(%intent_graph* %g)\n\
+         \x20 %asp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 6\n\
+         \x20 %acdp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 7\n\
          \x20 %in_deg_i8 = call i8* @calloc(i64 %nn, i64 8)\n\
          \x20 %in_deg = bitcast i8* %in_deg_i8 to i64*\n\
-         \x20 %queue_i8 = call i8* @malloc(i64 %in_deg_bytes)\n\
+         \x20 %q_bytes = mul i64 %nn, 8\n\
+         \x20 %queue_i8 = call i8* @malloc(i64 %q_bytes)\n\
          \x20 %queue = bitcast i8* %queue_i8 to i64*\n\
-         \x20 ; Count in-degrees.\n\
-         \x20 %ic_p = alloca i64\n\
-         \x20 store i64 0, i64* %ic_p\n\
-         \x20 br label %hc_indeg_loop\n\
-         hc_indeg_loop:\n\
-         \x20 %ic = load i64, i64* %ic_p\n\
-         \x20 %ic_done = icmp sge i64 %ic, %ne\n\
-         \x20 br i1 %ic_done, label %hc_seed_init, label %hc_indeg_body\n\
-         hc_indeg_body:\n\
-         \x20 %dst_arr_hc = load i32*, i32** %dpp\n\
-         \x20 %dst_slot_hc = getelementptr i32, i32* %dst_arr_hc, i64 %ic\n\
-         \x20 %dst32_hc = load i32, i32* %dst_slot_hc\n\
-         \x20 %dst64_hc = sext i32 %dst32_hc to i64\n\
-         \x20 %dst_lo_hc = icmp slt i64 %dst64_hc, 0\n\
-         \x20 %dst_hi_hc = icmp sge i64 %dst64_hc, %nn\n\
-         \x20 %dst_bad_hc = or i1 %dst_lo_hc, %dst_hi_hc\n\
-         \x20 br i1 %dst_bad_hc, label %hc_indeg_next, label %hc_indeg_incr\n\
-         hc_indeg_incr:\n\
-         \x20 %in_deg_slot_hc = getelementptr i64, i64* %in_deg, i64 %dst64_hc\n\
-         \x20 %in_deg_v = load i64, i64* %in_deg_slot_hc\n\
-         \x20 %in_deg_v_inc = add i64 %in_deg_v, 1\n\
-         \x20 store i64 %in_deg_v_inc, i64* %in_deg_slot_hc\n\
-         \x20 br label %hc_indeg_next\n\
-         hc_indeg_next:\n\
-         \x20 %ic_inc = add i64 %ic, 1\n\
-         \x20 store i64 %ic_inc, i64* %ic_p\n\
-         \x20 br label %hc_indeg_loop\n\
+         \x20 ; Count in-degrees via CSR: for each source s, iterate adj_start[s]..adj_start[s+1].\n\
+         \x20 %s_p = alloca i64\n\
+         \x20 store i64 0, i64* %s_p\n\
+         \x20 br label %hc_src_loop\n\
+         hc_src_loop:\n\
+         \x20 %s = load i64, i64* %s_p\n\
+         \x20 %s_done = icmp sge i64 %s, %nn\n\
+         \x20 br i1 %s_done, label %hc_seed_init, label %hc_src_body\n\
+         hc_src_body:\n\
+         \x20 %as_arr_c = load i32*, i32** %asp\n\
+         \x20 %k0_slot_c = getelementptr i32, i32* %as_arr_c, i64 %s\n\
+         \x20 %k0_i32_c = load i32, i32* %k0_slot_c\n\
+         \x20 %s_p1 = add i64 %s, 1\n\
+         \x20 %k1_slot_c = getelementptr i32, i32* %as_arr_c, i64 %s_p1\n\
+         \x20 %k1_i32_c = load i32, i32* %k1_slot_c\n\
+         \x20 %k0_i64_c = sext i32 %k0_i32_c to i64\n\
+         \x20 %k1_i64_c = sext i32 %k1_i32_c to i64\n\
+         \x20 %k_p_c = alloca i64\n\
+         \x20 store i64 %k0_i64_c, i64* %k_p_c\n\
+         \x20 br label %hc_count_loop\n\
+         hc_count_loop:\n\
+         \x20 %k_c = load i64, i64* %k_p_c\n\
+         \x20 %k_done_c = icmp sge i64 %k_c, %k1_i64_c\n\
+         \x20 br i1 %k_done_c, label %hc_src_next, label %hc_count_body\n\
+         hc_count_body:\n\
+         \x20 %acd_arr_c = load i32*, i32** %acdp\n\
+         \x20 %v_slot_c = getelementptr i32, i32* %acd_arr_c, i64 %k_c\n\
+         \x20 %v32_c = load i32, i32* %v_slot_c\n\
+         \x20 %v_c = sext i32 %v32_c to i64\n\
+         \x20 %v_lo_c = icmp slt i64 %v_c, 0\n\
+         \x20 %v_hi_c = icmp sge i64 %v_c, %nn\n\
+         \x20 %v_bad_c = or i1 %v_lo_c, %v_hi_c\n\
+         \x20 br i1 %v_bad_c, label %hc_count_next, label %hc_count_incr\n\
+         hc_count_incr:\n\
+         \x20 %ind_slot = getelementptr i64, i64* %in_deg, i64 %v_c\n\
+         \x20 %ind_v = load i64, i64* %ind_slot\n\
+         \x20 %ind_v_inc = add i64 %ind_v, 1\n\
+         \x20 store i64 %ind_v_inc, i64* %ind_slot\n\
+         \x20 br label %hc_count_next\n\
+         hc_count_next:\n\
+         \x20 %k_inc_c = add i64 %k_c, 1\n\
+         \x20 store i64 %k_inc_c, i64* %k_p_c\n\
+         \x20 br label %hc_count_loop\n\
+         hc_src_next:\n\
+         \x20 %s_inc = add i64 %s, 1\n\
+         \x20 store i64 %s_inc, i64* %s_p\n\
+         \x20 br label %hc_src_loop\n\
          hc_seed_init:\n\
          \x20 %qh_p = alloca i64\n\
          \x20 %qt_p = alloca i64\n\
@@ -10661,47 +10681,48 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
          \x20 %proc = load i64, i64* %proc_p\n\
          \x20 %proc_inc = add i64 %proc, 1\n\
          \x20 store i64 %proc_inc, i64* %proc_p\n\
-         \x20 %ep = alloca i64\n\
-         \x20 store i64 0, i64* %ep\n\
-         \x20 br label %hc_edge_loop\n\
-         hc_edge_loop:\n\
-         \x20 %e = load i64, i64* %ep\n\
-         \x20 %e_done = icmp sge i64 %e, %ne\n\
-         \x20 br i1 %e_done, label %hc_outer, label %hc_edge_body\n\
-         hc_edge_body:\n\
-         \x20 %src_arr_hc = load i32*, i32** %spp\n\
-         \x20 %src_slot_hc = getelementptr i32, i32* %src_arr_hc, i64 %e\n\
-         \x20 %src32_hc = load i32, i32* %src_slot_hc\n\
-         \x20 %src64_hc = sext i32 %src32_hc to i64\n\
-         \x20 %is_src_hc = icmp eq i64 %src64_hc, %u\n\
-         \x20 br i1 %is_src_hc, label %hc_edge_check_v, label %hc_edge_next\n\
-         hc_edge_check_v:\n\
-         \x20 %dst_arr_hc2 = load i32*, i32** %dpp\n\
-         \x20 %dst_slot_hc2 = getelementptr i32, i32* %dst_arr_hc2, i64 %e\n\
-         \x20 %dst32_hc2 = load i32, i32* %dst_slot_hc2\n\
-         \x20 %v = sext i32 %dst32_hc2 to i64\n\
-         \x20 %v_lo_hc = icmp slt i64 %v, 0\n\
-         \x20 %v_hi_hc = icmp sge i64 %v, %nn\n\
-         \x20 %v_bad_hc = or i1 %v_lo_hc, %v_hi_hc\n\
-         \x20 br i1 %v_bad_hc, label %hc_edge_next, label %hc_edge_dec\n\
-         hc_edge_dec:\n\
-         \x20 %v_slot = getelementptr i64, i64* %in_deg, i64 %v\n\
-         \x20 %v_in = load i64, i64* %v_slot\n\
-         \x20 %v_in_dec = sub i64 %v_in, 1\n\
-         \x20 store i64 %v_in_dec, i64* %v_slot\n\
-         \x20 %v_zero = icmp eq i64 %v_in_dec, 0\n\
-         \x20 br i1 %v_zero, label %hc_edge_push, label %hc_edge_next\n\
-         hc_edge_push:\n\
-         \x20 %qt_cur = load i64, i64* %qt_p\n\
-         \x20 %q_push_slot = getelementptr i64, i64* %queue, i64 %qt_cur\n\
-         \x20 store i64 %v, i64* %q_push_slot\n\
-         \x20 %qt_inc_hc = add i64 %qt_cur, 1\n\
-         \x20 store i64 %qt_inc_hc, i64* %qt_p\n\
-         \x20 br label %hc_edge_next\n\
-         hc_edge_next:\n\
-         \x20 %e_inc_hc = add i64 %e, 1\n\
-         \x20 store i64 %e_inc_hc, i64* %ep\n\
-         \x20 br label %hc_edge_loop\n\
+         \x20 %as_arr_p = load i32*, i32** %asp\n\
+         \x20 %uk0_slot = getelementptr i32, i32* %as_arr_p, i64 %u\n\
+         \x20 %uk0_i32 = load i32, i32* %uk0_slot\n\
+         \x20 %u_p1 = add i64 %u, 1\n\
+         \x20 %uk1_slot = getelementptr i32, i32* %as_arr_p, i64 %u_p1\n\
+         \x20 %uk1_i32 = load i32, i32* %uk1_slot\n\
+         \x20 %uk0_i64 = sext i32 %uk0_i32 to i64\n\
+         \x20 %uk1_i64 = sext i32 %uk1_i32 to i64\n\
+         \x20 %nk_p = alloca i64\n\
+         \x20 store i64 %uk0_i64, i64* %nk_p\n\
+         \x20 br label %hc_nbr_loop\n\
+         hc_nbr_loop:\n\
+         \x20 %nk = load i64, i64* %nk_p\n\
+         \x20 %nk_done = icmp sge i64 %nk, %uk1_i64\n\
+         \x20 br i1 %nk_done, label %hc_outer, label %hc_nbr_body\n\
+         hc_nbr_body:\n\
+         \x20 %acd_arr_p = load i32*, i32** %acdp\n\
+         \x20 %v_slot_p = getelementptr i32, i32* %acd_arr_p, i64 %nk\n\
+         \x20 %v32_p = load i32, i32* %v_slot_p\n\
+         \x20 %v_p = sext i32 %v32_p to i64\n\
+         \x20 %v_lo_p = icmp slt i64 %v_p, 0\n\
+         \x20 %v_hi_p = icmp sge i64 %v_p, %nn\n\
+         \x20 %v_bad_p = or i1 %v_lo_p, %v_hi_p\n\
+         \x20 br i1 %v_bad_p, label %hc_nbr_next, label %hc_nbr_dec\n\
+         hc_nbr_dec:\n\
+         \x20 %vd_slot = getelementptr i64, i64* %in_deg, i64 %v_p\n\
+         \x20 %vd_v = load i64, i64* %vd_slot\n\
+         \x20 %vd_dec = sub i64 %vd_v, 1\n\
+         \x20 store i64 %vd_dec, i64* %vd_slot\n\
+         \x20 %vd_zero = icmp eq i64 %vd_dec, 0\n\
+         \x20 br i1 %vd_zero, label %hc_nbr_push, label %hc_nbr_next\n\
+         hc_nbr_push:\n\
+         \x20 %qt_cur_p = load i64, i64* %qt_p\n\
+         \x20 %q_push_p = getelementptr i64, i64* %queue, i64 %qt_cur_p\n\
+         \x20 store i64 %v_p, i64* %q_push_p\n\
+         \x20 %qt_inc_p = add i64 %qt_cur_p, 1\n\
+         \x20 store i64 %qt_inc_p, i64* %qt_p\n\
+         \x20 br label %hc_nbr_next\n\
+         hc_nbr_next:\n\
+         \x20 %nk_inc = add i64 %nk, 1\n\
+         \x20 store i64 %nk_inc, i64* %nk_p\n\
+         \x20 br label %hc_nbr_loop\n\
          hc_finish:\n\
          \x20 %in_deg_free = bitcast i64* %in_deg to i8*\n\
          \x20 call void @free(i8* %in_deg_free)\n\
@@ -10716,54 +10737,70 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
     );
     if emit_vec_dep {
         out.push_str(
-            "; Closure #335: topological sort writing into a user Vec<i64>.\n\
-         ; `out` is a mut ref to a Vec<i64> struct value; we update its\n\
-         ; data / len / capacity fields in place and return the count\n\
-         ; of nodes appended (== num_nodes for a DAG, less on cycle).\n\
+            "; Closure #335 + #337: topological sort via CSR (O(V+E)).\n\
          define i64 @intent_graph_topo_sort(%intent_graph* %g, %intent_vec_i64* %out) {\n\
          \x20 %nnp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 0\n\
-         \x20 %spp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
-         \x20 %dpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
-         \x20 %nep = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 4\n\
          \x20 %nn = load i64, i64* %nnp\n\
-         \x20 %ne = load i64, i64* %nep\n\
          \x20 %nn_zero = icmp sle i64 %nn, 0\n\
-         \x20 br i1 %nn_zero, label %ts_zero, label %ts_init\n\
+         \x20 br i1 %nn_zero, label %ts_zero, label %ts_build\n\
          ts_zero:\n\
          \x20 ret i64 0\n\
-         ts_init:\n\
+         ts_build:\n\
+         \x20 call void @intent_graph_build_csr_if_needed(%intent_graph* %g)\n\
+         \x20 %asp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 6\n\
+         \x20 %acdp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 7\n\
          \x20 %in_deg_i8 = call i8* @calloc(i64 %nn, i64 8)\n\
          \x20 %in_deg = bitcast i8* %in_deg_i8 to i64*\n\
          \x20 %q_bytes = mul i64 %nn, 8\n\
          \x20 %queue_i8 = call i8* @malloc(i64 %q_bytes)\n\
          \x20 %queue = bitcast i8* %queue_i8 to i64*\n\
-         \x20 ; Count in-degrees.\n\
-         \x20 %ic_p = alloca i64\n\
-         \x20 store i64 0, i64* %ic_p\n\
-         \x20 br label %ts_indeg_loop\n\
-         ts_indeg_loop:\n\
-         \x20 %ic = load i64, i64* %ic_p\n\
-         \x20 %ic_done = icmp sge i64 %ic, %ne\n\
-         \x20 br i1 %ic_done, label %ts_grow_decide, label %ts_indeg_body\n\
-         ts_indeg_body:\n\
-         \x20 %dst_arr_ts = load i32*, i32** %dpp\n\
-         \x20 %dst_slot_ts = getelementptr i32, i32* %dst_arr_ts, i64 %ic\n\
-         \x20 %dst32_ts = load i32, i32* %dst_slot_ts\n\
-         \x20 %dst64_ts = sext i32 %dst32_ts to i64\n\
-         \x20 %dst_lo_ts = icmp slt i64 %dst64_ts, 0\n\
-         \x20 %dst_hi_ts = icmp sge i64 %dst64_ts, %nn\n\
-         \x20 %dst_bad_ts = or i1 %dst_lo_ts, %dst_hi_ts\n\
-         \x20 br i1 %dst_bad_ts, label %ts_indeg_next, label %ts_indeg_incr\n\
-         ts_indeg_incr:\n\
-         \x20 %in_deg_slot = getelementptr i64, i64* %in_deg, i64 %dst64_ts\n\
-         \x20 %in_deg_v = load i64, i64* %in_deg_slot\n\
-         \x20 %in_deg_v_inc = add i64 %in_deg_v, 1\n\
-         \x20 store i64 %in_deg_v_inc, i64* %in_deg_slot\n\
-         \x20 br label %ts_indeg_next\n\
-         ts_indeg_next:\n\
-         \x20 %ic_inc = add i64 %ic, 1\n\
-         \x20 store i64 %ic_inc, i64* %ic_p\n\
-         \x20 br label %ts_indeg_loop\n\
+         \x20 ; Count in-degrees by walking CSR neighbor lists.\n\
+         \x20 %s_p_ts = alloca i64\n\
+         \x20 store i64 0, i64* %s_p_ts\n\
+         \x20 br label %ts_src_loop\n\
+         ts_src_loop:\n\
+         \x20 %s_ts = load i64, i64* %s_p_ts\n\
+         \x20 %s_done_ts = icmp sge i64 %s_ts, %nn\n\
+         \x20 br i1 %s_done_ts, label %ts_grow_decide, label %ts_src_body\n\
+         ts_src_body:\n\
+         \x20 %as_arr_count = load i32*, i32** %asp\n\
+         \x20 %ts_k0_slot = getelementptr i32, i32* %as_arr_count, i64 %s_ts\n\
+         \x20 %ts_k0_i32 = load i32, i32* %ts_k0_slot\n\
+         \x20 %s_ts_p1 = add i64 %s_ts, 1\n\
+         \x20 %ts_k1_slot = getelementptr i32, i32* %as_arr_count, i64 %s_ts_p1\n\
+         \x20 %ts_k1_i32 = load i32, i32* %ts_k1_slot\n\
+         \x20 %ts_k0_i64 = sext i32 %ts_k0_i32 to i64\n\
+         \x20 %ts_k1_i64 = sext i32 %ts_k1_i32 to i64\n\
+         \x20 %ts_k_p_count = alloca i64\n\
+         \x20 store i64 %ts_k0_i64, i64* %ts_k_p_count\n\
+         \x20 br label %ts_count_loop\n\
+         ts_count_loop:\n\
+         \x20 %ts_k_count = load i64, i64* %ts_k_p_count\n\
+         \x20 %ts_k_done_count = icmp sge i64 %ts_k_count, %ts_k1_i64\n\
+         \x20 br i1 %ts_k_done_count, label %ts_src_next, label %ts_count_body\n\
+         ts_count_body:\n\
+         \x20 %acd_arr_count = load i32*, i32** %acdp\n\
+         \x20 %ts_v_slot_count = getelementptr i32, i32* %acd_arr_count, i64 %ts_k_count\n\
+         \x20 %ts_v32_count = load i32, i32* %ts_v_slot_count\n\
+         \x20 %ts_v_count = sext i32 %ts_v32_count to i64\n\
+         \x20 %ts_v_lo_count = icmp slt i64 %ts_v_count, 0\n\
+         \x20 %ts_v_hi_count = icmp sge i64 %ts_v_count, %nn\n\
+         \x20 %ts_v_bad_count = or i1 %ts_v_lo_count, %ts_v_hi_count\n\
+         \x20 br i1 %ts_v_bad_count, label %ts_count_next, label %ts_count_incr\n\
+         ts_count_incr:\n\
+         \x20 %ts_ind_slot = getelementptr i64, i64* %in_deg, i64 %ts_v_count\n\
+         \x20 %ts_ind_v = load i64, i64* %ts_ind_slot\n\
+         \x20 %ts_ind_v_inc = add i64 %ts_ind_v, 1\n\
+         \x20 store i64 %ts_ind_v_inc, i64* %ts_ind_slot\n\
+         \x20 br label %ts_count_next\n\
+         ts_count_next:\n\
+         \x20 %ts_k_inc_count = add i64 %ts_k_count, 1\n\
+         \x20 store i64 %ts_k_inc_count, i64* %ts_k_p_count\n\
+         \x20 br label %ts_count_loop\n\
+         ts_src_next:\n\
+         \x20 %s_inc_ts = add i64 %s_ts, 1\n\
+         \x20 store i64 %s_inc_ts, i64* %s_p_ts\n\
+         \x20 br label %ts_src_loop\n\
          ts_grow_decide:\n\
          \x20 ; Ensure `out` has room for nn more entries.\n\
          \x20 %out_data_p = getelementptr %intent_vec_i64, %intent_vec_i64* %out, i32 0, i32 0\n\
@@ -10850,47 +10887,49 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
          \x20 %proc_now = load i64, i64* %proc_p\n\
          \x20 %proc_inc = add i64 %proc_now, 1\n\
          \x20 store i64 %proc_inc, i64* %proc_p\n\
-         \x20 %ep_ts = alloca i64\n\
-         \x20 store i64 0, i64* %ep_ts\n\
-         \x20 br label %ts_edge_loop\n\
-         ts_edge_loop:\n\
-         \x20 %e_ts = load i64, i64* %ep_ts\n\
-         \x20 %e_done_ts = icmp sge i64 %e_ts, %ne\n\
-         \x20 br i1 %e_done_ts, label %ts_outer, label %ts_edge_body\n\
-         ts_edge_body:\n\
-         \x20 %src_arr_ts = load i32*, i32** %spp\n\
-         \x20 %src_slot_ts = getelementptr i32, i32* %src_arr_ts, i64 %e_ts\n\
-         \x20 %src32_ts = load i32, i32* %src_slot_ts\n\
-         \x20 %src64_ts = sext i32 %src32_ts to i64\n\
-         \x20 %is_src_ts = icmp eq i64 %src64_ts, %u_ts\n\
-         \x20 br i1 %is_src_ts, label %ts_edge_check_v, label %ts_edge_next\n\
-         ts_edge_check_v:\n\
-         \x20 %dst_arr_ts2 = load i32*, i32** %dpp\n\
-         \x20 %dst_slot_ts2 = getelementptr i32, i32* %dst_arr_ts2, i64 %e_ts\n\
-         \x20 %dst32_ts2 = load i32, i32* %dst_slot_ts2\n\
-         \x20 %v_ts = sext i32 %dst32_ts2 to i64\n\
-         \x20 %v_lo_ts = icmp slt i64 %v_ts, 0\n\
-         \x20 %v_hi_ts = icmp sge i64 %v_ts, %nn\n\
-         \x20 %v_bad_ts = or i1 %v_lo_ts, %v_hi_ts\n\
-         \x20 br i1 %v_bad_ts, label %ts_edge_next, label %ts_edge_dec\n\
-         ts_edge_dec:\n\
-         \x20 %v_in_slot = getelementptr i64, i64* %in_deg, i64 %v_ts\n\
-         \x20 %v_in = load i64, i64* %v_in_slot\n\
-         \x20 %v_in_dec = sub i64 %v_in, 1\n\
-         \x20 store i64 %v_in_dec, i64* %v_in_slot\n\
-         \x20 %v_zero_ts = icmp eq i64 %v_in_dec, 0\n\
-         \x20 br i1 %v_zero_ts, label %ts_edge_push, label %ts_edge_next\n\
-         ts_edge_push:\n\
-         \x20 %qt_cur_ts = load i64, i64* %qt_p\n\
-         \x20 %q_push_ts = getelementptr i64, i64* %queue, i64 %qt_cur_ts\n\
-         \x20 store i64 %v_ts, i64* %q_push_ts\n\
-         \x20 %qt_inc_ts = add i64 %qt_cur_ts, 1\n\
-         \x20 store i64 %qt_inc_ts, i64* %qt_p\n\
-         \x20 br label %ts_edge_next\n\
-         ts_edge_next:\n\
-         \x20 %e_inc_ts = add i64 %e_ts, 1\n\
-         \x20 store i64 %e_inc_ts, i64* %ep_ts\n\
-         \x20 br label %ts_edge_loop\n\
+         \x20 ; Walk u_ts's CSR neighbors.\n\
+         \x20 %as_arr_pop_ts = load i32*, i32** %asp\n\
+         \x20 %ts_uk0_slot = getelementptr i32, i32* %as_arr_pop_ts, i64 %u_ts\n\
+         \x20 %ts_uk0_i32 = load i32, i32* %ts_uk0_slot\n\
+         \x20 %u_ts_p1 = add i64 %u_ts, 1\n\
+         \x20 %ts_uk1_slot = getelementptr i32, i32* %as_arr_pop_ts, i64 %u_ts_p1\n\
+         \x20 %ts_uk1_i32 = load i32, i32* %ts_uk1_slot\n\
+         \x20 %ts_uk0_i64 = sext i32 %ts_uk0_i32 to i64\n\
+         \x20 %ts_uk1_i64 = sext i32 %ts_uk1_i32 to i64\n\
+         \x20 %ts_nk_p = alloca i64\n\
+         \x20 store i64 %ts_uk0_i64, i64* %ts_nk_p\n\
+         \x20 br label %ts_nbr_loop\n\
+         ts_nbr_loop:\n\
+         \x20 %ts_nk = load i64, i64* %ts_nk_p\n\
+         \x20 %ts_nk_done = icmp sge i64 %ts_nk, %ts_uk1_i64\n\
+         \x20 br i1 %ts_nk_done, label %ts_outer, label %ts_nbr_body\n\
+         ts_nbr_body:\n\
+         \x20 %acd_arr_pop_ts = load i32*, i32** %acdp\n\
+         \x20 %ts_v_slot = getelementptr i32, i32* %acd_arr_pop_ts, i64 %ts_nk\n\
+         \x20 %ts_v32 = load i32, i32* %ts_v_slot\n\
+         \x20 %ts_v = sext i32 %ts_v32 to i64\n\
+         \x20 %ts_v_lo = icmp slt i64 %ts_v, 0\n\
+         \x20 %ts_v_hi = icmp sge i64 %ts_v, %nn\n\
+         \x20 %ts_v_bad = or i1 %ts_v_lo, %ts_v_hi\n\
+         \x20 br i1 %ts_v_bad, label %ts_nbr_next, label %ts_nbr_dec\n\
+         ts_nbr_dec:\n\
+         \x20 %ts_vd_slot = getelementptr i64, i64* %in_deg, i64 %ts_v\n\
+         \x20 %ts_vd_v = load i64, i64* %ts_vd_slot\n\
+         \x20 %ts_vd_dec = sub i64 %ts_vd_v, 1\n\
+         \x20 store i64 %ts_vd_dec, i64* %ts_vd_slot\n\
+         \x20 %ts_vd_zero = icmp eq i64 %ts_vd_dec, 0\n\
+         \x20 br i1 %ts_vd_zero, label %ts_nbr_push, label %ts_nbr_next\n\
+         ts_nbr_push:\n\
+         \x20 %qt_cur_nbr = load i64, i64* %qt_p\n\
+         \x20 %q_push_nbr = getelementptr i64, i64* %queue, i64 %qt_cur_nbr\n\
+         \x20 store i64 %ts_v, i64* %q_push_nbr\n\
+         \x20 %qt_inc_nbr = add i64 %qt_cur_nbr, 1\n\
+         \x20 store i64 %qt_inc_nbr, i64* %qt_p\n\
+         \x20 br label %ts_nbr_next\n\
+         ts_nbr_next:\n\
+         \x20 %ts_nk_inc = add i64 %ts_nk, 1\n\
+         \x20 store i64 %ts_nk_inc, i64* %ts_nk_p\n\
+         \x20 br label %ts_nbr_loop\n\
          ts_finish:\n\
          \x20 %in_deg_free_ts = bitcast i64* %in_deg to i8*\n\
          \x20 call void @free(i8* %in_deg_free_ts)\n\
@@ -10903,14 +10942,13 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
     }
     if has_option_i64 {
         out.push_str(
-            "define %Enum_Option__i64 @intent_graph_dijkstra(%intent_graph* %g, i64 %src, i64 %dst) {\n\
+            "; Closure #329 + #337: Dijkstra now relaxes via CSR.\n\
+             define %Enum_Option__i64 @intent_graph_dijkstra(%intent_graph* %g, i64 %src, i64 %dst) {\n\
              \x20 %nnp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 0\n\
-             \x20 %spp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
-             \x20 %dpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
-             \x20 %wpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 3\n\
-             \x20 %nep = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 4\n\
+             \x20 %asp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 6\n\
+             \x20 %acdp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 7\n\
+             \x20 %acwp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 8\n\
              \x20 %nn = load i64, i64* %nnp\n\
-             \x20 %ne = load i64, i64* %nep\n\
              \x20 %nn_zero = icmp sle i64 %nn, 0\n\
              \x20 %src_lo = icmp slt i64 %src, 0\n\
              \x20 %src_hi = icmp sge i64 %src, %nn\n\
@@ -10923,11 +10961,14 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
              \x20 br i1 %bad, label %dj_none, label %dj_check_eq\n\
              dj_check_eq:\n\
              \x20 %same = icmp eq i64 %src, %dst\n\
-             \x20 br i1 %same, label %dj_zero, label %dj_init\n\
+             \x20 br i1 %same, label %dj_zero, label %dj_build\n\
              dj_zero:\n\
              \x20 %z0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
              \x20 %z1 = insertvalue %Enum_Option__i64 %z0, i64 0, 1\n\
              \x20 ret %Enum_Option__i64 %z1\n\
+             dj_build:\n\
+             \x20 call void @intent_graph_build_csr_if_needed(%intent_graph* %g)\n\
+             \x20 br label %dj_init\n\
              dj_init:\n\
              \x20 %d_bytes = mul i64 %nn, 8\n\
              \x20 %dist_i8 = call i8* @malloc(i64 %d_bytes)\n\
@@ -11000,33 +11041,35 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
              \x20 %u_is_dst = icmp eq i64 %u, %dst\n\
              \x20 br i1 %u_is_dst, label %dj_read_result, label %dj_relax_init\n\
              dj_relax_init:\n\
-             \x20 %e_p = alloca i64\n\
-             \x20 store i64 0, i64* %e_p\n\
+             \x20 ; Walk u's CSR neighbors.\n\
+             \x20 %dj_as_arr = load i32*, i32** %asp\n\
+             \x20 %dj_uk0_slot = getelementptr i32, i32* %dj_as_arr, i64 %u\n\
+             \x20 %dj_uk0_i32 = load i32, i32* %dj_uk0_slot\n\
+             \x20 %dj_u_p1 = add i64 %u, 1\n\
+             \x20 %dj_uk1_slot = getelementptr i32, i32* %dj_as_arr, i64 %dj_u_p1\n\
+             \x20 %dj_uk1_i32 = load i32, i32* %dj_uk1_slot\n\
+             \x20 %dj_uk0_i64 = sext i32 %dj_uk0_i32 to i64\n\
+             \x20 %dj_uk1_i64 = sext i32 %dj_uk1_i32 to i64\n\
+             \x20 %dj_k_p = alloca i64\n\
+             \x20 store i64 %dj_uk0_i64, i64* %dj_k_p\n\
              \x20 br label %dj_relax_loop\n\
              dj_relax_loop:\n\
-             \x20 %e = load i64, i64* %e_p\n\
-             \x20 %e_done = icmp sge i64 %e, %ne\n\
-             \x20 br i1 %e_done, label %dj_outer_inc, label %dj_relax_body\n\
+             \x20 %dj_k = load i64, i64* %dj_k_p\n\
+             \x20 %dj_k_done = icmp sge i64 %dj_k, %dj_uk1_i64\n\
+             \x20 br i1 %dj_k_done, label %dj_outer_inc, label %dj_relax_body\n\
              dj_relax_body:\n\
-             \x20 %src_arr = load i32*, i32** %spp\n\
-             \x20 %src_e_slot = getelementptr i32, i32* %src_arr, i64 %e\n\
-             \x20 %src_e32 = load i32, i32* %src_e_slot\n\
-             \x20 %src_e64 = sext i32 %src_e32 to i64\n\
-             \x20 %is_u = icmp eq i64 %src_e64, %u\n\
-             \x20 br i1 %is_u, label %dj_relax_apply, label %dj_relax_next\n\
-             dj_relax_apply:\n\
-             \x20 %dst_arr = load i32*, i32** %dpp\n\
-             \x20 %dst_e_slot = getelementptr i32, i32* %dst_arr, i64 %e\n\
-             \x20 %dst_e32 = load i32, i32* %dst_e_slot\n\
-             \x20 %v = sext i32 %dst_e32 to i64\n\
+             \x20 %dj_acd_arr = load i32*, i32** %acdp\n\
+             \x20 %dj_v_slot = getelementptr i32, i32* %dj_acd_arr, i64 %dj_k\n\
+             \x20 %dj_v32 = load i32, i32* %dj_v_slot\n\
+             \x20 %v = sext i32 %dj_v32 to i64\n\
              \x20 %v_lo = icmp slt i64 %v, 0\n\
              \x20 %v_hi = icmp sge i64 %v, %nn\n\
              \x20 %v_bad = or i1 %v_lo, %v_hi\n\
              \x20 br i1 %v_bad, label %dj_relax_next, label %dj_relax_inner\n\
              dj_relax_inner:\n\
-             \x20 %w_arr = load i64*, i64** %wpp\n\
-             \x20 %w_slot = getelementptr i64, i64* %w_arr, i64 %e\n\
-             \x20 %w_v = load i64, i64* %w_slot\n\
+             \x20 %dj_acw_arr = load i64*, i64** %acwp\n\
+             \x20 %dj_w_slot = getelementptr i64, i64* %dj_acw_arr, i64 %dj_k\n\
+             \x20 %w_v = load i64, i64* %dj_w_slot\n\
              \x20 %nd = add i64 %best_final, %w_v\n\
              \x20 %dv_slot = getelementptr i64, i64* %dist, i64 %v\n\
              \x20 %dv = load i64, i64* %dv_slot\n\
@@ -11036,8 +11079,8 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
              \x20 store i64 %nd, i64* %dv_slot\n\
              \x20 br label %dj_relax_next\n\
              dj_relax_next:\n\
-             \x20 %e_inc = add i64 %e, 1\n\
-             \x20 store i64 %e_inc, i64* %e_p\n\
+             \x20 %dj_k_inc = add i64 %dj_k, 1\n\
+             \x20 store i64 %dj_k_inc, i64* %dj_k_p\n\
              \x20 br label %dj_relax_loop\n\
              dj_outer_inc:\n\
              \x20 %iter_inc = add i64 %iter, 1\n\
@@ -11453,14 +11496,13 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
         );
         if emit_vec_dep {
             out.push_str(
-                "define %Enum_Option__i64 @intent_graph_astar(%intent_graph* %g, i64 %src, i64 %dst, %intent_vec_i64* %h) {\n\
+                "; Closure #334 + #337: A* now relaxes via CSR.\n\
+             define %Enum_Option__i64 @intent_graph_astar(%intent_graph* %g, i64 %src, i64 %dst, %intent_vec_i64* %h) {\n\
              \x20 %nnp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 0\n\
-             \x20 %spp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
-             \x20 %dpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
-             \x20 %wpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 3\n\
-             \x20 %nep = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 4\n\
+             \x20 %asp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 6\n\
+             \x20 %acdp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 7\n\
+             \x20 %acwp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 8\n\
              \x20 %nn = load i64, i64* %nnp\n\
-             \x20 %ne = load i64, i64* %nep\n\
              \x20 %nn_zero = icmp sle i64 %nn, 0\n\
              \x20 %src_lo = icmp slt i64 %src, 0\n\
              \x20 %src_hi = icmp sge i64 %src, %nn\n\
@@ -11478,11 +11520,14 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
              \x20 br i1 %len_mismatch, label %as_none, label %as_check_eq\n\
              as_check_eq:\n\
              \x20 %same_as = icmp eq i64 %src, %dst\n\
-             \x20 br i1 %same_as, label %as_zero, label %as_init\n\
+             \x20 br i1 %same_as, label %as_zero, label %as_build\n\
              as_zero:\n\
              \x20 %z0_as = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
              \x20 %z1_as = insertvalue %Enum_Option__i64 %z0_as, i64 0, 1\n\
              \x20 ret %Enum_Option__i64 %z1_as\n\
+             as_build:\n\
+             \x20 call void @intent_graph_build_csr_if_needed(%intent_graph* %g)\n\
+             \x20 br label %as_init\n\
              as_init:\n\
              \x20 %h_data_p = getelementptr %intent_vec_i64, %intent_vec_i64* %h, i32 0, i32 0\n\
              \x20 %h_data = load i64*, i64** %h_data_p\n\
@@ -11566,33 +11611,35 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
              as_relax_init:\n\
              \x20 %gs_u_slot = getelementptr i64, i64* %gs, i64 %u_as\n\
              \x20 %gs_u = load i64, i64* %gs_u_slot\n\
-             \x20 %ep_as = alloca i64\n\
-             \x20 store i64 0, i64* %ep_as\n\
+             \x20 ; Walk u_as's CSR neighbors.\n\
+             \x20 %as_as_arr = load i32*, i32** %asp\n\
+             \x20 %as_uk0_slot = getelementptr i32, i32* %as_as_arr, i64 %u_as\n\
+             \x20 %as_uk0_i32 = load i32, i32* %as_uk0_slot\n\
+             \x20 %as_u_p1 = add i64 %u_as, 1\n\
+             \x20 %as_uk1_slot = getelementptr i32, i32* %as_as_arr, i64 %as_u_p1\n\
+             \x20 %as_uk1_i32 = load i32, i32* %as_uk1_slot\n\
+             \x20 %as_uk0_i64 = sext i32 %as_uk0_i32 to i64\n\
+             \x20 %as_uk1_i64 = sext i32 %as_uk1_i32 to i64\n\
+             \x20 %as_k_p = alloca i64\n\
+             \x20 store i64 %as_uk0_i64, i64* %as_k_p\n\
              \x20 br label %as_relax_loop\n\
              as_relax_loop:\n\
-             \x20 %e_as = load i64, i64* %ep_as\n\
-             \x20 %e_done_as = icmp sge i64 %e_as, %ne\n\
-             \x20 br i1 %e_done_as, label %as_iter_inc, label %as_relax_body\n\
+             \x20 %as_k = load i64, i64* %as_k_p\n\
+             \x20 %as_k_done = icmp sge i64 %as_k, %as_uk1_i64\n\
+             \x20 br i1 %as_k_done, label %as_iter_inc, label %as_relax_body\n\
              as_relax_body:\n\
-             \x20 %src_arr_as = load i32*, i32** %spp\n\
-             \x20 %src_slot_as = getelementptr i32, i32* %src_arr_as, i64 %e_as\n\
-             \x20 %src32_as = load i32, i32* %src_slot_as\n\
-             \x20 %src64_as = sext i32 %src32_as to i64\n\
-             \x20 %is_src_as = icmp eq i64 %src64_as, %u_as\n\
-             \x20 br i1 %is_src_as, label %as_relax_apply, label %as_relax_next\n\
-             as_relax_apply:\n\
-             \x20 %dst_arr_as = load i32*, i32** %dpp\n\
-             \x20 %dst_slot_as = getelementptr i32, i32* %dst_arr_as, i64 %e_as\n\
-             \x20 %dst32_as = load i32, i32* %dst_slot_as\n\
-             \x20 %v_as = sext i32 %dst32_as to i64\n\
+             \x20 %as_acd_arr = load i32*, i32** %acdp\n\
+             \x20 %as_v_slot = getelementptr i32, i32* %as_acd_arr, i64 %as_k\n\
+             \x20 %as_v32 = load i32, i32* %as_v_slot\n\
+             \x20 %v_as = sext i32 %as_v32 to i64\n\
              \x20 %v_lo_as = icmp slt i64 %v_as, 0\n\
              \x20 %v_hi_as = icmp sge i64 %v_as, %nn\n\
              \x20 %v_bad_as = or i1 %v_lo_as, %v_hi_as\n\
              \x20 br i1 %v_bad_as, label %as_relax_next, label %as_relax_inner\n\
              as_relax_inner:\n\
-             \x20 %wpp_as = load i64*, i64** %wpp\n\
-             \x20 %w_slot_as = getelementptr i64, i64* %wpp_as, i64 %e_as\n\
-             \x20 %w_v_as = load i64, i64* %w_slot_as\n\
+             \x20 %as_acw_arr = load i64*, i64** %acwp\n\
+             \x20 %as_w_slot = getelementptr i64, i64* %as_acw_arr, i64 %as_k\n\
+             \x20 %w_v_as = load i64, i64* %as_w_slot\n\
              \x20 %nd_as = add i64 %gs_u, %w_v_as\n\
              \x20 %gs_v_slot = getelementptr i64, i64* %gs, i64 %v_as\n\
              \x20 %gs_v = load i64, i64* %gs_v_slot\n\
@@ -11602,8 +11649,8 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
              \x20 store i64 %nd_as, i64* %gs_v_slot\n\
              \x20 br label %as_relax_next\n\
              as_relax_next:\n\
-             \x20 %e_inc_as = add i64 %e_as, 1\n\
-             \x20 store i64 %e_inc_as, i64* %ep_as\n\
+             \x20 %as_k_inc = add i64 %as_k, 1\n\
+             \x20 store i64 %as_k_inc, i64* %as_k_p\n\
              \x20 br label %as_relax_loop\n\
              as_iter_inc:\n\
              \x20 %iter_inc_as = add i64 %as_iter, 1\n\
