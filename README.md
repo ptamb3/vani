@@ -65,7 +65,7 @@ orchestration, and testing, but Rust is the better default for a
 compiler that must be fast, memory-safe, deterministic, and close to
 ABI / native code generation.
 
-## Feature set (closures #1–#350)
+## Feature set (closures #1–#351)
 
 vāṇī today is a working systems language with the following shipped
 features. Surface that **reads natural-language** sits on top of a
@@ -204,7 +204,9 @@ deltas are:
   (`pow` / `sqrt` / `sin` / `cos` / `tan` / `floor` / `ceil` / overloaded
   `abs`) (#299) · RNG (`seed_rng` / `rand_i64` / `rand_in_range`,
   thread-local xorshift64) (#300) · FNV-1a hash (`hash_i64` / `hash_f64`
-  / `hash_str` / `hash_combine`) (#301 + `hash_f64` in #347).
+  / `hash_str` / `hash_combine`) (#301 + `hash_f64` in #347) +
+  adversarial-resistant SipHash-2-4 (`siphash_i64` / `siphash_str`,
+  keyed with `(k0, k1)`, spec-vector parity verified) (#351).
 - **Level 2 — generic containers** (all i64 in v1): BinaryHeap on
   `Vec<i64>` (#302) · `Deque<i64>` ring buffer w/ 8 builtins (#303) ·
   `HashSet<i64>` open-addressing w/ tombstone-aware remove (#304 +
@@ -2856,7 +2858,7 @@ real use cases:
 | String ops | `str_contains` / `str_starts_with` / `str_ends_with` -> bool, `parse_int` / `parse_float` -> `Option<i64>` / `Option<f64>`, `str_trim` -> `OwnedStr` (heap-allocating, strips ASCII whitespace), `str_replace(s, from, to)` -> `OwnedStr` (two-pass non-overlapping substring replace), `str_split(s, delim)` -> `Vec<OwnedStr>` (heap-allocating per-element span dup) (closure #298 + `str_trim` in **#348** + `str_replace` in **#349** + `str_split` in **#350**) | ✅ AFFINE |
 | Math | `pow` / `sqrt` / `sin` / `cos` / `tan` / `floor` / `ceil` (f64 -> f64), `abs` overloaded (i64 -> i64, f64 -> f64) (closure #299) | ✅ AFFINE |
 | RNG | `seed_rng(u64)` / `rand_i64()` / `rand_in_range(lo, hi)` — thread-local xorshift64 (closure #300) | ✅ AFFINE |
-| Hash | `hash_i64(i64)` / `hash_f64(f64)` / `hash_str(Str)` / `hash_combine(u64, u64)` -> `u64` — FNV-1a; `hash_f64` bitcasts IEEE-754 bits and folds `-0.0`→`+0.0` (closure #301 + `hash_f64` in **#347**) | ✅ AFFINE |
+| Hash | `hash_i64(i64)` / `hash_f64(f64)` / `hash_str(Str)` / `hash_combine(u64, u64)` -> `u64` — FNV-1a; `hash_f64` bitcasts IEEE-754 bits and folds `-0.0`→`+0.0`. Adversarial-resistant SipHash-2-4: `siphash_i64(k0, k1, i64)` / `siphash_str(k0, k1, Str)` -> `u64`, keyed with a 128-bit (k0, k1) pair, spec-vector parity verified (closure #301 + `hash_f64` in **#347** + SipHash-2-4 in **#351**) | ✅ AFFINE |
 | BinaryHeap | `heap_push` / `heap_pop` / `heap_peek` / `heapify` on `Vec<i64>` — min-heap (closure #302) | ✅ AFFINE |
 | Deque | `Deque<i64>` ring buffer w/ 8 builtins (new / push_back / push_front / pop_back / pop_front / peek_back / peek_front / len) (closure #303) | ✅ AFFINE |
 | HashSet | `HashSet<i64>` open-addressing hash set w/ 3-state slot tag (empty / occupied / tombstone); 5 builtins (new / insert / contains / remove / len) + method sugar; `(len + tombstones) ≥ capacity / 2` triggers a rehash that clears tombstones (closure #304 + remove in **#342**) | ✅ AFFINE |
@@ -2890,7 +2892,7 @@ plan and affine contract) lives in [TODO.md](TODO.md) under the
 
 | Level | Items | Affine flag |
 |-------|-------|-------------|
-| **1 — Operations on existing primitives** ✅ **COMPLETE** | `Vec.sort` / `sort_by(fn)` (#293) · `Vec.reverse` / `Vec.dedup` (#294) · `Vec.find` / `contains` / `binary_search` (#295) · `Vec.swap_remove` / `insert` / `clear` (#296) · Array ops on `[i64; N]` (#297) · `str_contains` / `str_starts_with` / `str_ends_with` / `parse_int` / `parse_float` (#298) + heap-allocating `str_trim` (#348) / `str_replace` (#349) -> `OwnedStr`, `str_split` (#350) -> `Vec<OwnedStr>` · Math: `pow` / `sqrt` / `sin` / `cos` / `tan` / `floor` / `ceil` + overloaded `abs` (#299) · RNG: `seed_rng` / `rand_i64` / `rand_in_range` (#300) · Hash: `hash_i64` / `hash_f64` / `hash_str` / `hash_combine` (FNV-1a) (#301 + `hash_f64` in #347) | ✅ AFFINE |
+| **1 — Operations on existing primitives** ✅ **COMPLETE** | `Vec.sort` / `sort_by(fn)` (#293) · `Vec.reverse` / `Vec.dedup` (#294) · `Vec.find` / `contains` / `binary_search` (#295) · `Vec.swap_remove` / `insert` / `clear` (#296) · Array ops on `[i64; N]` (#297) · `str_contains` / `str_starts_with` / `str_ends_with` / `parse_int` / `parse_float` (#298) + heap-allocating `str_trim` (#348) / `str_replace` (#349) -> `OwnedStr`, `str_split` (#350) -> `Vec<OwnedStr>` · Math: `pow` / `sqrt` / `sin` / `cos` / `tan` / `floor` / `ceil` + overloaded `abs` (#299) · RNG: `seed_rng` / `rand_i64` / `rand_in_range` (#300) · Hash: `hash_i64` / `hash_f64` / `hash_str` / `hash_combine` (FNV-1a) (#301 + `hash_f64` in #347) + `siphash_i64` / `siphash_str` (SipHash-2-4 keyed, adversarial-resistant) (#351) | ✅ AFFINE |
 | **2 — Generic containers** (deps: Level 1, generic decls #281) ✅ **COMPLETE** | ✅ BinaryHeap-on-Vec (#302) · ✅ `Deque<i64>` (#303) · ✅ `HashSet<i64>` (#304) · ✅ `HashMap<i64, i64>` (#305, AFFINE under Copy-V; AFFINE-TENSION queued for non-Copy V) · ✅ `BTreeSet<i64>` (#306, sorted-Vec backing) · ✅ `BTreeMap<i64, i64>` (#307, parallel sorted-Vec backing). Dedicated `BinaryHeap<T>` wrapper landed at Level 4 (#326); node-arena B-tree variants → Level 4 | ✅ / ⚠️ AFFINE-TENSION |
 | **3 — Closures + iterators** | ✅ Anonymous fn expressions w/o captures (#308) · ✅ Eager `vec_map` / `vec_fold` / `vec_filter` on Vec<i64> via fn-ptr args (#309 + #310) · ✅ Method-call sugar across Vec + affine containers (#311 + #312) · ✅ `vec_take` / `vec_drop` + uniform `xs.len()` (#313) · ✅ Closures w/ captured state (#314 + nested scopes #315) · ✅ Fused single-pass combinators `vec_map_fold` / `vec_filter_fold` / `vec_map_filter` / `vec_map_filter_fold` (#316 + #317) · ✅ Auto-fusion of `vec_map + vec_fold` chains (#318). ⏳ Auto-fusion of more chain shapes; non-Copy captures; capture-by-ref; passing closures as fn-ptr args; `.collect()` / `vec_zip` | ✅ / ⚠️ AFFINE-TENSION |
 | **4 — Advanced / domain-specific** | BST / AVL / red-black via node arena + `i32` child indices (✅), B-tree arena (✅), Trie arena (✅), graphs as `Vec<Node>` + `Vec<Vec<u32>>` adjacency (✅), graph algorithms BFS / DFS / Dijkstra / A* / topo / Kruskal / Prim (✅), Union-Find (✅), skip list (✅), Bloom filter (✅) | ✅ AFFINE |

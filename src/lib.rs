@@ -16018,6 +16018,84 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn siphash_i64_typecheck_and_compile() {
+        // Closure #351: siphash_i64(k0: u64, k1: u64, x: i64) -> u64.
+        let source = r#"
+            fn main() -> i64 {
+              let k0: u64 = 1 as u64;
+              let k1: u64 = 2 as u64;
+              let h: u64 = siphash_i64(k0, k1, 42);
+              if h == h { return 0; } else { return 1; }
+            }
+        "#;
+        compile_to_c(source).expect("siphash_i64 must type-check in C");
+        compile_to_llvm(source).expect("siphash_i64 must compile to LLVM");
+    }
+
+    #[test]
+    fn siphash_str_typecheck_and_compile() {
+        // Closure #351: siphash_str(k0: u64, k1: u64, s: Str) -> u64.
+        let source = r#"
+            fn main() -> i64 {
+              let k0: u64 = 1 as u64;
+              let k1: u64 = 2 as u64;
+              let h: u64 = siphash_str(k0, k1, "vani");
+              if h == h { return 0; } else { return 1; }
+            }
+        "#;
+        compile_to_c(source).expect("siphash_str must type-check in C");
+        compile_to_llvm(source).expect("siphash_str must compile to LLVM");
+    }
+
+    #[test]
+    fn siphash_emits_helpers_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let k0: u64 = 0 as u64;
+              let k1: u64 = 0 as u64;
+              let _: u64 = siphash_i64(k0, k1, 1);
+              let _: u64 = siphash_str(k0, k1, "x");
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("siphash C compile");
+        assert!(
+            c.contains("intent_siphash24_bytes")
+                && c.contains("intent_siphash_i64")
+                && c.contains("intent_siphash_str"),
+            "C output must include the SipHash helpers"
+        );
+        let ll = compile_to_llvm(source).expect("siphash LLVM compile");
+        assert!(
+            ll.contains("define i64 @intent_siphash24_bytes(")
+                && ll.contains("define i64 @intent_siphash_i64(")
+                && ll.contains("define i64 @intent_siphash_str("),
+            "LLVM output must include the SipHash defines"
+        );
+    }
+
+    #[test]
+    fn siphash_rejects_wrong_arity() {
+        // siphash_i64 takes 3 args (k0, k1, value). 2 args
+        // should fail with a clear diagnostic.
+        let source = r#"
+            fn main() -> i64 {
+              let h: u64 = siphash_i64(1 as u64, 2 as u64);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err(
+            "siphash_i64 with 2 args must fail"
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("siphash_i64")
+                && e.message.contains("3")),
+            "expected siphash_i64 arity diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn hash_f64_emits_helpers_in_both_backends() {
         let source = r#"
             fn main() -> i64 {

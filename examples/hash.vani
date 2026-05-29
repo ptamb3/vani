@@ -3,28 +3,33 @@
 //   intentc run examples/hash.vani --backend=c              # C backend
 //   intentc build examples/hash.vani -o /tmp/hash && /tmp/hash
 
-intent "Hash builtins — FNV-1a over i64 / f64 / Str + boost-style combine";
+intent "Hash builtins — FNV-1a + SipHash-2-4 for i64 / f64 / Str";
 
-// Four builtins for hashing scalar values and strings.
-// All return u64 and are pure + deterministic (same input
-// always produces the same output, identical across both
-// backends).
+// Six builtins for hashing scalar values and strings. All
+// return u64 and are pure + deterministic (same input always
+// produces the same output, identical across both backends).
 //
-//   hash_i64(x: i64) -> u64       — FNV-1a over 8 bytes
-//   hash_f64(x: f64) -> u64       — FNV-1a on IEEE-754 bits   [closure #347]
-//   hash_str(s: Str) -> u64       — FNV-1a until NUL
+// FNV-1a family — fast, unkeyed, good distribution:
+//   hash_i64(x: i64) -> u64        — FNV-1a over 8 bytes
+//   hash_f64(x: f64) -> u64        — FNV-1a on IEEE-754 bits  [#347]
+//   hash_str(s: Str) -> u64        — FNV-1a until NUL
 //   hash_combine(a, b: u64) -> u64 — boost::hash_combine mixer
+//
+// SipHash-2-4 family — keyed, adversarial-resistant:
+//   siphash_i64(k0, k1: u64, x: i64) -> u64   [#351]
+//   siphash_str(k0, k1: u64, s: Str) -> u64   [#351]
 //
 // `hash_f64` folds -0.0 to +0.0 so the two values (which
 // compare equal under ==) share a hash. NaN payloads are NOT
-// normalized — per IEEE-754, NaN != NaN, so users that need
-// NaN-aware membership should compare via isnan() rather than
-// rely on a single canonical hash for NaN.
+// normalized — per IEEE-754, NaN != NaN.
 //
-// These are the building blocks for HashSet<T> / HashMap<K, V>
-// in Level 2 of the data-structures roadmap. v1 ships FNV-1a;
-// SipHash (adversarial-resistant) is queued for a future
-// hardening pass.
+// SipHash takes an explicit 128-bit key (k0, k1) so callers
+// can resist hash-flooding attacks on HashSet/HashMap-like
+// data structures by randomizing the key per process. The
+// `intent_siphash24_bytes` core is the canonical SipHash-2-4
+// (2 compression rounds, 4 finalization rounds); the spec
+// test vector for an empty message with key 0x000102...0f
+// is `0x726fdb47dd0e0e31` and matches on both backends.
 
 fn main() -> i64 {
   // Determinism: same input ⇒ same hash.
@@ -73,6 +78,31 @@ fn main() -> i64 {
   let zp: u64 = hash_f64(0.0);
   let zn: u64 = hash_f64((0 - 1) as f64 * 0.0);
   if zp == zn { print "hash_f64 folds -0.0 to +0.0"; }
+
+  // Closure #351: SipHash-2-4. Keyed hash with a 128-bit
+  // (k0, k1) key. Same determinism contract; different keys
+  // yield different hashes for the same input.
+  let k0: u64 = 506097522914230528 as u64;  // 0x0706050403020100
+  let k1: u64 = 1084818905618843912 as u64; // 0x0f0e0d0c0b0a0908
+
+  let sa: u64 = siphash_i64(k0, k1, 42);
+  let sb: u64 = siphash_i64(k0, k1, 42);
+  if sa == sb { print "siphash_i64 deterministic: ok"; }
+
+  // Swapping the key halves yields a different hash.
+  let sc: u64 = siphash_i64(k1, k0, 42);
+  if sa != sc { print "siphash_i64 is key-sensitive"; }
+
+  // Spec test vector — canonical SipHash-2-4 paper, empty
+  // message with key bytes 00..0f gives 0x726fdb47dd0e0e31.
+  let canonical: u64 = siphash_str(k0, k1, "");
+  let expected: u64 = 8246050544436514353 as u64;
+  if canonical == expected { print "siphash_str matches canonical spec vector"; }
+
+  // String hash with key — different input ⇒ different hash.
+  let h_vani: u64 = siphash_str(k0, k1, "vani");
+  let h_rust: u64 = siphash_str(k0, k1, "rust");
+  if h_vani != h_rust { print "siphash_str distinguishes \"vani\" from \"rust\""; }
 
   return 0;
 }

@@ -3247,7 +3247,7 @@ fn emit_intent_skiplist_helpers_c_body(out: &mut String, has_option_i64: bool) {
 /// Data-structures roadmap Level 1 — FNV-1a hash helpers.
 /// Offset basis 0xcbf29ce484222325, prime 0x100000001b3.
 fn emit_intent_hash_helpers_c(out: &mut String, body: &str) {
-    if !body.contains("intent_hash_") {
+    if !body.contains("intent_hash_") && !body.contains("intent_siphash") {
         return;
     }
     out.push_str(
@@ -3289,6 +3289,56 @@ fn emit_intent_hash_helpers_c(out: &mut String, body: &str) {
          \x20   h *= 0x100000001b3ULL;\n\
          \x20 }\n\
          \x20 return h;\n\
+         }\n\
+         /* Closure #351: SipHash-2-4 — keyed adversarial-resistant\n\
+         \x20  hash. Same shape as the FNV-1a family but takes an\n\
+         \x20  explicit 128-bit key (two u64s) so callers in HashSet/\n\
+         \x20  HashMap settings can resist hash-flooding attacks by\n\
+         \x20  randomizing per process. The core helper hashes a byte\n\
+         \x20  span; thin _i64 / _str wrappers pack a scalar / borrow\n\
+         \x20  the C-string bytes. Matches the canonical SipHash-2-4\n\
+         \x20  spec (2 compression rounds, 4 finalization rounds).\n\
+         \x20  Validated against published test vectors. */\n\
+         #define INTENT_SIP_ROTL(x, b) (((x) << (b)) | ((x) >> (64 - (b))))\n\
+         #define INTENT_SIP_ROUND \\\n\
+         \x20 v0 += v1; v1 = INTENT_SIP_ROTL(v1, 13); v1 ^= v0; v0 = INTENT_SIP_ROTL(v0, 32); \\\n\
+         \x20 v2 += v3; v3 = INTENT_SIP_ROTL(v3, 16); v3 ^= v2; \\\n\
+         \x20 v0 += v3; v3 = INTENT_SIP_ROTL(v3, 21); v3 ^= v0; \\\n\
+         \x20 v2 += v1; v1 = INTENT_SIP_ROTL(v1, 17); v1 ^= v2; v2 = INTENT_SIP_ROTL(v2, 32)\n\
+         static INTENT_UNUSED uint64_t intent_siphash24_bytes(uint64_t k0, uint64_t k1, const uint8_t* m, size_t n) {\n\
+         \x20 uint64_t v0 = k0 ^ 0x736f6d6570736575ULL;\n\
+         \x20 uint64_t v1 = k1 ^ 0x646f72616e646f6dULL;\n\
+         \x20 uint64_t v2 = k0 ^ 0x6c7967656e657261ULL;\n\
+         \x20 uint64_t v3 = k1 ^ 0x7465646279746573ULL;\n\
+         \x20 size_t blocks = n / 8;\n\
+         \x20 for (size_t i = 0; i < blocks; i++) {\n\
+         \x20   uint64_t mw;\n\
+         \x20   memcpy(&mw, m + i * 8, 8);\n\
+         \x20   v3 ^= mw;\n\
+         \x20   INTENT_SIP_ROUND; INTENT_SIP_ROUND;\n\
+         \x20   v0 ^= mw;\n\
+         \x20 }\n\
+         \x20 size_t tail_off = blocks * 8;\n\
+         \x20 size_t tail_n = n - tail_off;\n\
+         \x20 uint64_t b = ((uint64_t)n) << 56;\n\
+         \x20 for (size_t i = 0; i < tail_n; i++) {\n\
+         \x20   b |= ((uint64_t)(m[tail_off + i])) << (i * 8);\n\
+         \x20 }\n\
+         \x20 v3 ^= b;\n\
+         \x20 INTENT_SIP_ROUND; INTENT_SIP_ROUND;\n\
+         \x20 v0 ^= b;\n\
+         \x20 v2 ^= 0xff;\n\
+         \x20 INTENT_SIP_ROUND; INTENT_SIP_ROUND; INTENT_SIP_ROUND; INTENT_SIP_ROUND;\n\
+         \x20 return v0 ^ v1 ^ v2 ^ v3;\n\
+         }\n\
+         static INTENT_UNUSED uint64_t intent_siphash_i64(uint64_t k0, uint64_t k1, int64_t x) {\n\
+         \x20 uint8_t buf[8];\n\
+         \x20 memcpy(buf, &x, 8);\n\
+         \x20 return intent_siphash24_bytes(k0, k1, buf, 8);\n\
+         }\n\
+         static INTENT_UNUSED uint64_t intent_siphash_str(uint64_t k0, uint64_t k1, const char* s) {\n\
+         \x20 if (!s) return intent_siphash24_bytes(k0, k1, (const uint8_t*)\"\", 0);\n\
+         \x20 return intent_siphash24_bytes(k0, k1, (const uint8_t*)s, strlen(s));\n\
          }\n\n",
     );
 }
@@ -9008,6 +9058,22 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         }
         "hash_str" => {
             format!("intent_hash_str(({}))", emit_expr(&args[0]))
+        }
+        "siphash_i64" => {
+            format!(
+                "intent_siphash_i64(({}), ({}), ({}))",
+                emit_expr(&args[0]),
+                emit_expr(&args[1]),
+                emit_expr(&args[2])
+            )
+        }
+        "siphash_str" => {
+            format!(
+                "intent_siphash_str(({}), ({}), ({}))",
+                emit_expr(&args[0]),
+                emit_expr(&args[1]),
+                emit_expr(&args[2])
+            )
         }
         "hash_combine" => {
             format!(

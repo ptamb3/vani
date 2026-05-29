@@ -897,6 +897,15 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         emit_intent_hash_helpers_llvm(&mut out);
     }
 
+    // SipHash-2-4 helpers (closure #351). Distinct from the
+    // FNV-1a family above — different identifier prefix and
+    // independent gate, so callers can mix the two without
+    // double-emit. Bloom filter doesn't currently call
+    // SipHash, so the gate is just on siphash_* usage.
+    if program_uses_siphash(program) {
+        emit_intent_siphash_definitions(&mut out);
+    }
+
     // Deque<i64> helpers (closure #303). Gated on actual use.
     if crate::backend_c::program_uses_i64_deque(program) {
         let has_option_i64 = LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
@@ -5785,6 +5794,28 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            if name == "siphash_i64" {
+                let k0 = emit_expr(&args[0], ctx, out);
+                let k1 = emit_expr(&args[1], ctx, out);
+                let x = emit_expr(&args[2], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_siphash_i64(i64 {}, i64 {}, i64 {})\n",
+                    dest, k0, k1, x
+                ));
+                return dest;
+            }
+            if name == "siphash_str" {
+                let k0 = emit_expr(&args[0], ctx, out);
+                let k1 = emit_expr(&args[1], ctx, out);
+                let s = emit_expr(&args[2], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_siphash_str(i64 {}, i64 {}, i8* {})\n",
+                    dest, k0, k1, s
+                ));
+                return dest;
+            }
             // RNG builtins (closure #300). Call outlined
             // helper defs emitted at module scope.
             if name == "seed_rng" {
@@ -7834,6 +7865,188 @@ pub(crate) fn emit_intent_str_concat_definition(out: &mut String) {
 /// `%intent_vec_i8p` reference when no caller exists (the
 /// typedef itself is element-walker-gated and not present
 /// otherwise).
+/// Closure #351: emit one SipHash-2-4 round in LLVM IR.
+/// Reads the 4 input SSA names, returns the 4 output names so
+/// the caller can chain rounds. Uses a `tag` to namespace the
+/// many fresh tmp values so 8 chained rounds don't collide.
+///
+/// The round formula (SipHash spec §2):
+///   v0 += v1; v1 = ROTL(v1, 13); v1 ^= v0; v0 = ROTL(v0, 32);
+///   v2 += v3; v3 = ROTL(v3, 16); v3 ^= v2;
+///   v0 += v3; v3 = ROTL(v3, 21); v3 ^= v0;
+///   v2 += v1; v1 = ROTL(v1, 17); v1 ^= v2; v2 = ROTL(v2, 32);
+fn emit_sipround_llvm(
+    out: &mut String,
+    tag: &str,
+    v0_in: &str,
+    v1_in: &str,
+    v2_in: &str,
+    v3_in: &str,
+) -> (String, String, String, String) {
+    // ROTL(x, n) in IR: shl + lshr (by 64-n) + or.
+    // Each step uses %sr_<tag>_<seq>.
+    out.push_str(&format!("  %sr_{t}_a1 = add i64 {a}, {b}\n", t = tag, a = v0_in, b = v1_in));
+    out.push_str(&format!("  %sr_{t}_b1_l = shl i64 {a}, 13\n", t = tag, a = v1_in));
+    out.push_str(&format!("  %sr_{t}_b1_r = lshr i64 {a}, 51\n", t = tag, a = v1_in));
+    out.push_str(&format!("  %sr_{t}_b1 = or i64 %sr_{t}_b1_l, %sr_{t}_b1_r\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_c1 = xor i64 %sr_{t}_b1, %sr_{t}_a1\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_v0_l = shl i64 %sr_{t}_a1, 32\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_v0_r = lshr i64 %sr_{t}_a1, 32\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_v0 = or i64 %sr_{t}_v0_l, %sr_{t}_v0_r\n", t = tag));
+    // v2 += v3; v3 = ROTL(v3, 16); v3 ^= v2;
+    out.push_str(&format!("  %sr_{t}_a2 = add i64 {a}, {b}\n", t = tag, a = v2_in, b = v3_in));
+    out.push_str(&format!("  %sr_{t}_b2_l = shl i64 {a}, 16\n", t = tag, a = v3_in));
+    out.push_str(&format!("  %sr_{t}_b2_r = lshr i64 {a}, 48\n", t = tag, a = v3_in));
+    out.push_str(&format!("  %sr_{t}_b2 = or i64 %sr_{t}_b2_l, %sr_{t}_b2_r\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_d2 = xor i64 %sr_{t}_b2, %sr_{t}_a2\n", t = tag));
+    // v0 += v3; v3 = ROTL(v3, 21); v3 ^= v0;
+    out.push_str(&format!("  %sr_{t}_e0 = add i64 %sr_{t}_v0, %sr_{t}_d2\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_f3_l = shl i64 %sr_{t}_d2, 21\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_f3_r = lshr i64 %sr_{t}_d2, 43\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_f3 = or i64 %sr_{t}_f3_l, %sr_{t}_f3_r\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_v3 = xor i64 %sr_{t}_f3, %sr_{t}_e0\n", t = tag));
+    // v2 += v1; v1 = ROTL(v1, 17); v1 ^= v2; v2 = ROTL(v2, 32);
+    out.push_str(&format!("  %sr_{t}_g2 = add i64 %sr_{t}_a2, %sr_{t}_c1\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_h1_l = shl i64 %sr_{t}_c1, 17\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_h1_r = lshr i64 %sr_{t}_c1, 47\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_h1 = or i64 %sr_{t}_h1_l, %sr_{t}_h1_r\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_v1 = xor i64 %sr_{t}_h1, %sr_{t}_g2\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_v2_l = shl i64 %sr_{t}_g2, 32\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_v2_r = lshr i64 %sr_{t}_g2, 32\n", t = tag));
+    out.push_str(&format!("  %sr_{t}_v2 = or i64 %sr_{t}_v2_l, %sr_{t}_v2_r\n", t = tag));
+    (
+        format!("%sr_{}_e0", tag), // v0 (post v0 += v3)
+        format!("%sr_{}_v1", tag),
+        format!("%sr_{}_v2", tag),
+        format!("%sr_{}_v3", tag),
+    )
+}
+
+/// Closure #351: SipHash-2-4 over a byte span. C-equivalent
+/// helper used by the i64 / Str wrappers. Hand-unrolled with
+/// 8 sipround instances (2 per compression block, 2 for the
+/// final block, 4 for finalization). The compression loop
+/// stages through an alloca-backed state to keep the IR
+/// understandable.
+pub(crate) fn emit_intent_siphash_definitions(out: &mut String) {
+    // ---------- intent_siphash24_bytes ----------
+    out.push_str("define i64 @intent_siphash24_bytes(i64 %k0, i64 %k1, i8* %m, i64 %n) {\n");
+    // Initial state.
+    out.push_str("  %iv0 = xor i64 %k0, 8317987319222330741\n");   // 0x736f6d6570736575
+    out.push_str("  %iv1 = xor i64 %k1, 7237128888997146477\n");   // 0x646f72616e646f6d
+    out.push_str("  %iv2 = xor i64 %k0, 7816392313619706465\n");   // 0x6c7967656e657261
+    out.push_str("  %iv3 = xor i64 %k1, 8387220255154660723\n");   // 0x7465646279746573
+    // State allocas so the compression loop can update.
+    out.push_str("  %v0_p = alloca i64\n");
+    out.push_str("  %v1_p = alloca i64\n");
+    out.push_str("  %v2_p = alloca i64\n");
+    out.push_str("  %v3_p = alloca i64\n");
+    out.push_str("  store i64 %iv0, i64* %v0_p\n");
+    out.push_str("  store i64 %iv1, i64* %v1_p\n");
+    out.push_str("  store i64 %iv2, i64* %v2_p\n");
+    out.push_str("  store i64 %iv3, i64* %v3_p\n");
+    // blocks = n / 8
+    out.push_str("  %blocks = lshr i64 %n, 3\n");
+    out.push_str("  %i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %i_p\n");
+    out.push_str("  br label %sip_blk_loop\n");
+    out.push_str("sip_blk_loop:\n");
+    out.push_str("  %i = load i64, i64* %i_p\n");
+    out.push_str("  %i_done = icmp uge i64 %i, %blocks\n");
+    out.push_str("  br i1 %i_done, label %sip_tail, label %sip_blk_body\n");
+    out.push_str("sip_blk_body:\n");
+    // Load 8 bytes at m + i*8 (memcpy into temp).
+    out.push_str("  %off = mul i64 %i, 8\n");
+    out.push_str("  %m_at = getelementptr i8, i8* %m, i64 %off\n");
+    out.push_str("  %mw_p = alloca i64\n");
+    out.push_str("  %mw_i8 = bitcast i64* %mw_p to i8*\n");
+    out.push_str("  %_lc = call i8* @memcpy(i8* %mw_i8, i8* %m_at, i64 8)\n");
+    out.push_str("  %mw = load i64, i64* %mw_p\n");
+    // v3 ^= mw, two sipround, v0 ^= mw.
+    out.push_str("  %v0_b = load i64, i64* %v0_p\n");
+    out.push_str("  %v1_b = load i64, i64* %v1_p\n");
+    out.push_str("  %v2_b = load i64, i64* %v2_p\n");
+    out.push_str("  %v3_b = load i64, i64* %v3_p\n");
+    out.push_str("  %v3_b_x = xor i64 %v3_b, %mw\n");
+    let (a0, a1, a2, a3) = emit_sipround_llvm(out, "blk1", "%v0_b", "%v1_b", "%v2_b", "%v3_b_x");
+    let (b0, b1, b2, b3) = emit_sipround_llvm(out, "blk2", &a0, &a1, &a2, &a3);
+    out.push_str(&format!("  %v0_b_x = xor i64 {}, %mw\n", b0));
+    out.push_str(&format!("  store i64 %v0_b_x, i64* %v0_p\n"));
+    out.push_str(&format!("  store i64 {}, i64* %v1_p\n", b1));
+    out.push_str(&format!("  store i64 {}, i64* %v2_p\n", b2));
+    out.push_str(&format!("  store i64 {}, i64* %v3_p\n", b3));
+    out.push_str("  %i_n = add i64 %i, 1\n");
+    out.push_str("  store i64 %i_n, i64* %i_p\n");
+    out.push_str("  br label %sip_blk_loop\n");
+    // Final block: pack length << 56 plus up to 7 tail bytes.
+    out.push_str("sip_tail:\n");
+    out.push_str("  %tail_off = mul i64 %blocks, 8\n");
+    out.push_str("  %tail_n = sub i64 %n, %tail_off\n");
+    out.push_str("  %n_lo = and i64 %n, 255\n");
+    out.push_str("  %b_init = shl i64 %n_lo, 56\n");
+    out.push_str("  %b_p = alloca i64\n");
+    out.push_str("  store i64 %b_init, i64* %b_p\n");
+    out.push_str("  %j_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %j_p\n");
+    out.push_str("  br label %sip_tail_loop\n");
+    out.push_str("sip_tail_loop:\n");
+    out.push_str("  %j = load i64, i64* %j_p\n");
+    out.push_str("  %j_done = icmp uge i64 %j, %tail_n\n");
+    out.push_str("  br i1 %j_done, label %sip_finalize, label %sip_tail_body\n");
+    out.push_str("sip_tail_body:\n");
+    out.push_str("  %t_off = add i64 %tail_off, %j\n");
+    out.push_str("  %t_at = getelementptr i8, i8* %m, i64 %t_off\n");
+    out.push_str("  %t_b = load i8, i8* %t_at\n");
+    out.push_str("  %t_b64 = zext i8 %t_b to i64\n");
+    out.push_str("  %t_sh = mul i64 %j, 8\n");
+    out.push_str("  %t_shifted = shl i64 %t_b64, %t_sh\n");
+    out.push_str("  %b_cur = load i64, i64* %b_p\n");
+    out.push_str("  %b_or = or i64 %b_cur, %t_shifted\n");
+    out.push_str("  store i64 %b_or, i64* %b_p\n");
+    out.push_str("  %j_n = add i64 %j, 1\n");
+    out.push_str("  store i64 %j_n, i64* %j_p\n");
+    out.push_str("  br label %sip_tail_loop\n");
+    out.push_str("sip_finalize:\n");
+    // v3 ^= b, two rounds, v0 ^= b.
+    out.push_str("  %v0_t = load i64, i64* %v0_p\n");
+    out.push_str("  %v1_t = load i64, i64* %v1_p\n");
+    out.push_str("  %v2_t = load i64, i64* %v2_p\n");
+    out.push_str("  %v3_t = load i64, i64* %v3_p\n");
+    out.push_str("  %b_final = load i64, i64* %b_p\n");
+    out.push_str("  %v3_t_x = xor i64 %v3_t, %b_final\n");
+    let (c0, c1, c2, c3) = emit_sipround_llvm(out, "ft1", "%v0_t", "%v1_t", "%v2_t", "%v3_t_x");
+    let (d0, d1, d2, d3) = emit_sipround_llvm(out, "ft2", &c0, &c1, &c2, &c3);
+    out.push_str(&format!("  %v0_t_x = xor i64 {}, %b_final\n", d0));
+    // v2 ^= 0xff, 4 finalization rounds.
+    out.push_str(&format!("  %v2_t_x = xor i64 {}, 255\n", d2));
+    let (e0, e1, e2, e3) = emit_sipround_llvm(out, "fz1", "%v0_t_x", &d1, "%v2_t_x", &d3);
+    let (f0, f1, f2, f3) = emit_sipround_llvm(out, "fz2", &e0, &e1, &e2, &e3);
+    let (g0, g1, g2, g3) = emit_sipround_llvm(out, "fz3", &f0, &f1, &f2, &f3);
+    let (h0, h1, h2, h3) = emit_sipround_llvm(out, "fz4", &g0, &g1, &g2, &g3);
+    out.push_str(&format!("  %xr1 = xor i64 {}, {}\n", h0, h1));
+    out.push_str(&format!("  %xr2 = xor i64 {}, {}\n", h2, h3));
+    out.push_str("  %sip_out = xor i64 %xr1, %xr2\n");
+    out.push_str("  ret i64 %sip_out\n");
+    out.push_str("}\n\n");
+
+    // ---------- intent_siphash_i64 ----------
+    out.push_str("define i64 @intent_siphash_i64(i64 %k0, i64 %k1, i64 %x) {\n");
+    out.push_str("  %xp = alloca i64\n");
+    out.push_str("  store i64 %x, i64* %xp\n");
+    out.push_str("  %xi8 = bitcast i64* %xp to i8*\n");
+    out.push_str("  %r = call i64 @intent_siphash24_bytes(i64 %k0, i64 %k1, i8* %xi8, i64 8)\n");
+    out.push_str("  ret i64 %r\n");
+    out.push_str("}\n\n");
+
+    // ---------- intent_siphash_str ----------
+    // vāṇī Str doesn't produce NULL; treat as plain C string.
+    out.push_str("define i64 @intent_siphash_str(i64 %k0, i64 %k1, i8* %s) {\n");
+    out.push_str("  %n = call i64 @strlen(i8* %s)\n");
+    out.push_str("  %r = call i64 @intent_siphash24_bytes(i64 %k0, i64 %k1, i8* %s, i64 %n)\n");
+    out.push_str("  ret i64 %r\n");
+    out.push_str("}\n\n");
+}
+
 pub(crate) fn emit_intent_str_split_definition(out: &mut String) {
     // vāṇī `Str` doesn't produce NULL through the surface
     // (string literals lower to private constants; OwnedStr
@@ -8256,6 +8469,81 @@ fn emit_intent_rng_helpers_llvm(out: &mut String) {
 
 /// Walk the typed program for any Call to hash_i64 / hash_str
 /// / hash_combine. Triggers emission of the FNV-1a helpers.
+/// Closure #351: detect any call to `siphash_i64` /
+/// `siphash_str`. Gates emission of the SipHash-2-4 helpers
+/// in LLVM (C piggybacks on the existing `intent_siphash`
+/// substring check inside `emit_intent_hash_helpers_c`).
+fn program_uses_siphash(program: &TypedProgram) -> bool {
+    use crate::ir::TypedExprKind as E;
+    use crate::ir::TypedStmt as S;
+    fn expr_uses(expr: &crate::ir::TypedExpr) -> bool {
+        match &expr.kind {
+            E::Call { name, args, .. } => {
+                if matches!(name.as_str(), "siphash_i64" | "siphash_str") {
+                    return true;
+                }
+                args.iter().any(expr_uses)
+            }
+            E::Unary { expr, .. } | E::Cast { expr, .. } => expr_uses(expr),
+            E::Len { array, .. } => expr_uses(array),
+            E::Binary { left, right, .. } => expr_uses(left) || expr_uses(right),
+            E::CallIndirect { callee, args } => {
+                expr_uses(callee) || args.iter().any(expr_uses)
+            }
+            E::ArrayLit { elements } => elements.iter().any(expr_uses),
+            E::Index { array, index, .. } => expr_uses(array) || expr_uses(index),
+            E::Tuple { elements } => elements.iter().any(expr_uses),
+            E::TupleAccess { tuple, .. } => expr_uses(tuple),
+            E::StructLit { fields, .. } => fields.iter().any(|(_, v)| expr_uses(v)),
+            E::FieldAccess { object, .. } => expr_uses(object),
+            E::EnumVariantWithPayload { payload, .. } => expr_uses(payload),
+            E::IfExpr { cond, then_value, else_value } => {
+                expr_uses(cond) || expr_uses(then_value) || expr_uses(else_value)
+            }
+            E::Match { scrutinee, arms } => {
+                expr_uses(scrutinee) || arms.iter().any(|a| expr_uses(&a.body))
+            }
+            E::Block { stmts, tail } => {
+                stmts.iter().any(stmt_walk) || expr_uses(tail)
+            }
+            _ => false,
+        }
+    }
+    fn stmt_walk(s: &S) -> bool {
+        match s {
+            S::Let { expr, .. }
+            | S::Reassign { expr, .. }
+            | S::Return { expr }
+            | S::Assert { expr, .. }
+            | S::Prove { expr } => expr_uses(expr),
+            S::Discard { expr } => expr_uses(expr),
+            S::Print { items } => items.iter().any(|it| match it {
+                crate::ir::TypedPrintItem::Expr(e) => expr_uses(e),
+                _ => false,
+            }),
+            S::If { cond, then_body, else_body, .. } => {
+                expr_uses(cond)
+                    || then_body.iter().any(stmt_walk)
+                    || else_body.iter().any(stmt_walk)
+            }
+            S::While { cond, body, .. } => {
+                expr_uses(cond) || body.iter().any(stmt_walk)
+            }
+            S::For { start, end, body, .. } => {
+                expr_uses(start) || expr_uses(end) || body.iter().any(stmt_walk)
+            }
+            S::ForIter { body, .. } => body.iter().any(stmt_walk),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if f.body.iter().any(stmt_walk) {
+            return true;
+        }
+    }
+    false
+}
+
 fn program_uses_hash(program: &TypedProgram) -> bool {
     use crate::ir::TypedExprKind as E;
     use crate::ir::TypedStmt as S;

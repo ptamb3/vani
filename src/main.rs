@@ -321,6 +321,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_f64"
                 || name == "hash_str" || name == "hash_combine"
+                || name == "siphash_i64" || name == "siphash_str"
                 || name == "heap_push" || name == "heap_pop"
                 || name == "heap_peek" || name == "heapify"
                 || name == "deque_new"
