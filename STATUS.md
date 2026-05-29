@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #323 — Level 3 auto-fusion phase 3: extends closures #318/#319's peephole pass to **non-adjacent chains**. The consumer no longer needs to be the next statement — any intervening statement that's "neutral" (doesn't touch the intermediate `m` AND doesn't touch the source `xs`) is skipped over. Soundness: if any intervening statement touches the source, the fusion is bailed (it might mutate xs between map and fold, changing the observable result). When the producer's source isn't a pinnable Var (e.g. `ref t.field`), the pass falls back to adjacent-only fusion. 2 new lib tests cover both the fuse-over-neutral case and the conservative bail.)
-**Test totals:** 1187 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #324 — Level 3 `vec_chain(ref xs, ref ys) -> Vec<i64>` builtin: concatenates two Vec<i64>s into a fresh allocation. Output capacity is exactly `xs.len() + ys.len()`. Tree-C uses memcpy; Tree-LLVM uses two memmoves. Method sugar `xs.chain(ref ys)`. 3 new lib tests.)
+**Test totals:** 1190 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,

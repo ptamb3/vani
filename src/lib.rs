@@ -13377,6 +13377,47 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_chain_typechecks_and_compiles() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              let ys: Vec<i64> = vec(10, 20, 30);
+              let zs: Vec<i64> = vec_chain(ref xs, ref ys);
+              return zs[4];
+            }
+        "#;
+        compile_to_c(source).expect("vec_chain in C");
+        compile_to_llvm(source).expect("vec_chain in LLVM");
+    }
+
+    #[test]
+    fn vec_chain_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let ys: Vec<i64> = vec(4, 5);
+              let zs: Vec<i64> = xs.chain(ref ys);
+              return zs[3];
+            }
+        "#;
+        compile_to_c(source).expect("xs.chain sugar in C");
+        compile_to_llvm(source).expect("xs.chain sugar in LLVM");
+    }
+
+    #[test]
+    fn vec_chain_rejects_non_vec_arg() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              let z: Vec<i64> = vec_chain(ref xs, 99);
+              return z[0];
+            }
+        "#;
+        let errors = compile(source).expect_err("non-Vec arg must fail");
+        assert!(!errors.is_empty(), "expected at least one diagnostic");
+    }
+
+    #[test]
     fn vec_reductions_sum_product() {
         let source = r#"
             fn main() -> i64 {

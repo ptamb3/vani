@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -10595,6 +10595,8 @@ fn check_expr(
                             "count" => ("vec_count", false),
                             "any" => ("vec_any", false),
                             "all" => ("vec_all", false),
+                            // Closure #324: chain.
+                            "chain" => ("vec_chain", false),
                             "take" => ("vec_take", false),
                             "drop" => ("vec_drop", false),
                             // Read-only search builtins.
@@ -13784,6 +13786,11 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "vec_chain" => {
+            return check_vec_chain_builtin(
+                args, env, signatures, span, diagnostics,
+            );
+        }
         "reverse" | "dedup" => {
             return check_reverse_dedup_builtin(
                 name, args, env, signatures, span, diagnostics,
@@ -16331,6 +16338,67 @@ fn check_vec_reduction_builtin(
             name: name.to_string(),
             name_span: span,
             args: typed_args,
+        },
+        ret_ty(),
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 3 — vec_chain (closure #324).
+/// Concatenates two Vec<i64>s into a fresh result Vec. Both
+/// inputs are borrowed read-only; the caller owns + drops the
+/// returned Vec.
+///
+///   vec_chain(ref xs: Vec<i64>, ref ys: Vec<i64>) -> Vec<i64>
+fn check_vec_chain_builtin(
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let ret_ty = || Type::Vec(Box::new(Type::I64));
+    if args.len() != 2 {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!("vec_chain() expects 2 arguments (ref xs, ref ys), got {}", args.len()),
+        ));
+        return CheckedExpr::fallback(ret_ty(), span);
+    }
+    let xs = check_expr(&args[0], env, signatures, diagnostics);
+    let ys = check_expr(&args[1], env, signatures, diagnostics);
+    for (i, arg) in [&xs, &ys].iter().enumerate() {
+        let element_type = match arg.ty() {
+            Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
+                Type::Vec(element) => Some((**element).clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(et) = element_type else {
+            diagnostics.push(Diagnostic::new(
+                args[i].span,
+                format!("vec_chain() arg #{} must be `ref Vec<i64>`, got {}", i + 1, arg.ty()),
+            ));
+            return CheckedExpr::fallback(ret_ty(), span);
+        };
+        if !matches!(et, Type::I64) {
+            diagnostics.push(Diagnostic::new(
+                args[i].span,
+                format!(
+                    "vec_chain() only supports `Vec<i64>` in v1, got element type {}",
+                    et
+                ),
+            ));
+            return CheckedExpr::fallback(ret_ty(), span);
+        }
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: "vec_chain".to_string(),
+            name_span: span,
+            args: vec![xs.expr, ys.expr],
         },
         ret_ty(),
         None,

@@ -2845,6 +2845,24 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
 \n}}\n",
             sn = struct_name,
         ));
+        // vec_chain (closure #324): concatenate two Vec<i64>s
+        // into a fresh result. Output capacity = sum of input
+        // lengths, exact allocation.
+        out.push_str(&format!(
+            "static INTENT_UNUSED {sn} {sn}__chain(const {sn}* xs, const {sn}* ys) {{\
+\n    {sn} out;\
+\n    uint64_t total = xs->len + ys->len;\
+\n    out.len = total;\
+\n    out.capacity = total;\
+\n    if (total == 0) {{ out.data = (int64_t*)0; return out; }}\
+\n    out.data = (int64_t*)malloc(total * sizeof(int64_t));\
+\n    if (!out.data) abort();\
+\n    if (xs->len) memcpy(out.data, xs->data, xs->len * sizeof(int64_t));\
+\n    if (ys->len) memcpy(out.data + xs->len, ys->data, ys->len * sizeof(int64_t));\
+\n    return out;\
+\n}}\n",
+            sn = struct_name,
+        ));
         // vec_sum / vec_product / vec_min / vec_max /
         // vec_count / vec_any / vec_all (closure #322): single-
         // pass reductions with fixed kernels.
@@ -6220,6 +6238,18 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                     emit_expr(&args[2])
                 ),
                 _ => unreachable!("vec_map_filter() arg 0 must be ref Vec<i64>"),
+            }
+        }
+        "vec_chain" => {
+            // Closure #324. args = ref xs, ref ys.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, {})",
+                    vec_helper(element, "chain"),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1])
+                ),
+                _ => unreachable!("vec_chain() arg 0 must be ref Vec<i64>"),
             }
         }
         "vec_sum" | "vec_product" => {

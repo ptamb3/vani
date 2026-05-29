@@ -344,6 +344,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "vec_sum" || name == "vec_product"
                 || name == "vec_min" || name == "vec_max"
                 || name == "vec_count" || name == "vec_any" || name == "vec_all"
+                || name == "vec_chain"
             {
                 return false;
             }

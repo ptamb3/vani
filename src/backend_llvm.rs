@@ -5616,6 +5616,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "vec_count"
                     | "vec_any"
                     | "vec_all"
+                    | "vec_chain"
             ) {
                 let elt = vec_element_of_first_arg(args)
                     .expect("vec builtins take a Vec as the first arg");
@@ -5650,9 +5651,9 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 } else if name == "vec_map_filter_fold" {
                     "map_filter_fold"
                 } else if let Some(op) = name.strip_prefix("vec_") {
-                    // closure #322 reductions all share this
-                    // strip-the-`vec_` prefix shape.
-                    if matches!(op, "sum" | "product" | "min" | "max" | "count" | "any" | "all") {
+                    // closure #322 reductions + #324 chain share
+                    // this strip-the-`vec_` prefix shape.
+                    if matches!(op, "sum" | "product" | "min" | "max" | "count" | "any" | "all" | "chain") {
                         op
                     } else {
                         name.as_str()
@@ -9832,6 +9833,84 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
         out.push_str("  %r = load i64, i64* %acc_p\n");
         out.push_str("  ret i64 %r\n");
         out.push_str("}\n");
+        // vec_chain (closure #324): concatenate two Vec<i64>s
+        // into a fresh allocation of size xs->len + ys->len.
+        let chain_name = format!("@intent_vec_{}__chain", tag);
+        out.push_str(&format!(
+            "define {sty} {sn}({sty}* %xs_p, {sty}* %ys_p) {{\n",
+            sn = chain_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %xs_data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %xs_len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %ys_data_p = getelementptr {sty}, {sty}* %ys_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %ys_len_p = getelementptr {sty}, {sty}* %ys_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %xs_data = load i64*, i64** %xs_data_p\n");
+        out.push_str("  %xs_len = load i64, i64* %xs_len_p\n");
+        out.push_str("  %ys_data = load i64*, i64** %ys_data_p\n");
+        out.push_str("  %ys_len = load i64, i64* %ys_len_p\n");
+        out.push_str("  %total = add i64 %xs_len, %ys_len\n");
+        out.push_str("  %is_empty = icmp eq i64 %total, 0\n");
+        out.push_str("  br i1 %is_empty, label %ch_empty, label %ch_alloc\n");
+        out.push_str("ch_alloc:\n");
+        out.push_str("  %bytes = mul i64 %total, 8\n");
+        out.push_str("  %dst_i8 = call i8* @malloc(i64 %bytes)\n");
+        out.push_str("  %dst = bitcast i8* %dst_i8 to i64*\n");
+        // Copy xs first.
+        out.push_str("  %xs_bytes = mul i64 %xs_len, 8\n");
+        out.push_str("  %xs_src_i8 = bitcast i64* %xs_data to i8*\n");
+        out.push_str(
+            "  call i8* @memmove(i8* %dst_i8, i8* %xs_src_i8, i64 %xs_bytes)\n",
+        );
+        // Then ys at offset xs_len.
+        out.push_str("  %ys_dst = getelementptr i64, i64* %dst, i64 %xs_len\n");
+        out.push_str("  %ys_dst_i8 = bitcast i64* %ys_dst to i8*\n");
+        out.push_str("  %ys_bytes = mul i64 %ys_len, 8\n");
+        out.push_str("  %ys_src_i8 = bitcast i64* %ys_data to i8*\n");
+        out.push_str(
+            "  call i8* @memmove(i8* %ys_dst_i8, i8* %ys_src_i8, i64 %ys_bytes)\n",
+        );
+        out.push_str(&format!(
+            "  %cr0 = insertvalue {sty} undef, i64* %dst, 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %cr1 = insertvalue {sty} %cr0, i64 %total, 1\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %cr2 = insertvalue {sty} %cr1, i64 %total, 2\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!("  ret {sty} %cr2\n", sty = s_ty));
+        out.push_str("ch_empty:\n");
+        out.push_str(&format!(
+            "  %ce0 = insertvalue {sty} undef, i64* null, 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %ce1 = insertvalue {sty} %ce0, i64 0, 1\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %ce2 = insertvalue {sty} %ce1, i64 0, 2\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!("  ret {sty} %ce2\n", sty = s_ty));
+        out.push_str("}\n");
+
         // Closure #322: reductions on Vec<i64> — sum, product,
         // min, max, count, any, all. Each is a single tight
         // loop with a fixed kernel.
