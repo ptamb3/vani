@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #320 — Level 3 ergonomics polish: method-call sugar extended to all in-place Vec mutators and read-only search builtins. `xs.push(v)`, `xs.pop()`, `xs.reverse()`, `xs.dedup()`, `xs.swap_remove(i)`, `xs.insert(i, v)`, `xs.clear()` desugar to the mut-ref builtin forms; `xs.find(v)`, `xs.contains(v)`, `xs.binary_search(v)` desugar to the ref forms. Same `Var` receiver restriction as #311. Pure checker desugar — zero new code paths. 3 new lib tests.)
-**Test totals:** 1177 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #321 — Level 3 ergonomics polish cont.: method-call sugar for `[T; N]` Array receivers. `arr.sort()` / `arr.sort_by(cmp)` / `arr.reverse()` desugar to the mut-ref builtin forms; `arr.find(v)` / `arr.contains(v)` / `arr.binary_search(v)` desugar to the ref forms. Same `Var` receiver restriction as #311. Mirrors the Vec sugar arm exactly. 3 new lib tests.)
+**Test totals:** 1180 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
@@ -147,6 +147,38 @@ ref second-class closures; passing closures across function
 boundaries (needs closure-as-value type — likely a struct
 holding the env + fn-ptr pair); reassigning a closure
 binding; nested closure declarations.
+
+### Data-structures roadmap Level 3 — Array method-call sugar (shipped 2026-05-28, closure #321)
+
+✅ AFFINE — pure surface desugar, mirrors closures #311 / #320.
+
+Method-call syntax now works on `[T; N]` Array receivers,
+parallel to Vec:
+
+| Source                | Desugared form                       |
+|-----------------------|--------------------------------------|
+| `arr.sort()`          | `sort(mut ref arr)`                  |
+| `arr.sort_by(cmp)`    | `sort_by(mut ref arr, cmp)`          |
+| `arr.reverse()`       | `reverse(mut ref arr)`               |
+| `arr.find(v)`         | `find(ref arr, v)`                   |
+| `arr.contains(v)`     | `contains(ref arr, v)`               |
+| `arr.binary_search(v)`| `binary_search(ref arr, v)`          |
+
+Same `Var` receiver restriction as #311. Iterator combinators
+(`map` / `filter` / `fold` / `take` / `drop`) are NOT exposed
+on arrays since the underlying builtins are Vec-only in v1.
+That's a queued follow-up alongside non-i64 element types.
+
+**Codegen:** none new. Same builtins as the function-call
+form; the existing array dispatch in both backends handles
+everything.
+
+**Tests:** 3 new lib tests (sort + reverse pattern; contains
++ binary_search pattern; sort_by with anon-fn comparator).
+
+**Pending follow-ups:** iterator combinator sugar on arrays
+(map / filter / fold) — requires array-specific runtime
+helpers; non-i64 array element types in combinators.
 
 ### Data-structures roadmap Level 3 — Vec mutator method-call sugar (shipped 2026-05-28, closure #320)
 

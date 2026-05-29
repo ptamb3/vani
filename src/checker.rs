@@ -10573,6 +10573,67 @@ fn check_expr(
                 }
             }
 
+            // Closure #321 — method-call sugar for `[T; N]`
+            // Arrays. Mirrors the Vec sugar arm above but
+            // dispatches to the array-prefixed builtins
+            // (sort / sort_by / reverse / find / contains /
+            // binary_search). Same `Var` receiver restriction.
+            if let ExprKind::Var(recv_name) = &receiver.kind {
+                let recv_ty_opt = env.lookup(recv_name).map(|i| i.ty.clone());
+                let is_array = recv_ty_opt
+                    .as_ref()
+                    .map(|t| match t {
+                        Type::Array { .. } => true,
+                        Type::Ref(inner) | Type::RefMut(inner) => {
+                            matches!(**inner, Type::Array { .. })
+                        }
+                        _ => false,
+                    })
+                    .unwrap_or(false);
+                if is_array {
+                    let (builtin_name, want_mut_ref): (&str, bool) =
+                        match method.as_str() {
+                            "sort" => ("sort", true),
+                            "sort_by" => ("sort_by", true),
+                            "reverse" => ("reverse", true),
+                            "find" => ("find", false),
+                            "contains" => ("contains", false),
+                            "binary_search" => ("binary_search", false),
+                            _ => ("", false),
+                        };
+                    if !builtin_name.is_empty() {
+                        let recv_clone = (**receiver).clone();
+                        let borrow_kind = if want_mut_ref {
+                            ExprKind::RefMut {
+                                inner: Box::new(recv_clone),
+                            }
+                        } else {
+                            ExprKind::Ref {
+                                inner: Box::new(recv_clone),
+                            }
+                        };
+                        let receiver_borrow = Expr {
+                            kind: borrow_kind,
+                            span: receiver.span,
+                        };
+                        let mut new_args: Vec<Expr> = Vec::with_capacity(args.len() + 1);
+                        new_args.push(receiver_borrow);
+                        for a in args {
+                            new_args.push(a.clone());
+                        }
+                        return check_call(
+                            builtin_name,
+                            *method_span,
+                            &new_args,
+                            env,
+                            signatures,
+                            expr.span,
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+
             // Closure #312 — method-call sugar for affine
             // containers. `m.get(k)` / `s.insert(v)` / `d.pop_back()`
             // etc. on HashMap / HashSet / BTreeMap / BTreeSet /

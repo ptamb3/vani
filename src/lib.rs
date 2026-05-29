@@ -13328,6 +13328,55 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn array_method_sugar_sort_and_reverse() {
+        let source = r#"
+            fn main() -> i64 {
+              let arr: [i64; 4] = [3, 1, 4, 1];
+              arr.sort();
+              arr.reverse();
+              return arr[0];
+            }
+        "#;
+        compile_to_c(source).expect("arr.sort() / reverse() sugar in C");
+        compile_to_llvm(source).expect("arr.sort() / reverse() sugar in LLVM");
+    }
+
+    #[test]
+    fn array_method_sugar_search() {
+        let source = r#"
+            fn unwrap_or(o: Option<i64>, def: i64) -> i64 {
+              return match o {
+                Option.Some(v) then v,
+                Option.None then def,
+              };
+            }
+            fn main() -> i64 {
+              let arr: [i64; 5] = [1, 2, 3, 4, 5];
+              if arr.contains(3) {
+                return unwrap_or(arr.binary_search(4), 0 - 1);
+              } else {
+                return 0;
+              }
+            }
+        "#;
+        compile_to_c(source).expect("arr.contains / binary_search sugar in C");
+        compile_to_llvm(source).expect("arr.contains / binary_search sugar in LLVM");
+    }
+
+    #[test]
+    fn array_method_sugar_sort_by_with_anon_fn() {
+        let source = r#"
+            fn main() -> i64 {
+              let arr: [i64; 3] = [5, 1, 3];
+              arr.sort_by(fn(a: i64, b: i64) -> i64 { return a - b; });
+              return arr[0];
+            }
+        "#;
+        compile_to_c(source).expect("arr.sort_by(anon) sugar in C");
+        compile_to_llvm(source).expect("arr.sort_by(anon) sugar in LLVM");
+    }
+
+    #[test]
     fn vec_mutator_method_sugar_push_pop_reverse() {
         let source = r#"
             fn main() -> i64 {
