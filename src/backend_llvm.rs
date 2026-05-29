@@ -690,6 +690,10 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     emit_intent_str_concat_definition(&mut out);
     emit_intent_str_trim_definition(&mut out);
     emit_intent_str_replace_definition(&mut out);
+    // Note: emit_intent_str_split_definition (closure #350) is
+    // emitted later, after the Vec<OwnedStr> typedef has been
+    // declared, since the helper's signature references
+    // `%intent_vec_i8p`. See the post-vec-helpers gate below.
 
     // Format-string globals used by `print`. We emit them all
     // unconditionally; they're tiny and `lli` will optimize away
@@ -858,6 +862,14 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         for elt in &vec_elements {
             emit_vec_helpers(elt, &mut out);
         }
+    }
+
+    // Closure #350: emit `@intent_str_split` after the Vec
+    // typedefs are in scope (the helper signature references
+    // `%intent_vec_i8p`). Gated on actual usage — when no
+    // caller exists the typedef may not be present either.
+    if crate::backend_c::program_uses_str_split(program) {
+        emit_intent_str_split_definition(&mut out);
     }
 
     // Data-structures roadmap: emit shared array helpers for
@@ -5870,6 +5882,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            if name == "str_split" {
+                let s = emit_expr(&args[0], ctx, out);
+                let delim = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_vec_i8p @intent_str_split(i8* {}, i8* {})\n",
+                    dest, s, delim
+                ));
+                return dest;
+            }
             if name == "str_contains" {
                 let s = emit_expr(&args[0], ctx, out);
                 let n = emit_expr(&args[1], ctx, out);
@@ -7797,6 +7819,120 @@ pub(crate) fn emit_intent_str_concat_definition(out: &mut String) {
     out.push_str("  br label %done\n");
     out.push_str("done:\n");
     out.push_str("  ret i8* %buf\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #350: heap-allocating `str_split`. Returns a fresh
+/// `%intent_vec_i8p` (`Vec<OwnedStr>`) whose elements are
+/// freshly malloc'd char* spans of `s` between non-
+/// overlapping occurrences of `delim`. Inline-push avoids
+/// dependency on `@intent_vec_i8p__push_mut` so the helper
+/// works even when the user's program imports only the
+/// typedef shape. Edge cases match the C helper.
+///
+/// Gated by `program_uses_str_split` to avoid emitting the
+/// `%intent_vec_i8p` reference when no caller exists (the
+/// typedef itself is element-walker-gated and not present
+/// otherwise).
+pub(crate) fn emit_intent_str_split_definition(out: &mut String) {
+    // vāṇī `Str` doesn't produce NULL through the surface
+    // (string literals lower to private constants; OwnedStr
+    // points to a malloc'd buffer). Skip the NULL paths and
+    // trust `%s` / `%delim` to be valid C strings.
+    out.push_str("define %intent_vec_i8p @intent_str_split(i8* %s, i8* %delim) {\n");
+    // Out struct local var, zero-initialized.
+    out.push_str("  %out_p = alloca %intent_vec_i8p\n");
+    out.push_str("  %z0 = insertvalue %intent_vec_i8p undef, i8** null, 0\n");
+    out.push_str("  %z1 = insertvalue %intent_vec_i8p %z0, i64 0, 1\n");
+    out.push_str("  %z2 = insertvalue %intent_vec_i8p %z1, i64 0, 2\n");
+    out.push_str("  store %intent_vec_i8p %z2, %intent_vec_i8p* %out_p\n");
+    // strlen(delim); zero ⇒ single-element vec containing dup(s).
+    out.push_str("  %dl_real = call i64 @strlen(i8* %delim)\n");
+    out.push_str("  %dl_is_zero = icmp eq i64 %dl_real, 0\n");
+    out.push_str("  br i1 %dl_is_zero, label %sp_empty_delim, label %sp_walk_init\n");
+    out.push_str("sp_empty_delim:\n");
+    out.push_str("  %sl_e = call i64 @strlen(i8* %s)\n");
+    out.push_str("  %slp1_e = add i64 %sl_e, 1\n");
+    out.push_str("  %dup_e = call i8* @malloc(i64 %slp1_e)\n");
+    out.push_str("  %_de = call i8* @memcpy(i8* %dup_e, i8* %s, i64 %slp1_e)\n");
+    // Allocate a 4-slot data buffer for the lone element.
+    out.push_str("  %data_e_bytes = mul i64 4, 8\n");
+    out.push_str("  %data_e_i8 = call i8* @malloc(i64 %data_e_bytes)\n");
+    out.push_str("  %data_e = bitcast i8* %data_e_i8 to i8**\n");
+    out.push_str("  store i8* %dup_e, i8** %data_e\n");
+    out.push_str("  %r0 = insertvalue %intent_vec_i8p undef, i8** %data_e, 0\n");
+    out.push_str("  %r1 = insertvalue %intent_vec_i8p %r0, i64 1, 1\n");
+    out.push_str("  %r2 = insertvalue %intent_vec_i8p %r1, i64 4, 2\n");
+    out.push_str("  ret %intent_vec_i8p %r2\n");
+    // Main loop: walk via strstr, push each span.
+    out.push_str("sp_walk_init:\n");
+    out.push_str("  %dl = call i64 @strlen(i8* %delim)\n");
+    out.push_str("  %p_p = alloca i8*\n");
+    out.push_str("  store i8* %s, i8** %p_p\n");
+    out.push_str("  br label %sp_loop\n");
+    out.push_str("sp_loop:\n");
+    out.push_str("  %p_cur = load i8*, i8** %p_p\n");
+    out.push_str("  %m_cur = call i8* @strstr(i8* %p_cur, i8* %delim)\n");
+    out.push_str("  %is_no_match = icmp eq i8* %m_cur, null\n");
+    out.push_str("  br i1 %is_no_match, label %sp_tail, label %sp_with_match\n");
+    out.push_str("sp_with_match:\n");
+    out.push_str("  %p_int = ptrtoint i8* %p_cur to i64\n");
+    out.push_str("  %m_int = ptrtoint i8* %m_cur to i64\n");
+    out.push_str("  %span_m = sub i64 %m_int, %p_int\n");
+    out.push_str("  br label %sp_alloc_and_push\n");
+    out.push_str("sp_tail:\n");
+    out.push_str("  %span_t = call i64 @strlen(i8* %p_cur)\n");
+    out.push_str("  br label %sp_alloc_and_push\n");
+    out.push_str("sp_alloc_and_push:\n");
+    out.push_str("  %span = phi i64 [ %span_m, %sp_with_match ], [ %span_t, %sp_tail ]\n");
+    out.push_str("  %dup_total = add i64 %span, 1\n");
+    out.push_str("  %dup = call i8* @malloc(i64 %dup_total)\n");
+    out.push_str("  %span_pos = icmp ugt i64 %span, 0\n");
+    out.push_str("  br i1 %span_pos, label %sp_copy_span, label %sp_terminate_dup\n");
+    out.push_str("sp_copy_span:\n");
+    out.push_str("  %_cs = call i8* @memcpy(i8* %dup, i8* %p_cur, i64 %span)\n");
+    out.push_str("  br label %sp_terminate_dup\n");
+    out.push_str("sp_terminate_dup:\n");
+    out.push_str("  %nul_at = getelementptr i8, i8* %dup, i64 %span\n");
+    out.push_str("  store i8 0, i8* %nul_at\n");
+    // Inline push onto %out_p:
+    //   if (len >= cap) grow (cap = cap ? cap*2 : 4; realloc data)
+    //   data[len++] = dup
+    out.push_str("  %dp = getelementptr %intent_vec_i8p, %intent_vec_i8p* %out_p, i32 0, i32 0\n");
+    out.push_str("  %lp = getelementptr %intent_vec_i8p, %intent_vec_i8p* %out_p, i32 0, i32 1\n");
+    out.push_str("  %cp = getelementptr %intent_vec_i8p, %intent_vec_i8p* %out_p, i32 0, i32 2\n");
+    out.push_str("  %len_old = load i64, i64* %lp\n");
+    out.push_str("  %cap_old = load i64, i64* %cp\n");
+    out.push_str("  %full = icmp uge i64 %len_old, %cap_old\n");
+    out.push_str("  br i1 %full, label %sp_grow, label %sp_store_elt\n");
+    out.push_str("sp_grow:\n");
+    out.push_str("  %cap_z = icmp eq i64 %cap_old, 0\n");
+    out.push_str("  %cap_d = mul i64 %cap_old, 2\n");
+    out.push_str("  %new_cap_sp = select i1 %cap_z, i64 4, i64 %cap_d\n");
+    out.push_str("  %new_bytes_sp = mul i64 %new_cap_sp, 8\n");
+    out.push_str("  %data_old = load i8**, i8*** %dp\n");
+    out.push_str("  %data_old_i8 = bitcast i8** %data_old to i8*\n");
+    out.push_str("  %data_new_i8 = call i8* @realloc(i8* %data_old_i8, i64 %new_bytes_sp)\n");
+    out.push_str("  %data_new = bitcast i8* %data_new_i8 to i8**\n");
+    out.push_str("  store i8** %data_new, i8*** %dp\n");
+    out.push_str("  store i64 %new_cap_sp, i64* %cp\n");
+    out.push_str("  br label %sp_store_elt\n");
+    out.push_str("sp_store_elt:\n");
+    out.push_str("  %data_w = load i8**, i8*** %dp\n");
+    out.push_str("  %len_w = load i64, i64* %lp\n");
+    out.push_str("  %slot = getelementptr i8*, i8** %data_w, i64 %len_w\n");
+    out.push_str("  store i8* %dup, i8** %slot\n");
+    out.push_str("  %len_inc = add i64 %len_w, 1\n");
+    out.push_str("  store i64 %len_inc, i64* %lp\n");
+    // If we hit no_match path, we're done; otherwise advance p and loop.
+    out.push_str("  br i1 %is_no_match, label %sp_done, label %sp_advance\n");
+    out.push_str("sp_advance:\n");
+    out.push_str("  %p_next = getelementptr i8, i8* %m_cur, i64 %dl\n");
+    out.push_str("  store i8* %p_next, i8** %p_p\n");
+    out.push_str("  br label %sp_loop\n");
+    out.push_str("sp_done:\n");
+    out.push_str("  %final = load %intent_vec_i8p, %intent_vec_i8p* %out_p\n");
+    out.push_str("  ret %intent_vec_i8p %final\n");
     out.push_str("}\n\n");
 }
 

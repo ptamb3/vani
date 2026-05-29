@@ -3,26 +3,29 @@
 //   intentc run examples/string_ops.vani --backend=c              # C backend
 //   intentc build examples/string_ops.vani -o /tmp/string_ops && /tmp/string_ops
 
-intent "String surface — predicates, parsers, trim, replace";
+intent "String surface — predicates, parsers, trim, replace, split";
 
-// Seven builtins for working with borrowed `Str` values.
+// Eight builtins for working with borrowed `Str` values.
 // Most are read-only and allocation-free; the heap-allocating
-// members (`str_trim`, `str_replace`) return fresh `OwnedStr`
-// handles whose Drop fires at scope exit.
+// members (`str_trim`, `str_replace`, `str_split`) return
+// fresh `OwnedStr` (or `Vec<OwnedStr>`) handles whose Drop
+// fires at scope exit.
 //
 //   str_contains(s, needle) -> bool
 //   str_starts_with(s, prefix) -> bool
 //   str_ends_with(s, suffix) -> bool
-//   str_trim(s) -> OwnedStr            [closure #348]
-//   str_replace(s, from, to) -> OwnedStr [closure #349]
+//   str_trim(s) -> OwnedStr               [closure #348]
+//   str_replace(s, from, to) -> OwnedStr  [closure #349]
+//   str_split(s, delim) -> Vec<OwnedStr>  [closure #350]
 //   parse_int(s) -> Option<i64>
 //   parse_float(s) -> Option<f64>
 //
 // Lower to libc primitives (strstr / strncmp / strcmp /
-// strtoll / strtod) in both backends. `str_trim` and
-// `str_replace` malloc fresh buffers; `str_replace` does a
-// two-pass count-then-copy to size the output exactly.
-// `str_split -> Vec<OwnedStr>` remains queued as a follow-up.
+// strtoll / strtod) in both backends. The heap-allocating
+// trio mallocs fresh buffers; `str_replace` does a two-pass
+// count-then-copy to size the output exactly. `str_split`
+// returns a `Vec<OwnedStr>` whose per-element drop chain
+// frees every span on scope exit.
 
 fn main() -> i64 {
   let s: Str = "hello world";
@@ -113,6 +116,34 @@ fn main() -> i64 {
   // diverge); the helper hands back a fresh copy of `s`.
   let unchanged: OwnedStr = str_replace("hello", "", "Z");
   print "replace empty from (no-op):", unchanged;
+
+  // Closure #350: str_split. Returns a `Vec<OwnedStr>` whose
+  // elements are non-overlapping spans of `s` between
+  // occurrences of `delim`. Each element is a freshly-malloc'd
+  // OwnedStr; iterating uses `clone_at(ref xs, i)` to read a
+  // copy without moving out of the Vec.
+  let parts: Vec<OwnedStr> = str_split("a,b,c,d", ",");
+  let n: i64 = len(ref parts) as i64;
+  print "split csv count (4):", n;
+  for i from 0 to n {
+    let one: OwnedStr = clone_at(ref parts, i);
+    print "  split[i]:", one;
+  }
+
+  // Multi-character delim — common case for line-by-line
+  // parsing.
+  let lines: Vec<OwnedStr> = str_split("foo--bar--baz", "--");
+  let ln_count: i64 = len(ref lines) as i64;
+  print "split on \"--\" count (3):", ln_count;
+
+  // Consecutive delims yield empty middle elements.
+  let cons: Vec<OwnedStr> = str_split("a,,b", ",");
+  let cn: i64 = len(ref cons) as i64;
+  print "consecutive delims count (3, middle empty):", cn;
+
+  // No match — single-element vec with a dup of the input.
+  let nom: Vec<OwnedStr> = str_split("hello", "xyz");
+  print "no match count (1):", len(ref nom);
 
   return 0;
 }

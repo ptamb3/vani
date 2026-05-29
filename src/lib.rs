@@ -12412,6 +12412,59 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_split_returns_vec_owned_str_typecheck() {
+        // Closure #350: str_split(s, delim) -> Vec<OwnedStr>.
+        // The return is a heap-allocating Vec of per-element
+        // OwnedStr; consumers read elements via clone_at since
+        // OwnedStr is non-Copy.
+        let source = r#"
+            fn main() -> i64 {
+              let parts: Vec<OwnedStr> = str_split("a,b,c", ",");
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str_split must type-check in C");
+        compile_to_llvm(source).expect("str_split must compile to LLVM");
+    }
+
+    #[test]
+    fn str_split_emits_helper_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let parts: Vec<OwnedStr> = str_split("a,b", ",");
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("str_split C compile");
+        assert!(
+            c.contains("intent_str_split"),
+            "C output must include the intent_str_split helper"
+        );
+        let ll = compile_to_llvm(source).expect("str_split LLVM compile");
+        assert!(
+            ll.contains("define %intent_vec_i8p @intent_str_split("),
+            "LLVM output must include the @intent_str_split define"
+        );
+    }
+
+    #[test]
+    fn str_split_gated_off_when_unused() {
+        // Programs that don't call str_split shouldn't have the
+        // helper emitted (its IR signature references the
+        // Vec<OwnedStr> typedef which is itself element-gated).
+        let source = r#"
+            fn main() -> i64 {
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("trivial program LLVM compile");
+        assert!(
+            !ll.contains("@intent_str_split"),
+            "unused str_split helper must not be emitted"
+        );
+    }
+
+    #[test]
     fn str_replace_emits_helper_in_both_backends() {
         let source = r#"
             fn main() -> i64 {

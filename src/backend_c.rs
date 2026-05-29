@@ -491,6 +491,14 @@ pub fn emit_c(program: &TypedProgram) -> String {
         emit_vec_bundle(element, &mut body);
     }
 
+    // Closure #350: emit `intent_str_split` after the Vec
+    // bundles so its `intent_vec_owned_str` return type is in
+    // scope. Gated on actual program usage to avoid an unused
+    // helper when no caller exists.
+    if program_uses_str_split(program) {
+        emit_intent_str_split_c(&mut body);
+    }
+
     for intent in &program.intents {
         body.push_str("/* intent: ");
         body.push_str(&escape_comment(intent));
@@ -2152,6 +2160,83 @@ pub(crate) fn program_uses_graph(program: &TypedProgram) -> bool {
             if stmt_uses_graph(s) {
                 return true;
             }
+        }
+    }
+    false
+}
+
+/// Closure #350: walk the program for any call to `str_split`.
+/// Used to gate `intent_str_split` emission — the helper
+/// references `intent_vec_owned_str` which is itself
+/// element-type-gated. Both helpers must be in scope before
+/// any caller, so emission is deferred to the body's Vec-
+/// bundle pass.
+pub(crate) fn program_uses_str_split(program: &TypedProgram) -> bool {
+    use crate::ir::TypedExprKind as E;
+    use crate::ir::TypedStmt as S;
+    fn expr_uses(expr: &crate::ir::TypedExpr) -> bool {
+        match &expr.kind {
+            E::Call { name, args, .. } => {
+                if name == "str_split" {
+                    return true;
+                }
+                args.iter().any(expr_uses)
+            }
+            E::Unary { expr, .. } | E::Cast { expr, .. } => expr_uses(expr),
+            E::Len { array, .. } => expr_uses(array),
+            E::Binary { left, right, .. } => expr_uses(left) || expr_uses(right),
+            E::CallIndirect { callee, args } => {
+                expr_uses(callee) || args.iter().any(expr_uses)
+            }
+            E::ArrayLit { elements } => elements.iter().any(expr_uses),
+            E::Index { array, index, .. } => expr_uses(array) || expr_uses(index),
+            E::Tuple { elements } => elements.iter().any(expr_uses),
+            E::TupleAccess { tuple, .. } => expr_uses(tuple),
+            E::StructLit { fields, .. } => fields.iter().any(|(_, v)| expr_uses(v)),
+            E::FieldAccess { object, .. } => expr_uses(object),
+            E::EnumVariantWithPayload { payload, .. } => expr_uses(payload),
+            E::IfExpr { cond, then_value, else_value } => {
+                expr_uses(cond) || expr_uses(then_value) || expr_uses(else_value)
+            }
+            E::Match { scrutinee, arms } => {
+                expr_uses(scrutinee) || arms.iter().any(|a| expr_uses(&a.body))
+            }
+            E::Block { stmts, tail } => {
+                stmts.iter().any(stmt_walk) || expr_uses(tail)
+            }
+            _ => false,
+        }
+    }
+    fn stmt_walk(s: &S) -> bool {
+        match s {
+            S::Let { expr, .. }
+            | S::Reassign { expr, .. }
+            | S::Return { expr }
+            | S::Assert { expr, .. }
+            | S::Prove { expr } => expr_uses(expr),
+            S::Discard { expr } => expr_uses(expr),
+            S::Print { items } => items.iter().any(|it| match it {
+                crate::ir::TypedPrintItem::Expr(e) => expr_uses(e),
+                _ => false,
+            }),
+            S::If { cond, then_body, else_body, .. } => {
+                expr_uses(cond)
+                    || then_body.iter().any(stmt_walk)
+                    || else_body.iter().any(stmt_walk)
+            }
+            S::While { cond, body, .. } => {
+                expr_uses(cond) || body.iter().any(stmt_walk)
+            }
+            S::For { start, end, body, .. } => {
+                expr_uses(start) || expr_uses(end) || body.iter().any(stmt_walk)
+            }
+            S::ForIter { body, .. } => body.iter().any(stmt_walk),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if f.body.iter().any(stmt_walk) {
+            return true;
         }
     }
     false
@@ -4087,6 +4172,69 @@ pub(crate) fn emit_intent_str_concat_c(out: &mut String) {
          \x20 out[ln + rn] = 0;\n\
          \x20 if (l_owned) free((void*)l);\n\
          \x20 if (r_owned) free((void*)r);\n\
+         \x20 return out;\n\
+         }\n\n",
+    );
+}
+
+/// Closure #350: heap-allocating `str_split`. Returns a fresh
+/// `Vec<OwnedStr>` containing the substrings of `s` between
+/// non-overlapping occurrences of `delim`. Each element is a
+/// freshly-malloc'd char* so the Vec's per-element Drop is
+/// well-defined.
+///
+/// Edge cases:
+///   - `delim` empty: returns a single-element vec containing
+///     dup(s). (Splitting on "" otherwise diverges / has no
+///     sensible default.)
+///   - `s` empty: returns a vec with a single empty OwnedStr.
+///   - No match: returns a vec with a single dup(s) element.
+///   - Consecutive delims: empty OwnedStrs in between (matches
+///     the canonical split semantics).
+///
+/// Gated by the `intent_vec_owned_str` typedef + helpers being
+/// present, which the existing Vec-element walker auto-emits
+/// when the program uses `Vec<OwnedStr>` anywhere — including
+/// at this function's return type.
+pub(crate) fn emit_intent_str_split_c(out: &mut String) {
+    out.push_str(
+        "static intent_vec_owned_str intent_str_split(const char* s, const char* delim) INTENT_UNUSED;\n\
+         static intent_vec_owned_str intent_str_split(const char* s, const char* delim) {\n\
+         \x20 intent_vec_owned_str out;\n\
+         \x20 out.data = (char**)0; out.len = 0; out.capacity = 0;\n\
+         \x20 if (!s) s = \"\";\n\
+         \x20 size_t dl = (delim == 0) ? 0 : strlen(delim);\n\
+         \x20 size_t sl = strlen(s);\n\
+         \x20 /* Empty delim: one element = dup(s). */\n\
+         \x20 if (dl == 0) {\n\
+         \x20   char* dup = (char*)malloc(sl + 1);\n\
+         \x20   if (!dup) abort();\n\
+         \x20   memcpy(dup, s, sl + 1);\n\
+         \x20   out.capacity = 4;\n\
+         \x20   out.data = (char**)malloc(out.capacity * sizeof(char*));\n\
+         \x20   if (!out.data) abort();\n\
+         \x20   out.data[0] = dup;\n\
+         \x20   out.len = 1;\n\
+         \x20   return out;\n\
+         \x20 }\n\
+         \x20 const char* p = s;\n\
+         \x20 while (1) {\n\
+         \x20   const char* m = strstr(p, delim);\n\
+         \x20   size_t span = m ? (size_t)(m - p) : strlen(p);\n\
+         \x20   char* dup = (char*)malloc(span + 1);\n\
+         \x20   if (!dup) abort();\n\
+         \x20   if (span > 0) memcpy(dup, p, span);\n\
+         \x20   dup[span] = 0;\n\
+         \x20   /* inline push (no per-type helper dependency). */\n\
+         \x20   if (out.len >= out.capacity) {\n\
+         \x20     out.capacity = out.capacity ? out.capacity * 2 : 4;\n\
+         \x20     out.data = (char**)realloc(out.data, out.capacity * sizeof(char*));\n\
+         \x20     if (!out.data) abort();\n\
+         \x20   }\n\
+         \x20   out.data[out.len++] = dup;\n\
+         \x20   if (!m) break;\n\
+         \x20   p = m + dl;\n\
+         \x20 }\n\
          \x20 return out;\n\
          }\n\n",
     );
@@ -8447,6 +8595,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[0]),
                 emit_expr(&args[1]),
                 emit_expr(&args[2])
+            )
+        }
+        "str_split" => {
+            format!(
+                "intent_str_split(({}), ({}))",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
             )
         }
         "parse_int" => {
