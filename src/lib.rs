@@ -12737,6 +12737,66 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn hashmap_remove_typecheck() {
+        // Closure #343: hashmap_remove must type-check as
+        // `mut ref HashMap<i64, i64>, i64 -> Option<i64>` and
+        // reject by-ref (mirrors hashset_remove).
+        let ok = r#"
+            fn main() -> i64 {
+              let m: HashMap<i64, i64> = hashmap_new();
+              let _ = hashmap_insert(mut ref m, 1, 10);
+              let _: Option<i64> = hashmap_remove(mut ref m, 1);
+              let _: Option<i64> = m.remove(2);
+              return 0;
+            }
+        "#;
+        compile_to_c(ok).expect("hashmap_remove must type-check in C");
+        compile_to_llvm(ok).expect("hashmap_remove must compile to LLVM");
+
+        let bad = r#"
+            fn main() -> i64 {
+              let m: HashMap<i64, i64> = hashmap_new();
+              let _: Option<i64> = hashmap_remove(ref m, 5);
+              return 0;
+            }
+        "#;
+        let errors = compile(bad).expect_err("hashmap_remove by-ref must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref HashMap")),
+            "expected mut-ref-HashMap diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn hashmap_remove_emits_helpers_and_tombstone_field() {
+        // Pin both backends' output to catch struct-layout
+        // regressions: HashMap now has 6 fields incl. tombstones
+        // (keys, values, occ, len, capacity, tombstones).
+        let source = r#"
+            fn main() -> i64 {
+              let m: HashMap<i64, i64> = hashmap_new();
+              let _: Option<i64> = hashmap_remove(mut ref m, 1);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("hashmap_remove C compile");
+        assert!(
+            c.contains("intent_hashmap_i64_i64_remove")
+                && c.contains("tombstones"),
+            "C output must include the remove helper + tombstones field"
+        );
+        let ll = compile_to_llvm(source).expect("hashmap_remove LLVM compile");
+        assert!(
+            ll.contains("@intent_hashmap_i64_i64_remove")
+                && ll.contains("%intent_hashmap_i64_i64 = type { i64*, i64*, i8*, i64, i64, i64 }"),
+            "LLVM output must include the remove helper + the 6-field struct"
+        );
+    }
+
+    #[test]
     fn union_find_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

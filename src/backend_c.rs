@@ -1047,18 +1047,26 @@ fn stmt_uses_i64_i64_hashmap(stmt: &crate::ir::TypedStmt) -> bool {
 /// always emitted.
 fn emit_intent_hashmap_helpers_c_body(out: &mut String, has_option_i64: bool) {
     out.push_str(
-        "typedef struct { int64_t* keys; int64_t* values; uint8_t* occ; uint64_t len; uint64_t capacity; } intent_hashmap_i64_i64;\n\
+        "typedef struct { int64_t* keys; int64_t* values; uint8_t* occ; uint64_t len; uint64_t capacity; uint64_t tombstones; } intent_hashmap_i64_i64;\n\
+         /* occ byte states (closure #343):\n\
+          *   0 = empty       — terminates probe chains\n\
+          *   1 = occupied    — slot in use\n\
+          *   2 = tombstone   — slot removed; probe must continue past it\n\
+          * Grow triggers on (len + tombstones) * 2 >= capacity so a\n\
+          * remove-heavy workload eventually rehashes and clears\n\
+          * tombstones. */\n\
          static INTENT_UNUSED intent_hashmap_i64_i64 intent_hashmap_i64_i64_new(void) {\n\
          \x20 intent_hashmap_i64_i64 m;\n\
          \x20 m.keys = (int64_t*)0; m.values = (int64_t*)0; m.occ = (uint8_t*)0;\n\
-         \x20 m.len = 0; m.capacity = 0;\n\
+         \x20 m.len = 0; m.capacity = 0; m.tombstones = 0;\n\
          \x20 return m;\n\
          }\n\
          static INTENT_UNUSED void intent_hashmap_i64_i64_drop(intent_hashmap_i64_i64* m) {\n\
          \x20 if (m->keys) free(m->keys);\n\
          \x20 if (m->values) free(m->values);\n\
          \x20 if (m->occ) free(m->occ);\n\
-         \x20 m->keys = 0; m->values = 0; m->occ = 0; m->len = 0; m->capacity = 0;\n\
+         \x20 m->keys = 0; m->values = 0; m->occ = 0;\n\
+         \x20 m->len = 0; m->capacity = 0; m->tombstones = 0;\n\
          }\n\
          static INTENT_UNUSED uint64_t intent_hashmap_i64_i64__hash_key(int64_t k) {\n\
          \x20 uint64_t h = 0xcbf29ce484222325ULL;\n\
@@ -1069,11 +1077,12 @@ fn emit_intent_hashmap_helpers_c_body(out: &mut String, has_option_i64: bool) {
          \x20 }\n\
          \x20 return h;\n\
          }\n\
+         /* Rehash-only insert (used during grow): assumes no\n\
+          * tombstones exist (just-allocated occ array). */\n\
          static INTENT_UNUSED void intent_hashmap_i64_i64__insert_raw(intent_hashmap_i64_i64* m, int64_t k, int64_t v) {\n\
          \x20 uint64_t mask = m->capacity - 1;\n\
          \x20 uint64_t i = intent_hashmap_i64_i64__hash_key(k) & mask;\n\
-         \x20 while (m->occ[i] != 0) {\n\
-         \x20   if (m->keys[i] == k) { m->values[i] = v; return; }\n\
+         \x20 while (m->occ[i] == 1) {\n\
          \x20   i = (i + 1) & mask;\n\
          \x20 }\n\
          \x20 m->keys[i] = k; m->values[i] = v; m->occ[i] = 1; m->len++;\n\
@@ -1090,6 +1099,7 @@ fn emit_intent_hashmap_helpers_c_body(out: &mut String, has_option_i64: bool) {
          \x20 if (!m->keys || !m->values || !m->occ) abort();\n\
          \x20 m->len = 0;\n\
          \x20 m->capacity = new_cap;\n\
+         \x20 m->tombstones = 0;\n\
          \x20 for (uint64_t i = 0; i < old_cap; i++) {\n\
          \x20   if (old_occ[i] == 1) intent_hashmap_i64_i64__insert_raw(m, old_keys[i], old_values[i]);\n\
          \x20 }\n\
@@ -1102,7 +1112,7 @@ fn emit_intent_hashmap_helpers_c_body(out: &mut String, has_option_i64: bool) {
          \x20 uint64_t mask = m->capacity - 1;\n\
          \x20 uint64_t i = intent_hashmap_i64_i64__hash_key(k) & mask;\n\
          \x20 while (m->occ[i] != 0) {\n\
-         \x20   if (m->keys[i] == k) return true;\n\
+         \x20   if (m->occ[i] == 1 && m->keys[i] == k) return true;\n\
          \x20   i = (i + 1) & mask;\n\
          \x20 }\n\
          \x20 return false;\n\
@@ -1119,25 +1129,54 @@ fn emit_intent_hashmap_helpers_c_body(out: &mut String, has_option_i64: bool) {
              \x20 uint64_t mask = m->capacity - 1;\n\
              \x20 uint64_t i = intent_hashmap_i64_i64__hash_key(k) & mask;\n\
              \x20 while (m->occ[i] != 0) {\n\
-             \x20   if (m->keys[i] == k) { r.tag = 0; r.payload = m->values[i]; return r; }\n\
+             \x20   if (m->occ[i] == 1 && m->keys[i] == k) { r.tag = 0; r.payload = m->values[i]; return r; }\n\
              \x20   i = (i + 1) & mask;\n\
              \x20 }\n\
              \x20 r.tag = 1; r.payload = 0; return r;\n\
              }\n\
              static INTENT_UNUSED Enum_Option__i64 intent_hashmap_i64_i64_insert(intent_hashmap_i64_i64* m, int64_t k, int64_t v) {\n\
-             \x20 if (m->capacity == 0 || (m->len * 2) >= m->capacity) intent_hashmap_i64_i64__grow(m);\n\
+             \x20 if (m->capacity == 0 || ((m->len + m->tombstones) * 2) >= m->capacity) intent_hashmap_i64_i64__grow(m);\n\
              \x20 Enum_Option__i64 r;\n\
              \x20 uint64_t mask = m->capacity - 1;\n\
              \x20 uint64_t i = intent_hashmap_i64_i64__hash_key(k) & mask;\n\
+             \x20 /* First-tombstone-or-empty placement: walk past tombstones in\n\
+              * case the key already lives further down the probe chain. */\n\
+             \x20 int64_t first_tomb = -1;\n\
              \x20 while (m->occ[i] != 0) {\n\
-             \x20   if (m->keys[i] == k) {\n\
+             \x20   if (m->occ[i] == 1 && m->keys[i] == k) {\n\
              \x20     r.tag = 0; r.payload = m->values[i];\n\
              \x20     m->values[i] = v;\n\
              \x20     return r;\n\
              \x20   }\n\
+             \x20   if (m->occ[i] == 2 && first_tomb == -1) first_tomb = (int64_t)i;\n\
              \x20   i = (i + 1) & mask;\n\
              \x20 }\n\
-             \x20 m->keys[i] = k; m->values[i] = v; m->occ[i] = 1; m->len++;\n\
+             \x20 if (first_tomb != -1) {\n\
+             \x20   uint64_t slot = (uint64_t)first_tomb;\n\
+             \x20   m->keys[slot] = k; m->values[slot] = v; m->occ[slot] = 1;\n\
+             \x20   m->len++; m->tombstones--;\n\
+             \x20 } else {\n\
+             \x20   m->keys[i] = k; m->values[i] = v; m->occ[i] = 1; m->len++;\n\
+             \x20 }\n\
+             \x20 r.tag = 1; r.payload = 0; return r;\n\
+             }\n\
+             /* Closure #343: remove. Returns Some(prev_value) if the key\n\
+              * was present (marks slot as tombstone), None otherwise. */\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_hashmap_i64_i64_remove(intent_hashmap_i64_i64* m, int64_t k) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (m->capacity == 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 uint64_t mask = m->capacity - 1;\n\
+             \x20 uint64_t i = intent_hashmap_i64_i64__hash_key(k) & mask;\n\
+             \x20 while (m->occ[i] != 0) {\n\
+             \x20   if (m->occ[i] == 1 && m->keys[i] == k) {\n\
+             \x20     r.tag = 0; r.payload = m->values[i];\n\
+             \x20     m->occ[i] = 2;\n\
+             \x20     m->len--;\n\
+             \x20     m->tombstones++;\n\
+             \x20     return r;\n\
+             \x20   }\n\
+             \x20   i = (i + 1) & mask;\n\
+             \x20 }\n\
              \x20 r.tag = 1; r.payload = 0; return r;\n\
              }\n\n",
         );
@@ -8459,6 +8498,11 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         ),
         "hashmap_contains_key" => format!(
             "intent_hashmap_i64_i64_contains_key({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "hashmap_remove" => format!(
+            "intent_hashmap_i64_i64_remove({}, ({}))",
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),

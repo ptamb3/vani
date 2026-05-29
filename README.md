@@ -2791,7 +2791,7 @@ real use cases:
 | BinaryHeap | `heap_push` / `heap_pop` / `heap_peek` / `heapify` on `Vec<i64>` — min-heap (closure #302) | ✅ AFFINE |
 | Deque | `Deque<i64>` ring buffer w/ 8 builtins (new / push_back / push_front / pop_back / pop_front / peek_back / peek_front / len) (closure #303) | ✅ AFFINE |
 | HashSet | `HashSet<i64>` open-addressing hash set w/ 3-state slot tag (empty / occupied / tombstone); 5 builtins (new / insert / contains / remove / len) + method sugar; `(len + tombstones) ≥ capacity / 2` triggers a rehash that clears tombstones (closure #304 + remove in **#342**) | ✅ AFFINE |
-| HashMap | `HashMap<i64, i64>` open-addressing key/value map w/ 5 builtins (new / insert / get / contains_key / len) (closure #305) | ✅ AFFINE under v1 Copy-V; ⚠️ AFFINE-TENSION when V goes non-Copy |
+| HashMap | `HashMap<i64, i64>` open-addressing key/value map w/ 3-state slot tag (empty / occupied / tombstone); 6 builtins (new / insert / get / contains_key / remove / len) + method sugar; `(len + tombstones) ≥ capacity / 2` triggers a rehash that clears tombstones (closure #305 + remove in **#343**) | ✅ AFFINE under v1 Copy-V; ⚠️ AFFINE-TENSION when V goes non-Copy |
 | BTreeSet | `BTreeSet<i64>` ordered set on sorted-Vec backing w/ 5 builtins (new / insert / contains / remove / len) (closure #306) | ✅ AFFINE |
 | BTreeMap | `BTreeMap<i64, i64>` ordered key/value map on parallel-sorted-Vec backing w/ 6 builtins (new / insert / get / contains_key / remove / len) (closure #307) | ✅ AFFINE under v1 Copy-V; ⚠️ AFFINE-TENSION when V goes non-Copy |
 | UnionFind | Disjoint-set with path-compressed find + union-by-rank; parallel `parent`/`rank` i64 arrays; 5 builtins + method sugar (closure #325, **first Level 4 arena container**) | ✅ AFFINE |

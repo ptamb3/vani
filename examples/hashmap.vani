@@ -14,6 +14,10 @@ intent "HashMap<i64, i64> — open-addressing key/value map (Level 2 #4)";
 //       returns the previous value at k (Some), or None
 //   hashmap_get(ref m, k) -> Option<i64>
 //   hashmap_contains_key(ref m, k) -> bool
+//   hashmap_remove(mut ref m, k) -> Option<i64>      [closure #343]
+//       returns Some(prev) if removed, None if absent.
+//       Marks the slot as a tombstone so probe chains
+//       stay intact; future inserts reuse tombstones.
 //   hashmap_len(ref m) -> i64
 //
 // AFFINE-TENSION note: for Copy V (i64 in v1), `get` returns
@@ -59,6 +63,26 @@ fn main() -> i64 {
   print "after bulk insert len:", hashmap_len(ref m);
   print "get k=13 (169):", unwrap_or(hashmap_get(ref m, 13), 0 - 1);
   print "get k=99 (9801):", unwrap_or(hashmap_get(ref m, 99), 0 - 1);
+
+  // Closure #343: hashmap_remove via tombstones. Returns
+  // Some(prev_value) if the key was present, None if not.
+  let r1: Option<i64> = hashmap_remove(mut ref m, 13);
+  let r2: Option<i64> = hashmap_remove(mut ref m, 13);     // already gone
+  let r3: Option<i64> = hashmap_remove(mut ref m, 9001);   // never there
+  print "remove 13 (Some 169):", unwrap_or(r1, 0 - 1);
+  print "remove 13 again (-1):", unwrap_or(r2, 0 - 1);
+  print "remove 9001 (-1):", unwrap_or(r3, 0 - 1);
+  print "after removes len:", hashmap_len(ref m);
+
+  // Re-insert reuses the tombstone slot transparently.
+  let _ = hashmap_insert(mut ref m, 13, 1313);
+  print "get k=13 after re-insert (1313):", unwrap_or(hashmap_get(ref m, 13), 0 - 1);
+
+  // Probe chain integrity: remove an early-collider, ensure
+  // a later key in the same chain is still reachable.
+  let p1: Option<i64> = hashmap_remove(mut ref m, 50);
+  print "remove 50:", unwrap_or(p1, 0 - 1);
+  print "get k=51 (2601):", unwrap_or(hashmap_get(ref m, 51), 0 - 1);
 
   return 0;
 }
