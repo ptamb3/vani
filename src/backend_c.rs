@@ -2110,15 +2110,66 @@ fn stmt_uses_graph(stmt: &crate::ir::TypedStmt) -> bool {
 /// returns Option<i64>, gated on Option__i64 being registered.
 fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit_vec_dep: bool) {
     out.push_str(
-        "typedef struct { int64_t num_nodes; int32_t* edge_src; int32_t* edge_dst; int64_t* edge_weight; int64_t num_edges; int64_t edge_capacity; } intent_graph;\n\
+        "typedef struct { int64_t num_nodes; int32_t* edge_src; int32_t* edge_dst; int64_t* edge_weight; int64_t num_edges; int64_t edge_capacity; int32_t* adj_start; int32_t* adj_csr_dst; int64_t* adj_csr_weight; } intent_graph;\n\
          static INTENT_UNUSED intent_graph intent_graph_new(int64_t n) {\n\
          \x20 intent_graph g;\n\
          \x20 g.num_nodes = (n < 0) ? 0 : n;\n\
          \x20 g.edge_src = (int32_t*)0; g.edge_dst = (int32_t*)0; g.edge_weight = (int64_t*)0;\n\
          \x20 g.num_edges = 0; g.edge_capacity = 0;\n\
+         \x20 g.adj_start = (int32_t*)0; g.adj_csr_dst = (int32_t*)0; g.adj_csr_weight = (int64_t*)0;\n\
          \x20 return g;\n\
          }\n\
+         /* Closure #336: invalidate the CSR cache. Called by add_edge\n\
+          * and at the start of drop. NULL adj_start = cache invalid. */\n\
+         static INTENT_UNUSED void intent_graph_invalidate_csr(intent_graph* g) {\n\
+         \x20 if (g->adj_start) free(g->adj_start);\n\
+         \x20 if (g->adj_csr_dst) free(g->adj_csr_dst);\n\
+         \x20 if (g->adj_csr_weight) free(g->adj_csr_weight);\n\
+         \x20 g->adj_start = (int32_t*)0; g->adj_csr_dst = (int32_t*)0; g->adj_csr_weight = (int64_t*)0;\n\
+         }\n\
+         /* Closure #336: build the CSR adjacency cache on first use.\n\
+          * Allocates adj_start[num_nodes+1] + adj_csr_dst[num_edges]\n\
+          * + adj_csr_weight[num_edges]. Two-pass: count out-degrees,\n\
+          * compute prefix sums, then bucket-scatter edges. The graph\n\
+          * is logically const here — we cast away const because the\n\
+          * CSR cache is mutable cache state. */\n\
+         static INTENT_UNUSED void intent_graph_build_csr_if_needed(const intent_graph* g_ro) {\n\
+         \x20 intent_graph* g = (intent_graph*)g_ro;\n\
+         \x20 if (g->adj_start) return;\n\
+         \x20 if (g->num_nodes <= 0) return;\n\
+         \x20 int64_t nn = g->num_nodes;\n\
+         \x20 int64_t ne = g->num_edges;\n\
+         \x20 g->adj_start = (int32_t*)malloc((size_t)(nn + 1) * sizeof(int32_t));\n\
+         \x20 if (!g->adj_start) abort();\n\
+         \x20 for (int64_t i = 0; i <= nn; i++) g->adj_start[i] = 0;\n\
+         \x20 /* Count out-degrees in adj_start[s+1]. */\n\
+         \x20 for (int64_t e = 0; e < ne; e++) {\n\
+         \x20   int32_t s = g->edge_src[e];\n\
+         \x20   if (s >= 0 && (int64_t)s < nn) g->adj_start[s + 1]++;\n\
+         \x20 }\n\
+         \x20 /* Prefix sum to convert counts to start offsets. */\n\
+         \x20 for (int64_t i = 1; i <= nn; i++) g->adj_start[i] += g->adj_start[i - 1];\n\
+         \x20 int64_t total = (int64_t)g->adj_start[nn];\n\
+         \x20 if (total > 0) {\n\
+         \x20   g->adj_csr_dst = (int32_t*)malloc((size_t)total * sizeof(int32_t));\n\
+         \x20   g->adj_csr_weight = (int64_t*)malloc((size_t)total * sizeof(int64_t));\n\
+         \x20   if (!g->adj_csr_dst || !g->adj_csr_weight) abort();\n\
+         \x20 }\n\
+         \x20 /* Per-source bucket cursor: starts at adj_start[s]. */\n\
+         \x20 int32_t* cur = (int32_t*)malloc((size_t)nn * sizeof(int32_t));\n\
+         \x20 if (!cur) abort();\n\
+         \x20 for (int64_t i = 0; i < nn; i++) cur[i] = g->adj_start[i];\n\
+         \x20 for (int64_t e = 0; e < ne; e++) {\n\
+         \x20   int32_t s = g->edge_src[e];\n\
+         \x20   if (s < 0 || (int64_t)s >= nn) continue;\n\
+         \x20   int32_t pos = cur[s]++;\n\
+         \x20   g->adj_csr_dst[pos] = g->edge_dst[e];\n\
+         \x20   g->adj_csr_weight[pos] = g->edge_weight[e];\n\
+         \x20 }\n\
+         \x20 free(cur);\n\
+         }\n\
          static INTENT_UNUSED void intent_graph_drop(intent_graph* g) {\n\
+         \x20 intent_graph_invalidate_csr(g);\n\
          \x20 if (g->edge_src) free(g->edge_src);\n\
          \x20 if (g->edge_dst) free(g->edge_dst);\n\
          \x20 if (g->edge_weight) free(g->edge_weight);\n\
@@ -2126,6 +2177,7 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
          \x20 g->num_nodes = 0; g->num_edges = 0; g->edge_capacity = 0;\n\
          }\n\
          static INTENT_UNUSED int64_t intent_graph_add_edge(intent_graph* g, int64_t src, int64_t dst, int64_t w) {\n\
+         \x20 intent_graph_invalidate_csr(g);\n\
          \x20 if (g->num_edges >= g->edge_capacity) {\n\
          \x20   g->edge_capacity = g->edge_capacity ? g->edge_capacity * 2 : 8;\n\
          \x20   g->edge_src = (int32_t*)realloc(g->edge_src, (size_t)g->edge_capacity * sizeof(int32_t));\n\
@@ -2145,8 +2197,13 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
          static INTENT_UNUSED int64_t intent_graph_num_edges(const intent_graph* g) {\n\
          \x20 return g->num_edges;\n\
          }\n\
+         /* Closure #336: BFS now iterates neighbors via the CSR\n\
+          * adjacency cache, dropping per-pop edge iteration from\n\
+          * O(num_edges) to O(degree). Overall: O(V+E) instead of\n\
+          * O(V*E). */\n\
          static INTENT_UNUSED int64_t intent_graph_bfs_reach(const intent_graph* g, int64_t start) {\n\
          \x20 if (g->num_nodes <= 0 || start < 0 || start >= g->num_nodes) return 0;\n\
+         \x20 intent_graph_build_csr_if_needed(g);\n\
          \x20 uint8_t* visited = (uint8_t*)calloc((size_t)g->num_nodes, 1);\n\
          \x20 int64_t* queue = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
          \x20 if (!visited || !queue) abort();\n\
@@ -2154,9 +2211,10 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
          \x20 queue[qt++] = start; visited[start] = 1; count = 1;\n\
          \x20 while (qh < qt) {\n\
          \x20   int64_t u = queue[qh++];\n\
-         \x20   for (int64_t e = 0; e < g->num_edges; e++) {\n\
-         \x20     if ((int64_t)g->edge_src[e] != u) continue;\n\
-         \x20     int64_t v = (int64_t)g->edge_dst[e];\n\
+         \x20   int32_t k0 = g->adj_start[u];\n\
+         \x20   int32_t k1 = g->adj_start[u + 1];\n\
+         \x20   for (int32_t k = k0; k < k1; k++) {\n\
+         \x20     int64_t v = (int64_t)g->adj_csr_dst[k];\n\
          \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
          \x20     if (!visited[v]) { visited[v] = 1; queue[qt++] = v; count++; }\n\
          \x20   }\n\
@@ -2164,8 +2222,10 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
          \x20 free(visited); free(queue);\n\
          \x20 return count;\n\
          }\n\
+         /* Closure #336: DFS uses the same CSR cache. */\n\
          static INTENT_UNUSED int64_t intent_graph_dfs_reach(const intent_graph* g, int64_t start) {\n\
          \x20 if (g->num_nodes <= 0 || start < 0 || start >= g->num_nodes) return 0;\n\
+         \x20 intent_graph_build_csr_if_needed(g);\n\
          \x20 uint8_t* visited = (uint8_t*)calloc((size_t)g->num_nodes, 1);\n\
          \x20 int64_t* stack = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
          \x20 if (!visited || !stack) abort();\n\
@@ -2173,9 +2233,10 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
          \x20 stack[sp++] = start; visited[start] = 1; count = 1;\n\
          \x20 while (sp > 0) {\n\
          \x20   int64_t u = stack[--sp];\n\
-         \x20   for (int64_t e = 0; e < g->num_edges; e++) {\n\
-         \x20     if ((int64_t)g->edge_src[e] != u) continue;\n\
-         \x20     int64_t v = (int64_t)g->edge_dst[e];\n\
+         \x20   int32_t k0 = g->adj_start[u];\n\
+         \x20   int32_t k1 = g->adj_start[u + 1];\n\
+         \x20   for (int32_t k = k0; k < k1; k++) {\n\
+         \x20     int64_t v = (int64_t)g->adj_csr_dst[k];\n\
          \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
          \x20     if (!visited[v]) { visited[v] = 1; stack[sp++] = v; count++; }\n\
          \x20   }\n\

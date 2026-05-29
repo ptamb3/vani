@@ -13411,6 +13411,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn graph_emits_csr_cache_helpers() {
+        // Closure #336: Graph gains adj_start / adj_csr_dst /
+        // adj_csr_weight fields + a lazy build helper. BFS / DFS
+        // route through the CSR for O(V+E) traversal. The new
+        // struct layout + build_csr name must appear in both
+        // backends' output.
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(3);
+              let _: i64 = graph_add_edge(mut ref g, 0, 1, 1);
+              let _: i64 = graph_bfs_reach(ref g, 0);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("graph CSR C compile");
+        assert!(
+            c.contains("intent_graph_build_csr_if_needed")
+                && c.contains("intent_graph_invalidate_csr")
+                && c.contains("adj_start")
+                && c.contains("adj_csr_dst"),
+            "C output must reference the CSR helpers + fields; got snippet:\n{}",
+            &c[..c.len().min(1500)]
+        );
+        let ll = compile_to_llvm(source).expect("graph CSR LLVM compile");
+        assert!(
+            ll.contains("@intent_graph_build_csr_if_needed")
+                && ll.contains("@intent_graph_invalidate_csr")
+                && ll.contains("%intent_graph = type { i64, i32*, i32*, i64*, i64, i64, i32*, i32*, i64* }"),
+            "LLVM output must declare the 9-field Graph struct + CSR helpers"
+        );
+    }
+
+    #[test]
     fn graph_astar_topo_emit_helpers() {
         let source = r#"
             fn main() -> i64 {

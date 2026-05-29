@@ -857,6 +857,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "graph.vani",
         "graph_algo.vani",
         "graph_algo2.vani",
+        "graph_csr.vani",
         "hash.vani",
         "hashmap.vani",
         "hashset.vani",

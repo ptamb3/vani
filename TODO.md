@@ -316,11 +316,23 @@ pointer (already in the language as of #279 FFI callbacks).
     helpers are gated on `program_uses_graph_vec_builtin` so
     Graph users that don't touch A*/topo_sort don't get
     spurious `intent_vec_int64_t` references.
+    *CSR adjacency cache shipped 2026-05-29 (closure #336).*
+    Three new struct fields (adj_start / adj_csr_dst /
+    adj_csr_weight) appended at indices 6..8 so existing GEPs
+    for 0..5 stay valid; struct byte_size 48 → 72. New
+    intent_graph_build_csr_if_needed helper does a lazy
+    two-pass build (count out-degrees, prefix-sum into
+    adj_start, bucket-scatter edges). add_edge invalidates
+    the cache; the next traversal rebuilds. BFS and DFS now
+    iterate neighbors via adj_start[u]..adj_start[u+1] for
+    O(V+E) traversal instead of O(V·E). New
+    examples/graph_csr.vani.
     Pending: A* path reconstruction (currently returns just
-    the total cost, not the path); CSR-style adjacency cache
-    invalidated on add_edge for O(V+E) BFS/DFS instead of
-    O((V+E)·E); undirected variant; edges visiting via
-    closures; generic weight types.
+    the total cost, not the path); CSR adoption for the
+    remaining algorithms (has_cycle / dijkstra / astar /
+    prim / kruskal / topo_sort still scan all edges per pop);
+    undirected variant; edges visiting via closures; generic
+    weight types.
 24. **Union-Find / Disjoint-Set** — ✅ AFFINE.
     `Vec<u32>` parent + `Vec<u32>` rank. Path compression
     works under affine because mutation goes through
@@ -690,7 +702,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closures #334 + #335 — **A* with a user heuristic Vec + topological sort writing into a `mut ref Vec<i64>`**, both on the existing Graph type, no new struct fields. (#334) `graph_astar(ref g, src, dst, ref h: Vec<i64>) -> Option<i64>` side-steps the closure-as-value blocker by taking the heuristic as a `Vec<i64>` table; same O(V²) inner loop as Dijkstra but ordered by f = g + h; size-mismatched table returns None. (#335) `graph_topo_sort(ref g, mut ref out: Vec<i64>) -> i64` appends nodes in Kahn-order to `out` and returns the count appended (== num_nodes iff DAG). Both helpers are gated on `program_uses_graph_vec_builtin` so plain Graph users don't get spurious Vec runtime references. Method sugar `g.astar(s,d,ref h)` / `.topo_sort(mut ref out)`. New `examples/graph_algo2.vani` exercises both with cross-backend identical output. 5 new lib tests. Closure #333 (has_cycle / mst_kruskal / mst_prim) shipped immediately before. Next focal area sequence: (#336) **CSR-style adjacency cache** on Graph invalidated on add_edge for O(V+E) BFS/DFS / Dijkstra / A* / topo_sort instead of the current O((V+E)·E) — biggest perf win for larger graphs; needs additional struct fields + a lazy build step. (#337) **Trie alphabet generalization** (per-node sparse children for arbitrary u8 alphabet; radix-compressed variant; delete; ordered enumeration). (#338) **SkipList remove + tail tracker** for O(log n) max. (#339) **Red-black variant on the Bst arena** (1-bit color flag can share the existing heights byte). After Level 4 extensions: closure-as-value type for passing let-bound closures with captures to combinators (would also unblock A* path reconstruction, real Prim/Kruskal weight comparators, etc.); tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-29, after closure #336 — **CSR adjacency cache on the existing Graph type**. Three new fields (`adj_start: i32*` + `adj_csr_dst: i32*` + `adj_csr_weight: i64*`) appended at the end so existing LLVM GEPs for fields 0..5 stay valid; struct byte_size 48 → 72. A lazy `intent_graph_build_csr_if_needed` helper does a two-pass build (count out-degrees per source, prefix-sum into adj_start, bucket-scatter edges into adj_csr_dst/weight). `add_edge` invalidates the cache (frees + nulls the three CSR fields); the next traversal rebuilds. `Drop` also frees the cache. BFS and DFS now iterate neighbors via `adj_start[u]..adj_start[u+1]` for O(V+E) traversal instead of O(V·E). The remaining algorithms (has_cycle, dijkstra, astar, prim, kruskal, topo_sort) still use the per-edge scan in v1 — promoting them to CSR is queued as a follow-up. New `examples/graph_csr.vani` with denser 8-node tree-plus-cross-edge graph + invalidation roundtrip; cross-backend identical output. 1 new lib test. Closures #334 (A*) and #335 (topo_sort) shipped immediately before. Next focal area sequence: (#337) **Promote remaining graph algorithms to use CSR** — has_cycle / topo_sort / dijkstra / astar / prim each do O(num_edges) per visited vertex today; switching them all to CSR iteration is mechanical refactoring once #336 lands. (#338) **Trie alphabet generalization** (per-node sparse children for arbitrary u8 alphabet; radix-compressed variant; delete; ordered enumeration). (#339) **SkipList remove + tail tracker** for O(log n) max. (#340) **Red-black variant on the Bst arena** (1-bit color flag can share the existing heights byte). After Level 4 extensions: closure-as-value type for passing let-bound closures with captures to combinators (would also unblock A* path reconstruction, real Prim/Kruskal weight comparators, etc.); tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

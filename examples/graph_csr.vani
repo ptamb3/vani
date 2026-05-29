@@ -1,0 +1,63 @@
+// build & run:
+//   intentc run examples/graph_csr.vani                          # LLVM backend
+//   intentc run examples/graph_csr.vani --backend=c              # C backend
+
+intent "Graph CSR adjacency cache (closure #336) — BFS/DFS now O(V+E)";
+
+// Closure #336 extends the existing `Graph` type with a lazy
+// CSR (Compressed Sparse Row) adjacency cache. Three new struct
+// fields (adj_start / adj_csr_dst / adj_csr_weight) are kept at
+// the end of the existing struct so GEP indices for fields 0..5
+// stay valid. The cache is built on first traversal and
+// invalidated by `add_edge`. BFS and DFS now iterate neighbors
+// via the CSR (O(degree) per pop, O(V+E) overall) instead of
+// scanning every edge (O(num_edges) per pop, O(V·E) overall).
+//
+// The remaining algorithms (has_cycle, dijkstra, astar, prim,
+// kruskal, topo_sort) still use the original per-edge scan in
+// v1; promoting them to use CSR is queued as a follow-up.
+//
+// This example exercises a denser graph than the small ones in
+// graph.vani / graph_algo*.vani to give the CSR something to
+// chew on, and confirms the answer matches across backends and
+// across pre-/post-add_edge invalidation.
+
+fn main() -> i64 {
+  // 8 nodes in a binary-tree fan-out + cross edges.
+  // 0 → 1, 2;   1 → 3, 4;   2 → 5, 6;   3 → 7;   5 → 7
+  // Plus 1 → 6, 4 → 5 to add cross-shortcuts.
+  let g: Graph = graph_new(8);
+  let _ = g.add_edge(0, 1, 1);
+  let _ = g.add_edge(0, 2, 1);
+  let _ = g.add_edge(1, 3, 1);
+  let _ = g.add_edge(1, 4, 1);
+  let _ = g.add_edge(2, 5, 1);
+  let _ = g.add_edge(2, 6, 1);
+  let _ = g.add_edge(3, 7, 1);
+  let _ = g.add_edge(5, 7, 1);
+  let _ = g.add_edge(1, 6, 1);
+  let _ = g.add_edge(4, 5, 1);
+
+  // First traversal — CSR is built lazily here.
+  print "bfs from 0:", g.bfs_reach(0);
+  print "dfs from 0:", g.dfs_reach(0);
+  print "bfs from 3:", g.bfs_reach(3);
+  print "dfs from 5:", g.dfs_reach(5);
+
+  // Add an edge — CSR is invalidated; next traversal rebuilds.
+  // Now there's a path 7 → 0 reaching everything.
+  let _ = g.add_edge(7, 0, 1);
+  print "bfs from 7 after add_edge:", g.bfs_reach(7);
+  print "dfs from 7 after add_edge:", g.dfs_reach(7);
+
+  // Same queries on an isolated node graph (no edges).
+  let iso: Graph = graph_new(5);
+  print "iso bfs from 0:", iso.bfs_reach(0);
+  print "iso dfs from 3:", iso.dfs_reach(3);
+
+  // Single-node graph.
+  let one: Graph = graph_new(1);
+  print "one bfs from 0:", one.bfs_reach(0);
+
+  return 0;
+}

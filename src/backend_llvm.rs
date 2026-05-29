@@ -259,7 +259,7 @@ fn llvm_byte_size(ty: &Type) -> u64 {
         Type::BinaryHeap(_) => 24, // {data ptr, len, capacity}
         Type::BloomFilter => 32, // {bits ptr, num_bits, num_hashes, insert_count}
         Type::Bst(_) => 48, // {keys ptr, left ptr, right ptr, root, len, capacity, heights ptr}
-        Type::Graph => 48, // {num_nodes, edge_src ptr, edge_dst ptr, edge_weight ptr, num_edges, edge_capacity}
+        Type::Graph => 72, // closure #336: 9 fields incl. CSR cache (adj_start, adj_csr_dst, adj_csr_weight)
         Type::Trie => 40, // {children ptr, is_end ptr, num_nodes, capacity, num_words}
         Type::SkipList => 56, // {keys, forward, node_levels, rng_state, num_nodes, capacity, num_keys}
         Type::Object(_) => 16, // fat pointer: vtable + data
@@ -648,8 +648,18 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("%intent_bloom_filter = type { i8*, i64, i64, i64 }\n");
     // Bst<i64> (closure #328 + AVL in #332): { keys*, left*, right*, root, len, capacity, heights* } — AVL BST on node arena.
     out.push_str("%intent_bst_i64 = type { i64*, i32*, i32*, i64, i64, i64, i8* }\n");
-    // Graph (closure #329): { num_nodes, edge_src*, edge_dst*, edge_weight*, num_edges, edge_capacity } — weighted directed graph.
-    out.push_str("%intent_graph = type { i64, i32*, i32*, i64*, i64, i64 }\n");
+    // Graph (closure #329 + CSR cache in #336):
+    //   0: num_nodes (i64)
+    //   1: edge_src (i32*)         per-edge parallel arrays
+    //   2: edge_dst (i32*)
+    //   3: edge_weight (i64*)
+    //   4: num_edges (i64)
+    //   5: edge_capacity (i64)
+    //   6: adj_start (i32*)         CSR row pointers, length num_nodes+1, NULL = invalid
+    //   7: adj_csr_dst (i32*)       CSR neighbor list, length num_edges
+    //   8: adj_csr_weight (i64*)    CSR weights, parallel to adj_csr_dst
+    // The CSR cache is built lazily on first use and invalidated on add_edge.
+    out.push_str("%intent_graph = type { i64, i32*, i32*, i64*, i64, i64, i32*, i32*, i64* }\n");
     // Trie (closure #330): { children*, is_end*, num_nodes, capacity, num_words } — prefix tree on a-z alphabet (26-wide flat children).
     out.push_str("%intent_trie = type { i32*, i8*, i64, i64, i64 }\n");
     // SkipList<i64> (closure #331): { keys*, forward*, node_levels*, rng_state, num_nodes, capacity, num_keys } — probabilistic ordered set.
@@ -10067,9 +10077,223 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
          \x20 %r3 = insertvalue %intent_graph %r2, i64* null, 3\n\
          \x20 %r4 = insertvalue %intent_graph %r3, i64 0, 4\n\
          \x20 %r5 = insertvalue %intent_graph %r4, i64 0, 5\n\
-         \x20 ret %intent_graph %r5\n\
+         \x20 %r6 = insertvalue %intent_graph %r5, i32* null, 6\n\
+         \x20 %r7 = insertvalue %intent_graph %r6, i32* null, 7\n\
+         \x20 %r8 = insertvalue %intent_graph %r7, i64* null, 8\n\
+         \x20 ret %intent_graph %r8\n\
+         }\n\
+         ; Closure #336: invalidate the CSR cache. NULL adj_start = cache invalid.\n\
+         define void @intent_graph_invalidate_csr(%intent_graph* %g) {\n\
+         \x20 %asp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 6\n\
+         \x20 %acdp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 7\n\
+         \x20 %acwp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 8\n\
+         \x20 %as_v = load i32*, i32** %asp\n\
+         \x20 %acd_v = load i32*, i32** %acdp\n\
+         \x20 %acw_v = load i64*, i64** %acwp\n\
+         \x20 %as_null = icmp eq i32* %as_v, null\n\
+         \x20 br i1 %as_null, label %ic_acd, label %ic_fas\n\
+         ic_fas:\n\
+         \x20 %as_i8 = bitcast i32* %as_v to i8*\n\
+         \x20 call void @free(i8* %as_i8)\n\
+         \x20 br label %ic_acd\n\
+         ic_acd:\n\
+         \x20 %acd_null = icmp eq i32* %acd_v, null\n\
+         \x20 br i1 %acd_null, label %ic_acw, label %ic_facd\n\
+         ic_facd:\n\
+         \x20 %acd_i8 = bitcast i32* %acd_v to i8*\n\
+         \x20 call void @free(i8* %acd_i8)\n\
+         \x20 br label %ic_acw\n\
+         ic_acw:\n\
+         \x20 %acw_null = icmp eq i64* %acw_v, null\n\
+         \x20 br i1 %acw_null, label %ic_done, label %ic_facw\n\
+         ic_facw:\n\
+         \x20 %acw_i8 = bitcast i64* %acw_v to i8*\n\
+         \x20 call void @free(i8* %acw_i8)\n\
+         \x20 br label %ic_done\n\
+         ic_done:\n\
+         \x20 store i32* null, i32** %asp\n\
+         \x20 store i32* null, i32** %acdp\n\
+         \x20 store i64* null, i64** %acwp\n\
+         \x20 ret void\n\
+         }\n\
+         ; Closure #336: build CSR cache lazily on first traversal.\n\
+         ; adj_start[i] = offset into adj_csr_dst where node i's\n\
+         ; outgoing neighbors begin; adj_start[num_nodes] = total\n\
+         ; edges actually placed (out-of-range edges skipped).\n\
+         define void @intent_graph_build_csr_if_needed(%intent_graph* %g) {\n\
+         \x20 %asp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 6\n\
+         \x20 %as_cur = load i32*, i32** %asp\n\
+         \x20 %has_csr = icmp ne i32* %as_cur, null\n\
+         \x20 br i1 %has_csr, label %bc_done, label %bc_check_nn\n\
+         bc_check_nn:\n\
+         \x20 %nnp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 0\n\
+         \x20 %nn = load i64, i64* %nnp\n\
+         \x20 %nn_le_zero = icmp sle i64 %nn, 0\n\
+         \x20 br i1 %nn_le_zero, label %bc_done, label %bc_alloc\n\
+         bc_alloc:\n\
+         \x20 %nn1 = add i64 %nn, 1\n\
+         \x20 %as_bytes = mul i64 %nn1, 4\n\
+         \x20 %as_new_i8 = call i8* @malloc(i64 %as_bytes)\n\
+         \x20 %as_new = bitcast i8* %as_new_i8 to i32*\n\
+         \x20 store i32* %as_new, i32** %asp\n\
+         \x20 ; Zero adj_start[0..=nn].\n\
+         \x20 %i0_p = alloca i64\n\
+         \x20 store i64 0, i64* %i0_p\n\
+         \x20 br label %bc_zero_loop\n\
+         bc_zero_loop:\n\
+         \x20 %i0 = load i64, i64* %i0_p\n\
+         \x20 %i0_done = icmp sgt i64 %i0, %nn\n\
+         \x20 br i1 %i0_done, label %bc_count_init, label %bc_zero_body\n\
+         bc_zero_body:\n\
+         \x20 %as_slot0 = getelementptr i32, i32* %as_new, i64 %i0\n\
+         \x20 store i32 0, i32* %as_slot0\n\
+         \x20 %i0_inc = add i64 %i0, 1\n\
+         \x20 store i64 %i0_inc, i64* %i0_p\n\
+         \x20 br label %bc_zero_loop\n\
+         bc_count_init:\n\
+         \x20 %nep = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 4\n\
+         \x20 %ne = load i64, i64* %nep\n\
+         \x20 %spp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
+         \x20 %dpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
+         \x20 %wpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 3\n\
+         \x20 %src_arr_bc = load i32*, i32** %spp\n\
+         \x20 %dst_arr_bc = load i32*, i32** %dpp\n\
+         \x20 %w_arr_bc = load i64*, i64** %wpp\n\
+         \x20 %ec_p = alloca i64\n\
+         \x20 store i64 0, i64* %ec_p\n\
+         \x20 br label %bc_count_loop\n\
+         bc_count_loop:\n\
+         \x20 %ec = load i64, i64* %ec_p\n\
+         \x20 %ec_done = icmp sge i64 %ec, %ne\n\
+         \x20 br i1 %ec_done, label %bc_prefix_init, label %bc_count_body\n\
+         bc_count_body:\n\
+         \x20 %src_slot_bc = getelementptr i32, i32* %src_arr_bc, i64 %ec\n\
+         \x20 %s32_bc = load i32, i32* %src_slot_bc\n\
+         \x20 %s64_bc = sext i32 %s32_bc to i64\n\
+         \x20 %s_lo_bc = icmp slt i64 %s64_bc, 0\n\
+         \x20 %s_hi_bc = icmp sge i64 %s64_bc, %nn\n\
+         \x20 %s_bad_bc = or i1 %s_lo_bc, %s_hi_bc\n\
+         \x20 br i1 %s_bad_bc, label %bc_count_next, label %bc_count_incr\n\
+         bc_count_incr:\n\
+         \x20 %s_p1 = add i64 %s64_bc, 1\n\
+         \x20 %as_count_slot = getelementptr i32, i32* %as_new, i64 %s_p1\n\
+         \x20 %as_count_v = load i32, i32* %as_count_slot\n\
+         \x20 %as_count_inc = add i32 %as_count_v, 1\n\
+         \x20 store i32 %as_count_inc, i32* %as_count_slot\n\
+         \x20 br label %bc_count_next\n\
+         bc_count_next:\n\
+         \x20 %ec_inc = add i64 %ec, 1\n\
+         \x20 store i64 %ec_inc, i64* %ec_p\n\
+         \x20 br label %bc_count_loop\n\
+         bc_prefix_init:\n\
+         \x20 ; Prefix sum: adj_start[i] += adj_start[i-1].\n\
+         \x20 %pi_p = alloca i64\n\
+         \x20 store i64 1, i64* %pi_p\n\
+         \x20 br label %bc_prefix_loop\n\
+         bc_prefix_loop:\n\
+         \x20 %pi = load i64, i64* %pi_p\n\
+         \x20 %pi_done = icmp sgt i64 %pi, %nn\n\
+         \x20 br i1 %pi_done, label %bc_alloc_dst, label %bc_prefix_body\n\
+         bc_prefix_body:\n\
+         \x20 %pi_m1 = sub i64 %pi, 1\n\
+         \x20 %prev_slot = getelementptr i32, i32* %as_new, i64 %pi_m1\n\
+         \x20 %prev_v = load i32, i32* %prev_slot\n\
+         \x20 %cur_slot = getelementptr i32, i32* %as_new, i64 %pi\n\
+         \x20 %cur_v = load i32, i32* %cur_slot\n\
+         \x20 %sum_p = add i32 %cur_v, %prev_v\n\
+         \x20 store i32 %sum_p, i32* %cur_slot\n\
+         \x20 %pi_inc = add i64 %pi, 1\n\
+         \x20 store i64 %pi_inc, i64* %pi_p\n\
+         \x20 br label %bc_prefix_loop\n\
+         bc_alloc_dst:\n\
+         \x20 %total_slot = getelementptr i32, i32* %as_new, i64 %nn\n\
+         \x20 %total_i32 = load i32, i32* %total_slot\n\
+         \x20 %total_i64 = sext i32 %total_i32 to i64\n\
+         \x20 %has_edges = icmp sgt i64 %total_i64, 0\n\
+         \x20 br i1 %has_edges, label %bc_alloc_edge_bufs, label %bc_cursor_init\n\
+         bc_alloc_edge_bufs:\n\
+         \x20 %acdp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 7\n\
+         \x20 %acwp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 8\n\
+         \x20 %acd_bytes = mul i64 %total_i64, 4\n\
+         \x20 %acd_i8 = call i8* @malloc(i64 %acd_bytes)\n\
+         \x20 %acd_new = bitcast i8* %acd_i8 to i32*\n\
+         \x20 store i32* %acd_new, i32** %acdp\n\
+         \x20 %acw_bytes = mul i64 %total_i64, 8\n\
+         \x20 %acw_i8 = call i8* @malloc(i64 %acw_bytes)\n\
+         \x20 %acw_new = bitcast i8* %acw_i8 to i64*\n\
+         \x20 store i64* %acw_new, i64** %acwp\n\
+         \x20 br label %bc_cursor_init\n\
+         bc_cursor_init:\n\
+         \x20 ; Per-source cursor[i] = adj_start[i] initially.\n\
+         \x20 %cur_bytes = mul i64 %nn, 4\n\
+         \x20 %cur_i8 = call i8* @malloc(i64 %cur_bytes)\n\
+         \x20 %cur_arr = bitcast i8* %cur_i8 to i32*\n\
+         \x20 %ci_p = alloca i64\n\
+         \x20 store i64 0, i64* %ci_p\n\
+         \x20 br label %bc_cursor_init_loop\n\
+         bc_cursor_init_loop:\n\
+         \x20 %ci = load i64, i64* %ci_p\n\
+         \x20 %ci_done = icmp sge i64 %ci, %nn\n\
+         \x20 br i1 %ci_done, label %bc_scatter_init, label %bc_cursor_init_body\n\
+         bc_cursor_init_body:\n\
+         \x20 %as_ci_slot = getelementptr i32, i32* %as_new, i64 %ci\n\
+         \x20 %as_ci_v = load i32, i32* %as_ci_slot\n\
+         \x20 %cur_ci_slot = getelementptr i32, i32* %cur_arr, i64 %ci\n\
+         \x20 store i32 %as_ci_v, i32* %cur_ci_slot\n\
+         \x20 %ci_inc = add i64 %ci, 1\n\
+         \x20 store i64 %ci_inc, i64* %ci_p\n\
+         \x20 br label %bc_cursor_init_loop\n\
+         bc_scatter_init:\n\
+         \x20 %sp_e = alloca i64\n\
+         \x20 store i64 0, i64* %sp_e\n\
+         \x20 br label %bc_scatter_loop\n\
+         bc_scatter_loop:\n\
+         \x20 %ce = load i64, i64* %sp_e\n\
+         \x20 %ce_done = icmp sge i64 %ce, %ne\n\
+         \x20 br i1 %ce_done, label %bc_finish, label %bc_scatter_body\n\
+         bc_scatter_body:\n\
+         \x20 %src_arr_sc = load i32*, i32** %spp\n\
+         \x20 %src_slot_sc = getelementptr i32, i32* %src_arr_sc, i64 %ce\n\
+         \x20 %s32_sc = load i32, i32* %src_slot_sc\n\
+         \x20 %s64_sc = sext i32 %s32_sc to i64\n\
+         \x20 %s_lo_sc = icmp slt i64 %s64_sc, 0\n\
+         \x20 %s_hi_sc = icmp sge i64 %s64_sc, %nn\n\
+         \x20 %s_bad_sc = or i1 %s_lo_sc, %s_hi_sc\n\
+         \x20 br i1 %s_bad_sc, label %bc_scatter_next, label %bc_scatter_place\n\
+         bc_scatter_place:\n\
+         \x20 %cur_s_slot = getelementptr i32, i32* %cur_arr, i64 %s64_sc\n\
+         \x20 %pos_i32 = load i32, i32* %cur_s_slot\n\
+         \x20 %pos_i64 = sext i32 %pos_i32 to i64\n\
+         \x20 %pos_inc = add i32 %pos_i32, 1\n\
+         \x20 store i32 %pos_inc, i32* %cur_s_slot\n\
+         \x20 %dst_arr_sc = load i32*, i32** %dpp\n\
+         \x20 %w_arr_sc = load i64*, i64** %wpp\n\
+         \x20 %dst_sc_slot = getelementptr i32, i32* %dst_arr_sc, i64 %ce\n\
+         \x20 %d32_sc = load i32, i32* %dst_sc_slot\n\
+         \x20 %w_sc_slot = getelementptr i64, i64* %w_arr_sc, i64 %ce\n\
+         \x20 %w_sc_v = load i64, i64* %w_sc_slot\n\
+         \x20 %acdp2 = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 7\n\
+         \x20 %acwp2 = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 8\n\
+         \x20 %acd_arr = load i32*, i32** %acdp2\n\
+         \x20 %acw_arr = load i64*, i64** %acwp2\n\
+         \x20 %acd_pos_slot = getelementptr i32, i32* %acd_arr, i64 %pos_i64\n\
+         \x20 store i32 %d32_sc, i32* %acd_pos_slot\n\
+         \x20 %acw_pos_slot = getelementptr i64, i64* %acw_arr, i64 %pos_i64\n\
+         \x20 store i64 %w_sc_v, i64* %acw_pos_slot\n\
+         \x20 br label %bc_scatter_next\n\
+         bc_scatter_next:\n\
+         \x20 %ce_inc = add i64 %ce, 1\n\
+         \x20 store i64 %ce_inc, i64* %sp_e\n\
+         \x20 br label %bc_scatter_loop\n\
+         bc_finish:\n\
+         \x20 %cur_free = bitcast i32* %cur_arr to i8*\n\
+         \x20 call void @free(i8* %cur_free)\n\
+         \x20 br label %bc_done\n\
+         bc_done:\n\
+         \x20 ret void\n\
          }\n\
          define void @intent_graph_drop(%intent_graph* %g) {\n\
+         \x20 call void @intent_graph_invalidate_csr(%intent_graph* %g)\n\
          \x20 %spp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
          \x20 %dpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
          \x20 %wpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 3\n\
@@ -10109,6 +10333,7 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
          \x20 ret void\n\
          }\n\
          define i64 @intent_graph_add_edge(%intent_graph* %g, i64 %src, i64 %dst, i64 %w) {\n\
+         \x20 call void @intent_graph_invalidate_csr(%intent_graph* %g)\n\
          \x20 %spp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
          \x20 %dpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
          \x20 %wpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 3\n\
@@ -10168,22 +10393,22 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
          \x20 %v = load i64, i64* %p\n\
          \x20 ret i64 %v\n\
          }\n\
+         ; Closure #336: BFS via CSR — O(V+E) instead of O(V*E).\n\
          define i64 @intent_graph_bfs_reach(%intent_graph* %g, i64 %start) {\n\
          \x20 %nnp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 0\n\
-         \x20 %spp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
-         \x20 %dpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
-         \x20 %nep = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 4\n\
          \x20 %nn = load i64, i64* %nnp\n\
-         \x20 %ne = load i64, i64* %nep\n\
          \x20 %nn_zero = icmp sle i64 %nn, 0\n\
          \x20 %start_lo = icmp slt i64 %start, 0\n\
          \x20 %start_hi = icmp sge i64 %start, %nn\n\
          \x20 %bad1 = or i1 %nn_zero, %start_lo\n\
          \x20 %bad = or i1 %bad1, %start_hi\n\
-         \x20 br i1 %bad, label %bfs_zero, label %bfs_init\n\
+         \x20 br i1 %bad, label %bfs_zero, label %bfs_build\n\
          bfs_zero:\n\
          \x20 ret i64 0\n\
-         bfs_init:\n\
+         bfs_build:\n\
+         \x20 call void @intent_graph_build_csr_if_needed(%intent_graph* %g)\n\
+         \x20 %asp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 6\n\
+         \x20 %acdp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 7\n\
          \x20 %visited = call i8* @calloc(i64 %nn, i64 1)\n\
          \x20 %q_bytes = mul i64 %nn, 8\n\
          \x20 %queue_i8 = call i8* @malloc(i64 %q_bytes)\n\
@@ -10209,49 +10434,50 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
          \x20 %u = load i64, i64* %u_slot\n\
          \x20 %qh_next = add i64 %qh, 1\n\
          \x20 store i64 %qh_next, i64* %qh_p\n\
-         \x20 %e_p = alloca i64\n\
-         \x20 store i64 0, i64* %e_p\n\
-         \x20 br label %bfs_edge_loop\n\
-         bfs_edge_loop:\n\
-         \x20 %e = load i64, i64* %e_p\n\
-         \x20 %e_done = icmp sge i64 %e, %ne\n\
-         \x20 br i1 %e_done, label %bfs_outer, label %bfs_edge_body\n\
-         bfs_edge_body:\n\
-         \x20 %src_arr = load i32*, i32** %spp\n\
-         \x20 %src_slot = getelementptr i32, i32* %src_arr, i64 %e\n\
-         \x20 %src32 = load i32, i32* %src_slot\n\
-         \x20 %src64 = sext i32 %src32 to i64\n\
-         \x20 %is_src = icmp eq i64 %src64, %u\n\
-         \x20 br i1 %is_src, label %bfs_edge_check_v, label %bfs_edge_next\n\
-         bfs_edge_check_v:\n\
-         \x20 %dst_arr = load i32*, i32** %dpp\n\
-         \x20 %dst_slot = getelementptr i32, i32* %dst_arr, i64 %e\n\
-         \x20 %dst32 = load i32, i32* %dst_slot\n\
-         \x20 %v = sext i32 %dst32 to i64\n\
-         \x20 %v_lo = icmp slt i64 %v, 0\n\
-         \x20 %v_hi = icmp sge i64 %v, %nn\n\
+         \x20 %as_arr_bfs = load i32*, i32** %asp\n\
+         \x20 %k0_slot = getelementptr i32, i32* %as_arr_bfs, i64 %u\n\
+         \x20 %k0_i32 = load i32, i32* %k0_slot\n\
+         \x20 %u_p1_bfs = add i64 %u, 1\n\
+         \x20 %k1_slot = getelementptr i32, i32* %as_arr_bfs, i64 %u_p1_bfs\n\
+         \x20 %k1_i32 = load i32, i32* %k1_slot\n\
+         \x20 %k0_i64 = sext i32 %k0_i32 to i64\n\
+         \x20 %k1_i64 = sext i32 %k1_i32 to i64\n\
+         \x20 %k_p = alloca i64\n\
+         \x20 store i64 %k0_i64, i64* %k_p\n\
+         \x20 br label %bfs_nbr_loop\n\
+         bfs_nbr_loop:\n\
+         \x20 %k = load i64, i64* %k_p\n\
+         \x20 %k_done = icmp sge i64 %k, %k1_i64\n\
+         \x20 br i1 %k_done, label %bfs_outer, label %bfs_nbr_body\n\
+         bfs_nbr_body:\n\
+         \x20 %acd_arr_bfs = load i32*, i32** %acdp\n\
+         \x20 %acd_slot = getelementptr i32, i32* %acd_arr_bfs, i64 %k\n\
+         \x20 %dst32_bfs = load i32, i32* %acd_slot\n\
+         \x20 %v_bfs = sext i32 %dst32_bfs to i64\n\
+         \x20 %v_lo = icmp slt i64 %v_bfs, 0\n\
+         \x20 %v_hi = icmp sge i64 %v_bfs, %nn\n\
          \x20 %v_bad = or i1 %v_lo, %v_hi\n\
-         \x20 br i1 %v_bad, label %bfs_edge_next, label %bfs_edge_visit\n\
-         bfs_edge_visit:\n\
-         \x20 %vv_slot = getelementptr i8, i8* %visited, i64 %v\n\
+         \x20 br i1 %v_bad, label %bfs_nbr_next, label %bfs_nbr_visit\n\
+         bfs_nbr_visit:\n\
+         \x20 %vv_slot = getelementptr i8, i8* %visited, i64 %v_bfs\n\
          \x20 %was = load i8, i8* %vv_slot\n\
          \x20 %seen = icmp ne i8 %was, 0\n\
-         \x20 br i1 %seen, label %bfs_edge_next, label %bfs_edge_push\n\
-         bfs_edge_push:\n\
+         \x20 br i1 %seen, label %bfs_nbr_next, label %bfs_nbr_push\n\
+         bfs_nbr_push:\n\
          \x20 store i8 1, i8* %vv_slot\n\
          \x20 %qt_cur = load i64, i64* %qt_p\n\
          \x20 %q_new_slot = getelementptr i64, i64* %queue, i64 %qt_cur\n\
-         \x20 store i64 %v, i64* %q_new_slot\n\
+         \x20 store i64 %v_bfs, i64* %q_new_slot\n\
          \x20 %qt_inc = add i64 %qt_cur, 1\n\
          \x20 store i64 %qt_inc, i64* %qt_p\n\
          \x20 %cnt = load i64, i64* %count_p\n\
          \x20 %cnt_inc = add i64 %cnt, 1\n\
          \x20 store i64 %cnt_inc, i64* %count_p\n\
-         \x20 br label %bfs_edge_next\n\
-         bfs_edge_next:\n\
-         \x20 %e_inc = add i64 %e, 1\n\
-         \x20 store i64 %e_inc, i64* %e_p\n\
-         \x20 br label %bfs_edge_loop\n\
+         \x20 br label %bfs_nbr_next\n\
+         bfs_nbr_next:\n\
+         \x20 %k_inc_bfs = add i64 %k, 1\n\
+         \x20 store i64 %k_inc_bfs, i64* %k_p\n\
+         \x20 br label %bfs_nbr_loop\n\
          bfs_finish:\n\
          \x20 call void @free(i8* %visited)\n\
          \x20 %qf_i8 = bitcast i64* %queue to i8*\n\
@@ -10259,22 +10485,22 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
          \x20 %result = load i64, i64* %count_p\n\
          \x20 ret i64 %result\n\
          }\n\
+         ; Closure #336: DFS via CSR — O(V+E) instead of O(V*E).\n\
          define i64 @intent_graph_dfs_reach(%intent_graph* %g, i64 %start) {\n\
          \x20 %nnp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 0\n\
-         \x20 %spp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
-         \x20 %dpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
-         \x20 %nep = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 4\n\
          \x20 %nn = load i64, i64* %nnp\n\
-         \x20 %ne = load i64, i64* %nep\n\
          \x20 %nn_zero = icmp sle i64 %nn, 0\n\
          \x20 %start_lo = icmp slt i64 %start, 0\n\
          \x20 %start_hi = icmp sge i64 %start, %nn\n\
          \x20 %bad1 = or i1 %nn_zero, %start_lo\n\
          \x20 %bad = or i1 %bad1, %start_hi\n\
-         \x20 br i1 %bad, label %dfs_zero, label %dfs_init\n\
+         \x20 br i1 %bad, label %dfs_zero, label %dfs_build\n\
          dfs_zero:\n\
          \x20 ret i64 0\n\
-         dfs_init:\n\
+         dfs_build:\n\
+         \x20 call void @intent_graph_build_csr_if_needed(%intent_graph* %g)\n\
+         \x20 %asp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 6\n\
+         \x20 %acdp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 7\n\
          \x20 %visited = call i8* @calloc(i64 %nn, i64 1)\n\
          \x20 %s_bytes = mul i64 %nn, 8\n\
          \x20 %stack_i8 = call i8* @malloc(i64 %s_bytes)\n\
@@ -10297,49 +10523,50 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
          \x20 store i64 %sp_dec, i64* %sp_p\n\
          \x20 %u_slot = getelementptr i64, i64* %stack, i64 %sp_dec\n\
          \x20 %u = load i64, i64* %u_slot\n\
-         \x20 %e_p = alloca i64\n\
-         \x20 store i64 0, i64* %e_p\n\
-         \x20 br label %dfs_edge_loop\n\
-         dfs_edge_loop:\n\
-         \x20 %e = load i64, i64* %e_p\n\
-         \x20 %e_done = icmp sge i64 %e, %ne\n\
-         \x20 br i1 %e_done, label %dfs_outer, label %dfs_edge_body\n\
-         dfs_edge_body:\n\
-         \x20 %src_arr = load i32*, i32** %spp\n\
-         \x20 %src_slot = getelementptr i32, i32* %src_arr, i64 %e\n\
-         \x20 %src32 = load i32, i32* %src_slot\n\
-         \x20 %src64 = sext i32 %src32 to i64\n\
-         \x20 %is_src = icmp eq i64 %src64, %u\n\
-         \x20 br i1 %is_src, label %dfs_edge_check_v, label %dfs_edge_next\n\
-         dfs_edge_check_v:\n\
-         \x20 %dst_arr = load i32*, i32** %dpp\n\
-         \x20 %dst_slot = getelementptr i32, i32* %dst_arr, i64 %e\n\
-         \x20 %dst32 = load i32, i32* %dst_slot\n\
-         \x20 %v = sext i32 %dst32 to i64\n\
-         \x20 %v_lo = icmp slt i64 %v, 0\n\
-         \x20 %v_hi = icmp sge i64 %v, %nn\n\
-         \x20 %v_bad = or i1 %v_lo, %v_hi\n\
-         \x20 br i1 %v_bad, label %dfs_edge_next, label %dfs_edge_visit\n\
-         dfs_edge_visit:\n\
-         \x20 %vv_slot = getelementptr i8, i8* %visited, i64 %v\n\
-         \x20 %was = load i8, i8* %vv_slot\n\
-         \x20 %seen = icmp ne i8 %was, 0\n\
-         \x20 br i1 %seen, label %dfs_edge_next, label %dfs_edge_push\n\
-         dfs_edge_push:\n\
-         \x20 store i8 1, i8* %vv_slot\n\
-         \x20 %sp_cur = load i64, i64* %sp_p\n\
-         \x20 %s_new_slot = getelementptr i64, i64* %stack, i64 %sp_cur\n\
-         \x20 store i64 %v, i64* %s_new_slot\n\
-         \x20 %sp_inc = add i64 %sp_cur, 1\n\
-         \x20 store i64 %sp_inc, i64* %sp_p\n\
-         \x20 %cnt = load i64, i64* %count_p\n\
-         \x20 %cnt_inc = add i64 %cnt, 1\n\
-         \x20 store i64 %cnt_inc, i64* %count_p\n\
-         \x20 br label %dfs_edge_next\n\
-         dfs_edge_next:\n\
-         \x20 %e_inc = add i64 %e, 1\n\
-         \x20 store i64 %e_inc, i64* %e_p\n\
-         \x20 br label %dfs_edge_loop\n\
+         \x20 %as_arr_dfs = load i32*, i32** %asp\n\
+         \x20 %dk0_slot = getelementptr i32, i32* %as_arr_dfs, i64 %u\n\
+         \x20 %dk0_i32 = load i32, i32* %dk0_slot\n\
+         \x20 %u_p1_dfs = add i64 %u, 1\n\
+         \x20 %dk1_slot = getelementptr i32, i32* %as_arr_dfs, i64 %u_p1_dfs\n\
+         \x20 %dk1_i32 = load i32, i32* %dk1_slot\n\
+         \x20 %dk0_i64 = sext i32 %dk0_i32 to i64\n\
+         \x20 %dk1_i64 = sext i32 %dk1_i32 to i64\n\
+         \x20 %dk_p = alloca i64\n\
+         \x20 store i64 %dk0_i64, i64* %dk_p\n\
+         \x20 br label %dfs_nbr_loop\n\
+         dfs_nbr_loop:\n\
+         \x20 %dk = load i64, i64* %dk_p\n\
+         \x20 %dk_done = icmp sge i64 %dk, %dk1_i64\n\
+         \x20 br i1 %dk_done, label %dfs_outer, label %dfs_nbr_body\n\
+         dfs_nbr_body:\n\
+         \x20 %acd_arr_dfs = load i32*, i32** %acdp\n\
+         \x20 %dacd_slot = getelementptr i32, i32* %acd_arr_dfs, i64 %dk\n\
+         \x20 %ddst32 = load i32, i32* %dacd_slot\n\
+         \x20 %dv = sext i32 %ddst32 to i64\n\
+         \x20 %dv_lo = icmp slt i64 %dv, 0\n\
+         \x20 %dv_hi = icmp sge i64 %dv, %nn\n\
+         \x20 %dv_bad = or i1 %dv_lo, %dv_hi\n\
+         \x20 br i1 %dv_bad, label %dfs_nbr_next, label %dfs_nbr_visit\n\
+         dfs_nbr_visit:\n\
+         \x20 %dvv_slot = getelementptr i8, i8* %visited, i64 %dv\n\
+         \x20 %dwas = load i8, i8* %dvv_slot\n\
+         \x20 %dseen = icmp ne i8 %dwas, 0\n\
+         \x20 br i1 %dseen, label %dfs_nbr_next, label %dfs_nbr_push\n\
+         dfs_nbr_push:\n\
+         \x20 store i8 1, i8* %dvv_slot\n\
+         \x20 %dsp_cur = load i64, i64* %sp_p\n\
+         \x20 %ds_new_slot = getelementptr i64, i64* %stack, i64 %dsp_cur\n\
+         \x20 store i64 %dv, i64* %ds_new_slot\n\
+         \x20 %dsp_inc = add i64 %dsp_cur, 1\n\
+         \x20 store i64 %dsp_inc, i64* %sp_p\n\
+         \x20 %dcnt = load i64, i64* %count_p\n\
+         \x20 %dcnt_inc = add i64 %dcnt, 1\n\
+         \x20 store i64 %dcnt_inc, i64* %count_p\n\
+         \x20 br label %dfs_nbr_next\n\
+         dfs_nbr_next:\n\
+         \x20 %dk_inc = add i64 %dk, 1\n\
+         \x20 store i64 %dk_inc, i64* %dk_p\n\
+         \x20 br label %dfs_nbr_loop\n\
          dfs_finish:\n\
          \x20 call void @free(i8* %visited)\n\
          \x20 %sf_i8 = bitcast i64* %stack to i8*\n\
