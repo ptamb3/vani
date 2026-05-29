@@ -576,6 +576,12 @@ pub fn emit_c(program: &TypedProgram) -> String {
     if program_uses_trie(program) {
         emit_intent_trie_helpers_c_body(&mut body);
     }
+    if program_uses_skiplist(program) {
+        let has_option_i64 = ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        emit_intent_skiplist_helpers_c_body(&mut body, has_option_i64);
+    }
 
     for function in &program.functions {
         emit_prototype(function, &mut body);
@@ -2161,6 +2167,175 @@ fn emit_intent_trie_helpers_c_body(out: &mut String) {
          \x20 return t->num_nodes;\n\
          }\n\n",
     );
+}
+
+/// Walk the program for any `SkipList` type usage. Closure #331.
+pub(crate) fn program_uses_skiplist(program: &TypedProgram) -> bool {
+    fn ty_uses(ty: &Type) -> bool {
+        match ty {
+            Type::SkipList => true,
+            Type::Vec(inner) | Type::Ref(inner) | Type::RefMut(inner) => ty_uses(inner),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if ty_uses(&f.return_type) {
+            return true;
+        }
+        for p in &f.params {
+            if ty_uses(&p.ty) {
+                return true;
+            }
+        }
+        for s in &f.body {
+            if stmt_uses_skiplist(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn stmt_uses_skiplist(stmt: &crate::ir::TypedStmt) -> bool {
+    use crate::ir::TypedStmt as S;
+    fn ty_uses(ty: &Type) -> bool {
+        matches!(ty, Type::SkipList)
+            || matches!(ty,
+                Type::Vec(i) | Type::Ref(i) | Type::RefMut(i) if ty_uses(i))
+    }
+    match stmt {
+        S::Let { ty, .. } | S::Reassign { ty, .. } | S::Drop { ty, .. } => ty_uses(ty),
+        S::If { then_body, else_body, .. } => {
+            then_body.iter().any(stmt_uses_skiplist)
+                || else_body.iter().any(stmt_uses_skiplist)
+        }
+        S::While { body, .. } | S::For { body, .. } | S::ForIter { body, .. } => {
+            body.iter().any(stmt_uses_skiplist)
+        }
+        _ => false,
+    }
+}
+
+/// Data-structures roadmap Level 4 #7 — SkipList<i64> runtime
+/// helpers (closure #331). Probabilistic ordered set on a node
+/// arena. MAX_LEVEL fixed at 8; per-node forward[] indices
+/// stored in a flat `i32*` array of capacity × 8 entries. Node
+/// 0 is the head sentinel (its key is unused). Geometric level
+/// distribution driven by an LCG seed stored in the struct.
+/// min/max return Option<i64> and gate on Option__i64.
+fn emit_intent_skiplist_helpers_c_body(out: &mut String, has_option_i64: bool) {
+    out.push_str(
+        "#define INTENT_SKIPLIST_MAX_LEVEL 8\n\
+         typedef struct { int64_t* keys; int32_t* forward; int32_t* node_levels; uint64_t rng_state; int64_t num_nodes; int64_t capacity; int64_t num_keys; } intent_skiplist_i64;\n\
+         static INTENT_UNUSED uint64_t intent_skiplist_i64_rand(intent_skiplist_i64* sl) {\n\
+         \x20 sl->rng_state = sl->rng_state * 6364136223846793005ULL + 1442695040888963407ULL;\n\
+         \x20 return sl->rng_state;\n\
+         }\n\
+         static INTENT_UNUSED int32_t intent_skiplist_i64_random_level(intent_skiplist_i64* sl) {\n\
+         \x20 int32_t lvl = 1;\n\
+         \x20 while (lvl < INTENT_SKIPLIST_MAX_LEVEL) {\n\
+         \x20   if ((intent_skiplist_i64_rand(sl) & 1) == 0) break;\n\
+         \x20   lvl++;\n\
+         \x20 }\n\
+         \x20 return lvl;\n\
+         }\n\
+         static INTENT_UNUSED void intent_skiplist_i64_ensure_cap(intent_skiplist_i64* sl, int64_t needed) {\n\
+         \x20 if (needed <= sl->capacity) return;\n\
+         \x20 int64_t new_cap = sl->capacity ? sl->capacity * 2 : 8;\n\
+         \x20 while (new_cap < needed) new_cap *= 2;\n\
+         \x20 sl->keys = (int64_t*)realloc(sl->keys, (size_t)new_cap * sizeof(int64_t));\n\
+         \x20 sl->forward = (int32_t*)realloc(sl->forward, (size_t)new_cap * INTENT_SKIPLIST_MAX_LEVEL * sizeof(int32_t));\n\
+         \x20 sl->node_levels = (int32_t*)realloc(sl->node_levels, (size_t)new_cap * sizeof(int32_t));\n\
+         \x20 if (!sl->keys || !sl->forward || !sl->node_levels) abort();\n\
+         \x20 sl->capacity = new_cap;\n\
+         }\n\
+         static INTENT_UNUSED intent_skiplist_i64 intent_skiplist_i64_new(void) {\n\
+         \x20 intent_skiplist_i64 sl;\n\
+         \x20 sl.keys = (int64_t*)0; sl.forward = (int32_t*)0; sl.node_levels = (int32_t*)0;\n\
+         \x20 sl.rng_state = 0x9E3779B97F4A7C15ULL;\n\
+         \x20 sl.num_nodes = 0; sl.capacity = 0; sl.num_keys = 0;\n\
+         \x20 intent_skiplist_i64_ensure_cap(&sl, 1);\n\
+         \x20 /* Head sentinel at index 0: key unused, all forward = -1, level = MAX_LEVEL. */\n\
+         \x20 sl.keys[0] = 0;\n\
+         \x20 for (int k = 0; k < INTENT_SKIPLIST_MAX_LEVEL; k++) sl.forward[k] = -1;\n\
+         \x20 sl.node_levels[0] = INTENT_SKIPLIST_MAX_LEVEL;\n\
+         \x20 sl.num_nodes = 1;\n\
+         \x20 return sl;\n\
+         }\n\
+         static INTENT_UNUSED void intent_skiplist_i64_drop(intent_skiplist_i64* sl) {\n\
+         \x20 if (sl->keys) free(sl->keys);\n\
+         \x20 if (sl->forward) free(sl->forward);\n\
+         \x20 if (sl->node_levels) free(sl->node_levels);\n\
+         \x20 sl->keys = (int64_t*)0; sl->forward = (int32_t*)0; sl->node_levels = (int32_t*)0;\n\
+         \x20 sl->num_nodes = 0; sl->capacity = 0; sl->num_keys = 0;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_skiplist_i64_insert(intent_skiplist_i64* sl, int64_t x) {\n\
+         \x20 int32_t update[INTENT_SKIPLIST_MAX_LEVEL];\n\
+         \x20 int64_t cur = 0;\n\
+         \x20 for (int lvl = INTENT_SKIPLIST_MAX_LEVEL - 1; lvl >= 0; lvl--) {\n\
+         \x20   for (;;) {\n\
+         \x20     int32_t next = sl->forward[cur * INTENT_SKIPLIST_MAX_LEVEL + lvl];\n\
+         \x20     if (next == -1) break;\n\
+         \x20     if (sl->keys[next] >= x) break;\n\
+         \x20     cur = (int64_t)next;\n\
+         \x20   }\n\
+         \x20   update[lvl] = (int32_t)cur;\n\
+         \x20 }\n\
+         \x20 int32_t cand = sl->forward[(int64_t)update[0] * INTENT_SKIPLIST_MAX_LEVEL + 0];\n\
+         \x20 if (cand != -1 && sl->keys[cand] == x) return false;\n\
+         \x20 int32_t new_lvl = intent_skiplist_i64_random_level(sl);\n\
+         \x20 intent_skiplist_i64_ensure_cap(sl, sl->num_nodes + 1);\n\
+         \x20 int64_t new_idx = sl->num_nodes;\n\
+         \x20 sl->keys[new_idx] = x;\n\
+         \x20 sl->node_levels[new_idx] = new_lvl;\n\
+         \x20 for (int lvl = 0; lvl < new_lvl; lvl++) {\n\
+         \x20   sl->forward[new_idx * INTENT_SKIPLIST_MAX_LEVEL + lvl] = sl->forward[(int64_t)update[lvl] * INTENT_SKIPLIST_MAX_LEVEL + lvl];\n\
+         \x20   sl->forward[(int64_t)update[lvl] * INTENT_SKIPLIST_MAX_LEVEL + lvl] = (int32_t)new_idx;\n\
+         \x20 }\n\
+         \x20 for (int lvl = new_lvl; lvl < INTENT_SKIPLIST_MAX_LEVEL; lvl++) {\n\
+         \x20   sl->forward[new_idx * INTENT_SKIPLIST_MAX_LEVEL + lvl] = -1;\n\
+         \x20 }\n\
+         \x20 sl->num_nodes++; sl->num_keys++;\n\
+         \x20 return true;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_skiplist_i64_contains(const intent_skiplist_i64* sl, int64_t x) {\n\
+         \x20 int64_t cur = 0;\n\
+         \x20 for (int lvl = INTENT_SKIPLIST_MAX_LEVEL - 1; lvl >= 0; lvl--) {\n\
+         \x20   for (;;) {\n\
+         \x20     int32_t next = sl->forward[cur * INTENT_SKIPLIST_MAX_LEVEL + lvl];\n\
+         \x20     if (next == -1) break;\n\
+         \x20     if (sl->keys[next] >= x) break;\n\
+         \x20     cur = (int64_t)next;\n\
+         \x20   }\n\
+         \x20 }\n\
+         \x20 int32_t cand = sl->forward[cur * INTENT_SKIPLIST_MAX_LEVEL + 0];\n\
+         \x20 return (cand != -1 && sl->keys[cand] == x);\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_skiplist_i64_len(const intent_skiplist_i64* sl) {\n\
+         \x20 return sl->num_keys;\n\
+         }\n",
+    );
+    if has_option_i64 {
+        out.push_str(
+            "static INTENT_UNUSED Enum_Option__i64 intent_skiplist_i64_min(const intent_skiplist_i64* sl) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 int32_t first = sl->forward[0];\n\
+             \x20 if (first == -1) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 r.tag = 0; r.payload = sl->keys[first]; return r;\n\
+             }\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_skiplist_i64_max(const intent_skiplist_i64* sl) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 int64_t cur = 0;\n\
+             \x20 for (;;) {\n\
+             \x20   int32_t next = sl->forward[cur * INTENT_SKIPLIST_MAX_LEVEL + 0];\n\
+             \x20   if (next == -1) break;\n\
+             \x20   cur = (int64_t)next;\n\
+             \x20 }\n\
+             \x20 if (cur == 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 r.tag = 0; r.payload = sl->keys[cur]; return r;\n\
+             }\n\n",
+        );
+    }
 }
 
 /// Data-structures roadmap Level 1 — FNV-1a hash helpers.
@@ -4801,6 +4976,11 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
             }
             Type::Trie => {
                 out.push_str("  intent_trie_drop(&");
+                out.push_str(&local_name(name));
+                out.push_str(");\n");
+            }
+            Type::SkipList => {
+                out.push_str("  intent_skiplist_i64_drop(&");
                 out.push_str(&local_name(name));
                 out.push_str(");\n");
             }
@@ -7546,6 +7726,30 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_trie_node_count({})",
             emit_expr(&args[0])
         ),
+        // Closure #331: SkipList dispatch.
+        "skiplist_new" => "intent_skiplist_i64_new()".to_string(),
+        "skiplist_insert" => format!(
+            "intent_skiplist_i64_insert({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "skiplist_contains" => format!(
+            "intent_skiplist_i64_contains({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "skiplist_len" => format!(
+            "intent_skiplist_i64_len({})",
+            emit_expr(&args[0])
+        ),
+        "skiplist_min" => format!(
+            "intent_skiplist_i64_min({})",
+            emit_expr(&args[0])
+        ),
+        "skiplist_max" => format!(
+            "intent_skiplist_i64_max({})",
+            emit_expr(&args[0])
+        ),
         "hashmap_new" => "intent_hashmap_i64_i64_new()".to_string(),
         "hashmap_insert" => format!(
             "intent_hashmap_i64_i64_insert({}, ({}), ({}))",
@@ -8119,6 +8323,8 @@ pub(crate) fn c_leaf_type(ty: &Type) -> &'static str {
         Type::Graph => "intent_graph",
         // `Trie` — Level 4 #4 prefix tree on node arena. v1 a-z alphabet.
         Type::Trie => "intent_trie",
+        // `SkipList` — Level 4 #7 probabilistic ordered set. v1 i64.
+        Type::SkipList => "intent_skiplist_i64",
         // `fn(T1, T2) -> R` has no fixed leaf spelling in C —
         // function-pointer types are declarator-shaped
         // (`R (*name)(T1, T2)`). Callers that need to emit a
@@ -8450,7 +8656,7 @@ fn divisor_helper(ty: &Type) -> &'static str {
         Type::U64 => "intent_check_u64_divisor",
         Type::F32 => "intent_check_f32_divisor",
         Type::F64 => "intent_check_f64_divisor",
-        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::BloomFilter | Type::Bst(_) | Type::Graph | Type::Trie | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
+        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::BloomFilter | Type::Bst(_) | Type::Graph | Type::Trie | Type::SkipList | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
             unreachable!("non-numeric type cannot be a divisor")
         }
     }
@@ -8492,6 +8698,7 @@ fn shift_helper(ty: &Type) -> &'static str {
         | Type::Bst(_)
         | Type::Graph
         | Type::Trie
+        | Type::SkipList
         | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => unreachable!("shift count must be an integer"),
     }
 }

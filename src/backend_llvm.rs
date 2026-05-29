@@ -261,6 +261,7 @@ fn llvm_byte_size(ty: &Type) -> u64 {
         Type::Bst(_) => 40, // {keys ptr, left ptr, right ptr, root, len, capacity}
         Type::Graph => 48, // {num_nodes, edge_src ptr, edge_dst ptr, edge_weight ptr, num_edges, edge_capacity}
         Type::Trie => 40, // {children ptr, is_end ptr, num_nodes, capacity, num_words}
+        Type::SkipList => 56, // {keys, forward, node_levels, rng_state, num_nodes, capacity, num_keys}
         Type::Object(_) => 16, // fat pointer: vtable + data
         Type::Vec(_) => 24, // {data, len, cap} on 64-bit
         Type::Array { element, length } => llvm_byte_size(element) * length,
@@ -650,7 +651,9 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // Graph (closure #329): { num_nodes, edge_src*, edge_dst*, edge_weight*, num_edges, edge_capacity } — weighted directed graph.
     out.push_str("%intent_graph = type { i64, i32*, i32*, i64*, i64, i64 }\n");
     // Trie (closure #330): { children*, is_end*, num_nodes, capacity, num_words } — prefix tree on a-z alphabet (26-wide flat children).
-    out.push_str("%intent_trie = type { i32*, i8*, i64, i64, i64 }\n\n");
+    out.push_str("%intent_trie = type { i32*, i8*, i64, i64, i64 }\n");
+    // SkipList<i64> (closure #331): { keys*, forward*, node_levels*, rng_state, num_nodes, capacity, num_keys } — probabilistic ordered set.
+    out.push_str("%intent_skiplist_i64 = type { i64*, i32*, i32*, i64, i64, i64, i64 }\n\n");
 
     emit_intent_str_concat_definition(&mut out);
 
@@ -922,6 +925,14 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // Trie helpers (closure #330, Level 4 #4).
     if crate::backend_c::program_uses_trie(program) {
         emit_intent_trie_helpers_llvm(&mut out);
+    }
+
+    // SkipList<i64> helpers (closure #331, Level 4 #7).
+    if crate::backend_c::program_uses_skiplist(program) {
+        let has_option_i64 = LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        emit_intent_skiplist_i64_helpers_llvm(&mut out, has_option_i64);
     }
 
     for function in &program.functions {
@@ -1690,6 +1701,15 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 if let Some((_, addr)) = ctx.locals.get(name).cloned() {
                     out.push_str(&format!(
                         "  call void @intent_trie_drop(%intent_trie* {})\n",
+                        addr
+                    ));
+                }
+                return;
+            }
+            if matches!(ty, Type::SkipList) {
+                if let Some((_, addr)) = ctx.locals.get(name).cloned() {
+                    out.push_str(&format!(
+                        "  call void @intent_skiplist_i64_drop(%intent_skiplist_i64* {})\n",
                         addr
                     ));
                 }
@@ -5483,6 +5503,45 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!(
                     "  {} = call i64 @intent_trie_{}(%intent_trie* {})\n",
                     dest, suffix, t
+                ));
+                return dest;
+            }
+            // SkipList<i64> builtins (closure #331, Level 4 #7).
+            if name == "skiplist_new" {
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_skiplist_i64 @intent_skiplist_i64_new()\n",
+                    dest
+                ));
+                return dest;
+            }
+            if name == "skiplist_insert" || name == "skiplist_contains" {
+                let sl = emit_expr(&args[0], ctx, out);
+                let v = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                let suffix = name.strip_prefix("skiplist_").unwrap();
+                out.push_str(&format!(
+                    "  {} = call i1 @intent_skiplist_i64_{}(%intent_skiplist_i64* {}, i64 {})\n",
+                    dest, suffix, sl, v
+                ));
+                return dest;
+            }
+            if name == "skiplist_len" {
+                let sl = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_skiplist_i64_len(%intent_skiplist_i64* {})\n",
+                    dest, sl
+                ));
+                return dest;
+            }
+            if name == "skiplist_min" || name == "skiplist_max" {
+                let sl = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                let suffix = name.strip_prefix("skiplist_").unwrap();
+                out.push_str(&format!(
+                    "  {} = call %Enum_Option__i64 @intent_skiplist_i64_{}(%intent_skiplist_i64* {})\n",
+                    dest, suffix, sl
                 ));
                 return dest;
             }
@@ -10441,6 +10500,421 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 ret i64 %v\n\
          }\n\n",
     );
+}
+
+/// Data-structures roadmap Level 4 #7 — SkipList<i64> runtime
+/// helpers (closure #331). MAX_LEVEL fixed at 8. Per-node
+/// forward array is a flat capacity × 8 i32 buffer. Node 0 is
+/// the head sentinel. Geometric level distribution via an LCG
+/// seed stored in the struct. min/max return Option<i64>.
+fn emit_intent_skiplist_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
+    out.push_str(
+        "define i64 @intent_skiplist_i64_rand(%intent_skiplist_i64* %sl) {\n\
+         \x20 %rp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 3\n\
+         \x20 %s = load i64, i64* %rp\n\
+         \x20 %s_mul = mul i64 %s, 6364136223846793005\n\
+         \x20 %s_new = add i64 %s_mul, 1442695040888963407\n\
+         \x20 store i64 %s_new, i64* %rp\n\
+         \x20 ret i64 %s_new\n\
+         }\n\
+         define i32 @intent_skiplist_i64_random_level(%intent_skiplist_i64* %sl) {\n\
+         \x20 %lvl_p = alloca i32\n\
+         \x20 store i32 1, i32* %lvl_p\n\
+         \x20 br label %rl_loop\n\
+         rl_loop:\n\
+         \x20 %lvl = load i32, i32* %lvl_p\n\
+         \x20 %lvl64 = sext i32 %lvl to i64\n\
+         \x20 %at_max = icmp sge i64 %lvl64, 8\n\
+         \x20 br i1 %at_max, label %rl_done, label %rl_flip\n\
+         rl_flip:\n\
+         \x20 %r = call i64 @intent_skiplist_i64_rand(%intent_skiplist_i64* %sl)\n\
+         \x20 %bit = and i64 %r, 1\n\
+         \x20 %is_zero = icmp eq i64 %bit, 0\n\
+         \x20 br i1 %is_zero, label %rl_done, label %rl_step\n\
+         rl_step:\n\
+         \x20 %lvl_inc = add i32 %lvl, 1\n\
+         \x20 store i32 %lvl_inc, i32* %lvl_p\n\
+         \x20 br label %rl_loop\n\
+         rl_done:\n\
+         \x20 %final = load i32, i32* %lvl_p\n\
+         \x20 ret i32 %final\n\
+         }\n\
+         define void @intent_skiplist_i64_ensure_cap(%intent_skiplist_i64* %sl, i64 %needed) {\n\
+         \x20 %kp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 0\n\
+         \x20 %fp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 1\n\
+         \x20 %nlp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 2\n\
+         \x20 %capp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 5\n\
+         \x20 %cap = load i64, i64* %capp\n\
+         \x20 %enough = icmp sle i64 %needed, %cap\n\
+         \x20 br i1 %enough, label %ec_done, label %ec_grow\n\
+         ec_grow:\n\
+         \x20 %ncap_p = alloca i64\n\
+         \x20 %cap_zero = icmp eq i64 %cap, 0\n\
+         \x20 %cap_mul = mul i64 %cap, 2\n\
+         \x20 %cap_init = select i1 %cap_zero, i64 8, i64 %cap_mul\n\
+         \x20 store i64 %cap_init, i64* %ncap_p\n\
+         \x20 br label %ec_dbl_loop\n\
+         ec_dbl_loop:\n\
+         \x20 %nc = load i64, i64* %ncap_p\n\
+         \x20 %big_enough = icmp sge i64 %nc, %needed\n\
+         \x20 br i1 %big_enough, label %ec_resize, label %ec_dbl_more\n\
+         ec_dbl_more:\n\
+         \x20 %nc_mul = mul i64 %nc, 2\n\
+         \x20 store i64 %nc_mul, i64* %ncap_p\n\
+         \x20 br label %ec_dbl_loop\n\
+         ec_resize:\n\
+         \x20 %ncap = load i64, i64* %ncap_p\n\
+         \x20 %k_bytes = mul i64 %ncap, 8\n\
+         \x20 %k_old = load i64*, i64** %kp\n\
+         \x20 %k_old_i8 = bitcast i64* %k_old to i8*\n\
+         \x20 %k_new_i8 = call i8* @realloc(i8* %k_old_i8, i64 %k_bytes)\n\
+         \x20 %k_new = bitcast i8* %k_new_i8 to i64*\n\
+         \x20 store i64* %k_new, i64** %kp\n\
+         \x20 %f_bytes_tmp = mul i64 %ncap, 8\n\
+         \x20 %f_bytes = mul i64 %f_bytes_tmp, 4\n\
+         \x20 %f_old = load i32*, i32** %fp\n\
+         \x20 %f_old_i8 = bitcast i32* %f_old to i8*\n\
+         \x20 %f_new_i8 = call i8* @realloc(i8* %f_old_i8, i64 %f_bytes)\n\
+         \x20 %f_new = bitcast i8* %f_new_i8 to i32*\n\
+         \x20 store i32* %f_new, i32** %fp\n\
+         \x20 %nl_bytes = mul i64 %ncap, 4\n\
+         \x20 %nl_old = load i32*, i32** %nlp\n\
+         \x20 %nl_old_i8 = bitcast i32* %nl_old to i8*\n\
+         \x20 %nl_new_i8 = call i8* @realloc(i8* %nl_old_i8, i64 %nl_bytes)\n\
+         \x20 %nl_new = bitcast i8* %nl_new_i8 to i32*\n\
+         \x20 store i32* %nl_new, i32** %nlp\n\
+         \x20 store i64 %ncap, i64* %capp\n\
+         \x20 br label %ec_done\n\
+         ec_done:\n\
+         \x20 ret void\n\
+         }\n\
+         define %intent_skiplist_i64 @intent_skiplist_i64_new() {\n\
+         \x20 %sl_alloca = alloca %intent_skiplist_i64\n\
+         \x20 %r0 = insertvalue %intent_skiplist_i64 undef, i64* null, 0\n\
+         \x20 %r1 = insertvalue %intent_skiplist_i64 %r0, i32* null, 1\n\
+         \x20 %r2 = insertvalue %intent_skiplist_i64 %r1, i32* null, 2\n\
+         \x20 %r3 = insertvalue %intent_skiplist_i64 %r2, i64 -7046029254386353131, 3\n\
+         \x20 %r4 = insertvalue %intent_skiplist_i64 %r3, i64 0, 4\n\
+         \x20 %r5 = insertvalue %intent_skiplist_i64 %r4, i64 0, 5\n\
+         \x20 %r6 = insertvalue %intent_skiplist_i64 %r5, i64 0, 6\n\
+         \x20 store %intent_skiplist_i64 %r6, %intent_skiplist_i64* %sl_alloca\n\
+         \x20 call void @intent_skiplist_i64_ensure_cap(%intent_skiplist_i64* %sl_alloca, i64 1)\n\
+         \x20 ; Head sentinel at index 0.\n\
+         \x20 %kp_n = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl_alloca, i32 0, i32 0\n\
+         \x20 %fp_n = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl_alloca, i32 0, i32 1\n\
+         \x20 %nlp_n = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl_alloca, i32 0, i32 2\n\
+         \x20 %nnp_n = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl_alloca, i32 0, i32 4\n\
+         \x20 %keys = load i64*, i64** %kp_n\n\
+         \x20 %k_slot = getelementptr i64, i64* %keys, i64 0\n\
+         \x20 store i64 0, i64* %k_slot\n\
+         \x20 %fwd = load i32*, i32** %fp_n\n\
+         \x20 %nl = load i32*, i32** %nlp_n\n\
+         \x20 %k_p = alloca i32\n\
+         \x20 store i32 0, i32* %k_p\n\
+         \x20 br label %sn_init_loop\n\
+         sn_init_loop:\n\
+         \x20 %k = load i32, i32* %k_p\n\
+         \x20 %k_done = icmp sge i32 %k, 8\n\
+         \x20 br i1 %k_done, label %sn_init_end, label %sn_init_body\n\
+         sn_init_body:\n\
+         \x20 %k_i64 = sext i32 %k to i64\n\
+         \x20 %fwd_slot = getelementptr i32, i32* %fwd, i64 %k_i64\n\
+         \x20 store i32 -1, i32* %fwd_slot\n\
+         \x20 %k_inc = add i32 %k, 1\n\
+         \x20 store i32 %k_inc, i32* %k_p\n\
+         \x20 br label %sn_init_loop\n\
+         sn_init_end:\n\
+         \x20 %nl_slot = getelementptr i32, i32* %nl, i64 0\n\
+         \x20 store i32 8, i32* %nl_slot\n\
+         \x20 store i64 1, i64* %nnp_n\n\
+         \x20 %final = load %intent_skiplist_i64, %intent_skiplist_i64* %sl_alloca\n\
+         \x20 ret %intent_skiplist_i64 %final\n\
+         }\n\
+         define void @intent_skiplist_i64_drop(%intent_skiplist_i64* %sl) {\n\
+         \x20 %kp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 0\n\
+         \x20 %fp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 1\n\
+         \x20 %nlp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 2\n\
+         \x20 %keys = load i64*, i64** %kp\n\
+         \x20 %fwd = load i32*, i32** %fp\n\
+         \x20 %nl = load i32*, i32** %nlp\n\
+         \x20 %k_null = icmp eq i64* %keys, null\n\
+         \x20 br i1 %k_null, label %dr_f, label %dr_fk\n\
+         dr_fk:\n\
+         \x20 %k_i8 = bitcast i64* %keys to i8*\n\
+         \x20 call void @free(i8* %k_i8)\n\
+         \x20 br label %dr_f\n\
+         dr_f:\n\
+         \x20 %f_null = icmp eq i32* %fwd, null\n\
+         \x20 br i1 %f_null, label %dr_n, label %dr_ff\n\
+         dr_ff:\n\
+         \x20 %f_i8 = bitcast i32* %fwd to i8*\n\
+         \x20 call void @free(i8* %f_i8)\n\
+         \x20 br label %dr_n\n\
+         dr_n:\n\
+         \x20 %nl_null = icmp eq i32* %nl, null\n\
+         \x20 br i1 %nl_null, label %dr_done, label %dr_fnl\n\
+         dr_fnl:\n\
+         \x20 %nl_i8 = bitcast i32* %nl to i8*\n\
+         \x20 call void @free(i8* %nl_i8)\n\
+         \x20 br label %dr_done\n\
+         dr_done:\n\
+         \x20 store i64* null, i64** %kp\n\
+         \x20 store i32* null, i32** %fp\n\
+         \x20 store i32* null, i32** %nlp\n\
+         \x20 %nnp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 4\n\
+         \x20 %capp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 5\n\
+         \x20 %nkp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 6\n\
+         \x20 store i64 0, i64* %nnp\n\
+         \x20 store i64 0, i64* %capp\n\
+         \x20 store i64 0, i64* %nkp\n\
+         \x20 ret void\n\
+         }\n\
+         define i1 @intent_skiplist_i64_insert(%intent_skiplist_i64* %sl, i64 %x) {\n\
+         \x20 %kp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 0\n\
+         \x20 %fp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 1\n\
+         \x20 %nlp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 2\n\
+         \x20 %nnp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 4\n\
+         \x20 %nkp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 6\n\
+         \x20 %update = alloca [8 x i32]\n\
+         \x20 %cur_p = alloca i64\n\
+         \x20 store i64 0, i64* %cur_p\n\
+         \x20 %lvl_p = alloca i32\n\
+         \x20 store i32 7, i32* %lvl_p\n\
+         \x20 br label %si_lvl_loop\n\
+         si_lvl_loop:\n\
+         \x20 %lvl = load i32, i32* %lvl_p\n\
+         \x20 %lvl_done = icmp slt i32 %lvl, 0\n\
+         \x20 br i1 %lvl_done, label %si_check_dup, label %si_walk_loop\n\
+         si_walk_loop:\n\
+         \x20 %cur = load i64, i64* %cur_p\n\
+         \x20 %fwd_w = load i32*, i32** %fp\n\
+         \x20 %lvl64 = sext i32 %lvl to i64\n\
+         \x20 %base = mul i64 %cur, 8\n\
+         \x20 %off = add i64 %base, %lvl64\n\
+         \x20 %next_slot = getelementptr i32, i32* %fwd_w, i64 %off\n\
+         \x20 %next32 = load i32, i32* %next_slot\n\
+         \x20 %next_none = icmp eq i32 %next32, -1\n\
+         \x20 br i1 %next_none, label %si_record, label %si_check_key\n\
+         si_check_key:\n\
+         \x20 %next = sext i32 %next32 to i64\n\
+         \x20 %keys_w = load i64*, i64** %kp\n\
+         \x20 %k_slot = getelementptr i64, i64* %keys_w, i64 %next\n\
+         \x20 %k = load i64, i64* %k_slot\n\
+         \x20 %is_ge = icmp sge i64 %k, %x\n\
+         \x20 br i1 %is_ge, label %si_record, label %si_advance\n\
+         si_advance:\n\
+         \x20 store i64 %next, i64* %cur_p\n\
+         \x20 br label %si_walk_loop\n\
+         si_record:\n\
+         \x20 %cur_r = load i64, i64* %cur_p\n\
+         \x20 %cur_r_i32 = trunc i64 %cur_r to i32\n\
+         \x20 %upd_slot = getelementptr [8 x i32], [8 x i32]* %update, i64 0, i64 %lvl64\n\
+         \x20 store i32 %cur_r_i32, i32* %upd_slot\n\
+         \x20 %lvl_dec = sub i32 %lvl, 1\n\
+         \x20 store i32 %lvl_dec, i32* %lvl_p\n\
+         \x20 br label %si_lvl_loop\n\
+         si_check_dup:\n\
+         \x20 %upd0_slot = getelementptr [8 x i32], [8 x i32]* %update, i64 0, i64 0\n\
+         \x20 %upd0 = load i32, i32* %upd0_slot\n\
+         \x20 %upd0_64 = sext i32 %upd0 to i64\n\
+         \x20 %fwd_d = load i32*, i32** %fp\n\
+         \x20 %d_base = mul i64 %upd0_64, 8\n\
+         \x20 %d_slot = getelementptr i32, i32* %fwd_d, i64 %d_base\n\
+         \x20 %cand = load i32, i32* %d_slot\n\
+         \x20 %cand_none = icmp eq i32 %cand, -1\n\
+         \x20 br i1 %cand_none, label %si_alloc, label %si_check_eq\n\
+         si_check_eq:\n\
+         \x20 %cand64 = sext i32 %cand to i64\n\
+         \x20 %keys_d = load i64*, i64** %kp\n\
+         \x20 %cand_k_slot = getelementptr i64, i64* %keys_d, i64 %cand64\n\
+         \x20 %cand_k = load i64, i64* %cand_k_slot\n\
+         \x20 %is_dup = icmp eq i64 %cand_k, %x\n\
+         \x20 br i1 %is_dup, label %si_dup, label %si_alloc\n\
+         si_dup:\n\
+         \x20 ret i1 false\n\
+         si_alloc:\n\
+         \x20 %new_lvl = call i32 @intent_skiplist_i64_random_level(%intent_skiplist_i64* %sl)\n\
+         \x20 %nn = load i64, i64* %nnp\n\
+         \x20 %nn_inc = add i64 %nn, 1\n\
+         \x20 call void @intent_skiplist_i64_ensure_cap(%intent_skiplist_i64* %sl, i64 %nn_inc)\n\
+         \x20 %new_idx = load i64, i64* %nnp\n\
+         \x20 %keys_a = load i64*, i64** %kp\n\
+         \x20 %k_a_slot = getelementptr i64, i64* %keys_a, i64 %new_idx\n\
+         \x20 store i64 %x, i64* %k_a_slot\n\
+         \x20 %nl_a = load i32*, i32** %nlp\n\
+         \x20 %nl_a_slot = getelementptr i32, i32* %nl_a, i64 %new_idx\n\
+         \x20 store i32 %new_lvl, i32* %nl_a_slot\n\
+         \x20 %fwd_a = load i32*, i32** %fp\n\
+         \x20 %i_p = alloca i32\n\
+         \x20 store i32 0, i32* %i_p\n\
+         \x20 br label %si_link_loop\n\
+         si_link_loop:\n\
+         \x20 %i = load i32, i32* %i_p\n\
+         \x20 %i_done = icmp sge i32 %i, %new_lvl\n\
+         \x20 br i1 %i_done, label %si_clear_higher, label %si_link_body\n\
+         si_link_body:\n\
+         \x20 %i64_ = sext i32 %i to i64\n\
+         \x20 %upd_i_slot = getelementptr [8 x i32], [8 x i32]* %update, i64 0, i64 %i64_\n\
+         \x20 %upd_i = load i32, i32* %upd_i_slot\n\
+         \x20 %upd_i_64 = sext i32 %upd_i to i64\n\
+         \x20 %upd_base = mul i64 %upd_i_64, 8\n\
+         \x20 %upd_off = add i64 %upd_base, %i64_\n\
+         \x20 %upd_slot_a = getelementptr i32, i32* %fwd_a, i64 %upd_off\n\
+         \x20 %prev_next = load i32, i32* %upd_slot_a\n\
+         \x20 %new_base = mul i64 %new_idx, 8\n\
+         \x20 %new_off = add i64 %new_base, %i64_\n\
+         \x20 %new_slot_a = getelementptr i32, i32* %fwd_a, i64 %new_off\n\
+         \x20 store i32 %prev_next, i32* %new_slot_a\n\
+         \x20 %new_idx_i32 = trunc i64 %new_idx to i32\n\
+         \x20 store i32 %new_idx_i32, i32* %upd_slot_a\n\
+         \x20 %i_inc = add i32 %i, 1\n\
+         \x20 store i32 %i_inc, i32* %i_p\n\
+         \x20 br label %si_link_loop\n\
+         si_clear_higher:\n\
+         \x20 %j_p = alloca i32\n\
+         \x20 store i32 %new_lvl, i32* %j_p\n\
+         \x20 br label %si_clear_loop\n\
+         si_clear_loop:\n\
+         \x20 %j = load i32, i32* %j_p\n\
+         \x20 %j_done = icmp sge i32 %j, 8\n\
+         \x20 br i1 %j_done, label %si_finish, label %si_clear_body\n\
+         si_clear_body:\n\
+         \x20 %j64 = sext i32 %j to i64\n\
+         \x20 %ncb = mul i64 %new_idx, 8\n\
+         \x20 %nc_off = add i64 %ncb, %j64\n\
+         \x20 %nc_slot = getelementptr i32, i32* %fwd_a, i64 %nc_off\n\
+         \x20 store i32 -1, i32* %nc_slot\n\
+         \x20 %j_inc = add i32 %j, 1\n\
+         \x20 store i32 %j_inc, i32* %j_p\n\
+         \x20 br label %si_clear_loop\n\
+         si_finish:\n\
+         \x20 %nn_f = load i64, i64* %nnp\n\
+         \x20 %nn_n = add i64 %nn_f, 1\n\
+         \x20 store i64 %nn_n, i64* %nnp\n\
+         \x20 %nk = load i64, i64* %nkp\n\
+         \x20 %nk_n = add i64 %nk, 1\n\
+         \x20 store i64 %nk_n, i64* %nkp\n\
+         \x20 ret i1 true\n\
+         }\n\
+         define i1 @intent_skiplist_i64_contains(%intent_skiplist_i64* %sl, i64 %x) {\n\
+         \x20 %kp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 0\n\
+         \x20 %fp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 1\n\
+         \x20 %cur_p = alloca i64\n\
+         \x20 store i64 0, i64* %cur_p\n\
+         \x20 %lvl_p = alloca i32\n\
+         \x20 store i32 7, i32* %lvl_p\n\
+         \x20 br label %sc_lvl_loop\n\
+         sc_lvl_loop:\n\
+         \x20 %lvl = load i32, i32* %lvl_p\n\
+         \x20 %lvl_done = icmp slt i32 %lvl, 0\n\
+         \x20 br i1 %lvl_done, label %sc_check, label %sc_walk_loop\n\
+         sc_walk_loop:\n\
+         \x20 %cur = load i64, i64* %cur_p\n\
+         \x20 %fwd_w = load i32*, i32** %fp\n\
+         \x20 %lvl64 = sext i32 %lvl to i64\n\
+         \x20 %base = mul i64 %cur, 8\n\
+         \x20 %off = add i64 %base, %lvl64\n\
+         \x20 %next_slot = getelementptr i32, i32* %fwd_w, i64 %off\n\
+         \x20 %next32 = load i32, i32* %next_slot\n\
+         \x20 %next_none = icmp eq i32 %next32, -1\n\
+         \x20 br i1 %next_none, label %sc_lvl_dec, label %sc_check_key\n\
+         sc_check_key:\n\
+         \x20 %next = sext i32 %next32 to i64\n\
+         \x20 %keys_w = load i64*, i64** %kp\n\
+         \x20 %k_slot = getelementptr i64, i64* %keys_w, i64 %next\n\
+         \x20 %k = load i64, i64* %k_slot\n\
+         \x20 %is_ge = icmp sge i64 %k, %x\n\
+         \x20 br i1 %is_ge, label %sc_lvl_dec, label %sc_advance\n\
+         sc_advance:\n\
+         \x20 store i64 %next, i64* %cur_p\n\
+         \x20 br label %sc_walk_loop\n\
+         sc_lvl_dec:\n\
+         \x20 %lvl_d = sub i32 %lvl, 1\n\
+         \x20 store i32 %lvl_d, i32* %lvl_p\n\
+         \x20 br label %sc_lvl_loop\n\
+         sc_check:\n\
+         \x20 %cur_c = load i64, i64* %cur_p\n\
+         \x20 %fwd_c = load i32*, i32** %fp\n\
+         \x20 %base_c = mul i64 %cur_c, 8\n\
+         \x20 %cand_slot = getelementptr i32, i32* %fwd_c, i64 %base_c\n\
+         \x20 %cand = load i32, i32* %cand_slot\n\
+         \x20 %cand_none = icmp eq i32 %cand, -1\n\
+         \x20 br i1 %cand_none, label %sc_false, label %sc_check_eq\n\
+         sc_check_eq:\n\
+         \x20 %cand64 = sext i32 %cand to i64\n\
+         \x20 %keys_c = load i64*, i64** %kp\n\
+         \x20 %cand_k_slot = getelementptr i64, i64* %keys_c, i64 %cand64\n\
+         \x20 %cand_k = load i64, i64* %cand_k_slot\n\
+         \x20 %match = icmp eq i64 %cand_k, %x\n\
+         \x20 ret i1 %match\n\
+         sc_false:\n\
+         \x20 ret i1 false\n\
+         }\n\
+         define i64 @intent_skiplist_i64_len(%intent_skiplist_i64* %sl) {\n\
+         \x20 %nkp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 6\n\
+         \x20 %v = load i64, i64* %nkp\n\
+         \x20 ret i64 %v\n\
+         }\n",
+    );
+    if has_option_i64 {
+        out.push_str(
+            "define %Enum_Option__i64 @intent_skiplist_i64_min(%intent_skiplist_i64* %sl) {\n\
+             \x20 %kp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 0\n\
+             \x20 %fp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 1\n\
+             \x20 %fwd = load i32*, i32** %fp\n\
+             \x20 %first_slot = getelementptr i32, i32* %fwd, i64 0\n\
+             \x20 %first = load i32, i32* %first_slot\n\
+             \x20 %is_none = icmp eq i32 %first, -1\n\
+             \x20 br i1 %is_none, label %smn_none, label %smn_some\n\
+             smn_some:\n\
+             \x20 %first64 = sext i32 %first to i64\n\
+             \x20 %keys = load i64*, i64** %kp\n\
+             \x20 %k_slot = getelementptr i64, i64* %keys, i64 %first64\n\
+             \x20 %k = load i64, i64* %k_slot\n\
+             \x20 %s0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %s1 = insertvalue %Enum_Option__i64 %s0, i64 %k, 1\n\
+             \x20 ret %Enum_Option__i64 %s1\n\
+             smn_none:\n\
+             \x20 %n0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %n1 = insertvalue %Enum_Option__i64 %n0, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %n1\n\
+             }\n\
+             define %Enum_Option__i64 @intent_skiplist_i64_max(%intent_skiplist_i64* %sl) {\n\
+             \x20 %kp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 0\n\
+             \x20 %fp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 1\n\
+             \x20 %cur_p = alloca i64\n\
+             \x20 store i64 0, i64* %cur_p\n\
+             \x20 br label %smx_loop\n\
+             smx_loop:\n\
+             \x20 %cur = load i64, i64* %cur_p\n\
+             \x20 %fwd = load i32*, i32** %fp\n\
+             \x20 %base = mul i64 %cur, 8\n\
+             \x20 %nxt_slot = getelementptr i32, i32* %fwd, i64 %base\n\
+             \x20 %nxt = load i32, i32* %nxt_slot\n\
+             \x20 %is_done = icmp eq i32 %nxt, -1\n\
+             \x20 br i1 %is_done, label %smx_check, label %smx_step\n\
+             smx_step:\n\
+             \x20 %nxt64 = sext i32 %nxt to i64\n\
+             \x20 store i64 %nxt64, i64* %cur_p\n\
+             \x20 br label %smx_loop\n\
+             smx_check:\n\
+             \x20 %cur_f = load i64, i64* %cur_p\n\
+             \x20 %is_head = icmp eq i64 %cur_f, 0\n\
+             \x20 br i1 %is_head, label %smx_none, label %smx_some\n\
+             smx_some:\n\
+             \x20 %keys = load i64*, i64** %kp\n\
+             \x20 %k_slot = getelementptr i64, i64* %keys, i64 %cur_f\n\
+             \x20 %k = load i64, i64* %k_slot\n\
+             \x20 %s0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %s1 = insertvalue %Enum_Option__i64 %s0, i64 %k, 1\n\
+             \x20 ret %Enum_Option__i64 %s1\n\
+             smx_none:\n\
+             \x20 %n0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %n1 = insertvalue %Enum_Option__i64 %n0, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %n1\n\
+             }\n\n",
+        );
+    }
 }
 
 /// Data-structures roadmap Level 2 — HashSet<i64> runtime
@@ -15472,7 +15946,7 @@ fn is_scalar(ty: &Type) -> bool {
         // <ty> <v>, <ty>* …` work uniformly. The builtins
         // (channel_new, mutex_new, mutex_lock) return SSA
         // values of these struct types.
-        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::BloomFilter | Type::Bst(_) | Type::Graph | Type::Trie)
+        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::BloomFilter | Type::Bst(_) | Type::Graph | Type::Trie | Type::SkipList)
         // Function pointers are pointer-sized scalars. The
         // alloca holds a single value of fn-ptr type (the
         // load returns a function-pointer SSA value the
@@ -15533,6 +16007,7 @@ pub(crate) fn llvm_type(ty: &Type) -> &'static str {
         Type::Bst(_) => "%intent_bst_i64",
         Type::Graph => "%intent_graph",
         Type::Trie => "%intent_trie",
+        Type::SkipList => "%intent_skiplist_i64",
         // Enums lower to a 32-bit tag — see `llvm_type_string`
         // for the same. T1.3.
         Type::Enum(_) => "i32",

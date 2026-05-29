@@ -882,6 +882,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "rng.vani",
         "sanskrit_keywords.vani",
         "scopes.vani",
+        "skiplist.vani",
         "sort.vani",
         "string_ops.vani",
         "strings.vani",

@@ -13340,6 +13340,114 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn skiplist_basics_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let sl: SkipList = skiplist_new();
+              let _: bool = skiplist_insert(mut ref sl, 5);
+              let _: bool = skiplist_contains(ref sl, 5);
+              let _: i64 = skiplist_len(ref sl);
+              let _: Option<i64> = skiplist_min(ref sl);
+              let _: Option<i64> = skiplist_max(ref sl);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("skiplist basics must type-check in C");
+        compile_to_llvm(source).expect("skiplist basics must compile to LLVM");
+    }
+
+    #[test]
+    fn skiplist_insert_rejects_non_mut_ref() {
+        let source = r#"
+            fn main() -> i64 {
+              let sl: SkipList = skiplist_new();
+              let _: bool = skiplist_insert(ref sl, 1);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("skiplist_insert by-ref must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref SkipList")),
+            "expected mut-ref-SkipList diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn skiplist_reserves_name_against_user_struct() {
+        let source = r#"
+            struct SkipList { x: i64 }
+            fn main() -> i64 { return 0; }
+        "#;
+        let errors = compile(source).expect_err("`struct SkipList` must collide");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("SkipList") && e.message.contains("reserved")),
+            "expected reserved-name diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn skiplist_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let sl: SkipList = skiplist_new();
+              let _: bool = sl.insert(1);
+              let _: bool = sl.contains(1);
+              let _: Option<i64> = sl.min();
+              let _: Option<i64> = sl.max();
+              return sl.len();
+            }
+        "#;
+        compile_to_c(source).expect("skiplist method sugar must type-check in C");
+        compile_to_llvm(source).expect("skiplist method sugar must compile to LLVM");
+    }
+
+    #[test]
+    fn skiplist_emits_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let sl: SkipList = skiplist_new();
+              let _: bool = skiplist_insert(mut ref sl, 1);
+              let _: bool = skiplist_contains(ref sl, 1);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("skiplist program compiles");
+        assert!(
+            c.contains("intent_skiplist_i64")
+                && c.contains("intent_skiplist_i64_insert")
+                && c.contains("intent_skiplist_i64_contains")
+                && c.contains("intent_skiplist_i64_drop"),
+            "C output must include the SkipList runtime; got snippet:\n{}",
+            &c[..c.len().min(800)]
+        );
+    }
+
+    #[test]
+    fn skiplist_emits_helpers_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let sl: SkipList = skiplist_new();
+              let _: bool = skiplist_insert(mut ref sl, 1);
+              let _: bool = skiplist_contains(ref sl, 1);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("skiplist LLVM compile");
+        assert!(
+            ll.contains("%intent_skiplist_i64 = type")
+                && ll.contains("@intent_skiplist_i64_insert")
+                && ll.contains("@intent_skiplist_i64_contains"),
+            "LLVM output must include the SkipList typedef + helpers"
+        );
+    }
+
+    #[test]
     fn btreemap_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

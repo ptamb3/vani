@@ -299,6 +299,19 @@ pointer (already in the language as of #279 FFI callbacks).
 25. **Skip list** — ✅ AFFINE.
     Arena-based; forward-link levels stored as `Vec<u32>`
     per node.
+    *Shipped 2026-05-29 (closure #331) — Level 4 #7.*
+    `SkipList` affine handle backed by `{ i64* keys, i32*
+    forward (flat capacity × 8), i32* node_levels, u64
+    rng_state, i64 num_nodes, i64 capacity, i64 num_keys }`.
+    MAX_LEVEL fixed at 8 (v1). Geometric level distribution
+    driven by a stored LCG seed (deterministic across runs).
+    6 builtins: `skiplist_new / insert / contains / len /
+    min / max`. Method sugar: `sl.insert(x)` / `.contains(x)`
+    / `.len()` / `.min()` / `.max()`. `min` is O(1) (level-0
+    head pointer); `max` is O(n) level-0 walk in v1. Drop
+    frees all three arrays. Pending: `remove` (with proper
+    forward-pointer back-patching), tail-tracker for O(log n)
+    max, configurable MAX_LEVEL, non-i64 element types.
 26. **Bloom filter** — ✅ AFFINE.
     Bit-vector over `Vec<u64>` + multi-hash via the #10
     Hash interface.
@@ -636,7 +649,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #330 — **Level 4 #4** `Trie` prefix tree on a node arena (lowercase a-z keys v1). Backing `{ i32* children (flat 26 × num_nodes), u8* is_end, i64 num_nodes, i64 capacity, i64 num_words }`. 6 builtins (`trie_new` / `insert` / `contains` / `starts_with` / `len` / `node_count`) + method sugar. Insert / lookup short-circuit to false on any non-a-z input character. Drop frees both arrays. New `examples/trie.vani` + 6 new lib tests. Closures #326 (BinaryHeap<T>), #327 (BloomFilter), #328 (Bst<T>), and #329 (Graph + BFS/DFS/Dijkstra) shipped immediately before. **Level 4 is now 6/9 complete.** Next focal area sequence: (#331) **Skip list** (Level 4 #7) — arena-based with forward-link levels per node; probabilistic balancing. (#332) AVL / red-black rotations on the Bst arena (rotations swap i32 indices). (#333+) Graph extensions: A* / topological sort / Kruskal (now unblocked by `UnionFind`) / Prim, CSR adjacency cache, undirected variant. (#334) Trie extensions: arbitrary alphabet via per-node `Vec<(u8, u32)>` sparse children; radix-compressed variant; delete; ordered enumeration. After Level 4: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-29, after closure #331 — **Level 4 #7** `SkipList<T>` probabilistic ordered set on a node arena (i64 keys v1). MAX_LEVEL = 8, per-node forward[] indices stored in a flat `i32*` capacity × 8 array; node 0 is the head sentinel; LCG seed for geometric level distribution stored in the struct. 6 builtins (`skiplist_new` / `insert` / `contains` / `len` / `min` / `max`) + method sugar. `min` is O(1), `max` does a level-0 walk for v1. Drop frees the three arrays. New `examples/skiplist.vani` + 6 new lib tests. Closures #326 (BinaryHeap<T>), #327 (BloomFilter), #328 (Bst<T>), #329 (Graph), and #330 (Trie) shipped immediately before. **Level 4 is now 7/9 complete — the v1 data-structures roadmap is essentially closed**; only AVL/RB on the Bst arena (#332) and graph algorithms extensions (A* / topo / Kruskal / Prim, CSR cache — #333+) remain queued from the original spec, plus various per-container follow-ups. Next focal area sequence: (#332) AVL / red-black rotations on the Bst arena (rotations swap i32 child indices, no node moves; the existing `Bst<T>` handle just gains balance metadata). (#333) Graph extensions: A* (path tracker on top of Dijkstra), topological sort, Kruskal (unblocked by `UnionFind`), Prim. (#334) CSR-style adjacency cache invalidated on edge insertion for O(V+E) BFS/DFS instead of the current O((V+E)·E). (#335+) Trie alphabet generalization; SkipList remove; tail tracker. After Level 4: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

@@ -1640,6 +1640,10 @@ impl Parser {
                 self.bump();
                 return Ok(Type::Trie);
             }
+            if name == "SkipList" {
+                self.bump();
+                return Ok(Type::SkipList);
+            }
             if name == "Atomic" {
                 self.bump();
                 self.expect_keyword("'<'", |kind| matches!(kind, TokenKind::Less))?;

@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_len", "trie_node_count", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_len", "trie_node_count", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_len", "skiplist_min", "skiplist_max", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -461,7 +461,7 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // built-in `Type::Task`, leading to confusing
     // "got Task" errors deep in the pipeline.
     const RESERVED_TYPE_NAMES: &[&str] = &[
-        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "HashSet", "HashMap", "BTreeSet", "BTreeMap", "UnionFind", "BinaryHeap", "BloomFilter", "Bst", "Graph", "Trie", "OwnedStr", "Self",
+        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "HashSet", "HashMap", "BTreeSet", "BTreeMap", "UnionFind", "BinaryHeap", "BloomFilter", "Bst", "Graph", "Trie", "SkipList", "OwnedStr", "Self",
     ];
     for decl in &program.structs {
         if RESERVED_TYPE_NAMES.contains(&decl.name.as_str()) {
@@ -5800,7 +5800,8 @@ fn monomorphize_type_decls_in_program(
                 | "btreemap_get" | "btreemap_insert" | "btreemap_remove"
                 | "binary_heap_pop" | "binary_heap_peek"
                 | "bst_min" | "bst_max"
-                | "graph_dijkstra" => Some(Type::I64),
+                | "graph_dijkstra"
+                | "skiplist_min" | "skiplist_max" => Some(Type::I64),
                 "parse_float" => Some(Type::F64),
                 _ => None,
             };
@@ -10815,6 +10816,14 @@ fn check_expr(
                         "node_count" => ("trie_node_count", false),
                         _ => ("", false),
                     },
+                    Some(Type::SkipList) => match method.as_str() {
+                        "insert" => ("skiplist_insert", true),
+                        "contains" => ("skiplist_contains", false),
+                        "len" => ("skiplist_len", false),
+                        "min" => ("skiplist_min", false),
+                        "max" => ("skiplist_max", false),
+                        _ => ("", false),
+                    },
                     _ => ("", false),
                 };
                 if !builtin_name.is_empty() {
@@ -13876,6 +13885,12 @@ fn check_call(
         "trie_new" | "trie_insert" | "trie_contains"
         | "trie_starts_with" | "trie_len" | "trie_node_count" => {
             return check_trie_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
+        "skiplist_new" | "skiplist_insert" | "skiplist_contains"
+        | "skiplist_len" | "skiplist_min" | "skiplist_max" => {
+            return check_skiplist_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
         }
@@ -17272,6 +17287,125 @@ fn check_trie_builtin(
             "trie key", diagnostics,
         );
         typed_args.push(s.expr);
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        ret_ty(),
+        None,
+        span,
+    )
+}
+
+/// SkipList builtins — closure #331, Level 4 #7.
+///
+///   skiplist_new() -> SkipList
+///   skiplist_insert(mut ref sl, x: i64) -> bool
+///       True iff a new node was created (false on duplicate).
+///   skiplist_contains(ref sl, x: i64) -> bool
+///   skiplist_len(ref sl) -> i64
+///   skiplist_min(ref sl) -> Option<i64>
+///   skiplist_max(ref sl) -> Option<i64>
+fn check_skiplist_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args = match name {
+        "skiplist_new" => 0,
+        "skiplist_len" | "skiplist_min" | "skiplist_max" => 1,
+        "skiplist_insert" | "skiplist_contains" => 2,
+        _ => unreachable!(),
+    };
+    let ret_ty = || -> Type {
+        match name {
+            "skiplist_new" => Type::SkipList,
+            "skiplist_insert" | "skiplist_contains" => Type::Bool,
+            "skiplist_min" | "skiplist_max" => {
+                Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+            }
+            _ => Type::I64,
+        }
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}() expects {} argument{}, got {}",
+                name,
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback(ret_ty(), span);
+    }
+    if name == "skiplist_new" {
+        return CheckedExpr::new(
+            TypedExprKind::Call {
+                name: "skiplist_new".to_string(),
+                name_span: span,
+                args: Vec::new(),
+            },
+            Type::SkipList,
+            None,
+            span,
+        );
+    }
+    let sl = check_expr(&args[0], env, signatures, diagnostics);
+    let is_mut_op = matches!(name, "skiplist_insert");
+    match sl.ty() {
+        Type::Ref(inner) | Type::RefMut(inner) => {
+            if !matches!(**inner, Type::SkipList) {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "{}() requires a `{}SkipList` argument, got {}",
+                        name,
+                        if is_mut_op { "mut ref " } else { "ref " },
+                        sl.ty()
+                    ),
+                ));
+                return CheckedExpr::fallback(ret_ty(), span);
+            }
+        }
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "{}() requires a `{}SkipList` argument, got {}",
+                    name,
+                    if is_mut_op { "mut ref " } else { "ref " },
+                    other
+                ),
+            ));
+            return CheckedExpr::fallback(ret_ty(), span);
+        }
+    }
+    if is_mut_op && !matches!(sl.ty(), Type::RefMut(_)) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() requires a `mut ref SkipList` argument, got {}",
+                name,
+                sl.ty()
+            ),
+        ));
+    }
+    let mut typed_args = vec![sl.expr];
+    if matches!(name, "skiplist_insert" | "skiplist_contains") {
+        let v_raw = check_expr(&args[1], env, signatures, diagnostics);
+        let v = coerce_checked(
+            v_raw, &Type::I64, args[1].span,
+            "skiplist key", diagnostics,
+        );
+        typed_args.push(v.expr);
     }
     CheckedExpr::new(
         TypedExprKind::Call {

@@ -1,0 +1,62 @@
+// build & run:
+//   intentc run examples/skiplist.vani                          # LLVM backend
+//   intentc run examples/skiplist.vani --backend=c              # C backend
+//   intentc build examples/skiplist.vani -o /tmp/sl && /tmp/sl
+
+intent "SkipList<T> — probabilistic ordered set (Level 4 #7)";
+
+// `SkipList` is a first-class affine handle for a probabilistic
+// ordered set. MAX_LEVEL is fixed at 8 in v1; per-node forward[]
+// pointers are stored in a flat i32 index array of capacity × 8
+// entries. The struct also stores a 64-bit LCG state used to
+// pick level counts for new nodes (geometric distribution).
+//
+// Backing fields:
+//   keys: i64*
+//   forward: i32*    (flat capacity × 8 entries; -1 = none)
+//   node_levels: i32* (per-node count of valid forward pointers)
+//   rng_state: u64
+//   num_nodes, capacity, num_keys
+//
+// 6 builtins + method sugar:
+//   skiplist_new()           -> SkipList
+//   sl.insert(x)             -> bool (true if new)
+//   sl.contains(x)           -> bool
+//   sl.len()                 -> i64
+//   sl.min() / sl.max()      -> Option<i64>
+//
+// Scope-exit Drop frees the three arrays.
+
+fn unwrap_or(o: Option<i64>, def: i64) -> i64 {
+  return match o {
+    Option.Some(v) then v,
+    Option.None then def,
+  };
+}
+
+fn main() -> i64 {
+  let sl: SkipList = skiplist_new();
+
+  // Insert a mixed-order batch.
+  let _ = sl.insert(5);
+  let _ = sl.insert(2);
+  let _ = sl.insert(8);
+  let _ = sl.insert(1);
+  let _ = sl.insert(7);
+  let _ = sl.insert(3);
+
+  // Duplicate insert returns false.
+  print "insert dup:", sl.insert(5);
+
+  print "len:", sl.len();
+  print "min:", unwrap_or(sl.min(), 0 - 1);
+  print "max:", unwrap_or(sl.max(), 0 - 1);
+
+  // Membership queries — should match Bst contains semantics.
+  print "contains 7:", sl.contains(7);
+  print "contains 4:", sl.contains(4);
+  print "contains 1:", sl.contains(1);
+  print "contains 8:", sl.contains(8);
+
+  return 0;
+}
