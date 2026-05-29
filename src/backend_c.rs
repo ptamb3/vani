@@ -1728,63 +1728,151 @@ fn stmt_uses_i64_bst(stmt: &crate::ir::TypedStmt) -> bool {
 }
 
 /// Data-structures roadmap Level 4 #3 — Bst<i64> runtime helpers
-/// (closure #328). Node arena pattern: parallel `keys` (i64) +
-/// `left`/`right` (i32 child indices, -1 = no child) arrays.
-/// Root is stored as an i64 index (-1 if empty). Capacity grows
-/// 2x on demand. v1 i64 element only; AVL / red-black balancing
-/// is queued for a follow-up closure. min/max return
-/// `Option<i64>` — gated on Option__i64 being registered.
+/// (closure #328, AVL balancing added in closure #332). Node
+/// arena: parallel `keys` (i64) + `left`/`right` (i32 child
+/// indices, -1 = no child) + `heights` (u8 per-node) arrays.
+/// Insert and remove keep the tree AVL-balanced via iterative
+/// path tracking + the four-case rebalance (LL/LR/RR/RL).
+/// min/max return `Option<i64>` and gate on Option__i64.
 fn emit_intent_bst_i64_helpers_c_body(out: &mut String, has_option_i64: bool) {
     out.push_str(
-        "typedef struct { int64_t* keys; int32_t* left; int32_t* right; int64_t root; int64_t len; int64_t capacity; } intent_bst_i64;\n\
+        "typedef struct { int64_t* keys; int32_t* left; int32_t* right; int64_t root; int64_t len; int64_t capacity; uint8_t* heights; } intent_bst_i64;\n\
          static INTENT_UNUSED intent_bst_i64 intent_bst_i64_new(void) {\n\
-         \x20 intent_bst_i64 b; b.keys = (int64_t*)0; b.left = (int32_t*)0; b.right = (int32_t*)0;\n\
-         \x20 b.root = -1; b.len = 0; b.capacity = 0; return b;\n\
+         \x20 intent_bst_i64 b;\n\
+         \x20 b.keys = (int64_t*)0; b.left = (int32_t*)0; b.right = (int32_t*)0;\n\
+         \x20 b.heights = (uint8_t*)0;\n\
+         \x20 b.root = -1; b.len = 0; b.capacity = 0;\n\
+         \x20 return b;\n\
          }\n\
          static INTENT_UNUSED void intent_bst_i64_drop(intent_bst_i64* b) {\n\
          \x20 if (b->keys) free(b->keys);\n\
          \x20 if (b->left) free(b->left);\n\
          \x20 if (b->right) free(b->right);\n\
+         \x20 if (b->heights) free(b->heights);\n\
          \x20 b->keys = (int64_t*)0; b->left = (int32_t*)0; b->right = (int32_t*)0;\n\
+         \x20 b->heights = (uint8_t*)0;\n\
          \x20 b->root = -1; b->len = 0; b->capacity = 0;\n\
          }\n\
          static INTENT_UNUSED void intent_bst_i64_grow(intent_bst_i64* b) {\n\
          \x20 int64_t new_cap = b->capacity ? b->capacity * 2 : 8;\n\
-         \x20 b->keys  = (int64_t*)realloc(b->keys,  (size_t)new_cap * sizeof(int64_t));\n\
-         \x20 b->left  = (int32_t*)realloc(b->left,  (size_t)new_cap * sizeof(int32_t));\n\
-         \x20 b->right = (int32_t*)realloc(b->right, (size_t)new_cap * sizeof(int32_t));\n\
-         \x20 if (!b->keys || !b->left || !b->right) abort();\n\
+         \x20 b->keys    = (int64_t*)realloc(b->keys,    (size_t)new_cap * sizeof(int64_t));\n\
+         \x20 b->left    = (int32_t*)realloc(b->left,    (size_t)new_cap * sizeof(int32_t));\n\
+         \x20 b->right   = (int32_t*)realloc(b->right,   (size_t)new_cap * sizeof(int32_t));\n\
+         \x20 b->heights = (uint8_t*)realloc(b->heights, (size_t)new_cap * sizeof(uint8_t));\n\
+         \x20 if (!b->keys || !b->left || !b->right || !b->heights) abort();\n\
          \x20 b->capacity = new_cap;\n\
+         }\n\
+         static INTENT_UNUSED uint8_t intent_bst_i64_h(const intent_bst_i64* b, int32_t i) {\n\
+         \x20 return (i == -1) ? 0 : b->heights[i];\n\
+         }\n\
+         static INTENT_UNUSED void intent_bst_i64_update_height(intent_bst_i64* b, int64_t node) {\n\
+         \x20 uint8_t lh = intent_bst_i64_h(b, b->left[node]);\n\
+         \x20 uint8_t rh = intent_bst_i64_h(b, b->right[node]);\n\
+         \x20 b->heights[node] = (uint8_t)(1 + ((lh > rh) ? lh : rh));\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_bst_i64_rotate_right(intent_bst_i64* b, int64_t x) {\n\
+         \x20 int64_t y = (int64_t)b->left[x];\n\
+         \x20 int32_t y_right = b->right[y];\n\
+         \x20 b->left[x] = y_right;\n\
+         \x20 b->right[y] = (int32_t)x;\n\
+         \x20 intent_bst_i64_update_height(b, x);\n\
+         \x20 intent_bst_i64_update_height(b, y);\n\
+         \x20 return y;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_bst_i64_rotate_left(intent_bst_i64* b, int64_t x) {\n\
+         \x20 int64_t y = (int64_t)b->right[x];\n\
+         \x20 int32_t y_left = b->left[y];\n\
+         \x20 b->right[x] = y_left;\n\
+         \x20 b->left[y] = (int32_t)x;\n\
+         \x20 intent_bst_i64_update_height(b, x);\n\
+         \x20 intent_bst_i64_update_height(b, y);\n\
+         \x20 return y;\n\
+         }\n\
+         /* Rebalance the subtree rooted at `node` after a height\n\
+          * change to one of its children, returning the new root\n\
+          * of that subtree (may be unchanged). Caller is\n\
+          * responsible for relinking it into the parent. */\n\
+         static INTENT_UNUSED int64_t intent_bst_i64_rebalance(intent_bst_i64* b, int64_t node) {\n\
+         \x20 intent_bst_i64_update_height(b, node);\n\
+         \x20 int lh = (int)intent_bst_i64_h(b, b->left[node]);\n\
+         \x20 int rh = (int)intent_bst_i64_h(b, b->right[node]);\n\
+         \x20 int balance = lh - rh;\n\
+         \x20 if (balance > 1) {\n\
+         \x20   int64_t l = (int64_t)b->left[node];\n\
+         \x20   int llh = (int)intent_bst_i64_h(b, b->left[l]);\n\
+         \x20   int lrh = (int)intent_bst_i64_h(b, b->right[l]);\n\
+         \x20   if (lrh > llh) {\n\
+         \x20     b->left[node] = (int32_t)intent_bst_i64_rotate_left(b, l);\n\
+         \x20   }\n\
+         \x20   return intent_bst_i64_rotate_right(b, node);\n\
+         \x20 }\n\
+         \x20 if (balance < -1) {\n\
+         \x20   int64_t r = (int64_t)b->right[node];\n\
+         \x20   int rlh = (int)intent_bst_i64_h(b, b->left[r]);\n\
+         \x20   int rrh = (int)intent_bst_i64_h(b, b->right[r]);\n\
+         \x20   if (rlh > rrh) {\n\
+         \x20     b->right[node] = (int32_t)intent_bst_i64_rotate_right(b, r);\n\
+         \x20   }\n\
+         \x20   return intent_bst_i64_rotate_left(b, node);\n\
+         \x20 }\n\
+         \x20 return node;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_bst_i64_emplace(intent_bst_i64* b, int64_t x) {\n\
+         \x20 if (b->len >= b->capacity) intent_bst_i64_grow(b);\n\
+         \x20 int64_t idx = b->len;\n\
+         \x20 b->keys[idx] = x; b->left[idx] = -1; b->right[idx] = -1;\n\
+         \x20 b->heights[idx] = 1;\n\
+         \x20 b->len++;\n\
+         \x20 return idx;\n\
          }\n\
          static INTENT_UNUSED bool intent_bst_i64_insert(intent_bst_i64* b, int64_t x) {\n\
          \x20 if (b->root == -1) {\n\
-         \x20   if (b->len >= b->capacity) intent_bst_i64_grow(b);\n\
-         \x20   int64_t idx = b->len;\n\
-         \x20   b->keys[idx] = x; b->left[idx] = -1; b->right[idx] = -1;\n\
-         \x20   b->root = idx; b->len++; return true;\n\
+         \x20   b->root = intent_bst_i64_emplace(b, x);\n\
+         \x20   return true;\n\
          \x20 }\n\
+         \x20 /* Walk down, recording the search path. Depth bound is\n\
+          * the AVL height of an n-node tree, well below 64 for any\n\
+          * tree that fits in i32 child indices. */\n\
+         \x20 int64_t path[64];\n\
+         \x20 int8_t  path_dir[64];  /* 0 = went left, 1 = went right */\n\
+         \x20 int     plen = 0;\n\
          \x20 int64_t cur = b->root;\n\
          \x20 while (1) {\n\
          \x20   int64_t k = b->keys[cur];\n\
          \x20   if (x == k) return false;\n\
+         \x20   path[plen] = cur;\n\
          \x20   if (x < k) {\n\
+         \x20     path_dir[plen++] = 0;\n\
          \x20     if (b->left[cur] == -1) {\n\
-         \x20       if (b->len >= b->capacity) intent_bst_i64_grow(b);\n\
-         \x20       int64_t idx = b->len;\n\
-         \x20       b->keys[idx] = x; b->left[idx] = -1; b->right[idx] = -1;\n\
-         \x20       b->left[cur] = (int32_t)idx; b->len++; return true;\n\
+         \x20       int64_t new_idx = intent_bst_i64_emplace(b, x);\n\
+         \x20       b->left[cur] = (int32_t)new_idx;\n\
+         \x20       break;\n\
          \x20     }\n\
          \x20     cur = (int64_t)b->left[cur];\n\
          \x20   } else {\n\
+         \x20     path_dir[plen++] = 1;\n\
          \x20     if (b->right[cur] == -1) {\n\
-         \x20       if (b->len >= b->capacity) intent_bst_i64_grow(b);\n\
-         \x20       int64_t idx = b->len;\n\
-         \x20       b->keys[idx] = x; b->left[idx] = -1; b->right[idx] = -1;\n\
-         \x20       b->right[cur] = (int32_t)idx; b->len++; return true;\n\
+         \x20       int64_t new_idx = intent_bst_i64_emplace(b, x);\n\
+         \x20       b->right[cur] = (int32_t)new_idx;\n\
+         \x20       break;\n\
          \x20     }\n\
          \x20     cur = (int64_t)b->right[cur];\n\
          \x20   }\n\
          \x20 }\n\
+         \x20 /* Walk back up: recompute heights, rotate where needed, \n\
+          * and relink the rotated subtree root into the parent. */\n\
+         \x20 for (int i = plen - 1; i >= 0; i--) {\n\
+         \x20   int64_t node = path[i];\n\
+         \x20   int64_t new_root = intent_bst_i64_rebalance(b, node);\n\
+         \x20   if (i == 0) {\n\
+         \x20     b->root = new_root;\n\
+         \x20   } else {\n\
+         \x20     int64_t parent = path[i - 1];\n\
+         \x20     if (path_dir[i - 1] == 0) b->left[parent] = (int32_t)new_root;\n\
+         \x20     else                       b->right[parent] = (int32_t)new_root;\n\
+         \x20   }\n\
+         \x20 }\n\
+         \x20 return true;\n\
          }\n\
          static INTENT_UNUSED bool intent_bst_i64_contains(const intent_bst_i64* b, int64_t x) {\n\
          \x20 int64_t cur = b->root;\n\
@@ -1795,41 +1883,73 @@ fn emit_intent_bst_i64_helpers_c_body(out: &mut String, has_option_i64: bool) {
          \x20 }\n\
          \x20 return false;\n\
          }\n\
-         /* Remove by key. Tombstone strategy: we logically detach\n\
-          * the node by overwriting its key with that of the in-order\n\
-          * successor; the dead slot stays in the arena (no compaction).\n\
-          * Returns true iff a key was removed. */\n\
+         /* Remove by key with AVL rebalance. Standard iterative\n\
+          * algorithm: walk down recording the path, unlink the\n\
+          * found node (in-order successor for two-children case),\n\
+          * then walk back up the path rebalancing. Deleted arena\n\
+          * slots stay tombstoned (no compaction). */\n\
          static INTENT_UNUSED bool intent_bst_i64_remove(intent_bst_i64* b, int64_t x) {\n\
          \x20 if (b->root == -1) return false;\n\
-         \x20 int64_t parent = -1; int64_t cur = b->root; int is_left_child = 0;\n\
+         \x20 int64_t path[64];\n\
+         \x20 int8_t  path_dir[64];\n\
+         \x20 int     plen = 0;\n\
+         \x20 int64_t cur = b->root;\n\
+         \x20 int     found_at = -1;\n\
          \x20 while (cur != -1) {\n\
          \x20   int64_t k = b->keys[cur];\n\
-         \x20   if (x == k) break;\n\
-         \x20   parent = cur;\n\
-         \x20   if (x < k) { cur = (int64_t)b->left[cur]; is_left_child = 1; }\n\
-         \x20   else       { cur = (int64_t)b->right[cur]; is_left_child = 0; }\n\
+         \x20   if (x == k) { found_at = plen; break; }\n\
+         \x20   path[plen] = cur;\n\
+         \x20   path_dir[plen] = (x < k) ? 0 : 1;\n\
+         \x20   plen++;\n\
+         \x20   cur = (x < k) ? (int64_t)b->left[cur] : (int64_t)b->right[cur];\n\
          \x20 }\n\
-         \x20 if (cur == -1) return false;\n\
-         \x20 int32_t replacement;\n\
-         \x20 if (b->left[cur] == -1 && b->right[cur] == -1) {\n\
-         \x20   replacement = -1;\n\
-         \x20 } else if (b->left[cur] == -1) {\n\
-         \x20   replacement = b->right[cur];\n\
-         \x20 } else if (b->right[cur] == -1) {\n\
-         \x20   replacement = b->left[cur];\n\
+         \x20 if (found_at < 0) return false;\n\
+         \x20 /* `cur` is the found node; `plen` is its parent's index in path */\n\
+         \x20 int32_t found_l = b->left[cur];\n\
+         \x20 int32_t found_r = b->right[cur];\n\
+         \x20 int64_t replacement;\n\
+         \x20 if (found_l != -1 && found_r != -1) {\n\
+         \x20   /* Two children: copy in-order successor's key up,\n\
+          * then unlink the successor. The successor's path\n\
+          * starts with the found node, then walks into the\n\
+          * right subtree and as far left as possible. */\n\
+         \x20   path[plen] = cur;\n\
+         \x20   path_dir[plen] = 1;\n\
+         \x20   plen++;\n\
+         \x20   int64_t s = (int64_t)found_r;\n\
+         \x20   while (b->left[s] != -1) {\n\
+         \x20     path[plen] = s;\n\
+         \x20     path_dir[plen] = 0;\n\
+         \x20     plen++;\n\
+         \x20     s = (int64_t)b->left[s];\n\
+         \x20   }\n\
+         \x20   b->keys[cur] = b->keys[s];\n\
+         \x20   replacement = (int64_t)b->right[s];\n\
          \x20 } else {\n\
-         \x20   /* Two children: copy in-order successor's key up. */\n\
-         \x20   int64_t succ_parent = cur; int64_t succ = (int64_t)b->right[cur];\n\
-         \x20   while (b->left[succ] != -1) { succ_parent = succ; succ = (int64_t)b->left[succ]; }\n\
-         \x20   b->keys[cur] = b->keys[succ];\n\
-         \x20   if (succ_parent == cur) b->right[succ_parent] = b->right[succ];\n\
-         \x20   else b->left[succ_parent] = b->right[succ];\n\
-         \x20   b->len--; return true;\n\
+         \x20   replacement = (found_l != -1) ? (int64_t)found_l : (int64_t)found_r;\n\
          \x20 }\n\
-         \x20 if (parent == -1) b->root = (int64_t)replacement;\n\
-         \x20 else if (is_left_child) b->left[parent] = replacement;\n\
-         \x20 else b->right[parent] = replacement;\n\
-         \x20 b->len--; return true;\n\
+         \x20 /* Relink the replacement into the parent (or the root). */\n\
+         \x20 if (plen == 0) {\n\
+         \x20   b->root = replacement;\n\
+         \x20 } else {\n\
+         \x20   int64_t parent = path[plen - 1];\n\
+         \x20   if (path_dir[plen - 1] == 0) b->left[parent] = (int32_t)replacement;\n\
+         \x20   else                          b->right[parent] = (int32_t)replacement;\n\
+         \x20 }\n\
+         \x20 b->len--;\n\
+         \x20 /* Rebalance up the path. */\n\
+         \x20 for (int i = plen - 1; i >= 0; i--) {\n\
+         \x20   int64_t node = path[i];\n\
+         \x20   int64_t new_root = intent_bst_i64_rebalance(b, node);\n\
+         \x20   if (i == 0) {\n\
+         \x20     b->root = new_root;\n\
+         \x20   } else {\n\
+         \x20     int64_t parent = path[i - 1];\n\
+         \x20     if (path_dir[i - 1] == 0) b->left[parent] = (int32_t)new_root;\n\
+         \x20     else                       b->right[parent] = (int32_t)new_root;\n\
+         \x20   }\n\
+         \x20 }\n\
+         \x20 return true;\n\
          }\n\
          static INTENT_UNUSED int64_t intent_bst_i64_len(const intent_bst_i64* b) {\n\
          \x20 return b->len;\n\

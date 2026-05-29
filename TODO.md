@@ -235,9 +235,24 @@ pointer (already in the language as of #279 FFI callbacks).
     `Option<i64>`. `remove` uses the in-order successor for the
     two-children case; arena slots from removed nodes stay
     tombstoned (no compaction). Drop frees all three arrays.
-    Pending: AVL / red-black rotations on the same arena
-    (the i32-index design makes rotations pointer-free); arena
-    compaction; non-i64 keys via the Hash / Ord interface.
+    *AVL balancing shipped 2026-05-29 (closure #332).*
+    Added per-node `u8* heights` as a 7th struct field (kept
+    at the end so existing LLVM GEP indices for fields 0..5
+    stay valid). insert and remove walk down the tree on
+    stack-allocated `[64 x i64]` + `[64 x i8]` path buffers,
+    then walk back up applying the four rotation cases (LL /
+    LR / RR / RL) via shared rotate_left / rotate_right /
+    rebalance helpers. Rotations swap i32 child indices in
+    place — no node moves, so the affine ownership story is
+    unchanged. Sorted-input adversarial workloads now run in
+    O(log n) per op. New `examples/bst_avl.vani` exercises
+    ascending / descending / zig-zag inserts + mid-tree
+    removes that trigger the successor + rebalance path.
+    Pending: red-black variant on the same arena pattern
+    (RB needs a 1-bit color flag instead of full height; can
+    share the heights byte's high bit); arena compaction
+    after many removes; non-i64 keys via the Hash / Ord
+    interface.
 21. **B-tree (disk-friendly variant)** — ✅ AFFINE.
     Same arena pattern as #20.
 22. **Trie (prefix tree)** — ✅ AFFINE.
@@ -649,7 +664,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #331 — **Level 4 #7** `SkipList<T>` probabilistic ordered set on a node arena (i64 keys v1). MAX_LEVEL = 8, per-node forward[] indices stored in a flat `i32*` capacity × 8 array; node 0 is the head sentinel; LCG seed for geometric level distribution stored in the struct. 6 builtins (`skiplist_new` / `insert` / `contains` / `len` / `min` / `max`) + method sugar. `min` is O(1), `max` does a level-0 walk for v1. Drop frees the three arrays. New `examples/skiplist.vani` + 6 new lib tests. Closures #326 (BinaryHeap<T>), #327 (BloomFilter), #328 (Bst<T>), #329 (Graph), and #330 (Trie) shipped immediately before. **Level 4 is now 7/9 complete — the v1 data-structures roadmap is essentially closed**; only AVL/RB on the Bst arena (#332) and graph algorithms extensions (A* / topo / Kruskal / Prim, CSR cache — #333+) remain queued from the original spec, plus various per-container follow-ups. Next focal area sequence: (#332) AVL / red-black rotations on the Bst arena (rotations swap i32 child indices, no node moves; the existing `Bst<T>` handle just gains balance metadata). (#333) Graph extensions: A* (path tracker on top of Dijkstra), topological sort, Kruskal (unblocked by `UnionFind`), Prim. (#334) CSR-style adjacency cache invalidated on edge insertion for O(V+E) BFS/DFS instead of the current O((V+E)·E). (#335+) Trie alphabet generalization; SkipList remove; tail tracker. After Level 4: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-29, after closure #332 — **AVL balancing on the existing `Bst<T>` arena** (Level 4 #3 extension). Added per-node `u8* heights` as a 7th struct field (positioned at end so existing LLVM GEP indices stay valid). insert and remove walk down the tree recording the search path on stack-allocated `[64 x i64]` + `[64 x i8]` buffers, then walk back up applying the four rotation cases (LL / LR / RR / RL) via shared rotate_left / rotate_right / rebalance helpers. Rotations swap i32 child indices — no node moves, so the affine story is unchanged. Adversarial sorted-input workloads now run in O(log n) per op. New `examples/bst_avl.vani` exercises ascending / descending / zig-zag insertion patterns + mid-tree removes that trigger the successor-walk + rebalance path. 1 new lib test pins the AVL helper names + 7-field LLVM type. Closure #331 (SkipList) shipped immediately before. **Level 4 of the data-structures roadmap is now fully closed under v1.** Next focal area sequence: (#333) Graph extensions — A* (path tracker on top of Dijkstra), topological sort, Kruskal (unblocked by `UnionFind`), Prim. (#334) CSR-style adjacency cache on Graph invalidated on edge insertion for O(V+E) BFS/DFS instead of the current O((V+E)·E). (#335) Trie alphabet generalization (per-node sparse children for arbitrary u8 alphabet; radix-compressed variant; delete; ordered enumeration). (#336) SkipList remove + tail tracker for O(log n) max. (#337) Red-black variant on the Bst arena (1-bit color flag in the existing heights byte). After Level 4 extensions: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

@@ -258,7 +258,7 @@ fn llvm_byte_size(ty: &Type) -> u64 {
         Type::UnionFind => 32, // {parent ptr, rank ptr, n, sets}
         Type::BinaryHeap(_) => 24, // {data ptr, len, capacity}
         Type::BloomFilter => 32, // {bits ptr, num_bits, num_hashes, insert_count}
-        Type::Bst(_) => 40, // {keys ptr, left ptr, right ptr, root, len, capacity}
+        Type::Bst(_) => 48, // {keys ptr, left ptr, right ptr, root, len, capacity, heights ptr}
         Type::Graph => 48, // {num_nodes, edge_src ptr, edge_dst ptr, edge_weight ptr, num_edges, edge_capacity}
         Type::Trie => 40, // {children ptr, is_end ptr, num_nodes, capacity, num_words}
         Type::SkipList => 56, // {keys, forward, node_levels, rng_state, num_nodes, capacity, num_keys}
@@ -646,8 +646,8 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("%intent_binary_heap_i64 = type { i64*, i64, i64 }\n");
     // BloomFilter (closure #327): { bits*, num_bits, num_hashes, insert_count } — probabilistic membership.
     out.push_str("%intent_bloom_filter = type { i8*, i64, i64, i64 }\n");
-    // Bst<i64> (closure #328): { keys*, left*, right*, root, len, capacity } — BST on node arena.
-    out.push_str("%intent_bst_i64 = type { i64*, i32*, i32*, i64, i64, i64 }\n");
+    // Bst<i64> (closure #328 + AVL in #332): { keys*, left*, right*, root, len, capacity, heights* } — AVL BST on node arena.
+    out.push_str("%intent_bst_i64 = type { i64*, i32*, i32*, i64, i64, i64, i8* }\n");
     // Graph (closure #329): { num_nodes, edge_src*, edge_dst*, edge_weight*, num_edges, edge_capacity } — weighted directed graph.
     out.push_str("%intent_graph = type { i64, i32*, i32*, i64*, i64, i64 }\n");
     // Trie (closure #330): { children*, is_end*, num_nodes, capacity, num_words } — prefix tree on a-z alphabet (26-wide flat children).
@@ -9241,10 +9241,13 @@ fn emit_intent_bloom_filter_helpers_llvm(out: &mut String) {
 }
 
 /// Data-structures roadmap Level 4 #3 — Bst<i64> runtime helpers
-/// (closure #328). Node arena: parallel keys (i64) + left/right
-/// child-index (i32, -1 = none) arrays + root index (i64,
-/// -1 = empty). Grow doubles capacity. min/max return
-/// Option<i64> and are gated on Option__i64 being registered.
+/// (closure #328, AVL balancing added in closure #332). Node
+/// arena: parallel keys (i64) + left/right child-index (i32,
+/// -1 = none) arrays + per-node heights (i8) array + root
+/// index (i64, -1 = empty). insert and remove walk down
+/// recording the search path on an alloca'd stack, then walk
+/// back up applying the four AVL rotation cases. min/max
+/// return Option<i64> and are gated on Option__i64.
 fn emit_intent_bst_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
     out.push_str(
         "define %intent_bst_i64 @intent_bst_i64_new() {\n\
@@ -9254,15 +9257,18 @@ fn emit_intent_bst_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
          \x20 %r3 = insertvalue %intent_bst_i64 %r2, i64 -1, 3\n\
          \x20 %r4 = insertvalue %intent_bst_i64 %r3, i64 0, 4\n\
          \x20 %r5 = insertvalue %intent_bst_i64 %r4, i64 0, 5\n\
-         \x20 ret %intent_bst_i64 %r5\n\
+         \x20 %r6 = insertvalue %intent_bst_i64 %r5, i8* null, 6\n\
+         \x20 ret %intent_bst_i64 %r6\n\
          }\n\
          define void @intent_bst_i64_drop(%intent_bst_i64* %b) {\n\
          \x20 %kpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 0\n\
          \x20 %lpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
          \x20 %rpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %hpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 6\n\
          \x20 %keys = load i64*, i64** %kpp\n\
          \x20 %lefts = load i32*, i32** %lpp\n\
          \x20 %rights = load i32*, i32** %rpp\n\
+         \x20 %heights = load i8*, i8** %hpp\n\
          \x20 %k_null = icmp eq i64* %keys, null\n\
          \x20 br i1 %k_null, label %d_left, label %d_fk\n\
          d_fk:\n\
@@ -9278,15 +9284,22 @@ fn emit_intent_bst_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
          \x20 br label %d_right\n\
          d_right:\n\
          \x20 %r_null = icmp eq i32* %rights, null\n\
-         \x20 br i1 %r_null, label %d_done, label %d_fr\n\
+         \x20 br i1 %r_null, label %d_heights, label %d_fr\n\
          d_fr:\n\
          \x20 %r_i8 = bitcast i32* %rights to i8*\n\
          \x20 call void @free(i8* %r_i8)\n\
+         \x20 br label %d_heights\n\
+         d_heights:\n\
+         \x20 %h_null = icmp eq i8* %heights, null\n\
+         \x20 br i1 %h_null, label %d_done, label %d_fh\n\
+         d_fh:\n\
+         \x20 call void @free(i8* %heights)\n\
          \x20 br label %d_done\n\
          d_done:\n\
          \x20 store i64* null, i64** %kpp\n\
          \x20 store i32* null, i32** %lpp\n\
          \x20 store i32* null, i32** %rpp\n\
+         \x20 store i8* null, i8** %hpp\n\
          \x20 %rtp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 3\n\
          \x20 %lp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 4\n\
          \x20 %cp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 5\n\
@@ -9299,6 +9312,7 @@ fn emit_intent_bst_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
          \x20 %kpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 0\n\
          \x20 %lpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
          \x20 %rpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %hpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 6\n\
          \x20 %cp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 5\n\
          \x20 %cap_old = load i64, i64* %cp\n\
          \x20 %cap_zero = icmp eq i64 %cap_old, 0\n\
@@ -9321,127 +9335,304 @@ fn emit_intent_bst_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
          \x20 %rights_new_i8 = call i8* @realloc(i8* %rights_old_i8, i64 %lr_bytes)\n\
          \x20 %rights_new = bitcast i8* %rights_new_i8 to i32*\n\
          \x20 store i32* %rights_new, i32** %rpp\n\
+         \x20 %heights_old = load i8*, i8** %hpp\n\
+         \x20 %heights_new = call i8* @realloc(i8* %heights_old, i64 %cap_new)\n\
+         \x20 store i8* %heights_new, i8** %hpp\n\
          \x20 store i64 %cap_new, i64* %cp\n\
          \x20 ret void\n\
          }\n\
-         define i1 @intent_bst_i64_insert(%intent_bst_i64* %b, i64 %x) {\n\
-         \x20 %kpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 0\n\
+         define i8 @intent_bst_i64_h(%intent_bst_i64* %b, i32 %i) {\n\
+         \x20 %is_none = icmp eq i32 %i, -1\n\
+         \x20 br i1 %is_none, label %h_zero, label %h_load\n\
+         h_zero:\n\
+         \x20 ret i8 0\n\
+         h_load:\n\
+         \x20 %hpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 6\n\
+         \x20 %heights = load i8*, i8** %hpp\n\
+         \x20 %i64_ = sext i32 %i to i64\n\
+         \x20 %slot = getelementptr i8, i8* %heights, i64 %i64_\n\
+         \x20 %v = load i8, i8* %slot\n\
+         \x20 ret i8 %v\n\
+         }\n\
+         define void @intent_bst_i64_update_height(%intent_bst_i64* %b, i64 %node) {\n\
          \x20 %lpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
          \x20 %rpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
-         \x20 %rtp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 3\n\
+         \x20 %hpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 6\n\
+         \x20 %lefts = load i32*, i32** %lpp\n\
+         \x20 %rights = load i32*, i32** %rpp\n\
+         \x20 %heights = load i8*, i8** %hpp\n\
+         \x20 %l_slot = getelementptr i32, i32* %lefts, i64 %node\n\
+         \x20 %r_slot = getelementptr i32, i32* %rights, i64 %node\n\
+         \x20 %l_i = load i32, i32* %l_slot\n\
+         \x20 %r_i = load i32, i32* %r_slot\n\
+         \x20 %lh = call i8 @intent_bst_i64_h(%intent_bst_i64* %b, i32 %l_i)\n\
+         \x20 %rh = call i8 @intent_bst_i64_h(%intent_bst_i64* %b, i32 %r_i)\n\
+         \x20 %gt = icmp ugt i8 %lh, %rh\n\
+         \x20 %mx = select i1 %gt, i8 %lh, i8 %rh\n\
+         \x20 %nh = add i8 %mx, 1\n\
+         \x20 %h_slot = getelementptr i8, i8* %heights, i64 %node\n\
+         \x20 store i8 %nh, i8* %h_slot\n\
+         \x20 ret void\n\
+         }\n\
+         define i64 @intent_bst_i64_rotate_right(%intent_bst_i64* %b, i64 %x) {\n\
+         \x20 %lpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
+         \x20 %rpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %lefts = load i32*, i32** %lpp\n\
+         \x20 %rights = load i32*, i32** %rpp\n\
+         \x20 %x_left_slot = getelementptr i32, i32* %lefts, i64 %x\n\
+         \x20 %y_i32 = load i32, i32* %x_left_slot\n\
+         \x20 %y = sext i32 %y_i32 to i64\n\
+         \x20 %y_right_slot = getelementptr i32, i32* %rights, i64 %y\n\
+         \x20 %y_right = load i32, i32* %y_right_slot\n\
+         \x20 store i32 %y_right, i32* %x_left_slot\n\
+         \x20 %x_i32 = trunc i64 %x to i32\n\
+         \x20 store i32 %x_i32, i32* %y_right_slot\n\
+         \x20 call void @intent_bst_i64_update_height(%intent_bst_i64* %b, i64 %x)\n\
+         \x20 call void @intent_bst_i64_update_height(%intent_bst_i64* %b, i64 %y)\n\
+         \x20 ret i64 %y\n\
+         }\n\
+         define i64 @intent_bst_i64_rotate_left(%intent_bst_i64* %b, i64 %x) {\n\
+         \x20 %lpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
+         \x20 %rpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %lefts = load i32*, i32** %lpp\n\
+         \x20 %rights = load i32*, i32** %rpp\n\
+         \x20 %x_right_slot = getelementptr i32, i32* %rights, i64 %x\n\
+         \x20 %y_i32 = load i32, i32* %x_right_slot\n\
+         \x20 %y = sext i32 %y_i32 to i64\n\
+         \x20 %y_left_slot = getelementptr i32, i32* %lefts, i64 %y\n\
+         \x20 %y_left = load i32, i32* %y_left_slot\n\
+         \x20 store i32 %y_left, i32* %x_right_slot\n\
+         \x20 %x_i32 = trunc i64 %x to i32\n\
+         \x20 store i32 %x_i32, i32* %y_left_slot\n\
+         \x20 call void @intent_bst_i64_update_height(%intent_bst_i64* %b, i64 %x)\n\
+         \x20 call void @intent_bst_i64_update_height(%intent_bst_i64* %b, i64 %y)\n\
+         \x20 ret i64 %y\n\
+         }\n\
+         define i64 @intent_bst_i64_rebalance(%intent_bst_i64* %b, i64 %node) {\n\
+         \x20 call void @intent_bst_i64_update_height(%intent_bst_i64* %b, i64 %node)\n\
+         \x20 %lpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
+         \x20 %rpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %lefts = load i32*, i32** %lpp\n\
+         \x20 %rights = load i32*, i32** %rpp\n\
+         \x20 %l_slot = getelementptr i32, i32* %lefts, i64 %node\n\
+         \x20 %l_i = load i32, i32* %l_slot\n\
+         \x20 %r_slot = getelementptr i32, i32* %rights, i64 %node\n\
+         \x20 %r_i = load i32, i32* %r_slot\n\
+         \x20 %lh = call i8 @intent_bst_i64_h(%intent_bst_i64* %b, i32 %l_i)\n\
+         \x20 %rh = call i8 @intent_bst_i64_h(%intent_bst_i64* %b, i32 %r_i)\n\
+         \x20 %lh32 = zext i8 %lh to i32\n\
+         \x20 %rh32 = zext i8 %rh to i32\n\
+         \x20 %bal = sub i32 %lh32, %rh32\n\
+         \x20 %left_heavy = icmp sgt i32 %bal, 1\n\
+         \x20 br i1 %left_heavy, label %rb_lh, label %rb_check_rh\n\
+         rb_lh:\n\
+         \x20 %l = sext i32 %l_i to i64\n\
+         \x20 %l_l_slot = getelementptr i32, i32* %lefts, i64 %l\n\
+         \x20 %l_l_i = load i32, i32* %l_l_slot\n\
+         \x20 %l_r_slot = getelementptr i32, i32* %rights, i64 %l\n\
+         \x20 %l_r_i = load i32, i32* %l_r_slot\n\
+         \x20 %llh = call i8 @intent_bst_i64_h(%intent_bst_i64* %b, i32 %l_l_i)\n\
+         \x20 %lrh = call i8 @intent_bst_i64_h(%intent_bst_i64* %b, i32 %l_r_i)\n\
+         \x20 %lr_case = icmp ugt i8 %lrh, %llh\n\
+         \x20 br i1 %lr_case, label %rb_lr_pre, label %rb_ll_only\n\
+         rb_lr_pre:\n\
+         \x20 %new_l = call i64 @intent_bst_i64_rotate_left(%intent_bst_i64* %b, i64 %l)\n\
+         \x20 %lpp_w = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
+         \x20 %lefts_w = load i32*, i32** %lpp_w\n\
+         \x20 %nl_slot = getelementptr i32, i32* %lefts_w, i64 %node\n\
+         \x20 %new_l_i32 = trunc i64 %new_l to i32\n\
+         \x20 store i32 %new_l_i32, i32* %nl_slot\n\
+         \x20 br label %rb_ll_only\n\
+         rb_ll_only:\n\
+         \x20 %new_root_lh = call i64 @intent_bst_i64_rotate_right(%intent_bst_i64* %b, i64 %node)\n\
+         \x20 ret i64 %new_root_lh\n\
+         rb_check_rh:\n\
+         \x20 %right_heavy = icmp slt i32 %bal, -1\n\
+         \x20 br i1 %right_heavy, label %rb_rh, label %rb_none\n\
+         rb_rh:\n\
+         \x20 %r = sext i32 %r_i to i64\n\
+         \x20 %r_l_slot = getelementptr i32, i32* %lefts, i64 %r\n\
+         \x20 %r_l_i = load i32, i32* %r_l_slot\n\
+         \x20 %r_r_slot = getelementptr i32, i32* %rights, i64 %r\n\
+         \x20 %r_r_i = load i32, i32* %r_r_slot\n\
+         \x20 %rlh = call i8 @intent_bst_i64_h(%intent_bst_i64* %b, i32 %r_l_i)\n\
+         \x20 %rrh = call i8 @intent_bst_i64_h(%intent_bst_i64* %b, i32 %r_r_i)\n\
+         \x20 %rl_case = icmp ugt i8 %rlh, %rrh\n\
+         \x20 br i1 %rl_case, label %rb_rl_pre, label %rb_rr_only\n\
+         rb_rl_pre:\n\
+         \x20 %new_r = call i64 @intent_bst_i64_rotate_right(%intent_bst_i64* %b, i64 %r)\n\
+         \x20 %rpp_w = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %rights_w = load i32*, i32** %rpp_w\n\
+         \x20 %nr_slot = getelementptr i32, i32* %rights_w, i64 %node\n\
+         \x20 %new_r_i32 = trunc i64 %new_r to i32\n\
+         \x20 store i32 %new_r_i32, i32* %nr_slot\n\
+         \x20 br label %rb_rr_only\n\
+         rb_rr_only:\n\
+         \x20 %new_root_rh = call i64 @intent_bst_i64_rotate_left(%intent_bst_i64* %b, i64 %node)\n\
+         \x20 ret i64 %new_root_rh\n\
+         rb_none:\n\
+         \x20 ret i64 %node\n\
+         }\n\
+         define i64 @intent_bst_i64_emplace(%intent_bst_i64* %b, i64 %x) {\n\
          \x20 %lenp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 4\n\
          \x20 %capp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 5\n\
-         \x20 %root = load i64, i64* %rtp\n\
-         \x20 %is_empty = icmp eq i64 %root, -1\n\
-         \x20 br i1 %is_empty, label %ins_first, label %ins_walk\n\
-         ins_first:\n\
-         \x20 %len0 = load i64, i64* %lenp\n\
-         \x20 %cap0 = load i64, i64* %capp\n\
-         \x20 %need0 = icmp sge i64 %len0, %cap0\n\
-         \x20 br i1 %need0, label %ins_grow0, label %ins_emplace0\n\
-         ins_grow0:\n\
+         \x20 %len = load i64, i64* %lenp\n\
+         \x20 %cap = load i64, i64* %capp\n\
+         \x20 %need = icmp sge i64 %len, %cap\n\
+         \x20 br i1 %need, label %em_grow, label %em_emplace\n\
+         em_grow:\n\
          \x20 call void @intent_bst_i64_grow(%intent_bst_i64* %b)\n\
-         \x20 br label %ins_emplace0\n\
-         ins_emplace0:\n\
-         \x20 %keys0 = load i64*, i64** %kpp\n\
-         \x20 %lefts0 = load i32*, i32** %lpp\n\
-         \x20 %rights0 = load i32*, i32** %rpp\n\
-         \x20 %len0b = load i64, i64* %lenp\n\
-         \x20 %ks0 = getelementptr i64, i64* %keys0, i64 %len0b\n\
-         \x20 store i64 %x, i64* %ks0\n\
-         \x20 %ls0 = getelementptr i32, i32* %lefts0, i64 %len0b\n\
-         \x20 store i32 -1, i32* %ls0\n\
-         \x20 %rs0 = getelementptr i32, i32* %rights0, i64 %len0b\n\
-         \x20 store i32 -1, i32* %rs0\n\
-         \x20 store i64 %len0b, i64* %rtp\n\
-         \x20 %len_inc0 = add i64 %len0b, 1\n\
-         \x20 store i64 %len_inc0, i64* %lenp\n\
+         \x20 br label %em_emplace\n\
+         em_emplace:\n\
+         \x20 %kpp_e = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 0\n\
+         \x20 %lpp_e = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
+         \x20 %rpp_e = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %hpp_e = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 6\n\
+         \x20 %keys_e = load i64*, i64** %kpp_e\n\
+         \x20 %lefts_e = load i32*, i32** %lpp_e\n\
+         \x20 %rights_e = load i32*, i32** %rpp_e\n\
+         \x20 %heights_e = load i8*, i8** %hpp_e\n\
+         \x20 %idx = load i64, i64* %lenp\n\
+         \x20 %k_e_slot = getelementptr i64, i64* %keys_e, i64 %idx\n\
+         \x20 store i64 %x, i64* %k_e_slot\n\
+         \x20 %l_e_slot = getelementptr i32, i32* %lefts_e, i64 %idx\n\
+         \x20 store i32 -1, i32* %l_e_slot\n\
+         \x20 %r_e_slot = getelementptr i32, i32* %rights_e, i64 %idx\n\
+         \x20 store i32 -1, i32* %r_e_slot\n\
+         \x20 %h_e_slot = getelementptr i8, i8* %heights_e, i64 %idx\n\
+         \x20 store i8 1, i8* %h_e_slot\n\
+         \x20 %idx_inc = add i64 %idx, 1\n\
+         \x20 store i64 %idx_inc, i64* %lenp\n\
+         \x20 ret i64 %idx\n\
+         }\n\
+         define i1 @intent_bst_i64_insert(%intent_bst_i64* %b, i64 %x) {\n\
+         \x20 %path = alloca [64 x i64]\n\
+         \x20 %path_dir = alloca [64 x i8]\n\
+         \x20 %rtp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 3\n\
+         \x20 %root_init = load i64, i64* %rtp\n\
+         \x20 %is_empty = icmp eq i64 %root_init, -1\n\
+         \x20 br i1 %is_empty, label %ins_first, label %ins_walk_init\n\
+         ins_first:\n\
+         \x20 %first_idx = call i64 @intent_bst_i64_emplace(%intent_bst_i64* %b, i64 %x)\n\
+         \x20 store i64 %first_idx, i64* %rtp\n\
          \x20 ret i1 true\n\
-         ins_walk:\n\
+         ins_walk_init:\n\
+         \x20 %plen_p = alloca i32\n\
+         \x20 store i32 0, i32* %plen_p\n\
          \x20 %cur_p = alloca i64\n\
-         \x20 store i64 %root, i64* %cur_p\n\
+         \x20 store i64 %root_init, i64* %cur_p\n\
          \x20 br label %ins_loop\n\
          ins_loop:\n\
          \x20 %cur = load i64, i64* %cur_p\n\
-         \x20 %keys_w = load i64*, i64** %kpp\n\
-         \x20 %k_slot = getelementptr i64, i64* %keys_w, i64 %cur\n\
+         \x20 %kpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 0\n\
+         \x20 %keys = load i64*, i64** %kpp\n\
+         \x20 %k_slot = getelementptr i64, i64* %keys, i64 %cur\n\
          \x20 %k = load i64, i64* %k_slot\n\
          \x20 %is_eq = icmp eq i64 %x, %k\n\
          \x20 br i1 %is_eq, label %ins_dup, label %ins_cmp\n\
          ins_dup:\n\
          \x20 ret i1 false\n\
          ins_cmp:\n\
+         \x20 %plen = load i32, i32* %plen_p\n\
+         \x20 %plen64 = sext i32 %plen to i64\n\
+         \x20 %path_slot = getelementptr [64 x i64], [64 x i64]* %path, i64 0, i64 %plen64\n\
+         \x20 store i64 %cur, i64* %path_slot\n\
          \x20 %is_lt = icmp slt i64 %x, %k\n\
          \x20 br i1 %is_lt, label %ins_left, label %ins_right\n\
          ins_left:\n\
-         \x20 %lefts_w = load i32*, i32** %lpp\n\
-         \x20 %l_slot = getelementptr i32, i32* %lefts_w, i64 %cur\n\
-         \x20 %l_v32 = load i32, i32* %l_slot\n\
-         \x20 %l_v = sext i32 %l_v32 to i64\n\
-         \x20 %l_none = icmp eq i64 %l_v, -1\n\
+         \x20 %pd_l_slot = getelementptr [64 x i8], [64 x i8]* %path_dir, i64 0, i64 %plen64\n\
+         \x20 store i8 0, i8* %pd_l_slot\n\
+         \x20 %plen_inc_l = add i32 %plen, 1\n\
+         \x20 store i32 %plen_inc_l, i32* %plen_p\n\
+         \x20 %lpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
+         \x20 %lefts = load i32*, i32** %lpp\n\
+         \x20 %l_slot = getelementptr i32, i32* %lefts, i64 %cur\n\
+         \x20 %l_i = load i32, i32* %l_slot\n\
+         \x20 %l_none = icmp eq i32 %l_i, -1\n\
          \x20 br i1 %l_none, label %ins_attach_left, label %ins_descend_left\n\
          ins_descend_left:\n\
-         \x20 store i64 %l_v, i64* %cur_p\n\
+         \x20 %l_i64 = sext i32 %l_i to i64\n\
+         \x20 store i64 %l_i64, i64* %cur_p\n\
          \x20 br label %ins_loop\n\
          ins_attach_left:\n\
-         \x20 %lena = load i64, i64* %lenp\n\
-         \x20 %capa = load i64, i64* %capp\n\
-         \x20 %needa = icmp sge i64 %lena, %capa\n\
-         \x20 br i1 %needa, label %ins_growa, label %ins_emplacea\n\
-         ins_growa:\n\
-         \x20 call void @intent_bst_i64_grow(%intent_bst_i64* %b)\n\
-         \x20 br label %ins_emplacea\n\
-         ins_emplacea:\n\
-         \x20 %keys_a = load i64*, i64** %kpp\n\
-         \x20 %lefts_a = load i32*, i32** %lpp\n\
-         \x20 %rights_a = load i32*, i32** %rpp\n\
-         \x20 %lenab = load i64, i64* %lenp\n\
-         \x20 %ksa = getelementptr i64, i64* %keys_a, i64 %lenab\n\
-         \x20 store i64 %x, i64* %ksa\n\
-         \x20 %lsa = getelementptr i32, i32* %lefts_a, i64 %lenab\n\
-         \x20 store i32 -1, i32* %lsa\n\
-         \x20 %rsa = getelementptr i32, i32* %rights_a, i64 %lenab\n\
-         \x20 store i32 -1, i32* %rsa\n\
-         \x20 %parent_slot_l = getelementptr i32, i32* %lefts_a, i64 %cur\n\
-         \x20 %lenab32 = trunc i64 %lenab to i32\n\
-         \x20 store i32 %lenab32, i32* %parent_slot_l\n\
-         \x20 %lenab_inc = add i64 %lenab, 1\n\
-         \x20 store i64 %lenab_inc, i64* %lenp\n\
-         \x20 ret i1 true\n\
+         \x20 %new_idx_l = call i64 @intent_bst_i64_emplace(%intent_bst_i64* %b, i64 %x)\n\
+         \x20 %lpp_a = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
+         \x20 %lefts_a = load i32*, i32** %lpp_a\n\
+         \x20 %la_slot = getelementptr i32, i32* %lefts_a, i64 %cur\n\
+         \x20 %new_idx_l_i32 = trunc i64 %new_idx_l to i32\n\
+         \x20 store i32 %new_idx_l_i32, i32* %la_slot\n\
+         \x20 br label %ins_rebalance\n\
          ins_right:\n\
-         \x20 %rights_w = load i32*, i32** %rpp\n\
-         \x20 %r_slot = getelementptr i32, i32* %rights_w, i64 %cur\n\
-         \x20 %r_v32 = load i32, i32* %r_slot\n\
-         \x20 %r_v = sext i32 %r_v32 to i64\n\
-         \x20 %r_none = icmp eq i64 %r_v, -1\n\
+         \x20 %pd_r_slot = getelementptr [64 x i8], [64 x i8]* %path_dir, i64 0, i64 %plen64\n\
+         \x20 store i8 1, i8* %pd_r_slot\n\
+         \x20 %plen_inc_r = add i32 %plen, 1\n\
+         \x20 store i32 %plen_inc_r, i32* %plen_p\n\
+         \x20 %rpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %rights = load i32*, i32** %rpp\n\
+         \x20 %r_slot = getelementptr i32, i32* %rights, i64 %cur\n\
+         \x20 %r_i = load i32, i32* %r_slot\n\
+         \x20 %r_none = icmp eq i32 %r_i, -1\n\
          \x20 br i1 %r_none, label %ins_attach_right, label %ins_descend_right\n\
          ins_descend_right:\n\
-         \x20 store i64 %r_v, i64* %cur_p\n\
+         \x20 %r_i64 = sext i32 %r_i to i64\n\
+         \x20 store i64 %r_i64, i64* %cur_p\n\
          \x20 br label %ins_loop\n\
          ins_attach_right:\n\
-         \x20 %lenb = load i64, i64* %lenp\n\
-         \x20 %capb = load i64, i64* %capp\n\
-         \x20 %needb = icmp sge i64 %lenb, %capb\n\
-         \x20 br i1 %needb, label %ins_growb, label %ins_emplaceb\n\
-         ins_growb:\n\
-         \x20 call void @intent_bst_i64_grow(%intent_bst_i64* %b)\n\
-         \x20 br label %ins_emplaceb\n\
-         ins_emplaceb:\n\
-         \x20 %keys_b = load i64*, i64** %kpp\n\
-         \x20 %lefts_b = load i32*, i32** %lpp\n\
-         \x20 %rights_b = load i32*, i32** %rpp\n\
-         \x20 %lenbb = load i64, i64* %lenp\n\
-         \x20 %ksb = getelementptr i64, i64* %keys_b, i64 %lenbb\n\
-         \x20 store i64 %x, i64* %ksb\n\
-         \x20 %lsb = getelementptr i32, i32* %lefts_b, i64 %lenbb\n\
-         \x20 store i32 -1, i32* %lsb\n\
-         \x20 %rsb = getelementptr i32, i32* %rights_b, i64 %lenbb\n\
-         \x20 store i32 -1, i32* %rsb\n\
-         \x20 %parent_slot_r = getelementptr i32, i32* %rights_b, i64 %cur\n\
-         \x20 %lenbb32 = trunc i64 %lenbb to i32\n\
-         \x20 store i32 %lenbb32, i32* %parent_slot_r\n\
-         \x20 %lenbb_inc = add i64 %lenbb, 1\n\
-         \x20 store i64 %lenbb_inc, i64* %lenp\n\
+         \x20 %new_idx_r = call i64 @intent_bst_i64_emplace(%intent_bst_i64* %b, i64 %x)\n\
+         \x20 %rpp_a = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %rights_a = load i32*, i32** %rpp_a\n\
+         \x20 %ra_slot = getelementptr i32, i32* %rights_a, i64 %cur\n\
+         \x20 %new_idx_r_i32 = trunc i64 %new_idx_r to i32\n\
+         \x20 store i32 %new_idx_r_i32, i32* %ra_slot\n\
+         \x20 br label %ins_rebalance\n\
+         ins_rebalance:\n\
+         \x20 %plen_final = load i32, i32* %plen_p\n\
+         \x20 %i_p = alloca i32\n\
+         \x20 %i_init = sub i32 %plen_final, 1\n\
+         \x20 store i32 %i_init, i32* %i_p\n\
+         \x20 br label %ins_rb_loop\n\
+         ins_rb_loop:\n\
+         \x20 %i = load i32, i32* %i_p\n\
+         \x20 %i_done = icmp slt i32 %i, 0\n\
+         \x20 br i1 %i_done, label %ins_done, label %ins_rb_body\n\
+         ins_rb_body:\n\
+         \x20 %i64_b = sext i32 %i to i64\n\
+         \x20 %path_get_slot = getelementptr [64 x i64], [64 x i64]* %path, i64 0, i64 %i64_b\n\
+         \x20 %node = load i64, i64* %path_get_slot\n\
+         \x20 %new_root = call i64 @intent_bst_i64_rebalance(%intent_bst_i64* %b, i64 %node)\n\
+         \x20 %i_zero = icmp eq i32 %i, 0\n\
+         \x20 br i1 %i_zero, label %ins_set_root, label %ins_set_parent\n\
+         ins_set_root:\n\
+         \x20 store i64 %new_root, i64* %rtp\n\
+         \x20 br label %ins_rb_next\n\
+         ins_set_parent:\n\
+         \x20 %i_minus_1 = sub i32 %i, 1\n\
+         \x20 %im1_64 = sext i32 %i_minus_1 to i64\n\
+         \x20 %parent_slot_ins = getelementptr [64 x i64], [64 x i64]* %path, i64 0, i64 %im1_64\n\
+         \x20 %parent_ins = load i64, i64* %parent_slot_ins\n\
+         \x20 %pd_get_slot = getelementptr [64 x i8], [64 x i8]* %path_dir, i64 0, i64 %im1_64\n\
+         \x20 %pd_v = load i8, i8* %pd_get_slot\n\
+         \x20 %is_left_link = icmp eq i8 %pd_v, 0\n\
+         \x20 br i1 %is_left_link, label %ins_set_pleft, label %ins_set_pright\n\
+         ins_set_pleft:\n\
+         \x20 %lpp_r = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
+         \x20 %lefts_r = load i32*, i32** %lpp_r\n\
+         \x20 %parent_l_slot = getelementptr i32, i32* %lefts_r, i64 %parent_ins\n\
+         \x20 %new_root_i32_l = trunc i64 %new_root to i32\n\
+         \x20 store i32 %new_root_i32_l, i32* %parent_l_slot\n\
+         \x20 br label %ins_rb_next\n\
+         ins_set_pright:\n\
+         \x20 %rpp_r = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %rights_r = load i32*, i32** %rpp_r\n\
+         \x20 %parent_r_slot = getelementptr i32, i32* %rights_r, i64 %parent_ins\n\
+         \x20 %new_root_i32_r = trunc i64 %new_root to i32\n\
+         \x20 store i32 %new_root_i32_r, i32* %parent_r_slot\n\
+         \x20 br label %ins_rb_next\n\
+         ins_rb_next:\n\
+         \x20 %i_dec = sub i32 %i, 1\n\
+         \x20 store i32 %i_dec, i32* %i_p\n\
+         \x20 br label %ins_rb_loop\n\
+         ins_done:\n\
          \x20 ret i1 true\n\
          }\n\
          define i1 @intent_bst_i64_contains(%intent_bst_i64* %b, i64 %x) {\n\
@@ -9491,19 +9682,16 @@ fn emit_intent_bst_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
          \x20 ret i64 %v\n\
          }\n\
          define i1 @intent_bst_i64_remove(%intent_bst_i64* %b, i64 %x) {\n\
-         \x20 %kpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 0\n\
-         \x20 %lpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
-         \x20 %rpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %rm_path = alloca [64 x i64]\n\
+         \x20 %rm_dir = alloca [64 x i8]\n\
          \x20 %rtp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 3\n\
          \x20 %lenp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 4\n\
          \x20 %root_init = load i64, i64* %rtp\n\
          \x20 %is_empty = icmp eq i64 %root_init, -1\n\
          \x20 br i1 %is_empty, label %rm_false, label %rm_search_init\n\
          rm_search_init:\n\
-         \x20 %parent_p = alloca i64\n\
-         \x20 store i64 -1, i64* %parent_p\n\
-         \x20 %is_left_p = alloca i1\n\
-         \x20 store i1 false, i1* %is_left_p\n\
+         \x20 %plen_p = alloca i32\n\
+         \x20 store i32 0, i32* %plen_p\n\
          \x20 %cur_p = alloca i64\n\
          \x20 store i64 %root_init, i64* %cur_p\n\
          \x20 br label %rm_search_loop\n\
@@ -9512,197 +9700,235 @@ fn emit_intent_bst_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
          \x20 %is_none = icmp eq i64 %cur, -1\n\
          \x20 br i1 %is_none, label %rm_false, label %rm_search_test\n\
          rm_search_test:\n\
+         \x20 %kpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 0\n\
          \x20 %keys_s = load i64*, i64** %kpp\n\
          \x20 %k_slot = getelementptr i64, i64* %keys_s, i64 %cur\n\
          \x20 %k = load i64, i64* %k_slot\n\
          \x20 %eq = icmp eq i64 %x, %k\n\
-         \x20 br i1 %eq, label %rm_found, label %rm_search_descend\n\
-         rm_search_descend:\n\
-         \x20 store i64 %cur, i64* %parent_p\n\
-         \x20 %lt = icmp slt i64 %x, %k\n\
-         \x20 store i1 %lt, i1* %is_left_p\n\
-         \x20 br i1 %lt, label %rm_search_left, label %rm_search_right\n\
-         rm_search_left:\n\
-         \x20 %lefts_s = load i32*, i32** %lpp\n\
-         \x20 %l_slot = getelementptr i32, i32* %lefts_s, i64 %cur\n\
-         \x20 %l32 = load i32, i32* %l_slot\n\
-         \x20 %l64 = sext i32 %l32 to i64\n\
-         \x20 store i64 %l64, i64* %cur_p\n\
+         \x20 br i1 %eq, label %rm_found_pre, label %rm_search_record\n\
+         rm_search_record:\n\
+         \x20 %plen_s = load i32, i32* %plen_p\n\
+         \x20 %plen_s64 = sext i32 %plen_s to i64\n\
+         \x20 %p_slot = getelementptr [64 x i64], [64 x i64]* %rm_path, i64 0, i64 %plen_s64\n\
+         \x20 store i64 %cur, i64* %p_slot\n\
+         \x20 %lt_s = icmp slt i64 %x, %k\n\
+         \x20 %pd_b = select i1 %lt_s, i8 0, i8 1\n\
+         \x20 %pd_slot = getelementptr [64 x i8], [64 x i8]* %rm_dir, i64 0, i64 %plen_s64\n\
+         \x20 store i8 %pd_b, i8* %pd_slot\n\
+         \x20 %plen_s_inc = add i32 %plen_s, 1\n\
+         \x20 store i32 %plen_s_inc, i32* %plen_p\n\
+         \x20 br i1 %lt_s, label %rm_descend_left, label %rm_descend_right\n\
+         rm_descend_left:\n\
+         \x20 %lpp_s = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
+         \x20 %lefts_s = load i32*, i32** %lpp_s\n\
+         \x20 %ls_slot = getelementptr i32, i32* %lefts_s, i64 %cur\n\
+         \x20 %ls32 = load i32, i32* %ls_slot\n\
+         \x20 %ls64 = sext i32 %ls32 to i64\n\
+         \x20 store i64 %ls64, i64* %cur_p\n\
          \x20 br label %rm_search_loop\n\
-         rm_search_right:\n\
-         \x20 %rights_s = load i32*, i32** %rpp\n\
-         \x20 %r_slot = getelementptr i32, i32* %rights_s, i64 %cur\n\
-         \x20 %r32 = load i32, i32* %r_slot\n\
-         \x20 %r64 = sext i32 %r32 to i64\n\
-         \x20 store i64 %r64, i64* %cur_p\n\
+         rm_descend_right:\n\
+         \x20 %rpp_s = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %rights_s = load i32*, i32** %rpp_s\n\
+         \x20 %rs_slot = getelementptr i32, i32* %rights_s, i64 %cur\n\
+         \x20 %rs32 = load i32, i32* %rs_slot\n\
+         \x20 %rs64 = sext i32 %rs32 to i64\n\
+         \x20 store i64 %rs64, i64* %cur_p\n\
          \x20 br label %rm_search_loop\n\
-         rm_found:\n\
-         \x20 %cur_f = load i64, i64* %cur_p\n\
-         \x20 %lefts_f = load i32*, i32** %lpp\n\
-         \x20 %rights_f = load i32*, i32** %rpp\n\
-         \x20 %l_slot_f = getelementptr i32, i32* %lefts_f, i64 %cur_f\n\
-         \x20 %r_slot_f = getelementptr i32, i32* %rights_f, i64 %cur_f\n\
-         \x20 %lc32 = load i32, i32* %l_slot_f\n\
-         \x20 %rc32 = load i32, i32* %r_slot_f\n\
+         rm_found_pre:\n\
+         \x20 %lpp_f = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
+         \x20 %rpp_f = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %lefts_f = load i32*, i32** %lpp_f\n\
+         \x20 %rights_f = load i32*, i32** %rpp_f\n\
+         \x20 %lf_slot = getelementptr i32, i32* %lefts_f, i64 %cur\n\
+         \x20 %rf_slot = getelementptr i32, i32* %rights_f, i64 %cur\n\
+         \x20 %lc32 = load i32, i32* %lf_slot\n\
+         \x20 %rc32 = load i32, i32* %rf_slot\n\
          \x20 %lc_none = icmp eq i32 %lc32, -1\n\
          \x20 %rc_none = icmp eq i32 %rc32, -1\n\
-         \x20 %both_none = and i1 %lc_none, %rc_none\n\
-         \x20 br i1 %both_none, label %rm_replace, label %rm_check_left_only\n\
-         rm_check_left_only:\n\
-         \x20 br i1 %lc_none, label %rm_use_right_as_repl, label %rm_check_right_only\n\
-         rm_use_right_as_repl:\n\
-         \x20 br label %rm_replace_with_right\n\
-         rm_check_right_only:\n\
-         \x20 br i1 %rc_none, label %rm_use_left_as_repl, label %rm_two_children\n\
-         rm_use_left_as_repl:\n\
-         \x20 br label %rm_replace_with_left\n\
-         rm_replace:\n\
-         \x20 %repl_none_p = alloca i32\n\
-         \x20 store i32 -1, i32* %repl_none_p\n\
-         \x20 br label %rm_link\n\
-         rm_replace_with_right:\n\
-         \x20 %repl_r_p = alloca i32\n\
-         \x20 store i32 %rc32, i32* %repl_r_p\n\
-         \x20 br label %rm_link_r\n\
-         rm_replace_with_left:\n\
-         \x20 %repl_l_p = alloca i32\n\
-         \x20 store i32 %lc32, i32* %repl_l_p\n\
-         \x20 br label %rm_link_l\n\
-         rm_link:\n\
-         \x20 %repl_v = load i32, i32* %repl_none_p\n\
-         \x20 br label %rm_apply_link\n\
-         rm_link_r:\n\
-         \x20 %repl_v_r = load i32, i32* %repl_r_p\n\
-         \x20 br label %rm_apply_link_r\n\
-         rm_link_l:\n\
-         \x20 %repl_v_l = load i32, i32* %repl_l_p\n\
-         \x20 br label %rm_apply_link_l\n\
-         rm_apply_link:\n\
-         \x20 %parent_a = load i64, i64* %parent_p\n\
-         \x20 %is_left_a = load i1, i1* %is_left_p\n\
-         \x20 %is_root_a = icmp eq i64 %parent_a, -1\n\
-         \x20 br i1 %is_root_a, label %rm_set_root_a, label %rm_set_parent_a\n\
-         rm_set_root_a:\n\
-         \x20 %repl_v_s = sext i32 %repl_v to i64\n\
-         \x20 store i64 %repl_v_s, i64* %rtp\n\
-         \x20 br label %rm_decr_a\n\
-         rm_set_parent_a:\n\
-         \x20 br i1 %is_left_a, label %rm_set_pa_left, label %rm_set_pa_right\n\
-         rm_set_pa_left:\n\
-         \x20 %lefts_pa = load i32*, i32** %lpp\n\
-         \x20 %pa_l_slot = getelementptr i32, i32* %lefts_pa, i64 %parent_a\n\
-         \x20 store i32 %repl_v, i32* %pa_l_slot\n\
-         \x20 br label %rm_decr_a\n\
-         rm_set_pa_right:\n\
-         \x20 %rights_pa = load i32*, i32** %rpp\n\
-         \x20 %pa_r_slot = getelementptr i32, i32* %rights_pa, i64 %parent_a\n\
-         \x20 store i32 %repl_v, i32* %pa_r_slot\n\
-         \x20 br label %rm_decr_a\n\
-         rm_decr_a:\n\
-         \x20 %lenA = load i64, i64* %lenp\n\
-         \x20 %lenA_n = sub i64 %lenA, 1\n\
-         \x20 store i64 %lenA_n, i64* %lenp\n\
-         \x20 ret i1 true\n\
-         rm_apply_link_r:\n\
-         \x20 %parent_b = load i64, i64* %parent_p\n\
-         \x20 %is_left_b = load i1, i1* %is_left_p\n\
-         \x20 %is_root_b = icmp eq i64 %parent_b, -1\n\
-         \x20 br i1 %is_root_b, label %rm_set_root_b, label %rm_set_parent_b\n\
-         rm_set_root_b:\n\
-         \x20 %repl_b_s = sext i32 %repl_v_r to i64\n\
-         \x20 store i64 %repl_b_s, i64* %rtp\n\
-         \x20 br label %rm_decr_b\n\
-         rm_set_parent_b:\n\
-         \x20 br i1 %is_left_b, label %rm_set_pb_left, label %rm_set_pb_right\n\
-         rm_set_pb_left:\n\
-         \x20 %lefts_pb = load i32*, i32** %lpp\n\
-         \x20 %pb_l_slot = getelementptr i32, i32* %lefts_pb, i64 %parent_b\n\
-         \x20 store i32 %repl_v_r, i32* %pb_l_slot\n\
-         \x20 br label %rm_decr_b\n\
-         rm_set_pb_right:\n\
-         \x20 %rights_pb = load i32*, i32** %rpp\n\
-         \x20 %pb_r_slot = getelementptr i32, i32* %rights_pb, i64 %parent_b\n\
-         \x20 store i32 %repl_v_r, i32* %pb_r_slot\n\
-         \x20 br label %rm_decr_b\n\
-         rm_decr_b:\n\
-         \x20 %lenB = load i64, i64* %lenp\n\
-         \x20 %lenB_n = sub i64 %lenB, 1\n\
-         \x20 store i64 %lenB_n, i64* %lenp\n\
-         \x20 ret i1 true\n\
-         rm_apply_link_l:\n\
-         \x20 %parent_c = load i64, i64* %parent_p\n\
-         \x20 %is_left_c = load i1, i1* %is_left_p\n\
-         \x20 %is_root_c = icmp eq i64 %parent_c, -1\n\
-         \x20 br i1 %is_root_c, label %rm_set_root_c, label %rm_set_parent_c\n\
-         rm_set_root_c:\n\
-         \x20 %repl_c_s = sext i32 %repl_v_l to i64\n\
-         \x20 store i64 %repl_c_s, i64* %rtp\n\
-         \x20 br label %rm_decr_c\n\
-         rm_set_parent_c:\n\
-         \x20 br i1 %is_left_c, label %rm_set_pc_left, label %rm_set_pc_right\n\
-         rm_set_pc_left:\n\
-         \x20 %lefts_pc = load i32*, i32** %lpp\n\
-         \x20 %pc_l_slot = getelementptr i32, i32* %lefts_pc, i64 %parent_c\n\
-         \x20 store i32 %repl_v_l, i32* %pc_l_slot\n\
-         \x20 br label %rm_decr_c\n\
-         rm_set_pc_right:\n\
-         \x20 %rights_pc = load i32*, i32** %rpp\n\
-         \x20 %pc_r_slot = getelementptr i32, i32* %rights_pc, i64 %parent_c\n\
-         \x20 store i32 %repl_v_l, i32* %pc_r_slot\n\
-         \x20 br label %rm_decr_c\n\
-         rm_decr_c:\n\
-         \x20 %lenC = load i64, i64* %lenp\n\
-         \x20 %lenC_n = sub i64 %lenC, 1\n\
-         \x20 store i64 %lenC_n, i64* %lenp\n\
-         \x20 ret i1 true\n\
-         rm_two_children:\n\
-         \x20 ; Two-children case: copy in-order successor key up,\n\
-         \x20 ; then unlink the successor (which has at most a right child).\n\
-         \x20 %sp_p = alloca i64\n\
-         \x20 store i64 %cur_f, i64* %sp_p\n\
-         \x20 %s_p = alloca i64\n\
+         \x20 %two_kids = and i1 %lc_none, %rc_none\n\
+         \x20 %lc_set = xor i1 %lc_none, true\n\
+         \x20 %rc_set = xor i1 %rc_none, true\n\
+         \x20 %both_set = and i1 %lc_set, %rc_set\n\
+         \x20 br i1 %both_set, label %rm_two_children, label %rm_zero_or_one\n\
+         rm_zero_or_one:\n\
+         \x20 %repl_p = alloca i64\n\
+         \x20 br i1 %lc_none, label %rm_repl_right, label %rm_repl_left\n\
+         rm_repl_right:\n\
          \x20 %rc64 = sext i32 %rc32 to i64\n\
-         \x20 store i64 %rc64, i64* %s_p\n\
+         \x20 store i64 %rc64, i64* %repl_p\n\
+         \x20 br label %rm_relink\n\
+         rm_repl_left:\n\
+         \x20 %lc64 = sext i32 %lc32 to i64\n\
+         \x20 store i64 %lc64, i64* %repl_p\n\
+         \x20 br label %rm_relink\n\
+         rm_two_children:\n\
+         \x20 ; Push the found node onto the path with dir=right (we descend\n\
+         \x20 ; into its right subtree to find the in-order successor).\n\
+         \x20 %plen_tc = load i32, i32* %plen_p\n\
+         \x20 %plen_tc64 = sext i32 %plen_tc to i64\n\
+         \x20 %tc_path_slot = getelementptr [64 x i64], [64 x i64]* %rm_path, i64 0, i64 %plen_tc64\n\
+         \x20 store i64 %cur, i64* %tc_path_slot\n\
+         \x20 %tc_dir_slot = getelementptr [64 x i8], [64 x i8]* %rm_dir, i64 0, i64 %plen_tc64\n\
+         \x20 store i8 1, i8* %tc_dir_slot\n\
+         \x20 %plen_tc_inc = add i32 %plen_tc, 1\n\
+         \x20 store i32 %plen_tc_inc, i32* %plen_p\n\
+         \x20 %succ_p = alloca i64\n\
+         \x20 %rc64_succ = sext i32 %rc32 to i64\n\
+         \x20 store i64 %rc64_succ, i64* %succ_p\n\
          \x20 br label %rm_succ_loop\n\
          rm_succ_loop:\n\
-         \x20 %s = load i64, i64* %s_p\n\
-         \x20 %lefts_t = load i32*, i32** %lpp\n\
-         \x20 %s_l_slot = getelementptr i32, i32* %lefts_t, i64 %s\n\
-         \x20 %s_l32 = load i32, i32* %s_l_slot\n\
-         \x20 %s_l_none = icmp eq i32 %s_l32, -1\n\
-         \x20 br i1 %s_l_none, label %rm_succ_done, label %rm_succ_step\n\
+         \x20 %s = load i64, i64* %succ_p\n\
+         \x20 %lpp_t = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
+         \x20 %lefts_t = load i32*, i32** %lpp_t\n\
+         \x20 %sl_slot = getelementptr i32, i32* %lefts_t, i64 %s\n\
+         \x20 %sl32 = load i32, i32* %sl_slot\n\
+         \x20 %sl_none = icmp eq i32 %sl32, -1\n\
+         \x20 br i1 %sl_none, label %rm_succ_done, label %rm_succ_step\n\
          rm_succ_step:\n\
-         \x20 store i64 %s, i64* %sp_p\n\
-         \x20 %s_l64 = sext i32 %s_l32 to i64\n\
-         \x20 store i64 %s_l64, i64* %s_p\n\
+         \x20 %plen_st = load i32, i32* %plen_p\n\
+         \x20 %plen_st64 = sext i32 %plen_st to i64\n\
+         \x20 %st_path_slot = getelementptr [64 x i64], [64 x i64]* %rm_path, i64 0, i64 %plen_st64\n\
+         \x20 store i64 %s, i64* %st_path_slot\n\
+         \x20 %st_dir_slot = getelementptr [64 x i8], [64 x i8]* %rm_dir, i64 0, i64 %plen_st64\n\
+         \x20 store i8 0, i8* %st_dir_slot\n\
+         \x20 %plen_st_inc = add i32 %plen_st, 1\n\
+         \x20 store i32 %plen_st_inc, i32* %plen_p\n\
+         \x20 %sl64 = sext i32 %sl32 to i64\n\
+         \x20 store i64 %sl64, i64* %succ_p\n\
          \x20 br label %rm_succ_loop\n\
          rm_succ_done:\n\
-         \x20 %s_final = load i64, i64* %s_p\n\
-         \x20 %sp_final = load i64, i64* %sp_p\n\
-         \x20 %keys_t2 = load i64*, i64** %kpp\n\
-         \x20 %s_k_slot = getelementptr i64, i64* %keys_t2, i64 %s_final\n\
-         \x20 %s_key = load i64, i64* %s_k_slot\n\
-         \x20 %cur_k_slot = getelementptr i64, i64* %keys_t2, i64 %cur_f\n\
-         \x20 store i64 %s_key, i64* %cur_k_slot\n\
-         \x20 ; Now unlink successor.\n\
-         \x20 %rights_t2 = load i32*, i32** %rpp\n\
-         \x20 %s_r_slot = getelementptr i32, i32* %rights_t2, i64 %s_final\n\
+         \x20 ; Copy successor's key up into the found node, then\n\
+         \x20 ; unlink the successor (replacement = successor.right).\n\
+         \x20 %s_final = load i64, i64* %succ_p\n\
+         \x20 %kpp_sd = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 0\n\
+         \x20 %keys_sd = load i64*, i64** %kpp_sd\n\
+         \x20 %s_key_slot = getelementptr i64, i64* %keys_sd, i64 %s_final\n\
+         \x20 %s_key = load i64, i64* %s_key_slot\n\
+         \x20 %cur_key_slot = getelementptr i64, i64* %keys_sd, i64 %cur\n\
+         \x20 store i64 %s_key, i64* %cur_key_slot\n\
+         \x20 %rpp_sd = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %rights_sd = load i32*, i32** %rpp_sd\n\
+         \x20 %s_r_slot = getelementptr i32, i32* %rights_sd, i64 %s_final\n\
          \x20 %s_r32 = load i32, i32* %s_r_slot\n\
-         \x20 %sp_is_cur = icmp eq i64 %sp_final, %cur_f\n\
-         \x20 br i1 %sp_is_cur, label %rm_unlink_right, label %rm_unlink_left\n\
-         rm_unlink_right:\n\
-         \x20 %parent_right_slot = getelementptr i32, i32* %rights_t2, i64 %sp_final\n\
-         \x20 store i32 %s_r32, i32* %parent_right_slot\n\
-         \x20 br label %rm_decr_d\n\
-         rm_unlink_left:\n\
-         \x20 %lefts_t2 = load i32*, i32** %lpp\n\
-         \x20 %parent_left_slot = getelementptr i32, i32* %lefts_t2, i64 %sp_final\n\
-         \x20 store i32 %s_r32, i32* %parent_left_slot\n\
-         \x20 br label %rm_decr_d\n\
-         rm_decr_d:\n\
-         \x20 %lenD = load i64, i64* %lenp\n\
-         \x20 %lenD_n = sub i64 %lenD, 1\n\
-         \x20 store i64 %lenD_n, i64* %lenp\n\
+         \x20 %s_r64 = sext i32 %s_r32 to i64\n\
+         \x20 %repl_p_tc = alloca i64\n\
+         \x20 store i64 %s_r64, i64* %repl_p_tc\n\
+         \x20 br label %rm_relink_tc\n\
+         rm_relink_tc:\n\
+         \x20 %repl_tc = load i64, i64* %repl_p_tc\n\
+         \x20 %plen_link_tc = load i32, i32* %plen_p\n\
+         \x20 %plen_zero_tc = icmp eq i32 %plen_link_tc, 0\n\
+         \x20 br i1 %plen_zero_tc, label %rm_link_root_tc, label %rm_link_parent_tc\n\
+         rm_link_root_tc:\n\
+         \x20 store i64 %repl_tc, i64* %rtp\n\
+         \x20 br label %rm_decr\n\
+         rm_link_parent_tc:\n\
+         \x20 %plen_m1_tc = sub i32 %plen_link_tc, 1\n\
+         \x20 %plen_m1_tc64 = sext i32 %plen_m1_tc to i64\n\
+         \x20 %parent_p_tc_slot = getelementptr [64 x i64], [64 x i64]* %rm_path, i64 0, i64 %plen_m1_tc64\n\
+         \x20 %parent_tc = load i64, i64* %parent_p_tc_slot\n\
+         \x20 %parent_d_tc_slot = getelementptr [64 x i8], [64 x i8]* %rm_dir, i64 0, i64 %plen_m1_tc64\n\
+         \x20 %parent_d_tc = load i8, i8* %parent_d_tc_slot\n\
+         \x20 %is_left_tc = icmp eq i8 %parent_d_tc, 0\n\
+         \x20 br i1 %is_left_tc, label %rm_set_pleft_tc, label %rm_set_pright_tc\n\
+         rm_set_pleft_tc:\n\
+         \x20 %lpp_tcs = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
+         \x20 %lefts_tcs = load i32*, i32** %lpp_tcs\n\
+         \x20 %tcp_l_slot = getelementptr i32, i32* %lefts_tcs, i64 %parent_tc\n\
+         \x20 %repl_tc_i32_l = trunc i64 %repl_tc to i32\n\
+         \x20 store i32 %repl_tc_i32_l, i32* %tcp_l_slot\n\
+         \x20 br label %rm_decr\n\
+         rm_set_pright_tc:\n\
+         \x20 %rpp_tcs = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %rights_tcs = load i32*, i32** %rpp_tcs\n\
+         \x20 %tcp_r_slot = getelementptr i32, i32* %rights_tcs, i64 %parent_tc\n\
+         \x20 %repl_tc_i32_r = trunc i64 %repl_tc to i32\n\
+         \x20 store i32 %repl_tc_i32_r, i32* %tcp_r_slot\n\
+         \x20 br label %rm_decr\n\
+         rm_relink:\n\
+         \x20 %repl_v = load i64, i64* %repl_p\n\
+         \x20 %plen_link = load i32, i32* %plen_p\n\
+         \x20 %plen_zero = icmp eq i32 %plen_link, 0\n\
+         \x20 br i1 %plen_zero, label %rm_link_root, label %rm_link_parent\n\
+         rm_link_root:\n\
+         \x20 store i64 %repl_v, i64* %rtp\n\
+         \x20 br label %rm_decr\n\
+         rm_link_parent:\n\
+         \x20 %plen_m1 = sub i32 %plen_link, 1\n\
+         \x20 %plen_m1_64 = sext i32 %plen_m1 to i64\n\
+         \x20 %parent_p_slot = getelementptr [64 x i64], [64 x i64]* %rm_path, i64 0, i64 %plen_m1_64\n\
+         \x20 %parent_r = load i64, i64* %parent_p_slot\n\
+         \x20 %parent_d_slot = getelementptr [64 x i8], [64 x i8]* %rm_dir, i64 0, i64 %plen_m1_64\n\
+         \x20 %parent_d = load i8, i8* %parent_d_slot\n\
+         \x20 %is_left_link = icmp eq i8 %parent_d, 0\n\
+         \x20 br i1 %is_left_link, label %rm_set_pleft, label %rm_set_pright\n\
+         rm_set_pleft:\n\
+         \x20 %lpp_zo = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
+         \x20 %lefts_zo = load i32*, i32** %lpp_zo\n\
+         \x20 %zop_l_slot = getelementptr i32, i32* %lefts_zo, i64 %parent_r\n\
+         \x20 %repl_i32_l = trunc i64 %repl_v to i32\n\
+         \x20 store i32 %repl_i32_l, i32* %zop_l_slot\n\
+         \x20 br label %rm_decr\n\
+         rm_set_pright:\n\
+         \x20 %rpp_zo = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %rights_zo = load i32*, i32** %rpp_zo\n\
+         \x20 %zop_r_slot = getelementptr i32, i32* %rights_zo, i64 %parent_r\n\
+         \x20 %repl_i32_r = trunc i64 %repl_v to i32\n\
+         \x20 store i32 %repl_i32_r, i32* %zop_r_slot\n\
+         \x20 br label %rm_decr\n\
+         rm_decr:\n\
+         \x20 %lenX = load i64, i64* %lenp\n\
+         \x20 %lenX_n = sub i64 %lenX, 1\n\
+         \x20 store i64 %lenX_n, i64* %lenp\n\
+         \x20 br label %rm_rb_init\n\
+         rm_rb_init:\n\
+         \x20 %ri_p = alloca i32\n\
+         \x20 %plen_done = load i32, i32* %plen_p\n\
+         \x20 %ri_init = sub i32 %plen_done, 1\n\
+         \x20 store i32 %ri_init, i32* %ri_p\n\
+         \x20 br label %rm_rb_loop\n\
+         rm_rb_loop:\n\
+         \x20 %ri = load i32, i32* %ri_p\n\
+         \x20 %ri_done = icmp slt i32 %ri, 0\n\
+         \x20 br i1 %ri_done, label %rm_done, label %rm_rb_body\n\
+         rm_rb_body:\n\
+         \x20 %ri64 = sext i32 %ri to i64\n\
+         \x20 %rb_node_slot = getelementptr [64 x i64], [64 x i64]* %rm_path, i64 0, i64 %ri64\n\
+         \x20 %rb_node = load i64, i64* %rb_node_slot\n\
+         \x20 %rb_new = call i64 @intent_bst_i64_rebalance(%intent_bst_i64* %b, i64 %rb_node)\n\
+         \x20 %rb_at_zero = icmp eq i32 %ri, 0\n\
+         \x20 br i1 %rb_at_zero, label %rm_rb_set_root, label %rm_rb_set_parent\n\
+         rm_rb_set_root:\n\
+         \x20 store i64 %rb_new, i64* %rtp\n\
+         \x20 br label %rm_rb_next\n\
+         rm_rb_set_parent:\n\
+         \x20 %ri_m1 = sub i32 %ri, 1\n\
+         \x20 %ri_m1_64 = sext i32 %ri_m1 to i64\n\
+         \x20 %rb_parent_slot = getelementptr [64 x i64], [64 x i64]* %rm_path, i64 0, i64 %ri_m1_64\n\
+         \x20 %rb_parent = load i64, i64* %rb_parent_slot\n\
+         \x20 %rb_dir_slot = getelementptr [64 x i8], [64 x i8]* %rm_dir, i64 0, i64 %ri_m1_64\n\
+         \x20 %rb_dir = load i8, i8* %rb_dir_slot\n\
+         \x20 %rb_is_left = icmp eq i8 %rb_dir, 0\n\
+         \x20 br i1 %rb_is_left, label %rm_rb_set_pleft, label %rm_rb_set_pright\n\
+         rm_rb_set_pleft:\n\
+         \x20 %lpp_rb = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n\
+         \x20 %lefts_rb = load i32*, i32** %lpp_rb\n\
+         \x20 %rb_pl_slot = getelementptr i32, i32* %lefts_rb, i64 %rb_parent\n\
+         \x20 %rb_new_i32_l = trunc i64 %rb_new to i32\n\
+         \x20 store i32 %rb_new_i32_l, i32* %rb_pl_slot\n\
+         \x20 br label %rm_rb_next\n\
+         rm_rb_set_pright:\n\
+         \x20 %rpp_rb = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n\
+         \x20 %rights_rb = load i32*, i32** %rpp_rb\n\
+         \x20 %rb_pr_slot = getelementptr i32, i32* %rights_rb, i64 %rb_parent\n\
+         \x20 %rb_new_i32_r = trunc i64 %rb_new to i32\n\
+         \x20 store i32 %rb_new_i32_r, i32* %rb_pr_slot\n\
+         \x20 br label %rm_rb_next\n\
+         rm_rb_next:\n\
+         \x20 %ri_dec = sub i32 %ri, 1\n\
+         \x20 store i32 %ri_dec, i32* %ri_p\n\
+         \x20 br label %rm_rb_loop\n\
+         rm_done:\n\
          \x20 ret i1 true\n\
          rm_false:\n\
          \x20 ret i1 false\n\

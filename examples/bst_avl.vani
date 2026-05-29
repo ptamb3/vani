@@ -1,0 +1,89 @@
+// build & run:
+//   intentc run examples/bst_avl.vani                          # LLVM backend
+//   intentc run examples/bst_avl.vani --backend=c              # C backend
+//   intentc build examples/bst_avl.vani -o /tmp/avl && /tmp/avl
+
+intent "Bst<T> AVL stress: sorted-input balancing (Level 4 #3 extension, closure #332)";
+
+// AVL balancing maintains O(log n) height under adversarial
+// insertion patterns. A plain BST inserting 1..15 in sorted
+// order would build a right-skewed linked list of height 15.
+// The AVL Bst keeps the height to ⌈log₂(15+1)⌉ = 4 via the
+// four-case rotation set (LL / LR / RR / RL) applied on the
+// walk back up the search path.
+//
+// This example exercises three adversarial patterns:
+//   * Strictly ascending  — would trigger RR rotations in plain BST.
+//   * Strictly descending — would trigger LL rotations.
+//   * Zig-zag             — exercises LR and RL.
+//
+// Property checks: contains hits all inserted values; misses
+// report false; min/max land where expected. Rebalance is
+// internal so we can't directly observe height, but we can
+// confirm the structural invariants survive insertions and
+// removes in any order.
+
+fn unwrap_or(o: Option<i64>, def: i64) -> i64 {
+  return match o {
+    Option.Some(v) then v,
+    Option.None then def,
+  };
+}
+
+fn main() -> i64 {
+  let asc: Bst<i64> = bst_new();
+  for x from 1 to 16 {
+    let _ = asc.insert(x);
+  }
+  print "asc len:", asc.len();
+  print "asc min:", unwrap_or(asc.min(), 0 - 1);
+  print "asc max:", unwrap_or(asc.max(), 0 - 1);
+  print "asc contains 8:", asc.contains(8);
+  print "asc contains 16:", asc.contains(16);
+
+  let desc: Bst<i64> = bst_new();
+  let i: i64 = 15;
+  while i >= 1 {
+    let _ = desc.insert(i);
+    i = i - 1;
+  }
+  print "desc len:", desc.len();
+  print "desc min:", unwrap_or(desc.min(), 0 - 1);
+  print "desc max:", unwrap_or(desc.max(), 0 - 1);
+
+  // Zig-zag: 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15
+  let zig: Bst<i64> = bst_new();
+  let _ = zig.insert(8);
+  let _ = zig.insert(4);
+  let _ = zig.insert(12);
+  let _ = zig.insert(2);
+  let _ = zig.insert(10);
+  let _ = zig.insert(6);
+  let _ = zig.insert(14);
+  let _ = zig.insert(1);
+  let _ = zig.insert(9);
+  let _ = zig.insert(5);
+  let _ = zig.insert(13);
+  let _ = zig.insert(3);
+  let _ = zig.insert(11);
+  let _ = zig.insert(7);
+  let _ = zig.insert(15);
+  print "zig len:", zig.len();
+  print "zig min:", unwrap_or(zig.min(), 0 - 1);
+  print "zig max:", unwrap_or(zig.max(), 0 - 1);
+
+  // Removes that exercise the two-children path (delete root-ish
+  // values) and trigger rebalance after the unlink.
+  print "zig remove 8:", zig.remove(8);
+  print "zig remove 4:", zig.remove(4);
+  print "zig remove 12:", zig.remove(12);
+  print "zig len after removes:", zig.len();
+  print "zig contains 8:", zig.contains(8);
+  print "zig contains 4:", zig.contains(4);
+  print "zig contains 12:", zig.contains(12);
+  // Remaining values should still be queryable in O(log n).
+  print "zig contains 1:", zig.contains(1);
+  print "zig contains 15:", zig.contains(15);
+
+  return 0;
+}

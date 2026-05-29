@@ -13119,6 +13119,38 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn bst_emits_avl_helpers() {
+        // Closure #332 introduces height tracking + rotation
+        // helpers on the existing Bst arena. The helper names
+        // must appear in both backends' output whenever Bst is
+        // used so the AVL machinery is linked.
+        let source = r#"
+            fn main() -> i64 {
+              let b: Bst<i64> = bst_new();
+              let _: bool = bst_insert(mut ref b, 1);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("bst program compiles");
+        assert!(
+            c.contains("intent_bst_i64_rotate_left")
+                && c.contains("intent_bst_i64_rotate_right")
+                && c.contains("intent_bst_i64_rebalance")
+                && c.contains("heights"),
+            "C output must include AVL helpers; got snippet:\n{}",
+            &c[..c.len().min(1200)]
+        );
+        let ll = compile_to_llvm(source).expect("bst LLVM compile");
+        assert!(
+            ll.contains("@intent_bst_i64_rotate_left")
+                && ll.contains("@intent_bst_i64_rotate_right")
+                && ll.contains("@intent_bst_i64_rebalance")
+                && ll.contains("%intent_bst_i64 = type { i64*, i32*, i32*, i64, i64, i64, i8* }"),
+            "LLVM output must include AVL helpers + heights field"
+        );
+    }
+
+    #[test]
     fn graph_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {
