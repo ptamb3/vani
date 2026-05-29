@@ -2722,6 +2722,20 @@ fn emit_intent_trie_helpers_c_body(out: &mut String) {
          \x20 int64_t cur = intent_trie_walk(t, s);\n\
          \x20 return cur != -1;\n\
          }\n\
+         /* Closure #340: remove an exact word. Walks to the terminal\n\
+          * node and flips its `is_end` bit; returns true iff the word\n\
+          * was present. Arena slots stay tombstoned — they may still\n\
+          * be on the path of longer words, so we can't compact them\n\
+          * away (a future closure could add a compaction pass for\n\
+          * dead branches with no end-of-word descendants). */\n\
+         static INTENT_UNUSED bool intent_trie_delete(intent_trie* t, const char* s) {\n\
+         \x20 int64_t cur = intent_trie_walk(t, s);\n\
+         \x20 if (cur == -1) return false;\n\
+         \x20 if (!t->is_end[cur]) return false;\n\
+         \x20 t->is_end[cur] = 0;\n\
+         \x20 t->num_words--;\n\
+         \x20 return true;\n\
+         }\n\
          static INTENT_UNUSED int64_t intent_trie_len(const intent_trie* t) {\n\
          \x20 return t->num_words;\n\
          }\n\
@@ -8332,6 +8346,11 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         ),
         "trie_starts_with" => format!(
             "intent_trie_starts_with({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "trie_delete" => format!(
+            "intent_trie_delete({}, ({}))",
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),

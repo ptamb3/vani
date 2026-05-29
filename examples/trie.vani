@@ -50,5 +50,20 @@ fn main() -> i64 {
   print "starts_with do:", t.starts_with("do");
   print "starts_with z:", t.starts_with("z");
 
+  // Closure #340: trie_delete. Flips the end-of-word bit on the
+  // node reached by walking the word; arena slots stay in place
+  // because other words may share their prefixes. starts_with
+  // therefore still returns true for the prefix of a deleted word
+  // when other words shared that prefix.
+  print "delete car:", t.delete("car");
+  print "delete car (again):", t.delete("car");
+  print "delete absent:", t.delete("zoo");
+  print "len:", t.len();
+  print "contains car after delete:", t.contains("car");
+  // \"cart\" still exists; its prefix runs through the now-deleted
+  // \"car\" node, but the arena slot is intact.
+  print "contains cart:", t.contains("cart");
+  print "starts_with ca after delete:", t.starts_with("ca");
+
   return 0;
 }

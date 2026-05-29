@@ -366,6 +366,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "graph_astar" || name == "graph_topo_sort"
                 || name == "trie_new" || name == "trie_insert"
                 || name == "trie_contains" || name == "trie_starts_with"
+                || name == "trie_delete"
                 || name == "trie_len" || name == "trie_node_count"
                 || name == "skiplist_new" || name == "skiplist_insert"
                 || name == "skiplist_contains" || name == "skiplist_remove"

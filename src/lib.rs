@@ -13578,6 +13578,59 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn trie_delete_typecheck() {
+        // Closure #340: trie_delete must type-check as
+        // `mut ref Trie, Str -> bool` and reject by-ref.
+        let ok = r#"
+            fn main() -> i64 {
+              let t: Trie = trie_new();
+              let _: bool = trie_delete(mut ref t, "abc");
+              let _: bool = t.delete("abc");
+              return 0;
+            }
+        "#;
+        compile_to_c(ok).expect("trie_delete must type-check in C");
+        compile_to_llvm(ok).expect("trie_delete must compile to LLVM");
+
+        let bad = r#"
+            fn main() -> i64 {
+              let t: Trie = trie_new();
+              let _: bool = trie_delete(ref t, "abc");
+              return 0;
+            }
+        "#;
+        let errors = compile(bad).expect_err("trie_delete by-ref must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref Trie")),
+            "expected mut-ref-Trie diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn trie_delete_emits_helpers() {
+        let source = r#"
+            fn main() -> i64 {
+              let t: Trie = trie_new();
+              let _: bool = trie_delete(mut ref t, "abc");
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("trie_delete C compile");
+        assert!(
+            c.contains("intent_trie_delete"),
+            "C output must include trie_delete helper"
+        );
+        let ll = compile_to_llvm(source).expect("trie_delete LLVM compile");
+        assert!(
+            ll.contains("@intent_trie_delete"),
+            "LLVM output must include trie_delete helper"
+        );
+    }
+
+    #[test]
     fn skiplist_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

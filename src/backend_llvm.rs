@@ -5539,7 +5539,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
-            if name == "trie_insert" || name == "trie_contains" || name == "trie_starts_with" {
+            if name == "trie_insert" || name == "trie_contains" || name == "trie_starts_with" || name == "trie_delete" {
                 let t = emit_expr(&args[0], ctx, out);
                 let s = emit_expr(&args[1], ctx, out);
                 let dest = ctx.fresh_tmp();
@@ -12184,6 +12184,30 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 %is_none = icmp eq i64 %cur, -1\n\
          \x20 %ok = icmp ne i64 %cur, -1\n\
          \x20 ret i1 %ok\n\
+         }\n\
+         ; Closure #340: trie_delete. Flips the is_end bit on the\n\
+         ; node reached by walking `s`, decrements num_words. Returns\n\
+         ; true iff the word was present.\n\
+         define i1 @intent_trie_delete(%intent_trie* %t, i8* %s) {\n\
+         \x20 %cur_d = call i64 @intent_trie_walk(%intent_trie* %t, i8* %s)\n\
+         \x20 %is_none_d = icmp eq i64 %cur_d, -1\n\
+         \x20 br i1 %is_none_d, label %td_false, label %td_check\n\
+         td_check:\n\
+         \x20 %epp_d = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 1\n\
+         \x20 %e_arr_d = load i8*, i8** %epp_d\n\
+         \x20 %e_slot_d = getelementptr i8, i8* %e_arr_d, i64 %cur_d\n\
+         \x20 %was = load i8, i8* %e_slot_d\n\
+         \x20 %was_set = icmp ne i8 %was, 0\n\
+         \x20 br i1 %was_set, label %td_clear, label %td_false\n\
+         td_clear:\n\
+         \x20 store i8 0, i8* %e_slot_d\n\
+         \x20 %nwp_d = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 4\n\
+         \x20 %nw_d = load i64, i64* %nwp_d\n\
+         \x20 %nw_dec = sub i64 %nw_d, 1\n\
+         \x20 store i64 %nw_dec, i64* %nwp_d\n\
+         \x20 ret i1 true\n\
+         td_false:\n\
+         \x20 ret i1 false\n\
          }\n\
          define i64 @intent_trie_len(%intent_trie* %t) {\n\
          \x20 %nwp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 4\n\
