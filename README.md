@@ -19,6 +19,17 @@ direct LLVM / C code generation, and predictable cost — but with a
 surface that **reads as close to natural language as a strict compiler
 will let it**.
 
+*Familiar terrain, lighter outerwear.* If you've programmed in **C**,
+the route through these primitives should feel **C-scenic** — the same
+close-to-the-metal view, the same predictable cost, with the guardrails
+that you used to keep in your head now kept by the compiler on your
+behalf. If you're at home in **Rust**, the model here is more **Rust-ic**
+than a re-invention — the same affine ownership, second-class
+references, monomorphized generics, and deterministic Drop, dressed in
+softer punctuation. (These comparisons are descriptive — vāṇī is an
+independent project with no affiliation; see *Trademark* at the bottom
+of this file.)
+
 The goal is to let users *express the same program* in whichever
 spelling reads most naturally to them, without weakening the
 language's correctness or performance guarantees. Three concrete
@@ -54,7 +65,7 @@ orchestration, and testing, but Rust is the better default for a
 compiler that must be fast, memory-safe, deterministic, and close to
 ABI / native code generation.
 
-## Feature set (closures #1–#305)
+## Feature set (closures #1–#345)
 
 vāṇī today is a working systems language with the following shipped
 features. Surface that **reads natural-language** sits on top of a
@@ -176,9 +187,63 @@ semantic model **borrowed from Rust** and a code-generator that
   reduction RHS; DynCoerce non-Var hoist via synthetic Block expr;
   `let _ = make()` discard of fresh struct value frees heap fields.
 
-See [STATUS.md](STATUS.md) for the closure-by-closure history and
-[TODO.md](TODO.md) for what's queued. The full Roadmap (small +
-multi-session items) is in the README's *Roadmap* section below.
+**Since closure #292 — Data-structures + algorithms roadmap (Levels 1–4):**
+Sustained run that takes the language from "scalars + Vec + Channel"
+to "carry-your-own data-structures library, all affine, all sharing the
+same Drop and codegen disciplines." Each Level's full detail lives in
+the *Data structures + algorithms* table further down; the headline
+deltas are:
+- **Level 1 — operations on existing primitives:**
+  `Vec.sort` / `sort_by(cmp_fn)` (#293) · `Vec.reverse` / `dedup` (#294)
+  · `Vec.find` / `contains` / `binary_search` (#295) · `Vec.swap_remove`
+  / `insert` / `clear` (#296) · `[i64; N]` Array sort / find / contains
+  / binary_search (#297) · `str_contains` / `str_starts_with` /
+  `str_ends_with` / `parse_int` / `parse_float` (#298) · math
+  (`pow` / `sqrt` / `sin` / `cos` / `tan` / `floor` / `ceil` / overloaded
+  `abs`) (#299) · RNG (`seed_rng` / `rand_i64` / `rand_in_range`,
+  thread-local xorshift64) (#300) · FNV-1a hash (`hash_i64` / `hash_str`
+  / `hash_combine`) (#301).
+- **Level 2 — generic containers** (all i64 in v1): BinaryHeap on
+  `Vec<i64>` (#302) · `Deque<i64>` ring buffer w/ 8 builtins (#303) ·
+  `HashSet<i64>` open-addressing w/ tombstone-aware remove (#304 +
+  #342) · `HashMap<i64, i64>` open-addressing w/ tombstone-aware
+  remove (#305 + #343) · `BTreeSet<i64>` on sorted Vec (#306) ·
+  `BTreeMap<i64, i64>` on parallel sorted Vecs (#307).
+- **Level 3 — closures + iterators:** anonymous fn expressions
+  (`fn(x: T) -> R { … }`) lambda-lifted to top-level `__anon_fn_<N>`
+  (#308) · eager `vec_map` / `vec_fold` / `vec_filter` on `Vec<i64>`
+  (#309 + #310) · method-call sugar across `Vec`, `HashMap`,
+  `HashSet`, `BTreeMap`, `BTreeSet`, `Deque` (#311 + #312) ·
+  `vec_take` / `vec_drop` + uniform `xs.len()` (#313) · closures
+  with captured Copy state (#314), declarable inside `if`/`while`/
+  `for` bodies (#315) · fused single-pass family `vec_map_fold` /
+  `vec_filter_fold` / `vec_map_filter` / `vec_map_filter_fold`
+  (#316 + #317) · auto-fusion of `vec_map + vec_fold` chains (#318) ·
+  Vec mutator + search method sugar (`xs.push` / `xs.pop` /
+  `xs.reverse` / `xs.dedup` / `xs.find` / `xs.contains` /
+  `xs.binary_search` / `xs.swap_remove` / `xs.insert` / `xs.clear`)
+  (#320) · `[T; N]` Array sugar (`arr.sort` / `sort_by` / `reverse`
+  / `find` / `contains` / `binary_search`) (#321).
+- **Level 4 — advanced / domain-specific:** `UnionFind` w/ path
+  compression + union-by-rank (#325) · dedicated `BinaryHeap<T>`
+  affine handle (#326) · `BloomFilter` (#327) · `Bst<T>` on a node
+  arena, upgraded to **AVL self-balancing** (#328 + #332) · weighted
+  directed `Graph` w/ lazy CSR adjacency cache (#329 + #336),
+  algorithms BFS / DFS / Dijkstra / A* / topo-sort / Kruskal / Prim
+  via reverse-CSR cache (#333 → #338) · `Trie` prefix tree with
+  exact-word `delete` (#340), **arena compaction via freelist** so
+  remove-heavy workloads reclaim slots (#344), and **full u8
+  alphabet** — any nonzero byte is a valid character (#345) ·
+  `SkipList<T>` MAX_LEVEL=8 w/ `remove` + O(1) `max` via maintained
+  `tail_node` (#331 + #339 + #341).
+
+Each shipped closure exits with both backends byte-identical, the
+cross-backend parity runner green across every example in
+`examples/`, and at least one lib test pinning the new helper name
+or struct shape. See [STATUS.md](STATUS.md) for the closure-by-closure
+history and [TODO.md](TODO.md) for what's queued. The full Roadmap
+(small + multi-session items) is in the README's *Roadmap* section
+below.
 
 ## Memory safety & concurrency model
 
@@ -3157,3 +3222,13 @@ use them to refer to the project ("compatible with VANI", "implementation
 of VANI") and in good-faith forks. Please don't use them in a way that
 implies endorsement by the project, or as your own product brand. If in
 doubt, ask in an issue.
+
+**Third-party marks referenced in this README.** Names such as *Rust*,
+*C*, *C++*, *LLVM*, *Linux*, *Windows*, *macOS*, *Z3*, *Python*,
+*Sanskrit*, *Hindi*, *Marathi*, and any others used in comparison or
+discussion are the marks of their respective owners. References here
+are descriptive (nominative fair use) — e.g., to describe inspiration,
+compatibility, or platform support — and do not imply affiliation,
+sponsorship, or endorsement by those owners. Playful coinages like
+*"C-scenic"* and *"Rust-ic"* are English wordplay, not adoption of any
+third-party mark.
