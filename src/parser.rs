@@ -1621,6 +1621,10 @@ impl Parser {
                 self.expect_close_angle()?;
                 return Ok(Type::BinaryHeap(Box::new(element)));
             }
+            if name == "BloomFilter" {
+                self.bump();
+                return Ok(Type::BloomFilter);
+            }
             if name == "Atomic" {
                 self.bump();
                 self.expect_keyword("'<'", |kind| matches!(kind, TokenKind::Less))?;

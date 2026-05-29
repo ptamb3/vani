@@ -351,6 +351,9 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "binary_heap_new" || name == "binary_heap_push"
                 || name == "binary_heap_pop" || name == "binary_heap_peek"
                 || name == "binary_heap_len"
+                || name == "bloom_filter_new" || name == "bloom_filter_insert"
+                || name == "bloom_filter_contains" || name == "bloom_filter_len"
+                || name == "bloom_filter_count"
             {
                 return false;
             }

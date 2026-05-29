@@ -558,6 +558,9 @@ pub fn emit_c(program: &TypedProgram) -> String {
         });
         emit_intent_binary_heap_helpers_c_body(&mut body, has_option_i64);
     }
+    if program_uses_bloom_filter(program) {
+        emit_intent_bloom_filter_helpers_c_body(&mut body);
+    }
 
     for function in &program.functions {
         emit_prototype(function, &mut body);
@@ -1541,6 +1544,119 @@ fn emit_intent_binary_heap_helpers_c_body(out: &mut String, has_option_i64: bool
              }\n\n",
         );
     }
+}
+
+/// Walk the program for any `BloomFilter` type usage. Closure #327.
+pub(crate) fn program_uses_bloom_filter(program: &TypedProgram) -> bool {
+    fn ty_uses(ty: &Type) -> bool {
+        match ty {
+            Type::BloomFilter => true,
+            Type::Vec(inner) | Type::Ref(inner) | Type::RefMut(inner) => ty_uses(inner),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if ty_uses(&f.return_type) {
+            return true;
+        }
+        for p in &f.params {
+            if ty_uses(&p.ty) {
+                return true;
+            }
+        }
+        for s in &f.body {
+            if stmt_uses_bloom_filter(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn stmt_uses_bloom_filter(stmt: &crate::ir::TypedStmt) -> bool {
+    use crate::ir::TypedStmt as S;
+    fn ty_uses(ty: &Type) -> bool {
+        matches!(ty, Type::BloomFilter)
+            || matches!(ty,
+                Type::Vec(i) | Type::Ref(i) | Type::RefMut(i) if ty_uses(i))
+    }
+    match stmt {
+        S::Let { ty, .. } | S::Reassign { ty, .. } | S::Drop { ty, .. } => ty_uses(ty),
+        S::If { then_body, else_body, .. } => {
+            then_body.iter().any(stmt_uses_bloom_filter)
+                || else_body.iter().any(stmt_uses_bloom_filter)
+        }
+        S::While { body, .. } | S::For { body, .. } | S::ForIter { body, .. } => {
+            body.iter().any(stmt_uses_bloom_filter)
+        }
+        _ => false,
+    }
+}
+
+/// Data-structures roadmap Level 4 #6 — BloomFilter runtime
+/// helpers (closure #327). Fixed-size bit-array probed at
+/// `num_hashes` positions per insert; multi-hash derived from
+/// the FNV-1a `intent_hash_i64` builtin via two-hash double
+/// hashing. False positives possible, false negatives
+/// impossible. v1 keys are i64.
+fn emit_intent_bloom_filter_helpers_c_body(out: &mut String) {
+    out.push_str(
+        "typedef struct { uint8_t* bits; int64_t num_bits; int64_t num_hashes; int64_t insert_count; } intent_bloom_filter;\n\
+         static INTENT_UNUSED uint64_t intent_bloom_filter_hash2(int64_t x) {\n\
+         \x20 uint64_t h = 0x84222325cbf29ce4ULL;\n\
+         \x20 uint64_t u = (uint64_t)x;\n\
+         \x20 for (int i = 0; i < 8; i++) {\n\
+         \x20   h ^= (u >> (i * 8)) & 0xffULL;\n\
+         \x20   h *= 0xc6a4a7935bd1e995ULL;\n\
+         \x20 }\n\
+         \x20 return h;\n\
+         }\n\
+         static INTENT_UNUSED intent_bloom_filter intent_bloom_filter_new(int64_t num_bits, int64_t num_hashes) {\n\
+         \x20 intent_bloom_filter bf;\n\
+         \x20 if (num_bits <= 0) num_bits = 64;\n\
+         \x20 if (num_hashes <= 0) num_hashes = 1;\n\
+         \x20 int64_t bytes = (num_bits + 7) / 8;\n\
+         \x20 bf.bits = (uint8_t*)calloc((size_t)bytes, 1);\n\
+         \x20 if (!bf.bits) abort();\n\
+         \x20 bf.num_bits = bytes * 8;\n\
+         \x20 bf.num_hashes = num_hashes;\n\
+         \x20 bf.insert_count = 0;\n\
+         \x20 return bf;\n\
+         }\n\
+         static INTENT_UNUSED void intent_bloom_filter_drop(intent_bloom_filter* bf) {\n\
+         \x20 if (bf->bits) free(bf->bits);\n\
+         \x20 bf->bits = (uint8_t*)0; bf->num_bits = 0; bf->num_hashes = 0; bf->insert_count = 0;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_bloom_filter_insert(intent_bloom_filter* bf, int64_t x) {\n\
+         \x20 uint64_t h1 = intent_hash_i64(x);\n\
+         \x20 uint64_t h2 = intent_bloom_filter_hash2(x);\n\
+         \x20 if (h2 == 0) h2 = 1;\n\
+         \x20 uint64_t nb = (uint64_t)bf->num_bits;\n\
+         \x20 for (int64_t k = 0; k < bf->num_hashes; k++) {\n\
+         \x20   uint64_t pos = (h1 + (uint64_t)k * h2) % nb;\n\
+         \x20   bf->bits[pos >> 3] |= (uint8_t)(1u << (pos & 7));\n\
+         \x20 }\n\
+         \x20 bf->insert_count++;\n\
+         \x20 return bf->insert_count;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_bloom_filter_contains(const intent_bloom_filter* bf, int64_t x) {\n\
+         \x20 uint64_t h1 = intent_hash_i64(x);\n\
+         \x20 uint64_t h2 = intent_bloom_filter_hash2(x);\n\
+         \x20 if (h2 == 0) h2 = 1;\n\
+         \x20 uint64_t nb = (uint64_t)bf->num_bits;\n\
+         \x20 for (int64_t k = 0; k < bf->num_hashes; k++) {\n\
+         \x20   uint64_t pos = (h1 + (uint64_t)k * h2) % nb;\n\
+         \x20   if (!(bf->bits[pos >> 3] & (uint8_t)(1u << (pos & 7)))) return false;\n\
+         \x20 }\n\
+         \x20 return true;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_bloom_filter_len(const intent_bloom_filter* bf) {\n\
+         \x20 return bf->num_bits;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_bloom_filter_count(const intent_bloom_filter* bf) {\n\
+         \x20 return bf->insert_count;\n\
+         }\n\n",
+    );
 }
 
 /// Data-structures roadmap Level 1 — FNV-1a hash helpers.
@@ -4161,6 +4277,11 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
             }
             Type::BinaryHeap(_) => {
                 out.push_str("  intent_binary_heap_i64_drop(&");
+                out.push_str(&local_name(name));
+                out.push_str(");\n");
+            }
+            Type::BloomFilter => {
+                out.push_str("  intent_bloom_filter_drop(&");
                 out.push_str(&local_name(name));
                 out.push_str(");\n");
             }
@@ -6792,6 +6913,30 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_binary_heap_i64_len({})",
             emit_expr(&args[0])
         ),
+        // Closure #327: BloomFilter dispatch.
+        "bloom_filter_new" => format!(
+            "intent_bloom_filter_new(({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "bloom_filter_insert" => format!(
+            "intent_bloom_filter_insert({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "bloom_filter_contains" => format!(
+            "intent_bloom_filter_contains({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "bloom_filter_len" => format!(
+            "intent_bloom_filter_len({})",
+            emit_expr(&args[0])
+        ),
+        "bloom_filter_count" => format!(
+            "intent_bloom_filter_count({})",
+            emit_expr(&args[0])
+        ),
         "hashmap_new" => "intent_hashmap_i64_i64_new()".to_string(),
         "hashmap_insert" => format!(
             "intent_hashmap_i64_i64_insert({}, ({}), ({}))",
@@ -7357,6 +7502,8 @@ pub(crate) fn c_leaf_type(ty: &Type) -> &'static str {
         Type::UnionFind => "intent_union_find",
         // `BinaryHeap<T>` — Level 4 #2 dedicated min-heap. v1 i64.
         Type::BinaryHeap(_) => "intent_binary_heap_i64",
+        // `BloomFilter` — Level 4 #6 probabilistic membership tester.
+        Type::BloomFilter => "intent_bloom_filter",
         // `fn(T1, T2) -> R` has no fixed leaf spelling in C —
         // function-pointer types are declarator-shaped
         // (`R (*name)(T1, T2)`). Callers that need to emit a
@@ -7688,7 +7835,7 @@ fn divisor_helper(ty: &Type) -> &'static str {
         Type::U64 => "intent_check_u64_divisor",
         Type::F32 => "intent_check_f32_divisor",
         Type::F64 => "intent_check_f64_divisor",
-        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
+        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::BloomFilter | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
             unreachable!("non-numeric type cannot be a divisor")
         }
     }
@@ -7726,6 +7873,7 @@ fn shift_helper(ty: &Type) -> &'static str {
         | Type::BTreeMap(_, _)
         | Type::UnionFind
         | Type::BinaryHeap(_)
+        | Type::BloomFilter
         | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => unreachable!("shift count must be an integer"),
     }
 }

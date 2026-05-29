@@ -1,0 +1,43 @@
+// build & run:
+//   intentc run examples/bloom_filter.vani                          # LLVM backend
+//   intentc run examples/bloom_filter.vani --backend=c              # C backend
+//   intentc build examples/bloom_filter.vani -o /tmp/bf && /tmp/bf
+
+intent "BloomFilter — probabilistic membership tester (Level 4 #6)";
+
+// A Bloom filter is a probabilistic set with a fixed-size bit
+// array probed at `num_hashes` positions per key:
+//
+//   bloom_filter_new(num_bits, num_hashes) -> BloomFilter
+//   bf.insert(x)   / bloom_filter_insert(mut ref bf, x)   -> i64 (insert count)
+//   bf.contains(x) / bloom_filter_contains(ref bf, x)     -> bool
+//   bf.len()       / bloom_filter_len(ref bf)             -> i64 (num bits)
+//   bf.count()     / bloom_filter_count(ref bf)           -> i64 (insert count)
+//
+// Affine ownership: scope-exit drops the bit array. False
+// positives are possible (probabilistic), false negatives
+// are not — a `contains` of false guarantees the value was
+// never inserted.
+
+fn main() -> i64 {
+  // 256 bits, 3 hash positions per insert.
+  let bf: BloomFilter = bloom_filter_new(256, 3);
+
+  let _ = bf.insert(42);
+  let _ = bf.insert(100);
+  let _ = bf.insert(7);
+
+  print "size:", bf.len();
+  print "inserts:", bf.count();
+
+  // Definitely-inserted values must report contains=true.
+  print "contains 42:", bf.contains(42);
+  print "contains 100:", bf.contains(100);
+  print "contains 7:", bf.contains(7);
+
+  // A value that was never inserted is overwhelmingly likely
+  // to report false at this load factor.
+  print "contains 12345:", bf.contains(12345);
+
+  return 0;
+}

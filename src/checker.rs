@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -461,7 +461,7 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // built-in `Type::Task`, leading to confusing
     // "got Task" errors deep in the pipeline.
     const RESERVED_TYPE_NAMES: &[&str] = &[
-        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "HashSet", "HashMap", "BTreeSet", "BTreeMap", "UnionFind", "BinaryHeap", "OwnedStr", "Self",
+        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "HashSet", "HashMap", "BTreeSet", "BTreeMap", "UnionFind", "BinaryHeap", "BloomFilter", "OwnedStr", "Self",
     ];
     for decl in &program.structs {
         if RESERVED_TYPE_NAMES.contains(&decl.name.as_str()) {
@@ -10780,6 +10780,13 @@ fn check_expr(
                         "len" => ("binary_heap_len", false),
                         _ => ("", false),
                     },
+                    Some(Type::BloomFilter) => match method.as_str() {
+                        "insert" => ("bloom_filter_insert", true),
+                        "contains" => ("bloom_filter_contains", false),
+                        "len" => ("bloom_filter_len", false),
+                        "count" => ("bloom_filter_count", false),
+                        _ => ("", false),
+                    },
                     _ => ("", false),
                 };
                 if !builtin_name.is_empty() {
@@ -13818,6 +13825,13 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "bloom_filter_new" | "bloom_filter_insert"
+        | "bloom_filter_contains" | "bloom_filter_len"
+        | "bloom_filter_count" => {
+            return check_bloom_filter_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "reverse" | "dedup" => {
             return check_reverse_dedup_builtin(
                 name, args, env, signatures, span, diagnostics,
@@ -16694,6 +16708,140 @@ fn check_binary_heap_builtin(
             "binary_heap value", diagnostics,
         );
         typed_args.push(v.expr);
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        ret_ty(),
+        None,
+        span,
+    )
+}
+
+/// Bloom-filter builtins — closure #327, Level 4 #6.
+///
+///   bloom_filter_new(num_bits: i64, num_hashes: i64) -> BloomFilter
+///       Fresh filter with `num_bits` bits and `num_hashes`
+///       hash positions per insert. `num_bits` is rounded up
+///       to a multiple of 8 internally.
+///   bloom_filter_insert(mut ref bf, x: i64) -> i64
+///       Sets `num_hashes` bits derived from `x`; returns the
+///       new insert count.
+///   bloom_filter_contains(ref bf, x: i64) -> bool
+///       True iff *every* bit position derived from `x` is set.
+///       False positives possible (probabilistic); false
+///       negatives impossible.
+///   bloom_filter_len(ref bf) -> i64
+///       Number of bits in the filter.
+///   bloom_filter_count(ref bf) -> i64
+///       Number of inserts made so far.
+fn check_bloom_filter_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args = match name {
+        "bloom_filter_new" => 2,
+        "bloom_filter_len" | "bloom_filter_count" => 1,
+        "bloom_filter_insert" | "bloom_filter_contains" => 2,
+        _ => unreachable!(),
+    };
+    let ret_ty = || -> Type {
+        match name {
+            "bloom_filter_new" => Type::BloomFilter,
+            "bloom_filter_contains" => Type::Bool,
+            _ => Type::I64,
+        }
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}() expects {} argument{}, got {}",
+                name,
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback(ret_ty(), span);
+    }
+    if name == "bloom_filter_new" {
+        let nb_raw = check_expr(&args[0], env, signatures, diagnostics);
+        let nb = coerce_checked(
+            nb_raw, &Type::I64, args[0].span,
+            "bloom_filter num_bits", diagnostics,
+        );
+        let nh_raw = check_expr(&args[1], env, signatures, diagnostics);
+        let nh = coerce_checked(
+            nh_raw, &Type::I64, args[1].span,
+            "bloom_filter num_hashes", diagnostics,
+        );
+        return CheckedExpr::new(
+            TypedExprKind::Call {
+                name: "bloom_filter_new".to_string(),
+                name_span: span,
+                args: vec![nb.expr, nh.expr],
+            },
+            Type::BloomFilter,
+            None,
+            span,
+        );
+    }
+    let bf = check_expr(&args[0], env, signatures, diagnostics);
+    let is_mut_op = matches!(name, "bloom_filter_insert");
+    match bf.ty() {
+        Type::Ref(inner) | Type::RefMut(inner) => {
+            if !matches!(**inner, Type::BloomFilter) {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "{}() requires a `{}BloomFilter` argument, got {}",
+                        name,
+                        if is_mut_op { "mut ref " } else { "ref " },
+                        bf.ty()
+                    ),
+                ));
+                return CheckedExpr::fallback(ret_ty(), span);
+            }
+        }
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "{}() requires a `{}BloomFilter` argument, got {}",
+                    name,
+                    if is_mut_op { "mut ref " } else { "ref " },
+                    other
+                ),
+            ));
+            return CheckedExpr::fallback(ret_ty(), span);
+        }
+    }
+    if is_mut_op && !matches!(bf.ty(), Type::RefMut(_)) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() requires a `mut ref BloomFilter` argument, got {}",
+                name,
+                bf.ty()
+            ),
+        ));
+    }
+    let mut typed_args = vec![bf.expr];
+    if matches!(name, "bloom_filter_insert" | "bloom_filter_contains") {
+        let x_raw = check_expr(&args[1], env, signatures, diagnostics);
+        let x = coerce_checked(
+            x_raw, &Type::I64, args[1].span,
+            "bloom_filter key", diagnostics,
+        );
+        typed_args.push(x.expr);
     }
     CheckedExpr::new(
         TypedExprKind::Call {

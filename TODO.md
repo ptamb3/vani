@@ -261,6 +261,22 @@ pointer (already in the language as of #279 FFI callbacks).
 26. **Bloom filter** — ✅ AFFINE.
     Bit-vector over `Vec<u64>` + multi-hash via the #10
     Hash interface.
+    *Shipped 2026-05-29 (closure #327) — Level 4 #6.*
+    `BloomFilter` affine handle backed by a `u8*` bit array
+    + `num_bits` (rounded up to a multiple of 8) + `num_hashes`
+    + `insert_count`. 5 builtins: `bloom_filter_new(num_bits,
+    num_hashes) / insert / contains / len / count`. Method
+    sugar: `bf.insert(x)` / `bf.contains(x)` / `bf.len()` /
+    `bf.count()`. Probing positions derived by double hashing:
+    `h1 = intent_hash_i64(x)`, `h2 = bloom_filter_hash2(x)`
+    (a parallel-seed FNV-1a mix), with the k-th position
+    being `(h1 + k * h2) % num_bits`. Drop frees the bit
+    array. v1 keys are i64 (the Hash-interface lift to
+    user-struct keys queued separately). False positives
+    possible, false negatives impossible. Cross-backend
+    parity green; 7 new lib tests. Pending: 64-bit-word
+    backing for cache-friendliness; resizable variant;
+    typed-key generic via the #10 Hash interface.
 27. **`BinaryHeap<T>` dedicated wrapper type** — ✅ AFFINE.
     First-class affine handle that promotes the Vec<i64>-backed
     heap (closure #302 / `heap_push` etc.) to a typed wrapper.
@@ -579,7 +595,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #326 — **Level 4 #2** `BinaryHeap<T>` dedicated wrapper type: promotes the Vec<i64>-backed heap (closure #302) to a first-class affine handle. Backing `i64*` + `len` + `cap`; 5 builtins (`binary_heap_new` / `push` / `pop` / `peek` / `len`) + method sugar `h.push(v)` / `h.pop()` / `h.peek()` / `h.len()`. Sift-up in `push`, sift-down in `pop`. `pop` and `peek` return `Option<i64>` (auto-monomorphized via the existing payload registry). Drop frees the backing buffer. New `examples/binary_heap.vani` priority-queue drain demo; 6 new lib tests. Closure #325 (Level 4 #1) Union-Find shipped immediately before. **Level 4 is now 2/9 complete.** Next focal area sequence: (#327) **Bloom filter** (Level 4 #6) — fixed bit-vector over `Vec<u64>` + multi-hash via the FNV-1a `Hash` interface. (#328) **BST/AVL via node arena** (Level 4 #3) — child-index i32s, first arena-based ordered container. (#329) **Graph + algorithms** (BFS / DFS / Dijkstra now unblocked by `BinaryHeap<T>`; Kruskal unblocked by UnionFind; topo). (#330) Trie; (#331) Skip list. After Level 4: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-29, after closure #327 — **Level 4 #6** `BloomFilter` probabilistic membership tester: bit-array backing `{ u8* bits, num_bits, num_hashes, insert_count }`; 5 builtins (`bloom_filter_new` / `insert` / `contains` / `len` / `count`) + method sugar; double-hashing on FNV-1a (h1 = `intent_hash_i64`, h2 = a parallel-seed FNV mix); LLVM hash helpers gate now also fires on Bloom usage; Drop frees the bit array; v1 keys are i64. New `examples/bloom_filter.vani` insert/contains demo + 7 new lib tests. Closure #326 (Level 4 #2) BinaryHeap<T> wrapper shipped immediately before. **Level 4 is now 3/9 complete.** Next focal area sequence: (#328) **BST/AVL via node arena** (Level 4 #3) — child-index i32s, first arena-based ordered container. (#329) **Graph + algorithms** (BFS / DFS / Dijkstra now unblocked by `BinaryHeap<T>`; Kruskal unblocked by UnionFind; topo / A* / Prim). (#330) Trie; (#331) Skip list. After Level 4: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

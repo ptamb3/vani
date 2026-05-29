@@ -257,6 +257,7 @@ fn llvm_byte_size(ty: &Type) -> u64 {
         Type::BTreeMap(_, _) => 32, // {keys ptr, values ptr, len, capacity}
         Type::UnionFind => 32, // {parent ptr, rank ptr, n, sets}
         Type::BinaryHeap(_) => 24, // {data ptr, len, capacity}
+        Type::BloomFilter => 32, // {bits ptr, num_bits, num_hashes, insert_count}
         Type::Object(_) => 16, // fat pointer: vtable + data
         Type::Vec(_) => 24, // {data, len, cap} on 64-bit
         Type::Array { element, length } => llvm_byte_size(element) * length,
@@ -638,7 +639,9 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // UnionFind (closure #325): { parent*, rank*, n, sets } — disjoint-set arena.
     out.push_str("%intent_union_find = type { i64*, i64*, i64, i64 }\n");
     // BinaryHeap<i64> (closure #326): { data*, len, capacity } — min-heap.
-    out.push_str("%intent_binary_heap_i64 = type { i64*, i64, i64 }\n\n");
+    out.push_str("%intent_binary_heap_i64 = type { i64*, i64, i64 }\n");
+    // BloomFilter (closure #327): { bits*, num_bits, num_hashes, insert_count } — probabilistic membership.
+    out.push_str("%intent_bloom_filter = type { i8*, i64, i64, i64 }\n\n");
 
     emit_intent_str_concat_definition(&mut out);
 
@@ -827,8 +830,12 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     }
 
     // Data-structures roadmap: FNV-1a hash helpers. Gated on
-    // the program actually using a hash builtin.
-    if program_uses_hash(program) {
+    // the program actually using a hash builtin OR a Bloom
+    // filter (closure #327 calls @intent_hash_i64 from its
+    // insert/contains helpers).
+    if program_uses_hash(program)
+        || crate::backend_c::program_uses_bloom_filter(program)
+    {
         emit_intent_hash_helpers_llvm(&mut out);
     }
 
@@ -880,6 +887,11 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
             r.borrow().contains_key("Option__i64")
         });
         emit_intent_binary_heap_i64_helpers_llvm(&mut out, has_option_i64);
+    }
+
+    // BloomFilter helpers (closure #327, Level 4 #6).
+    if crate::backend_c::program_uses_bloom_filter(program) {
+        emit_intent_bloom_filter_helpers_llvm(&mut out);
     }
 
     for function in &program.functions {
@@ -1612,6 +1624,15 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 if let Some((_, addr)) = ctx.locals.get(name).cloned() {
                     out.push_str(&format!(
                         "  call void @intent_binary_heap_i64_drop(%intent_binary_heap_i64* {})\n",
+                        addr
+                    ));
+                }
+                return;
+            }
+            if matches!(ty, Type::BloomFilter) {
+                if let Some((_, addr)) = ctx.locals.get(name).cloned() {
+                    out.push_str(&format!(
+                        "  call void @intent_bloom_filter_drop(%intent_bloom_filter* {})\n",
                         addr
                     ));
                 }
@@ -5209,6 +5230,55 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // BloomFilter builtins (closure #327, Level 4 #6).
+            if name == "bloom_filter_new" {
+                let nb = emit_expr(&args[0], ctx, out);
+                let nh = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_bloom_filter @intent_bloom_filter_new(i64 {}, i64 {})\n",
+                    dest, nb, nh
+                ));
+                return dest;
+            }
+            if name == "bloom_filter_insert" {
+                let bf = emit_expr(&args[0], ctx, out);
+                let x = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_bloom_filter_insert(%intent_bloom_filter* {}, i64 {})\n",
+                    dest, bf, x
+                ));
+                return dest;
+            }
+            if name == "bloom_filter_contains" {
+                let bf = emit_expr(&args[0], ctx, out);
+                let x = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i1 @intent_bloom_filter_contains(%intent_bloom_filter* {}, i64 {})\n",
+                    dest, bf, x
+                ));
+                return dest;
+            }
+            if name == "bloom_filter_len" {
+                let bf = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_bloom_filter_len(%intent_bloom_filter* {})\n",
+                    dest, bf
+                ));
+                return dest;
+            }
+            if name == "bloom_filter_count" {
+                let bf = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_bloom_filter_count(%intent_bloom_filter* {})\n",
+                    dest, bf
+                ));
+                return dest;
+            }
             // HashSet<i64> builtins (closure #304). Call
             // outlined helpers emitted at module scope.
             if name == "hashset_new" {
@@ -8744,6 +8814,164 @@ fn emit_intent_binary_heap_i64_helpers_llvm(out: &mut String, has_option_i64: bo
              }\n\n",
         );
     }
+}
+
+/// Data-structures roadmap Level 4 #6 — BloomFilter runtime
+/// helpers (closure #327). Fixed-size bit-array (byte storage)
+/// probed at `num_hashes` positions via double-hashing
+/// (h1 = FNV-1a; h2 = a second FNV-style mix). False positives
+/// possible, false negatives impossible.
+fn emit_intent_bloom_filter_helpers_llvm(out: &mut String) {
+    out.push_str(
+        "define i64 @intent_bloom_filter_hash2(i64 %x) {\n\
+         \x20 %h_p = alloca i64\n\
+         \x20 store i64 -8925532866252464924, i64* %h_p\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 store i64 0, i64* %i_p\n\
+         \x20 br label %bh2_loop\n\
+         bh2_loop:\n\
+         \x20 %i = load i64, i64* %i_p\n\
+         \x20 %cont = icmp slt i64 %i, 8\n\
+         \x20 br i1 %cont, label %bh2_body, label %bh2_done\n\
+         bh2_body:\n\
+         \x20 %shamt = shl i64 %i, 3\n\
+         \x20 %shifted = lshr i64 %x, %shamt\n\
+         \x20 %byte = and i64 %shifted, 255\n\
+         \x20 %h = load i64, i64* %h_p\n\
+         \x20 %h_xor = xor i64 %h, %byte\n\
+         \x20 %h_mul = mul i64 %h_xor, -4132994306676758123\n\
+         \x20 store i64 %h_mul, i64* %h_p\n\
+         \x20 %i_n = add i64 %i, 1\n\
+         \x20 store i64 %i_n, i64* %i_p\n\
+         \x20 br label %bh2_loop\n\
+         bh2_done:\n\
+         \x20 %ret = load i64, i64* %h_p\n\
+         \x20 ret i64 %ret\n\
+         }\n\
+         define %intent_bloom_filter @intent_bloom_filter_new(i64 %nb_in, i64 %nh_in) {\n\
+         \x20 %nb_zero = icmp sle i64 %nb_in, 0\n\
+         \x20 %nb = select i1 %nb_zero, i64 64, i64 %nb_in\n\
+         \x20 %nh_zero = icmp sle i64 %nh_in, 0\n\
+         \x20 %nh = select i1 %nh_zero, i64 1, i64 %nh_in\n\
+         \x20 %nb7 = add i64 %nb, 7\n\
+         \x20 %bytes = sdiv i64 %nb7, 8\n\
+         \x20 %nb_round = mul i64 %bytes, 8\n\
+         \x20 %bits = call i8* @calloc(i64 %bytes, i64 1)\n\
+         \x20 %r0 = insertvalue %intent_bloom_filter undef, i8* %bits, 0\n\
+         \x20 %r1 = insertvalue %intent_bloom_filter %r0, i64 %nb_round, 1\n\
+         \x20 %r2 = insertvalue %intent_bloom_filter %r1, i64 %nh, 2\n\
+         \x20 %r3 = insertvalue %intent_bloom_filter %r2, i64 0, 3\n\
+         \x20 ret %intent_bloom_filter %r3\n\
+         }\n\
+         define void @intent_bloom_filter_drop(%intent_bloom_filter* %bf) {\n\
+         \x20 %bpp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 0\n\
+         \x20 %bits = load i8*, i8** %bpp\n\
+         \x20 %is_null = icmp eq i8* %bits, null\n\
+         \x20 br i1 %is_null, label %bf_done, label %bf_free\n\
+         bf_free:\n\
+         \x20 call void @free(i8* %bits)\n\
+         \x20 br label %bf_done\n\
+         bf_done:\n\
+         \x20 store i8* null, i8** %bpp\n\
+         \x20 %nbp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 1\n\
+         \x20 %nhp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 2\n\
+         \x20 %icp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 3\n\
+         \x20 store i64 0, i64* %nbp\n\
+         \x20 store i64 0, i64* %nhp\n\
+         \x20 store i64 0, i64* %icp\n\
+         \x20 ret void\n\
+         }\n\
+         define i64 @intent_bloom_filter_insert(%intent_bloom_filter* %bf, i64 %x) {\n\
+         \x20 %h1 = call i64 @intent_hash_i64(i64 %x)\n\
+         \x20 %h2_raw = call i64 @intent_bloom_filter_hash2(i64 %x)\n\
+         \x20 %h2_zero = icmp eq i64 %h2_raw, 0\n\
+         \x20 %h2 = select i1 %h2_zero, i64 1, i64 %h2_raw\n\
+         \x20 %bpp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 0\n\
+         \x20 %nbp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 1\n\
+         \x20 %nhp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 2\n\
+         \x20 %icp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 3\n\
+         \x20 %bits = load i8*, i8** %bpp\n\
+         \x20 %nb = load i64, i64* %nbp\n\
+         \x20 %nh = load i64, i64* %nhp\n\
+         \x20 %k_p = alloca i64\n\
+         \x20 store i64 0, i64* %k_p\n\
+         \x20 br label %ins_loop\n\
+         ins_loop:\n\
+         \x20 %k = load i64, i64* %k_p\n\
+         \x20 %cont = icmp slt i64 %k, %nh\n\
+         \x20 br i1 %cont, label %ins_body, label %ins_done\n\
+         ins_body:\n\
+         \x20 %k_h2 = mul i64 %k, %h2\n\
+         \x20 %sum = add i64 %h1, %k_h2\n\
+         \x20 %pos = urem i64 %sum, %nb\n\
+         \x20 %byte_idx = lshr i64 %pos, 3\n\
+         \x20 %bit_idx = and i64 %pos, 7\n\
+         \x20 %slot = getelementptr i8, i8* %bits, i64 %byte_idx\n\
+         \x20 %prev = load i8, i8* %slot\n\
+         \x20 %bit_i8 = trunc i64 %bit_idx to i8\n\
+         \x20 %mask = shl i8 1, %bit_i8\n\
+         \x20 %newv = or i8 %prev, %mask\n\
+         \x20 store i8 %newv, i8* %slot\n\
+         \x20 %k_n = add i64 %k, 1\n\
+         \x20 store i64 %k_n, i64* %k_p\n\
+         \x20 br label %ins_loop\n\
+         ins_done:\n\
+         \x20 %ic = load i64, i64* %icp\n\
+         \x20 %ic_n = add i64 %ic, 1\n\
+         \x20 store i64 %ic_n, i64* %icp\n\
+         \x20 ret i64 %ic_n\n\
+         }\n\
+         define i1 @intent_bloom_filter_contains(%intent_bloom_filter* %bf, i64 %x) {\n\
+         \x20 %h1 = call i64 @intent_hash_i64(i64 %x)\n\
+         \x20 %h2_raw = call i64 @intent_bloom_filter_hash2(i64 %x)\n\
+         \x20 %h2_zero = icmp eq i64 %h2_raw, 0\n\
+         \x20 %h2 = select i1 %h2_zero, i64 1, i64 %h2_raw\n\
+         \x20 %bpp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 0\n\
+         \x20 %nbp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 1\n\
+         \x20 %nhp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 2\n\
+         \x20 %bits = load i8*, i8** %bpp\n\
+         \x20 %nb = load i64, i64* %nbp\n\
+         \x20 %nh = load i64, i64* %nhp\n\
+         \x20 %k_p = alloca i64\n\
+         \x20 store i64 0, i64* %k_p\n\
+         \x20 br label %con_loop\n\
+         con_loop:\n\
+         \x20 %k = load i64, i64* %k_p\n\
+         \x20 %cont = icmp slt i64 %k, %nh\n\
+         \x20 br i1 %cont, label %con_body, label %con_true\n\
+         con_body:\n\
+         \x20 %k_h2 = mul i64 %k, %h2\n\
+         \x20 %sum = add i64 %h1, %k_h2\n\
+         \x20 %pos = urem i64 %sum, %nb\n\
+         \x20 %byte_idx = lshr i64 %pos, 3\n\
+         \x20 %bit_idx = and i64 %pos, 7\n\
+         \x20 %slot = getelementptr i8, i8* %bits, i64 %byte_idx\n\
+         \x20 %byte_val = load i8, i8* %slot\n\
+         \x20 %bit_i8 = trunc i64 %bit_idx to i8\n\
+         \x20 %mask = shl i8 1, %bit_i8\n\
+         \x20 %and = and i8 %byte_val, %mask\n\
+         \x20 %is_zero = icmp eq i8 %and, 0\n\
+         \x20 br i1 %is_zero, label %con_false, label %con_next\n\
+         con_next:\n\
+         \x20 %k_n = add i64 %k, 1\n\
+         \x20 store i64 %k_n, i64* %k_p\n\
+         \x20 br label %con_loop\n\
+         con_false:\n\
+         \x20 ret i1 false\n\
+         con_true:\n\
+         \x20 ret i1 true\n\
+         }\n\
+         define i64 @intent_bloom_filter_len(%intent_bloom_filter* %bf) {\n\
+         \x20 %nbp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 1\n\
+         \x20 %nb = load i64, i64* %nbp\n\
+         \x20 ret i64 %nb\n\
+         }\n\
+         define i64 @intent_bloom_filter_count(%intent_bloom_filter* %bf) {\n\
+         \x20 %icp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 3\n\
+         \x20 %ic = load i64, i64* %icp\n\
+         \x20 ret i64 %ic\n\
+         }\n\n",
+    );
 }
 
 /// Data-structures roadmap Level 2 — HashSet<i64> runtime
@@ -13775,7 +14003,7 @@ fn is_scalar(ty: &Type) -> bool {
         // <ty> <v>, <ty>* …` work uniformly. The builtins
         // (channel_new, mutex_new, mutex_lock) return SSA
         // values of these struct types.
-        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_))
+        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::BloomFilter)
         // Function pointers are pointer-sized scalars. The
         // alloca holds a single value of fn-ptr type (the
         // load returns a function-pointer SSA value the
@@ -13832,6 +14060,7 @@ pub(crate) fn llvm_type(ty: &Type) -> &'static str {
         Type::BTreeMap(_, _) => "%intent_btreemap_i64_i64",
         Type::UnionFind => "%intent_union_find",
         Type::BinaryHeap(_) => "%intent_binary_heap_i64",
+        Type::BloomFilter => "%intent_bloom_filter",
         // Enums lower to a 32-bit tag — see `llvm_type_string`
         // for the same. T1.3.
         Type::Enum(_) => "i32",

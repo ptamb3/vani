@@ -12883,6 +12883,130 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn bloom_filter_basics_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let bf: BloomFilter = bloom_filter_new(128, 3);
+              let _: i64 = bloom_filter_insert(mut ref bf, 42);
+              let _: bool = bloom_filter_contains(ref bf, 42);
+              let _: i64 = bloom_filter_len(ref bf);
+              let _: i64 = bloom_filter_count(ref bf);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("bloom_filter basics must type-check in C");
+        compile_to_llvm(source).expect("bloom_filter basics must compile to LLVM");
+    }
+
+    #[test]
+    fn bloom_filter_insert_rejects_non_mut_ref() {
+        let source = r#"
+            fn main() -> i64 {
+              let bf: BloomFilter = bloom_filter_new(128, 3);
+              let _: i64 = bloom_filter_insert(ref bf, 1);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("bloom_filter_insert by-ref must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref BloomFilter")),
+            "expected mut-ref-BloomFilter diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn bloom_filter_reserves_name_against_user_struct() {
+        let source = r#"
+            struct BloomFilter { x: i64 }
+            fn main() -> i64 { return 0; }
+        "#;
+        let errors = compile(source).expect_err("`struct BloomFilter` must collide");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("BloomFilter") && e.message.contains("reserved")),
+            "expected reserved-name diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn bloom_filter_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let bf: BloomFilter = bloom_filter_new(64, 2);
+              let _: i64 = bf.insert(1);
+              let _: bool = bf.contains(1);
+              let _: i64 = bf.len();
+              return bf.count();
+            }
+        "#;
+        compile_to_c(source).expect("bloom_filter method sugar must type-check in C");
+        compile_to_llvm(source).expect("bloom_filter method sugar must compile to LLVM");
+    }
+
+    #[test]
+    fn bloom_filter_no_false_negatives_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let bf: BloomFilter = bloom_filter_new(256, 3);
+              let _ = bf.insert(11);
+              let _ = bf.insert(22);
+              let _ = bf.insert(33);
+              if bf.contains(11) && bf.contains(22) && bf.contains(33) {
+                return 0;
+              } else {
+                return 1;
+              }
+            }
+        "#;
+        compile_to_c(source).expect("bloom_filter no-false-negatives must type-check in C");
+    }
+
+    #[test]
+    fn bloom_filter_emits_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let bf: BloomFilter = bloom_filter_new(64, 2);
+              let _: i64 = bloom_filter_insert(mut ref bf, 1);
+              let _: bool = bloom_filter_contains(ref bf, 1);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("bloom_filter program compiles");
+        assert!(
+            c.contains("intent_bloom_filter")
+                && c.contains("intent_bloom_filter_insert")
+                && c.contains("intent_bloom_filter_contains")
+                && c.contains("intent_bloom_filter_drop"),
+            "C output must include the BloomFilter runtime; got snippet:\n{}",
+            &c[..c.len().min(800)]
+        );
+    }
+
+    #[test]
+    fn bloom_filter_emits_helpers_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let bf: BloomFilter = bloom_filter_new(64, 2);
+              let _: i64 = bloom_filter_insert(mut ref bf, 1);
+              let _: bool = bloom_filter_contains(ref bf, 1);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("bloom_filter LLVM compile");
+        assert!(
+            ll.contains("%intent_bloom_filter = type")
+                && ll.contains("@intent_bloom_filter_insert")
+                && ll.contains("@intent_bloom_filter_contains"),
+            "LLVM output must include the BloomFilter typedef + helpers"
+        );
+    }
+
+    #[test]
     fn btreemap_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {
