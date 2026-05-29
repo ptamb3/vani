@@ -13438,8 +13438,8 @@ fn main() -> i64 {
         assert!(
             ll.contains("@intent_graph_build_csr_if_needed")
                 && ll.contains("@intent_graph_invalidate_csr")
-                && ll.contains("%intent_graph = type { i64, i32*, i32*, i64*, i64, i64, i32*, i32*, i64* }"),
-            "LLVM output must declare the 9-field Graph struct + CSR helpers"
+                && ll.contains("%intent_graph = type { i64, i32*, i32*, i64*, i64, i64, i32*, i32*, i64*, i32*, i32*, i64* }"),
+            "LLVM output must declare the 12-field Graph struct (closure #338 added reverse-CSR fields) + CSR helpers"
         );
     }
 

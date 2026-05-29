@@ -2110,22 +2110,28 @@ fn stmt_uses_graph(stmt: &crate::ir::TypedStmt) -> bool {
 /// returns Option<i64>, gated on Option__i64 being registered.
 fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit_vec_dep: bool) {
     out.push_str(
-        "typedef struct { int64_t num_nodes; int32_t* edge_src; int32_t* edge_dst; int64_t* edge_weight; int64_t num_edges; int64_t edge_capacity; int32_t* adj_start; int32_t* adj_csr_dst; int64_t* adj_csr_weight; } intent_graph;\n\
+        "typedef struct { int64_t num_nodes; int32_t* edge_src; int32_t* edge_dst; int64_t* edge_weight; int64_t num_edges; int64_t edge_capacity; int32_t* adj_start; int32_t* adj_csr_dst; int64_t* adj_csr_weight; int32_t* rev_adj_start; int32_t* rev_adj_csr_src; int64_t* rev_adj_csr_weight; } intent_graph;\n\
          static INTENT_UNUSED intent_graph intent_graph_new(int64_t n) {\n\
          \x20 intent_graph g;\n\
          \x20 g.num_nodes = (n < 0) ? 0 : n;\n\
          \x20 g.edge_src = (int32_t*)0; g.edge_dst = (int32_t*)0; g.edge_weight = (int64_t*)0;\n\
          \x20 g.num_edges = 0; g.edge_capacity = 0;\n\
          \x20 g.adj_start = (int32_t*)0; g.adj_csr_dst = (int32_t*)0; g.adj_csr_weight = (int64_t*)0;\n\
+         \x20 g.rev_adj_start = (int32_t*)0; g.rev_adj_csr_src = (int32_t*)0; g.rev_adj_csr_weight = (int64_t*)0;\n\
          \x20 return g;\n\
          }\n\
-         /* Closure #336: invalidate the CSR cache. Called by add_edge\n\
-          * and at the start of drop. NULL adj_start = cache invalid. */\n\
+         /* Closure #336 + #338: invalidate both CSR caches (forward and\n\
+          * reverse). Called by add_edge and at the start of drop. NULL\n\
+          * adj_start / rev_adj_start = corresponding cache invalid. */\n\
          static INTENT_UNUSED void intent_graph_invalidate_csr(intent_graph* g) {\n\
          \x20 if (g->adj_start) free(g->adj_start);\n\
          \x20 if (g->adj_csr_dst) free(g->adj_csr_dst);\n\
          \x20 if (g->adj_csr_weight) free(g->adj_csr_weight);\n\
          \x20 g->adj_start = (int32_t*)0; g->adj_csr_dst = (int32_t*)0; g->adj_csr_weight = (int64_t*)0;\n\
+         \x20 if (g->rev_adj_start) free(g->rev_adj_start);\n\
+         \x20 if (g->rev_adj_csr_src) free(g->rev_adj_csr_src);\n\
+         \x20 if (g->rev_adj_csr_weight) free(g->rev_adj_csr_weight);\n\
+         \x20 g->rev_adj_start = (int32_t*)0; g->rev_adj_csr_src = (int32_t*)0; g->rev_adj_csr_weight = (int64_t*)0;\n\
          }\n\
          /* Closure #336: build the CSR adjacency cache on first use.\n\
           * Allocates adj_start[num_nodes+1] + adj_csr_dst[num_edges]\n\
@@ -2165,6 +2171,46 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
          \x20   int32_t pos = cur[s]++;\n\
          \x20   g->adj_csr_dst[pos] = g->edge_dst[e];\n\
          \x20   g->adj_csr_weight[pos] = g->edge_weight[e];\n\
+         \x20 }\n\
+         \x20 free(cur);\n\
+         }\n\
+         /* Closure #338: build the REVERSE CSR adjacency cache.\n\
+          * Mirrors build_csr_if_needed but keyed on destination —\n\
+          * rev_adj_start[v] is the offset into rev_adj_csr_src where\n\
+          * node v's incoming edges begin; the entries record the\n\
+          * source of each incoming edge plus its weight. Used by\n\
+          * Prim's undirected interpretation to walk \"the other end\"\n\
+          * of every edge incident to a node. */\n\
+         static INTENT_UNUSED void intent_graph_build_rev_csr_if_needed(const intent_graph* g_ro) {\n\
+         \x20 intent_graph* g = (intent_graph*)g_ro;\n\
+         \x20 if (g->rev_adj_start) return;\n\
+         \x20 if (g->num_nodes <= 0) return;\n\
+         \x20 int64_t nn = g->num_nodes;\n\
+         \x20 int64_t ne = g->num_edges;\n\
+         \x20 g->rev_adj_start = (int32_t*)malloc((size_t)(nn + 1) * sizeof(int32_t));\n\
+         \x20 if (!g->rev_adj_start) abort();\n\
+         \x20 for (int64_t i = 0; i <= nn; i++) g->rev_adj_start[i] = 0;\n\
+         \x20 /* Count in-degrees in rev_adj_start[d+1]. */\n\
+         \x20 for (int64_t e = 0; e < ne; e++) {\n\
+         \x20   int32_t d = g->edge_dst[e];\n\
+         \x20   if (d >= 0 && (int64_t)d < nn) g->rev_adj_start[d + 1]++;\n\
+         \x20 }\n\
+         \x20 for (int64_t i = 1; i <= nn; i++) g->rev_adj_start[i] += g->rev_adj_start[i - 1];\n\
+         \x20 int64_t total = (int64_t)g->rev_adj_start[nn];\n\
+         \x20 if (total > 0) {\n\
+         \x20   g->rev_adj_csr_src = (int32_t*)malloc((size_t)total * sizeof(int32_t));\n\
+         \x20   g->rev_adj_csr_weight = (int64_t*)malloc((size_t)total * sizeof(int64_t));\n\
+         \x20   if (!g->rev_adj_csr_src || !g->rev_adj_csr_weight) abort();\n\
+         \x20 }\n\
+         \x20 int32_t* cur = (int32_t*)malloc((size_t)nn * sizeof(int32_t));\n\
+         \x20 if (!cur) abort();\n\
+         \x20 for (int64_t i = 0; i < nn; i++) cur[i] = g->rev_adj_start[i];\n\
+         \x20 for (int64_t e = 0; e < ne; e++) {\n\
+         \x20   int32_t d = g->edge_dst[e];\n\
+         \x20   if (d < 0 || (int64_t)d >= nn) continue;\n\
+         \x20   int32_t pos = cur[d]++;\n\
+         \x20   g->rev_adj_csr_src[pos] = g->edge_src[e];\n\
+         \x20   g->rev_adj_csr_weight[pos] = g->edge_weight[e];\n\
          \x20 }\n\
          \x20 free(cur);\n\
          }\n\
@@ -2434,6 +2480,11 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
              static INTENT_UNUSED Enum_Option__i64 intent_graph_mst_prim(const intent_graph* g) {\n\
              \x20 Enum_Option__i64 r;\n\
              \x20 if (g->num_nodes <= 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 /* Closure #338: walk u's neighbors via both forward and\n\
+              * reverse CSRs, dropping the inner loop from O(num_edges)\n\
+              * to O(degree). */\n\
+             \x20 intent_graph_build_csr_if_needed(g);\n\
+             \x20 intent_graph_build_rev_csr_if_needed(g);\n\
              \x20 int64_t INF = 0x7fffffffffffffffLL;\n\
              \x20 uint8_t* in_tree = (uint8_t*)calloc((size_t)g->num_nodes, 1);\n\
              \x20 int64_t* best = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
@@ -2450,15 +2501,24 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
              \x20   in_tree[u] = 1;\n\
              \x20   total += u_w;\n\
              \x20   added++;\n\
-             \x20   for (int64_t e = 0; e < g->num_edges; e++) {\n\
-             \x20     int64_t s = (int64_t)g->edge_src[e];\n\
-             \x20     int64_t d = (int64_t)g->edge_dst[e];\n\
-             \x20     int64_t v = -1;\n\
-             \x20     if (s == u) v = d;\n\
-             \x20     else if (d == u) v = s;\n\
+             \x20   /* Outgoing edges u→v via forward CSR. */\n\
+             \x20   int32_t f_k0 = g->adj_start[u];\n\
+             \x20   int32_t f_k1 = g->adj_start[u + 1];\n\
+             \x20   for (int32_t k = f_k0; k < f_k1; k++) {\n\
+             \x20     int64_t v = (int64_t)g->adj_csr_dst[k];\n\
              \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
              \x20     if (in_tree[v]) continue;\n\
-             \x20     int64_t w = g->edge_weight[e];\n\
+             \x20     int64_t w = g->adj_csr_weight[k];\n\
+             \x20     if (w < best[v]) best[v] = w;\n\
+             \x20   }\n\
+             \x20   /* Incoming edges v→u via reverse CSR (undirected interp). */\n\
+             \x20   int32_t r_k0 = g->rev_adj_start[u];\n\
+             \x20   int32_t r_k1 = g->rev_adj_start[u + 1];\n\
+             \x20   for (int32_t k = r_k0; k < r_k1; k++) {\n\
+             \x20     int64_t v = (int64_t)g->rev_adj_csr_src[k];\n\
+             \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
+             \x20     if (in_tree[v]) continue;\n\
+             \x20     int64_t w = g->rev_adj_csr_weight[k];\n\
              \x20     if (w < best[v]) best[v] = w;\n\
              \x20   }\n\
              \x20 }\n\

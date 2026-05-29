@@ -332,13 +332,21 @@ pointer (already in the language as of #279 FFI callbacks).
     neighbors via adj_start[u]..adj_start[u+1] instead of
     scanning all edges per pop. Each calls
     build_csr_if_needed once at entry, then reuses the cache.
-    Kruskal stays per-edge (sorts edges, not adjacency-driven).
-    Prim stays per-edge — its undirected interpretation would
-    need a reverse CSR; queued.
+    *Reverse-CSR + Prim promotion shipped 2026-05-29 (closure
+    #338).* Three new struct fields (rev_adj_start /
+    rev_adj_csr_src / rev_adj_csr_weight) appended at indices
+    9/10/11; byte_size 72 → 96. A new build_rev_csr_if_needed
+    helper builds the reverse adjacency cache (keyed on
+    destination) via the same two-pass count-prefix-scatter
+    pattern. Prim now builds both CSRs and iterates u's
+    incident edges as the union of forward (u→v) and reverse
+    (v→u) CSR walks — O(degree) per pop. Every graph
+    algorithm except Kruskal now does O(V+E) adjacency work.
+    Kruskal stays per-edge by design (sorts the edge list).
     Pending: A* path reconstruction (currently returns just
-    the total cost, not the path); reverse-CSR for Prim's
-    undirected pattern; undirected variant of the type;
-    edges visiting via closures; generic weight types.
+    the total cost, not the path); undirected variant of the
+    type itself; edges visiting via closures; generic weight
+    types.
 24. **Union-Find / Disjoint-Set** — ✅ AFFINE.
     `Vec<u32>` parent + `Vec<u32>` rank. Path compression
     works under affine because mutation goes through
@@ -708,7 +716,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #337 — **promote remaining graph algorithms to CSR**. `has_cycle`, `topo_sort`, `dijkstra`, and `astar` now walk neighbors via `adj_start[u]..adj_start[u+1]` from the CSR cache (closure #336) instead of scanning all edges per pop. Each calls `build_csr_if_needed` once at entry and reuses the cache. Overall costs: BFS/DFS/has_cycle/topo_sort are now O(V+E); Dijkstra/A* still have O(V²) outer-loop for next-min but get O(V+E) total relaxations instead of O(V·E). Kruskal stays per-edge by design (sorts edges, not adjacency-driven). Prim stays per-edge because its undirected interpretation would need a reverse CSR (queued for follow-up). No new fields, no API changes; existing examples produce byte-identical output across both backends. 1244 lib tests + parity green across 90 examples. Closure #336 (CSR cache, BFS+DFS) shipped immediately before. Next focal area sequence: (#338) **Reverse-CSR for Prim** or document Prim's adjacency walk as inherently O(V·E) under the directed-edges-treated-as-undirected interpretation. Either way small. (#339) **Trie alphabet generalization** (per-node sparse children for arbitrary u8 alphabet; radix-compressed variant; delete; ordered enumeration). (#340) **SkipList remove + tail tracker** for O(log n) max. (#341) **Red-black variant on the Bst arena** (1-bit color flag can share the existing heights byte). (#342+) Closure-as-value type — unblocks A* path reconstruction, real Prim/Kruskal weight comparators, sort_by with closures, and the broader iterator-combinator work. After Level 4 extensions: tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-29, after closure #338 — **reverse-CSR for Prim's undirected adjacency**. Three new struct fields (rev_adj_start / rev_adj_csr_src / rev_adj_csr_weight) appended at indices 9/10/11; byte_size 72 → 96. A new `intent_graph_build_rev_csr_if_needed` helper builds the reverse adjacency cache via the same two-pass count-prefix-scatter pattern as the forward CSR, but keyed on destination. Prim now builds both CSRs and iterates u's incident edges as the union of forward (u→v) and reverse (v→u) CSR walks — O(degree) per pop. With this change every graph algorithm except Kruskal (edge-sort-driven, not adjacency-driven) does O(V+E) adjacency iteration. No API changes; existing examples produce byte-identical output across both backends. 1244 lib + parity green across 90 examples. Closure #337 (CSR adoption for has_cycle/topo_sort/dijkstra/astar) shipped immediately before. **The graph CSR story is now complete.** Next focal area sequence: (#339) **Trie alphabet generalization** — per-node sparse children for arbitrary u8 alphabet, possibly a separate `BytesTrie` type. (#340) **SkipList remove + tail tracker** for O(log n) max. (#341) **Red-black variant on the Bst arena** (1-bit color flag can share the existing heights byte). (#342+) Closure-as-value type — unblocks A* path reconstruction, real Prim/Kruskal weight comparators, sort_by with closures, and the broader iterator-combinator work. After Level 4 extensions: tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)
