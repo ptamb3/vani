@@ -291,10 +291,25 @@ pointer (already in the language as of #279 FFI callbacks).
     required. `bfs_reach` / `dfs_reach` return reachable-node
     counts including the start vertex. Method sugar:
     `g.add_edge(s,d,w)` / `.num_nodes()` / etc. Drop frees the
-    three edge arrays. Pending: A*, topological sort, Kruskal
-    (now unblocked by `UnionFind` #325) / Prim, CSR-style
-    adjacency cache, undirected variant, edges visiting via
-    closures, generic weight types.
+    three edge arrays.
+    *Algorithm extensions shipped 2026-05-29 (closure #333).*
+    `graph_has_cycle(ref) -> bool` via Kahn's in-degree BFS;
+    `graph_mst_kruskal(ref) -> Option<i64>` via insertion-sorted
+    edge index array + path-compressed Union-Find inlined within
+    the helper (no dependency on the `UnionFind` type, keeps
+    Graph helpers self-contained); `graph_mst_prim(ref) ->
+    Option<i64>` via O(V²) linear-scan parallel to the Dijkstra
+    design. Both MST helpers treat edges as undirected. Method
+    sugar added: `g.has_cycle()` / `.mst_kruskal()` / `.mst_prim()`.
+    New `examples/graph_algo.vani` exercises DAG / cycle /
+    connected-weighted / disconnected / single-node cases.
+    Pending: A* (path tracker on top of Dijkstra, needs the
+    closure-as-value type for the heuristic fn), topological
+    sort returning a `Vec<i64>` order (currently we only expose
+    has_cycle, which uses topo internally), CSR-style adjacency
+    cache invalidated on add_edge for O(V+E) BFS/DFS instead of
+    O((V+E)·E), undirected variant, edges visiting via closures,
+    generic weight types.
 24. **Union-Find / Disjoint-Set** — ✅ AFFINE.
     `Vec<u32>` parent + `Vec<u32>` rank. Path compression
     works under affine because mutation goes through
@@ -664,7 +679,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #332 — **AVL balancing on the existing `Bst<T>` arena** (Level 4 #3 extension). Added per-node `u8* heights` as a 7th struct field (positioned at end so existing LLVM GEP indices stay valid). insert and remove walk down the tree recording the search path on stack-allocated `[64 x i64]` + `[64 x i8]` buffers, then walk back up applying the four rotation cases (LL / LR / RR / RL) via shared rotate_left / rotate_right / rebalance helpers. Rotations swap i32 child indices — no node moves, so the affine story is unchanged. Adversarial sorted-input workloads now run in O(log n) per op. New `examples/bst_avl.vani` exercises ascending / descending / zig-zag insertion patterns + mid-tree removes that trigger the successor-walk + rebalance path. 1 new lib test pins the AVL helper names + 7-field LLVM type. Closure #331 (SkipList) shipped immediately before. **Level 4 of the data-structures roadmap is now fully closed under v1.** Next focal area sequence: (#333) Graph extensions — A* (path tracker on top of Dijkstra), topological sort, Kruskal (unblocked by `UnionFind`), Prim. (#334) CSR-style adjacency cache on Graph invalidated on edge insertion for O(V+E) BFS/DFS instead of the current O((V+E)·E). (#335) Trie alphabet generalization (per-node sparse children for arbitrary u8 alphabet; radix-compressed variant; delete; ordered enumeration). (#336) SkipList remove + tail tracker for O(log n) max. (#337) Red-black variant on the Bst arena (1-bit color flag in the existing heights byte). After Level 4 extensions: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-29, after closure #333 — **Graph algorithm extensions: has_cycle / mst_kruskal / mst_prim** on the existing `Graph` type from closure #329, no new struct fields. `graph_has_cycle(ref) -> bool` via Kahn's algorithm; `graph_mst_kruskal(ref) -> Option<i64>` via insertion-sort + path-compressed Union-Find inlined within the helper (no `UnionFind` type dependency); `graph_mst_prim(ref) -> Option<i64>` via O(V²) linear-scan inner loop (no BinaryHeap dependency). Both MST helpers treat edges as undirected. Method sugar `g.has_cycle()` / `.mst_kruskal()` / `.mst_prim()`. New `examples/graph_algo.vani` exercises DAG / cycle / connected-weighted / disconnected / single-node cases on both backends with identical output. 4 new lib tests. Closure #332 (AVL on Bst) shipped immediately before. **Level 4 of the data-structures roadmap is fully closed under v1; graph extensions are now well underway.** Next focal area sequence: (#334) **A*** — path tracker on top of Dijkstra; needs the closure-as-value type for the heuristic fn so partially blocked on the post-Level-4 closure-as-value work; minimum-priority queue could also be lifted to use `BinaryHeap<i64>` now that #326 ships. (#335) **Topological sort returning `Vec<i64>`** — useful for scheduling / dependency orders. (#336) **CSR-style adjacency cache** on Graph invalidated on add_edge for O(V+E) BFS/DFS / Dijkstra instead of the current O((V+E)·E) — biggest perf win for larger graphs. (#337) **Trie alphabet generalization** (per-node sparse children for arbitrary u8 alphabet; radix-compressed variant; delete; ordered enumeration). (#338) **SkipList remove + tail tracker** for O(log n) max. (#339) **Red-black variant on the Bst arena** (1-bit color flag can share the existing heights byte). After Level 4 extensions: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

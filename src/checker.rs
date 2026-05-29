@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_len", "trie_node_count", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_len", "skiplist_min", "skiplist_max", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "graph_has_cycle", "graph_mst_kruskal", "graph_mst_prim", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_len", "trie_node_count", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_len", "skiplist_min", "skiplist_max", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -5801,6 +5801,7 @@ fn monomorphize_type_decls_in_program(
                 | "binary_heap_pop" | "binary_heap_peek"
                 | "bst_min" | "bst_max"
                 | "graph_dijkstra"
+                | "graph_mst_kruskal" | "graph_mst_prim"
                 | "skiplist_min" | "skiplist_max" => Some(Type::I64),
                 "parse_float" => Some(Type::F64),
                 _ => None,
@@ -10806,6 +10807,9 @@ fn check_expr(
                         "bfs_reach" => ("graph_bfs_reach", false),
                         "dfs_reach" => ("graph_dfs_reach", false),
                         "dijkstra" => ("graph_dijkstra", false),
+                        "has_cycle" => ("graph_has_cycle", false),
+                        "mst_kruskal" => ("graph_mst_kruskal", false),
+                        "mst_prim" => ("graph_mst_prim", false),
                         _ => ("", false),
                     },
                     Some(Type::Trie) => match method.as_str() {
@@ -13877,7 +13881,8 @@ fn check_call(
         }
         "graph_new" | "graph_add_edge" | "graph_num_nodes"
         | "graph_num_edges" | "graph_bfs_reach" | "graph_dfs_reach"
-        | "graph_dijkstra" => {
+        | "graph_dijkstra" | "graph_has_cycle"
+        | "graph_mst_kruskal" | "graph_mst_prim" => {
             return check_graph_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
@@ -17066,6 +17071,17 @@ fn check_bst_builtin(
 ///       Shortest path weight via O(V^2) inner loop (no
 ///       BinaryHeap dependency). Requires non-negative
 ///       weights. None on unreachable.
+///   graph_has_cycle(ref g) -> bool   (closure #333)
+///       True iff the directed graph contains a cycle. Uses
+///       Kahn's algorithm (in-degree + BFS).
+///   graph_mst_kruskal(ref g) -> Option<i64>   (closure #333)
+///       Minimum spanning tree total weight treating each
+///       added edge as undirected. None if the graph is
+///       disconnected (or num_nodes == 0). Internal
+///       insertion-sort + path-compressed Union-Find.
+///   graph_mst_prim(ref g) -> Option<i64>   (closure #333)
+///       Same semantics as `graph_mst_kruskal`, computed via
+///       Prim's O(V^2) inner loop (no BinaryHeap dependency).
 fn check_graph_builtin(
     name: &str,
     args: &[Expr],
@@ -17077,6 +17093,8 @@ fn check_graph_builtin(
     let want_args = match name {
         "graph_new" => 1,
         "graph_num_nodes" | "graph_num_edges" => 1,
+        "graph_has_cycle" | "graph_mst_kruskal"
+        | "graph_mst_prim" => 1,
         "graph_bfs_reach" | "graph_dfs_reach" => 2,
         "graph_add_edge" | "graph_dijkstra" => {
             if name == "graph_add_edge" { 4 } else { 3 }
@@ -17086,9 +17104,11 @@ fn check_graph_builtin(
     let ret_ty = || -> Type {
         match name {
             "graph_new" => Type::Graph,
-            "graph_dijkstra" => {
+            "graph_dijkstra" | "graph_mst_kruskal"
+            | "graph_mst_prim" => {
                 Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
             }
+            "graph_has_cycle" => Type::Bool,
             _ => Type::I64,
         }
     };

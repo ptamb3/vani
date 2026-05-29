@@ -2103,6 +2103,37 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool) {
          \x20 }\n\
          \x20 free(visited); free(stack);\n\
          \x20 return count;\n\
+         }\n\
+         /* Closure #333: Kahn's topological sort, returning true if\n\
+          * a directed cycle is detected (i.e., not all nodes can be\n\
+          * peeled off in zero-in-degree order). */\n\
+         static INTENT_UNUSED bool intent_graph_has_cycle(const intent_graph* g) {\n\
+         \x20 if (g->num_nodes <= 0) return false;\n\
+         \x20 int64_t* in_deg = (int64_t*)calloc((size_t)g->num_nodes, sizeof(int64_t));\n\
+         \x20 int64_t* queue  = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
+         \x20 if (!in_deg || !queue) abort();\n\
+         \x20 for (int64_t e = 0; e < g->num_edges; e++) {\n\
+         \x20   int32_t d = g->edge_dst[e];\n\
+         \x20   if (d >= 0 && (int64_t)d < g->num_nodes) in_deg[d]++;\n\
+         \x20 }\n\
+         \x20 int64_t qh = 0, qt = 0;\n\
+         \x20 for (int64_t i = 0; i < g->num_nodes; i++) {\n\
+         \x20   if (in_deg[i] == 0) queue[qt++] = i;\n\
+         \x20 }\n\
+         \x20 int64_t processed = 0;\n\
+         \x20 while (qh < qt) {\n\
+         \x20   int64_t u = queue[qh++];\n\
+         \x20   processed++;\n\
+         \x20   for (int64_t e = 0; e < g->num_edges; e++) {\n\
+         \x20     if ((int64_t)g->edge_src[e] != u) continue;\n\
+         \x20     int64_t v = (int64_t)g->edge_dst[e];\n\
+         \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
+         \x20     in_deg[v]--;\n\
+         \x20     if (in_deg[v] == 0) queue[qt++] = v;\n\
+         \x20   }\n\
+         \x20 }\n\
+         \x20 free(in_deg); free(queue);\n\
+         \x20 return processed < g->num_nodes;\n\
          }\n",
     );
     if has_option_i64 {
@@ -2139,6 +2170,96 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool) {
              \x20 free(dist); free(done);\n\
              \x20 if (d == INF) { r.tag = 1; r.payload = 0; }\n\
              \x20 else { r.tag = 0; r.payload = d; }\n\
+             \x20 return r;\n\
+             }\n\
+             /* Closure #333: Kruskal's MST with an insertion-sorted\n\
+              * edge index array + path-compressed Union-Find.\n\
+              * Treats edges as undirected (the original directed\n\
+              * (src,dst) pair contributes one undirected u-v edge\n\
+              * with the recorded weight). Returns None when the\n\
+              * graph is disconnected or has 0 nodes. */\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_graph_mst_kruskal(const intent_graph* g) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (g->num_nodes <= 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 if (g->num_nodes == 1) { r.tag = 0; r.payload = 0; return r; }\n\
+             \x20 int64_t ne = g->num_edges;\n\
+             \x20 int64_t* idx = (int64_t*)malloc((size_t)((ne == 0 ? 1 : ne)) * sizeof(int64_t));\n\
+             \x20 int64_t* parent = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
+             \x20 if (!idx || !parent) abort();\n\
+             \x20 for (int64_t i = 0; i < ne; i++) idx[i] = i;\n\
+             \x20 /* Insertion sort by edge_weight ascending. */\n\
+             \x20 for (int64_t i = 1; i < ne; i++) {\n\
+             \x20   int64_t cur = idx[i];\n\
+             \x20   int64_t cw = g->edge_weight[cur];\n\
+             \x20   int64_t j = i - 1;\n\
+             \x20   while (j >= 0 && g->edge_weight[idx[j]] > cw) {\n\
+             \x20     idx[j + 1] = idx[j];\n\
+             \x20     j--;\n\
+             \x20   }\n\
+             \x20   idx[j + 1] = cur;\n\
+             \x20 }\n\
+             \x20 for (int64_t i = 0; i < g->num_nodes; i++) parent[i] = i;\n\
+             \x20 int64_t total = 0;\n\
+             \x20 int64_t in_mst = 0;\n\
+             \x20 int64_t need = g->num_nodes - 1;\n\
+             \x20 for (int64_t k = 0; k < ne; k++) {\n\
+             \x20   int64_t e = idx[k];\n\
+             \x20   int64_t s = (int64_t)g->edge_src[e];\n\
+             \x20   int64_t d = (int64_t)g->edge_dst[e];\n\
+             \x20   if (s < 0 || s >= g->num_nodes || d < 0 || d >= g->num_nodes) continue;\n\
+             \x20   /* find(s) with iterative path compression */\n\
+             \x20   int64_t rs = s; while (parent[rs] != rs) rs = parent[rs];\n\
+             \x20   int64_t p = s; while (parent[p] != rs) { int64_t n = parent[p]; parent[p] = rs; p = n; }\n\
+             \x20   int64_t rd = d; while (parent[rd] != rd) rd = parent[rd];\n\
+             \x20   p = d; while (parent[p] != rd) { int64_t n = parent[p]; parent[p] = rd; p = n; }\n\
+             \x20   if (rs == rd) continue;\n\
+             \x20   parent[rs] = rd;\n\
+             \x20   total += g->edge_weight[e];\n\
+             \x20   in_mst++;\n\
+             \x20   if (in_mst >= need) break;\n\
+             \x20 }\n\
+             \x20 free(idx); free(parent);\n\
+             \x20 if (in_mst >= need) { r.tag = 0; r.payload = total; }\n\
+             \x20 else { r.tag = 1; r.payload = 0; }\n\
+             \x20 return r;\n\
+             }\n\
+             /* Closure #333: Prim's MST with an O(V^2) linear scan\n\
+              * for next-min (no BinaryHeap dependency). Treats\n\
+              * edges as undirected. */\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_graph_mst_prim(const intent_graph* g) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (g->num_nodes <= 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 int64_t INF = 0x7fffffffffffffffLL;\n\
+             \x20 uint8_t* in_tree = (uint8_t*)calloc((size_t)g->num_nodes, 1);\n\
+             \x20 int64_t* best = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
+             \x20 if (!in_tree || !best) abort();\n\
+             \x20 for (int64_t i = 0; i < g->num_nodes; i++) best[i] = INF;\n\
+             \x20 best[0] = 0;\n\
+             \x20 int64_t total = 0; int64_t added = 0;\n\
+             \x20 for (int64_t iter = 0; iter < g->num_nodes; iter++) {\n\
+             \x20   int64_t u = -1; int64_t u_w = INF;\n\
+             \x20   for (int64_t i = 0; i < g->num_nodes; i++) {\n\
+             \x20     if (!in_tree[i] && best[i] < u_w) { u_w = best[i]; u = i; }\n\
+             \x20   }\n\
+             \x20   if (u == -1) break;\n\
+             \x20   in_tree[u] = 1;\n\
+             \x20   total += u_w;\n\
+             \x20   added++;\n\
+             \x20   for (int64_t e = 0; e < g->num_edges; e++) {\n\
+             \x20     int64_t s = (int64_t)g->edge_src[e];\n\
+             \x20     int64_t d = (int64_t)g->edge_dst[e];\n\
+             \x20     int64_t v = -1;\n\
+             \x20     if (s == u) v = d;\n\
+             \x20     else if (d == u) v = s;\n\
+             \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
+             \x20     if (in_tree[v]) continue;\n\
+             \x20     int64_t w = g->edge_weight[e];\n\
+             \x20     if (w < best[v]) best[v] = w;\n\
+             \x20   }\n\
+             \x20 }\n\
+             \x20 free(in_tree); free(best);\n\
+             \x20 if (added == g->num_nodes) { r.tag = 0; r.payload = total; }\n\
+             \x20 else { r.tag = 1; r.payload = 0; }\n\
              \x20 return r;\n\
              }\n\n",
         );
@@ -7820,6 +7941,18 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1]),
             emit_expr(&args[2])
+        ),
+        "graph_has_cycle" => format!(
+            "intent_graph_has_cycle({})",
+            emit_expr(&args[0])
+        ),
+        "graph_mst_kruskal" => format!(
+            "intent_graph_mst_kruskal({})",
+            emit_expr(&args[0])
+        ),
+        "graph_mst_prim" => format!(
+            "intent_graph_mst_prim({})",
+            emit_expr(&args[0])
         ),
         // Closure #330: Trie dispatch.
         "trie_new" => "intent_trie_new()".to_string(),

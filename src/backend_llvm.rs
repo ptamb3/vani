@@ -5476,6 +5476,24 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            if name == "graph_has_cycle" {
+                let g = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i1 @intent_graph_has_cycle(%intent_graph* {})\n",
+                    dest, g
+                ));
+                return dest;
+            }
+            if name == "graph_mst_kruskal" || name == "graph_mst_prim" {
+                let g = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %Enum_Option__i64 @intent_{}(%intent_graph* {})\n",
+                    dest, name, g
+                ));
+                return dest;
+            }
             // Trie builtins (closure #330, Level 4 #4).
             if name == "trie_new" {
                 let dest = ctx.fresh_tmp();
@@ -10305,6 +10323,145 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool) {
          \x20 call void @free(i8* %sf_i8)\n\
          \x20 %result = load i64, i64* %count_p\n\
          \x20 ret i64 %result\n\
+         }\n\
+         define i1 @intent_graph_has_cycle(%intent_graph* %g) {\n\
+         \x20 %nnp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 0\n\
+         \x20 %spp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
+         \x20 %dpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
+         \x20 %nep = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 4\n\
+         \x20 %nn = load i64, i64* %nnp\n\
+         \x20 %ne = load i64, i64* %nep\n\
+         \x20 %nn_zero = icmp sle i64 %nn, 0\n\
+         \x20 br i1 %nn_zero, label %hc_false, label %hc_init\n\
+         hc_init:\n\
+         \x20 %in_deg_bytes = mul i64 %nn, 8\n\
+         \x20 %in_deg_i8 = call i8* @calloc(i64 %nn, i64 8)\n\
+         \x20 %in_deg = bitcast i8* %in_deg_i8 to i64*\n\
+         \x20 %queue_i8 = call i8* @malloc(i64 %in_deg_bytes)\n\
+         \x20 %queue = bitcast i8* %queue_i8 to i64*\n\
+         \x20 ; Count in-degrees.\n\
+         \x20 %ic_p = alloca i64\n\
+         \x20 store i64 0, i64* %ic_p\n\
+         \x20 br label %hc_indeg_loop\n\
+         hc_indeg_loop:\n\
+         \x20 %ic = load i64, i64* %ic_p\n\
+         \x20 %ic_done = icmp sge i64 %ic, %ne\n\
+         \x20 br i1 %ic_done, label %hc_seed_init, label %hc_indeg_body\n\
+         hc_indeg_body:\n\
+         \x20 %dst_arr_hc = load i32*, i32** %dpp\n\
+         \x20 %dst_slot_hc = getelementptr i32, i32* %dst_arr_hc, i64 %ic\n\
+         \x20 %dst32_hc = load i32, i32* %dst_slot_hc\n\
+         \x20 %dst64_hc = sext i32 %dst32_hc to i64\n\
+         \x20 %dst_lo_hc = icmp slt i64 %dst64_hc, 0\n\
+         \x20 %dst_hi_hc = icmp sge i64 %dst64_hc, %nn\n\
+         \x20 %dst_bad_hc = or i1 %dst_lo_hc, %dst_hi_hc\n\
+         \x20 br i1 %dst_bad_hc, label %hc_indeg_next, label %hc_indeg_incr\n\
+         hc_indeg_incr:\n\
+         \x20 %in_deg_slot_hc = getelementptr i64, i64* %in_deg, i64 %dst64_hc\n\
+         \x20 %in_deg_v = load i64, i64* %in_deg_slot_hc\n\
+         \x20 %in_deg_v_inc = add i64 %in_deg_v, 1\n\
+         \x20 store i64 %in_deg_v_inc, i64* %in_deg_slot_hc\n\
+         \x20 br label %hc_indeg_next\n\
+         hc_indeg_next:\n\
+         \x20 %ic_inc = add i64 %ic, 1\n\
+         \x20 store i64 %ic_inc, i64* %ic_p\n\
+         \x20 br label %hc_indeg_loop\n\
+         hc_seed_init:\n\
+         \x20 %qh_p = alloca i64\n\
+         \x20 %qt_p = alloca i64\n\
+         \x20 store i64 0, i64* %qh_p\n\
+         \x20 store i64 0, i64* %qt_p\n\
+         \x20 %sd_p = alloca i64\n\
+         \x20 store i64 0, i64* %sd_p\n\
+         \x20 br label %hc_seed_loop\n\
+         hc_seed_loop:\n\
+         \x20 %sd = load i64, i64* %sd_p\n\
+         \x20 %sd_done = icmp sge i64 %sd, %nn\n\
+         \x20 br i1 %sd_done, label %hc_process_init, label %hc_seed_test\n\
+         hc_seed_test:\n\
+         \x20 %sd_slot = getelementptr i64, i64* %in_deg, i64 %sd\n\
+         \x20 %sd_v = load i64, i64* %sd_slot\n\
+         \x20 %sd_is_zero = icmp eq i64 %sd_v, 0\n\
+         \x20 br i1 %sd_is_zero, label %hc_seed_push, label %hc_seed_next\n\
+         hc_seed_push:\n\
+         \x20 %qt_seed = load i64, i64* %qt_p\n\
+         \x20 %q_seed_slot = getelementptr i64, i64* %queue, i64 %qt_seed\n\
+         \x20 store i64 %sd, i64* %q_seed_slot\n\
+         \x20 %qt_seed_inc = add i64 %qt_seed, 1\n\
+         \x20 store i64 %qt_seed_inc, i64* %qt_p\n\
+         \x20 br label %hc_seed_next\n\
+         hc_seed_next:\n\
+         \x20 %sd_inc = add i64 %sd, 1\n\
+         \x20 store i64 %sd_inc, i64* %sd_p\n\
+         \x20 br label %hc_seed_loop\n\
+         hc_process_init:\n\
+         \x20 %proc_p = alloca i64\n\
+         \x20 store i64 0, i64* %proc_p\n\
+         \x20 br label %hc_outer\n\
+         hc_outer:\n\
+         \x20 %qh = load i64, i64* %qh_p\n\
+         \x20 %qt = load i64, i64* %qt_p\n\
+         \x20 %any = icmp slt i64 %qh, %qt\n\
+         \x20 br i1 %any, label %hc_pop, label %hc_finish\n\
+         hc_pop:\n\
+         \x20 %u_slot = getelementptr i64, i64* %queue, i64 %qh\n\
+         \x20 %u = load i64, i64* %u_slot\n\
+         \x20 %qh_next = add i64 %qh, 1\n\
+         \x20 store i64 %qh_next, i64* %qh_p\n\
+         \x20 %proc = load i64, i64* %proc_p\n\
+         \x20 %proc_inc = add i64 %proc, 1\n\
+         \x20 store i64 %proc_inc, i64* %proc_p\n\
+         \x20 %ep = alloca i64\n\
+         \x20 store i64 0, i64* %ep\n\
+         \x20 br label %hc_edge_loop\n\
+         hc_edge_loop:\n\
+         \x20 %e = load i64, i64* %ep\n\
+         \x20 %e_done = icmp sge i64 %e, %ne\n\
+         \x20 br i1 %e_done, label %hc_outer, label %hc_edge_body\n\
+         hc_edge_body:\n\
+         \x20 %src_arr_hc = load i32*, i32** %spp\n\
+         \x20 %src_slot_hc = getelementptr i32, i32* %src_arr_hc, i64 %e\n\
+         \x20 %src32_hc = load i32, i32* %src_slot_hc\n\
+         \x20 %src64_hc = sext i32 %src32_hc to i64\n\
+         \x20 %is_src_hc = icmp eq i64 %src64_hc, %u\n\
+         \x20 br i1 %is_src_hc, label %hc_edge_check_v, label %hc_edge_next\n\
+         hc_edge_check_v:\n\
+         \x20 %dst_arr_hc2 = load i32*, i32** %dpp\n\
+         \x20 %dst_slot_hc2 = getelementptr i32, i32* %dst_arr_hc2, i64 %e\n\
+         \x20 %dst32_hc2 = load i32, i32* %dst_slot_hc2\n\
+         \x20 %v = sext i32 %dst32_hc2 to i64\n\
+         \x20 %v_lo_hc = icmp slt i64 %v, 0\n\
+         \x20 %v_hi_hc = icmp sge i64 %v, %nn\n\
+         \x20 %v_bad_hc = or i1 %v_lo_hc, %v_hi_hc\n\
+         \x20 br i1 %v_bad_hc, label %hc_edge_next, label %hc_edge_dec\n\
+         hc_edge_dec:\n\
+         \x20 %v_slot = getelementptr i64, i64* %in_deg, i64 %v\n\
+         \x20 %v_in = load i64, i64* %v_slot\n\
+         \x20 %v_in_dec = sub i64 %v_in, 1\n\
+         \x20 store i64 %v_in_dec, i64* %v_slot\n\
+         \x20 %v_zero = icmp eq i64 %v_in_dec, 0\n\
+         \x20 br i1 %v_zero, label %hc_edge_push, label %hc_edge_next\n\
+         hc_edge_push:\n\
+         \x20 %qt_cur = load i64, i64* %qt_p\n\
+         \x20 %q_push_slot = getelementptr i64, i64* %queue, i64 %qt_cur\n\
+         \x20 store i64 %v, i64* %q_push_slot\n\
+         \x20 %qt_inc_hc = add i64 %qt_cur, 1\n\
+         \x20 store i64 %qt_inc_hc, i64* %qt_p\n\
+         \x20 br label %hc_edge_next\n\
+         hc_edge_next:\n\
+         \x20 %e_inc_hc = add i64 %e, 1\n\
+         \x20 store i64 %e_inc_hc, i64* %ep\n\
+         \x20 br label %hc_edge_loop\n\
+         hc_finish:\n\
+         \x20 %in_deg_free = bitcast i64* %in_deg to i8*\n\
+         \x20 call void @free(i8* %in_deg_free)\n\
+         \x20 %queue_free = bitcast i64* %queue to i8*\n\
+         \x20 call void @free(i8* %queue_free)\n\
+         \x20 %final_proc = load i64, i64* %proc_p\n\
+         \x20 %cycle = icmp slt i64 %final_proc, %nn\n\
+         \x20 ret i1 %cycle\n\
+         hc_false:\n\
+         \x20 ret i1 false\n\
          }\n",
     );
     if has_option_i64 {
@@ -10464,6 +10621,397 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool) {
              \x20 %n0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
              \x20 %n1 = insertvalue %Enum_Option__i64 %n0, i64 0, 1\n\
              \x20 ret %Enum_Option__i64 %n1\n\
+             }\n\
+             define %Enum_Option__i64 @intent_graph_mst_kruskal(%intent_graph* %g) {\n\
+             \x20 %nnp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 0\n\
+             \x20 %spp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
+             \x20 %dpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
+             \x20 %wpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 3\n\
+             \x20 %nep = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 4\n\
+             \x20 %nn = load i64, i64* %nnp\n\
+             \x20 %ne = load i64, i64* %nep\n\
+             \x20 %nn_zero = icmp sle i64 %nn, 0\n\
+             \x20 br i1 %nn_zero, label %mk_none, label %mk_check_one\n\
+             mk_check_one:\n\
+             \x20 %is_one = icmp eq i64 %nn, 1\n\
+             \x20 br i1 %is_one, label %mk_zero, label %mk_alloc\n\
+             mk_zero:\n\
+             \x20 %z0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %z1 = insertvalue %Enum_Option__i64 %z0, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %z1\n\
+             mk_alloc:\n\
+             \x20 ; Allocate idx[ne] and parent[nn]; ensure idx has at\n\
+             \x20 ; least 1 slot so malloc doesn't get 0 bytes.\n\
+             \x20 %ne_zero = icmp eq i64 %ne, 0\n\
+             \x20 %idx_size = select i1 %ne_zero, i64 1, i64 %ne\n\
+             \x20 %idx_bytes = mul i64 %idx_size, 8\n\
+             \x20 %idx_i8 = call i8* @malloc(i64 %idx_bytes)\n\
+             \x20 %idx = bitcast i8* %idx_i8 to i64*\n\
+             \x20 %p_bytes = mul i64 %nn, 8\n\
+             \x20 %parent_i8 = call i8* @malloc(i64 %p_bytes)\n\
+             \x20 %parent = bitcast i8* %parent_i8 to i64*\n\
+             \x20 ; Initialize idx[i] = i.\n\
+             \x20 %fi_p = alloca i64\n\
+             \x20 store i64 0, i64* %fi_p\n\
+             \x20 br label %mk_idx_init\n\
+             mk_idx_init:\n\
+             \x20 %fi = load i64, i64* %fi_p\n\
+             \x20 %fi_done = icmp sge i64 %fi, %ne\n\
+             \x20 br i1 %fi_done, label %mk_sort_init, label %mk_idx_body\n\
+             mk_idx_body:\n\
+             \x20 %idx_slot = getelementptr i64, i64* %idx, i64 %fi\n\
+             \x20 store i64 %fi, i64* %idx_slot\n\
+             \x20 %fi_inc = add i64 %fi, 1\n\
+             \x20 store i64 %fi_inc, i64* %fi_p\n\
+             \x20 br label %mk_idx_init\n\
+             mk_sort_init:\n\
+             \x20 ; Insertion sort idx[] by edge_weight[idx[k]] asc.\n\
+             \x20 %si_p = alloca i64\n\
+             \x20 store i64 1, i64* %si_p\n\
+             \x20 br label %mk_sort_outer\n\
+             mk_sort_outer:\n\
+             \x20 %si = load i64, i64* %si_p\n\
+             \x20 %si_done = icmp sge i64 %si, %ne\n\
+             \x20 br i1 %si_done, label %mk_parent_init, label %mk_sort_take\n\
+             mk_sort_take:\n\
+             \x20 %take_slot = getelementptr i64, i64* %idx, i64 %si\n\
+             \x20 %cur_idx = load i64, i64* %take_slot\n\
+             \x20 %wpp_s = load i64*, i64** %wpp\n\
+             \x20 %cur_w_slot = getelementptr i64, i64* %wpp_s, i64 %cur_idx\n\
+             \x20 %cur_w = load i64, i64* %cur_w_slot\n\
+             \x20 %sj_p = alloca i64\n\
+             \x20 %sj_init = sub i64 %si, 1\n\
+             \x20 store i64 %sj_init, i64* %sj_p\n\
+             \x20 br label %mk_sort_shift\n\
+             mk_sort_shift:\n\
+             \x20 %sj = load i64, i64* %sj_p\n\
+             \x20 %sj_neg = icmp slt i64 %sj, 0\n\
+             \x20 br i1 %sj_neg, label %mk_sort_place, label %mk_sort_cmp\n\
+             mk_sort_cmp:\n\
+             \x20 %sj_slot = getelementptr i64, i64* %idx, i64 %sj\n\
+             \x20 %sj_idx = load i64, i64* %sj_slot\n\
+             \x20 %wpp_c = load i64*, i64** %wpp\n\
+             \x20 %sj_w_slot = getelementptr i64, i64* %wpp_c, i64 %sj_idx\n\
+             \x20 %sj_w = load i64, i64* %sj_w_slot\n\
+             \x20 %sj_gt = icmp sgt i64 %sj_w, %cur_w\n\
+             \x20 br i1 %sj_gt, label %mk_sort_step, label %mk_sort_place\n\
+             mk_sort_step:\n\
+             \x20 %sj1 = add i64 %sj, 1\n\
+             \x20 %sj1_slot = getelementptr i64, i64* %idx, i64 %sj1\n\
+             \x20 store i64 %sj_idx, i64* %sj1_slot\n\
+             \x20 %sj_dec = sub i64 %sj, 1\n\
+             \x20 store i64 %sj_dec, i64* %sj_p\n\
+             \x20 br label %mk_sort_shift\n\
+             mk_sort_place:\n\
+             \x20 %sj_final = load i64, i64* %sj_p\n\
+             \x20 %sj_place = add i64 %sj_final, 1\n\
+             \x20 %place_slot = getelementptr i64, i64* %idx, i64 %sj_place\n\
+             \x20 store i64 %cur_idx, i64* %place_slot\n\
+             \x20 %si_inc = add i64 %si, 1\n\
+             \x20 store i64 %si_inc, i64* %si_p\n\
+             \x20 br label %mk_sort_outer\n\
+             mk_parent_init:\n\
+             \x20 ; parent[i] = i\n\
+             \x20 %pi_p = alloca i64\n\
+             \x20 store i64 0, i64* %pi_p\n\
+             \x20 br label %mk_parent_loop\n\
+             mk_parent_loop:\n\
+             \x20 %pi = load i64, i64* %pi_p\n\
+             \x20 %pi_done = icmp sge i64 %pi, %nn\n\
+             \x20 br i1 %pi_done, label %mk_main_init, label %mk_parent_body\n\
+             mk_parent_body:\n\
+             \x20 %p_init_slot = getelementptr i64, i64* %parent, i64 %pi\n\
+             \x20 store i64 %pi, i64* %p_init_slot\n\
+             \x20 %pi_inc = add i64 %pi, 1\n\
+             \x20 store i64 %pi_inc, i64* %pi_p\n\
+             \x20 br label %mk_parent_loop\n\
+             mk_main_init:\n\
+             \x20 %total_p = alloca i64\n\
+             \x20 store i64 0, i64* %total_p\n\
+             \x20 %in_mst_p = alloca i64\n\
+             \x20 store i64 0, i64* %in_mst_p\n\
+             \x20 %need = sub i64 %nn, 1\n\
+             \x20 %k_p = alloca i64\n\
+             \x20 store i64 0, i64* %k_p\n\
+             \x20 br label %mk_main_loop\n\
+             mk_main_loop:\n\
+             \x20 %k = load i64, i64* %k_p\n\
+             \x20 %k_done = icmp sge i64 %k, %ne\n\
+             \x20 br i1 %k_done, label %mk_finalize, label %mk_main_body\n\
+             mk_main_body:\n\
+             \x20 %k_slot = getelementptr i64, i64* %idx, i64 %k\n\
+             \x20 %e_id = load i64, i64* %k_slot\n\
+             \x20 %src_arr_mk = load i32*, i32** %spp\n\
+             \x20 %dst_arr_mk = load i32*, i32** %dpp\n\
+             \x20 %src_slot_mk = getelementptr i32, i32* %src_arr_mk, i64 %e_id\n\
+             \x20 %dst_slot_mk = getelementptr i32, i32* %dst_arr_mk, i64 %e_id\n\
+             \x20 %s32_mk = load i32, i32* %src_slot_mk\n\
+             \x20 %d32_mk = load i32, i32* %dst_slot_mk\n\
+             \x20 %s64_mk = sext i32 %s32_mk to i64\n\
+             \x20 %d64_mk = sext i32 %d32_mk to i64\n\
+             \x20 %s_lo_mk = icmp slt i64 %s64_mk, 0\n\
+             \x20 %s_hi_mk = icmp sge i64 %s64_mk, %nn\n\
+             \x20 %d_lo_mk = icmp slt i64 %d64_mk, 0\n\
+             \x20 %d_hi_mk = icmp sge i64 %d64_mk, %nn\n\
+             \x20 %sb_mk = or i1 %s_lo_mk, %s_hi_mk\n\
+             \x20 %db_mk = or i1 %d_lo_mk, %d_hi_mk\n\
+             \x20 %ab_mk = or i1 %sb_mk, %db_mk\n\
+             \x20 br i1 %ab_mk, label %mk_next, label %mk_find_roots\n\
+             mk_find_roots:\n\
+             \x20 ; find(s) iteratively.\n\
+             \x20 %rs_p = alloca i64\n\
+             \x20 store i64 %s64_mk, i64* %rs_p\n\
+             \x20 br label %mk_rs_loop\n\
+             mk_rs_loop:\n\
+             \x20 %rs = load i64, i64* %rs_p\n\
+             \x20 %rs_slot = getelementptr i64, i64* %parent, i64 %rs\n\
+             \x20 %rs_p_v = load i64, i64* %rs_slot\n\
+             \x20 %rs_done = icmp eq i64 %rs_p_v, %rs\n\
+             \x20 br i1 %rs_done, label %mk_rs_set, label %mk_rs_step\n\
+             mk_rs_step:\n\
+             \x20 store i64 %rs_p_v, i64* %rs_p\n\
+             \x20 br label %mk_rs_loop\n\
+             mk_rs_set:\n\
+             \x20 ; path compression: parent[p] = rs along s→rs.\n\
+             \x20 %rs_root = load i64, i64* %rs_p\n\
+             \x20 %sc_p = alloca i64\n\
+             \x20 store i64 %s64_mk, i64* %sc_p\n\
+             \x20 br label %mk_sc_loop\n\
+             mk_sc_loop:\n\
+             \x20 %sc = load i64, i64* %sc_p\n\
+             \x20 %sc_slot = getelementptr i64, i64* %parent, i64 %sc\n\
+             \x20 %sc_p_v = load i64, i64* %sc_slot\n\
+             \x20 %sc_done = icmp eq i64 %sc_p_v, %rs_root\n\
+             \x20 br i1 %sc_done, label %mk_find_dst, label %mk_sc_step\n\
+             mk_sc_step:\n\
+             \x20 store i64 %rs_root, i64* %sc_slot\n\
+             \x20 store i64 %sc_p_v, i64* %sc_p\n\
+             \x20 br label %mk_sc_loop\n\
+             mk_find_dst:\n\
+             \x20 %rd_p = alloca i64\n\
+             \x20 store i64 %d64_mk, i64* %rd_p\n\
+             \x20 br label %mk_rd_loop\n\
+             mk_rd_loop:\n\
+             \x20 %rd = load i64, i64* %rd_p\n\
+             \x20 %rd_slot = getelementptr i64, i64* %parent, i64 %rd\n\
+             \x20 %rd_p_v = load i64, i64* %rd_slot\n\
+             \x20 %rd_done = icmp eq i64 %rd_p_v, %rd\n\
+             \x20 br i1 %rd_done, label %mk_rd_set, label %mk_rd_step\n\
+             mk_rd_step:\n\
+             \x20 store i64 %rd_p_v, i64* %rd_p\n\
+             \x20 br label %mk_rd_loop\n\
+             mk_rd_set:\n\
+             \x20 %rd_root = load i64, i64* %rd_p\n\
+             \x20 %dc_p = alloca i64\n\
+             \x20 store i64 %d64_mk, i64* %dc_p\n\
+             \x20 br label %mk_dc_loop\n\
+             mk_dc_loop:\n\
+             \x20 %dc = load i64, i64* %dc_p\n\
+             \x20 %dc_slot = getelementptr i64, i64* %parent, i64 %dc\n\
+             \x20 %dc_p_v = load i64, i64* %dc_slot\n\
+             \x20 %dc_done = icmp eq i64 %dc_p_v, %rd_root\n\
+             \x20 br i1 %dc_done, label %mk_check_same, label %mk_dc_step\n\
+             mk_dc_step:\n\
+             \x20 store i64 %rd_root, i64* %dc_slot\n\
+             \x20 store i64 %dc_p_v, i64* %dc_p\n\
+             \x20 br label %mk_dc_loop\n\
+             mk_check_same:\n\
+             \x20 %rs_final = load i64, i64* %rs_p\n\
+             \x20 %rd_final = load i64, i64* %rd_p\n\
+             \x20 %same_root = icmp eq i64 %rs_final, %rd_final\n\
+             \x20 br i1 %same_root, label %mk_next, label %mk_union\n\
+             mk_union:\n\
+             \x20 ; parent[rs] = rd\n\
+             \x20 %rs_link_slot = getelementptr i64, i64* %parent, i64 %rs_final\n\
+             \x20 store i64 %rd_final, i64* %rs_link_slot\n\
+             \x20 %wpp_mu = load i64*, i64** %wpp\n\
+             \x20 %w_slot_mu = getelementptr i64, i64* %wpp_mu, i64 %e_id\n\
+             \x20 %w_v = load i64, i64* %w_slot_mu\n\
+             \x20 %total_cur = load i64, i64* %total_p\n\
+             \x20 %total_new = add i64 %total_cur, %w_v\n\
+             \x20 store i64 %total_new, i64* %total_p\n\
+             \x20 %in_mst_cur = load i64, i64* %in_mst_p\n\
+             \x20 %in_mst_new = add i64 %in_mst_cur, 1\n\
+             \x20 store i64 %in_mst_new, i64* %in_mst_p\n\
+             \x20 %enough = icmp sge i64 %in_mst_new, %need\n\
+             \x20 br i1 %enough, label %mk_finalize, label %mk_next\n\
+             mk_next:\n\
+             \x20 %k_inc = add i64 %k, 1\n\
+             \x20 store i64 %k_inc, i64* %k_p\n\
+             \x20 br label %mk_main_loop\n\
+             mk_finalize:\n\
+             \x20 %idx_free = bitcast i64* %idx to i8*\n\
+             \x20 call void @free(i8* %idx_free)\n\
+             \x20 %parent_free = bitcast i64* %parent to i8*\n\
+             \x20 call void @free(i8* %parent_free)\n\
+             \x20 %in_mst_final = load i64, i64* %in_mst_p\n\
+             \x20 %ok = icmp sge i64 %in_mst_final, %need\n\
+             \x20 br i1 %ok, label %mk_some, label %mk_none\n\
+             mk_some:\n\
+             \x20 %total_final = load i64, i64* %total_p\n\
+             \x20 %ms0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %ms1 = insertvalue %Enum_Option__i64 %ms0, i64 %total_final, 1\n\
+             \x20 ret %Enum_Option__i64 %ms1\n\
+             mk_none:\n\
+             \x20 %mn0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %mn1 = insertvalue %Enum_Option__i64 %mn0, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %mn1\n\
+             }\n\
+             define %Enum_Option__i64 @intent_graph_mst_prim(%intent_graph* %g) {\n\
+             \x20 %nnp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 0\n\
+             \x20 %spp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
+             \x20 %dpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
+             \x20 %wpp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 3\n\
+             \x20 %nep = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 4\n\
+             \x20 %nn = load i64, i64* %nnp\n\
+             \x20 %ne = load i64, i64* %nep\n\
+             \x20 %nn_zero = icmp sle i64 %nn, 0\n\
+             \x20 br i1 %nn_zero, label %mp_none, label %mp_init\n\
+             mp_init:\n\
+             \x20 %in_tree = call i8* @calloc(i64 %nn, i64 1)\n\
+             \x20 %b_bytes = mul i64 %nn, 8\n\
+             \x20 %best_i8 = call i8* @malloc(i64 %b_bytes)\n\
+             \x20 %best = bitcast i8* %best_i8 to i64*\n\
+             \x20 %bi_p = alloca i64\n\
+             \x20 store i64 0, i64* %bi_p\n\
+             \x20 br label %mp_init_loop\n\
+             mp_init_loop:\n\
+             \x20 %bi = load i64, i64* %bi_p\n\
+             \x20 %bi_done = icmp sge i64 %bi, %nn\n\
+             \x20 br i1 %bi_done, label %mp_init_zero, label %mp_init_body\n\
+             mp_init_body:\n\
+             \x20 %best_slot = getelementptr i64, i64* %best, i64 %bi\n\
+             \x20 store i64 9223372036854775807, i64* %best_slot\n\
+             \x20 %bi_inc = add i64 %bi, 1\n\
+             \x20 store i64 %bi_inc, i64* %bi_p\n\
+             \x20 br label %mp_init_loop\n\
+             mp_init_zero:\n\
+             \x20 %best0_slot = getelementptr i64, i64* %best, i64 0\n\
+             \x20 store i64 0, i64* %best0_slot\n\
+             \x20 %total_p = alloca i64\n\
+             \x20 store i64 0, i64* %total_p\n\
+             \x20 %added_p = alloca i64\n\
+             \x20 store i64 0, i64* %added_p\n\
+             \x20 %iter_p = alloca i64\n\
+             \x20 store i64 0, i64* %iter_p\n\
+             \x20 br label %mp_outer\n\
+             mp_outer:\n\
+             \x20 %iter = load i64, i64* %iter_p\n\
+             \x20 %iter_done = icmp sge i64 %iter, %nn\n\
+             \x20 br i1 %iter_done, label %mp_finalize, label %mp_pick\n\
+             mp_pick:\n\
+             \x20 %u_p = alloca i64\n\
+             \x20 store i64 -1, i64* %u_p\n\
+             \x20 %u_w_p = alloca i64\n\
+             \x20 store i64 9223372036854775807, i64* %u_w_p\n\
+             \x20 %pi_p = alloca i64\n\
+             \x20 store i64 0, i64* %pi_p\n\
+             \x20 br label %mp_pick_loop\n\
+             mp_pick_loop:\n\
+             \x20 %pi = load i64, i64* %pi_p\n\
+             \x20 %pi_done = icmp sge i64 %pi, %nn\n\
+             \x20 br i1 %pi_done, label %mp_pick_done, label %mp_pick_body\n\
+             mp_pick_body:\n\
+             \x20 %in_slot = getelementptr i8, i8* %in_tree, i64 %pi\n\
+             \x20 %in_v = load i8, i8* %in_slot\n\
+             \x20 %in_set = icmp ne i8 %in_v, 0\n\
+             \x20 br i1 %in_set, label %mp_pick_next, label %mp_pick_check\n\
+             mp_pick_check:\n\
+             \x20 %bsl = getelementptr i64, i64* %best, i64 %pi\n\
+             \x20 %bv = load i64, i64* %bsl\n\
+             \x20 %u_w_cur = load i64, i64* %u_w_p\n\
+             \x20 %lt_w = icmp slt i64 %bv, %u_w_cur\n\
+             \x20 br i1 %lt_w, label %mp_pick_set, label %mp_pick_next\n\
+             mp_pick_set:\n\
+             \x20 store i64 %bv, i64* %u_w_p\n\
+             \x20 store i64 %pi, i64* %u_p\n\
+             \x20 br label %mp_pick_next\n\
+             mp_pick_next:\n\
+             \x20 %pi_inc = add i64 %pi, 1\n\
+             \x20 store i64 %pi_inc, i64* %pi_p\n\
+             \x20 br label %mp_pick_loop\n\
+             mp_pick_done:\n\
+             \x20 %u = load i64, i64* %u_p\n\
+             \x20 %u_w = load i64, i64* %u_w_p\n\
+             \x20 %u_none = icmp eq i64 %u, -1\n\
+             \x20 %u_inf = icmp eq i64 %u_w, 9223372036854775807\n\
+             \x20 %stop = or i1 %u_none, %u_inf\n\
+             \x20 br i1 %stop, label %mp_finalize, label %mp_pick_take\n\
+             mp_pick_take:\n\
+             \x20 %u_tree_slot = getelementptr i8, i8* %in_tree, i64 %u\n\
+             \x20 store i8 1, i8* %u_tree_slot\n\
+             \x20 %t_cur = load i64, i64* %total_p\n\
+             \x20 %t_new = add i64 %t_cur, %u_w\n\
+             \x20 store i64 %t_new, i64* %total_p\n\
+             \x20 %a_cur = load i64, i64* %added_p\n\
+             \x20 %a_new = add i64 %a_cur, 1\n\
+             \x20 store i64 %a_new, i64* %added_p\n\
+             \x20 %ep_p = alloca i64\n\
+             \x20 store i64 0, i64* %ep_p\n\
+             \x20 br label %mp_relax_loop\n\
+             mp_relax_loop:\n\
+             \x20 %ep = load i64, i64* %ep_p\n\
+             \x20 %ep_done = icmp sge i64 %ep, %ne\n\
+             \x20 br i1 %ep_done, label %mp_iter_inc, label %mp_relax_body\n\
+             mp_relax_body:\n\
+             \x20 %src_arr_mp = load i32*, i32** %spp\n\
+             \x20 %dst_arr_mp = load i32*, i32** %dpp\n\
+             \x20 %src_slot_mp = getelementptr i32, i32* %src_arr_mp, i64 %ep\n\
+             \x20 %dst_slot_mp = getelementptr i32, i32* %dst_arr_mp, i64 %ep\n\
+             \x20 %s32_mp = load i32, i32* %src_slot_mp\n\
+             \x20 %d32_mp = load i32, i32* %dst_slot_mp\n\
+             \x20 %s64_mp = sext i32 %s32_mp to i64\n\
+             \x20 %d64_mp = sext i32 %d32_mp to i64\n\
+             \x20 %s_eq_u = icmp eq i64 %s64_mp, %u\n\
+             \x20 %d_eq_u = icmp eq i64 %d64_mp, %u\n\
+             \x20 %touches = or i1 %s_eq_u, %d_eq_u\n\
+             \x20 br i1 %touches, label %mp_pick_v, label %mp_relax_next\n\
+             mp_pick_v:\n\
+             \x20 %v_undir = select i1 %s_eq_u, i64 %d64_mp, i64 %s64_mp\n\
+             \x20 %v_lo_mp = icmp slt i64 %v_undir, 0\n\
+             \x20 %v_hi_mp = icmp sge i64 %v_undir, %nn\n\
+             \x20 %v_bad_mp = or i1 %v_lo_mp, %v_hi_mp\n\
+             \x20 br i1 %v_bad_mp, label %mp_relax_next, label %mp_check_v_in\n\
+             mp_check_v_in:\n\
+             \x20 %v_in_slot = getelementptr i8, i8* %in_tree, i64 %v_undir\n\
+             \x20 %v_in_v = load i8, i8* %v_in_slot\n\
+             \x20 %v_in_set = icmp ne i8 %v_in_v, 0\n\
+             \x20 br i1 %v_in_set, label %mp_relax_next, label %mp_relax_apply\n\
+             mp_relax_apply:\n\
+             \x20 %wpp_mp = load i64*, i64** %wpp\n\
+             \x20 %w_slot_mp = getelementptr i64, i64* %wpp_mp, i64 %ep\n\
+             \x20 %w_v_mp = load i64, i64* %w_slot_mp\n\
+             \x20 %best_v_slot = getelementptr i64, i64* %best, i64 %v_undir\n\
+             \x20 %best_v = load i64, i64* %best_v_slot\n\
+             \x20 %improves = icmp slt i64 %w_v_mp, %best_v\n\
+             \x20 br i1 %improves, label %mp_relax_set, label %mp_relax_next\n\
+             mp_relax_set:\n\
+             \x20 store i64 %w_v_mp, i64* %best_v_slot\n\
+             \x20 br label %mp_relax_next\n\
+             mp_relax_next:\n\
+             \x20 %ep_inc = add i64 %ep, 1\n\
+             \x20 store i64 %ep_inc, i64* %ep_p\n\
+             \x20 br label %mp_relax_loop\n\
+             mp_iter_inc:\n\
+             \x20 %iter_inc = add i64 %iter, 1\n\
+             \x20 store i64 %iter_inc, i64* %iter_p\n\
+             \x20 br label %mp_outer\n\
+             mp_finalize:\n\
+             \x20 call void @free(i8* %in_tree)\n\
+             \x20 %best_free = bitcast i64* %best to i8*\n\
+             \x20 call void @free(i8* %best_free)\n\
+             \x20 %added_final = load i64, i64* %added_p\n\
+             \x20 %all = icmp eq i64 %added_final, %nn\n\
+             \x20 br i1 %all, label %mp_some, label %mp_none\n\
+             mp_some:\n\
+             \x20 %total_final = load i64, i64* %total_p\n\
+             \x20 %ps0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n\
+             \x20 %ps1 = insertvalue %Enum_Option__i64 %ps0, i64 %total_final, 1\n\
+             \x20 ret %Enum_Option__i64 %ps1\n\
+             mp_none:\n\
+             \x20 %pn0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
+             \x20 %pn1 = insertvalue %Enum_Option__i64 %pn0, i64 0, 1\n\
+             \x20 ret %Enum_Option__i64 %pn1\n\
              }\n\n",
         );
     }

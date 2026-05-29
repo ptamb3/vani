@@ -13264,6 +13264,80 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn graph_algo_extensions_typecheck() {
+        // Closure #333: has_cycle / mst_kruskal / mst_prim
+        // builtins must type-check on both backends with the
+        // expected return types (bool / Option<i64>).
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(3);
+              let _: bool = graph_has_cycle(ref g);
+              let _: Option<i64> = graph_mst_kruskal(ref g);
+              let _: Option<i64> = graph_mst_prim(ref g);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("graph algo extensions must type-check in C");
+        compile_to_llvm(source).expect("graph algo extensions must compile to LLVM");
+    }
+
+    #[test]
+    fn graph_algo_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(4);
+              let _: bool = g.has_cycle();
+              let _: Option<i64> = g.mst_kruskal();
+              let _: Option<i64> = g.mst_prim();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("graph algo method sugar must type-check in C");
+        compile_to_llvm(source).expect("graph algo method sugar must compile to LLVM");
+    }
+
+    #[test]
+    fn graph_algo_emits_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(2);
+              let _: bool = graph_has_cycle(ref g);
+              let _: Option<i64> = graph_mst_kruskal(ref g);
+              let _: Option<i64> = graph_mst_prim(ref g);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("graph algo program compiles");
+        assert!(
+            c.contains("intent_graph_has_cycle")
+                && c.contains("intent_graph_mst_kruskal")
+                && c.contains("intent_graph_mst_prim"),
+            "C output must include the algorithm extension helpers; got snippet:\n{}",
+            &c[..c.len().min(800)]
+        );
+    }
+
+    #[test]
+    fn graph_algo_emits_helpers_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(2);
+              let _: bool = graph_has_cycle(ref g);
+              let _: Option<i64> = graph_mst_kruskal(ref g);
+              let _: Option<i64> = graph_mst_prim(ref g);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("graph algo LLVM compile");
+        assert!(
+            ll.contains("@intent_graph_has_cycle")
+                && ll.contains("@intent_graph_mst_kruskal")
+                && ll.contains("@intent_graph_mst_prim"),
+            "LLVM output must include the algorithm extension helpers"
+        );
+    }
+
+    #[test]
     fn trie_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {
