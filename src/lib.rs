@@ -13748,6 +13748,32 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn trie_compaction_extends_struct_and_emits_freelist() {
+        // Closure #344: arena compaction. The struct gains two
+        // fields (free_head, free_count) and the C/LLVM helpers
+        // reference them. node_count() must compute live = arena -
+        // freelist.
+        let source = r#"
+            fn main() -> i64 {
+              let t: Trie = trie_new();
+              let _: bool = trie_insert(mut ref t, "abc");
+              let _: bool = trie_delete(mut ref t, "abc");
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("trie compaction C compile");
+        assert!(
+            c.contains("free_head") && c.contains("free_count"),
+            "C struct must carry free_head + free_count fields"
+        );
+        let ll = compile_to_llvm(source).expect("trie compaction LLVM compile");
+        assert!(
+            ll.contains("%intent_trie = type { i32*, i8*, i64, i64, i64, i64, i64 }"),
+            "LLVM struct must be the 7-field shape: {{ i32*, i8*, i64, i64, i64, i64, i64 }}"
+        );
+    }
+
+    #[test]
     fn skiplist_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

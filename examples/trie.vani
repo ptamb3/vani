@@ -60,10 +60,37 @@ fn main() -> i64 {
   print "delete absent:", t.delete("zoo");
   print "len:", t.len();
   print "contains car after delete:", t.contains("car");
-  // \"cart\" still exists; its prefix runs through the now-deleted
-  // \"car\" node, but the arena slot is intact.
+  // "cart" still exists; its prefix runs through the now-deleted
+  // "car" node, but the arena slot is intact because cart uses it.
   print "contains cart:", t.contains("cart");
   print "starts_with ca after delete:", t.starts_with("ca");
+  // node_count is unchanged here — the deleted word shared its
+  // path with cart, so no node was free to reclaim.
+  print "node_count after delete car (10):", t.node_count();
+
+  // Closure #344: arena compaction. After delete, walk back up
+  // the path and free any node with no is_end and no remaining
+  // children. node_count reflects live nodes (num_nodes - free_count).
+  let t2: Trie = trie_new();
+  let _ = t2.insert("apple");
+  print "isolated apple node_count (6):", t2.node_count();
+  let _ = t2.delete("apple");
+  // All five letter-nodes were dead-ends, so they get reclaimed —
+  // only root remains.
+  print "after delete apple node_count (1):", t2.node_count();
+  // Re-insert reuses freelist slots; node_count returns to 6.
+  let _ = t2.insert("apple");
+  print "re-insert apple node_count (6):", t2.node_count();
+  print "contains apple:", t2.contains("apple");
+
+  // Partial compaction when a shared prefix survives.
+  let _ = t2.insert("app");
+  print "after +app node_count (6):", t2.node_count();
+  let _ = t2.delete("apple");
+  // 'l' and 'e' get reclaimed; a-p-p stays because "app" is still
+  // a stored word.
+  print "after delete apple node_count (4):", t2.node_count();
+  print "contains app:", t2.contains("app");
 
   return 0;
 }

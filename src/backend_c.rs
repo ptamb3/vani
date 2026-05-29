@@ -2727,7 +2727,7 @@ fn stmt_uses_trie(stmt: &crate::ir::TypedStmt) -> bool {
 /// false on any non-a-z input character.
 fn emit_intent_trie_helpers_c_body(out: &mut String) {
     out.push_str(
-        "typedef struct { int32_t* children; uint8_t* is_end; int64_t num_nodes; int64_t capacity; int64_t num_words; } intent_trie;\n\
+        "typedef struct { int32_t* children; uint8_t* is_end; int64_t num_nodes; int64_t capacity; int64_t num_words; int64_t free_head; int64_t free_count; } intent_trie;\n\
          static INTENT_UNUSED bool intent_trie_valid_char(int c) {\n\
          \x20 return c >= 'a' && c <= 'z';\n\
          }\n\
@@ -2738,7 +2738,20 @@ fn emit_intent_trie_helpers_c_body(out: &mut String) {
          \x20 }\n\
          \x20 return true;\n\
          }\n\
+         /* Closure #344: arena compaction. The freelist of recycled\n\
+          * node indices reuses children[idx*26 + 0] as a next-pointer\n\
+          * (safe because freed nodes have all 26 children set to -1).\n\
+          * num_nodes is the high-water mark; live node count is\n\
+          * num_nodes - free_count. */\n\
          static INTENT_UNUSED int64_t intent_trie_new_node(intent_trie* t) {\n\
+         \x20 if (t->free_head != -1) {\n\
+         \x20   int64_t idx = t->free_head;\n\
+         \x20   t->free_head = (int64_t)t->children[idx * 26 + 0];\n\
+         \x20   t->free_count--;\n\
+         \x20   for (int c = 0; c < 26; c++) t->children[idx * 26 + c] = -1;\n\
+         \x20   t->is_end[idx] = 0;\n\
+         \x20   return idx;\n\
+         \x20 }\n\
          \x20 if (t->num_nodes >= t->capacity) {\n\
          \x20   t->capacity = t->capacity ? t->capacity * 2 : 8;\n\
          \x20   t->children = (int32_t*)realloc(t->children, (size_t)t->capacity * 26 * sizeof(int32_t));\n\
@@ -2755,6 +2768,7 @@ fn emit_intent_trie_helpers_c_body(out: &mut String) {
          \x20 intent_trie t;\n\
          \x20 t.children = (int32_t*)0; t.is_end = (uint8_t*)0;\n\
          \x20 t.num_nodes = 0; t.capacity = 0; t.num_words = 0;\n\
+         \x20 t.free_head = -1; t.free_count = 0;\n\
          \x20 (void)intent_trie_new_node(&t);  /* root = 0 */\n\
          \x20 return t;\n\
          }\n\
@@ -2763,6 +2777,7 @@ fn emit_intent_trie_helpers_c_body(out: &mut String) {
          \x20 if (t->is_end) free(t->is_end);\n\
          \x20 t->children = (int32_t*)0; t->is_end = (uint8_t*)0;\n\
          \x20 t->num_nodes = 0; t->capacity = 0; t->num_words = 0;\n\
+         \x20 t->free_head = -1; t->free_count = 0;\n\
          }\n\
          static INTENT_UNUSED bool intent_trie_insert(intent_trie* t, const char* s) {\n\
          \x20 if (!intent_trie_valid_str(s)) return false;\n\
@@ -2807,25 +2822,57 @@ fn emit_intent_trie_helpers_c_body(out: &mut String) {
          \x20 int64_t cur = intent_trie_walk(t, s);\n\
          \x20 return cur != -1;\n\
          }\n\
-         /* Closure #340: remove an exact word. Walks to the terminal\n\
-          * node and flips its `is_end` bit; returns true iff the word\n\
-          * was present. Arena slots stay tombstoned — they may still\n\
-          * be on the path of longer words, so we can't compact them\n\
-          * away (a future closure could add a compaction pass for\n\
-          * dead branches with no end-of-word descendants). */\n\
+         /* Closure #344: remove an exact word and compact the arena.\n\
+          * After flipping is_end on the terminal node, walks back up\n\
+          * the path. Any node with no is_end and all-`-1` children is\n\
+          * unlinked from its parent and pushed onto the freelist\n\
+          * (child slot 0 doubles as the next-free pointer). Reclaims\n\
+          * memory on remove-heavy Trie workloads. */\n\
          static INTENT_UNUSED bool intent_trie_delete(intent_trie* t, const char* s) {\n\
-         \x20 int64_t cur = intent_trie_walk(t, s);\n\
-         \x20 if (cur == -1) return false;\n\
-         \x20 if (!t->is_end[cur]) return false;\n\
+         \x20 if (!intent_trie_valid_str(s)) return false;\n\
+         \x20 size_t n = 0;\n\
+         \x20 for (const char* p = s; *p; p++) n++;\n\
+         \x20 int64_t* path_node = (int64_t*)malloc((n + 1) * sizeof(int64_t));\n\
+         \x20 int* path_ch = (int*)malloc((n > 0 ? n : 1) * sizeof(int));\n\
+         \x20 if (!path_node || !path_ch) abort();\n\
+         \x20 path_node[0] = 0;\n\
+         \x20 int64_t cur = 0;\n\
+         \x20 size_t i;\n\
+         \x20 for (i = 0; i < n; i++) {\n\
+         \x20   int c = (unsigned char)s[i] - 'a';\n\
+         \x20   int32_t next = t->children[cur * 26 + c];\n\
+         \x20   if (next == -1) { free(path_node); free(path_ch); return false; }\n\
+         \x20   path_ch[i] = c;\n\
+         \x20   cur = (int64_t)next;\n\
+         \x20   path_node[i + 1] = cur;\n\
+         \x20 }\n\
+         \x20 if (!t->is_end[cur]) { free(path_node); free(path_ch); return false; }\n\
          \x20 t->is_end[cur] = 0;\n\
          \x20 t->num_words--;\n\
+         \x20 /* Walk back up; free dead nodes one at a time. */\n\
+         \x20 for (size_t step = n; step > 0; step--) {\n\
+         \x20   int64_t node = path_node[step];\n\
+         \x20   if (node == 0) break;\n\
+         \x20   if (t->is_end[node]) break;\n\
+         \x20   bool has_child = false;\n\
+         \x20   for (int c = 0; c < 26; c++) {\n\
+         \x20     if (t->children[node * 26 + c] != -1) { has_child = true; break; }\n\
+         \x20   }\n\
+         \x20   if (has_child) break;\n\
+         \x20   int64_t parent = path_node[step - 1];\n\
+         \x20   t->children[parent * 26 + path_ch[step - 1]] = -1;\n\
+         \x20   t->children[node * 26 + 0] = (int32_t)t->free_head;\n\
+         \x20   t->free_head = node;\n\
+         \x20   t->free_count++;\n\
+         \x20 }\n\
+         \x20 free(path_node); free(path_ch);\n\
          \x20 return true;\n\
          }\n\
          static INTENT_UNUSED int64_t intent_trie_len(const intent_trie* t) {\n\
          \x20 return t->num_words;\n\
          }\n\
          static INTENT_UNUSED int64_t intent_trie_node_count(const intent_trie* t) {\n\
-         \x20 return t->num_nodes;\n\
+         \x20 return t->num_nodes - t->free_count;\n\
          }\n\n",
     );
 }

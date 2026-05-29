@@ -260,7 +260,7 @@ fn llvm_byte_size(ty: &Type) -> u64 {
         Type::BloomFilter => 32, // {bits ptr, num_bits, num_hashes, insert_count}
         Type::Bst(_) => 48, // {keys ptr, left ptr, right ptr, root, len, capacity, heights ptr}
         Type::Graph => 96, // closure #336 + #338: 12 fields, fwd CSR + rev CSR (rev_adj_start, rev_adj_csr_src, rev_adj_csr_weight)
-        Type::Trie => 40, // {children ptr, is_end ptr, num_nodes, capacity, num_words}
+        Type::Trie => 56, // closure #344: +free_head, +free_count for arena compaction
         Type::SkipList => 64, // closure #341: 8 fields incl. tail_node for O(1) max
         Type::Object(_) => 16, // fat pointer: vtable + data
         Type::Vec(_) => 24, // {data, len, cap} on 64-bit
@@ -676,8 +676,12 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     //  11: rev_adj_csr_weight (i64*)    rev CSR weights, parallel to rev_adj_csr_src
     // Both CSR caches are built lazily on first use and invalidated on add_edge.
     out.push_str("%intent_graph = type { i64, i32*, i32*, i64*, i64, i64, i32*, i32*, i64*, i32*, i32*, i64* }\n");
-    // Trie (closure #330): { children*, is_end*, num_nodes, capacity, num_words } — prefix tree on a-z alphabet (26-wide flat children).
-    out.push_str("%intent_trie = type { i32*, i8*, i64, i64, i64 }\n");
+    // Trie (closure #330; arena compaction via freelist in #344):
+    //   { children*, is_end*, num_nodes, capacity, num_words, free_head, free_count }
+    // num_nodes is the high-water mark; live count is num_nodes - free_count.
+    // The freelist reuses children[idx*26 + 0] as a next-pointer (safe
+    // because freed nodes have all 26 child slots == -1).
+    out.push_str("%intent_trie = type { i32*, i8*, i64, i64, i64, i64, i64 }\n");
     // SkipList<i64> (closure #331 + tail tracker in #341):
     //   0..6 as in #331 (keys, forward, node_levels, rng_state, num_nodes, capacity, num_keys)
     //   7: tail_node (i64) — index of the rightmost (highest-key) node, -1 if empty
@@ -12104,15 +12108,37 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          tv_false:\n\
          \x20 ret i1 false\n\
          }\n\
+         ; Closure #344: arena compaction. Pops from the freelist\n\
+         ; when free_head != -1; otherwise grows + appends at\n\
+         ; num_nodes.\n\
          define i64 @intent_trie_new_node(%intent_trie* %t) {\n\
          \x20 %cpp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 0\n\
          \x20 %epp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 1\n\
          \x20 %nnp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 2\n\
          \x20 %capp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 3\n\
+         \x20 %fhp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 5\n\
+         \x20 %fcp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 6\n\
+         \x20 %fh = load i64, i64* %fhp\n\
+         \x20 %has_free = icmp ne i64 %fh, -1\n\
+         \x20 %idx_p = alloca i64\n\
+         \x20 br i1 %has_free, label %tn_pop, label %tn_check_cap\n\
+         tn_pop:\n\
+         \x20 store i64 %fh, i64* %idx_p\n\
+         \x20 %c_arr_fp = load i32*, i32** %cpp\n\
+         \x20 %fh_off = mul i64 %fh, 26\n\
+         \x20 %fh_slot0 = getelementptr i32, i32* %c_arr_fp, i64 %fh_off\n\
+         \x20 %next_free32 = load i32, i32* %fh_slot0\n\
+         \x20 %next_free = sext i32 %next_free32 to i64\n\
+         \x20 store i64 %next_free, i64* %fhp\n\
+         \x20 %fc_old = load i64, i64* %fcp\n\
+         \x20 %fc_dec = sub i64 %fc_old, 1\n\
+         \x20 store i64 %fc_dec, i64* %fcp\n\
+         \x20 br label %tn_clear\n\
+         tn_check_cap:\n\
          \x20 %nn = load i64, i64* %nnp\n\
          \x20 %cap = load i64, i64* %capp\n\
          \x20 %need = icmp sge i64 %nn, %cap\n\
-         \x20 br i1 %need, label %tn_grow, label %tn_emplace\n\
+         \x20 br i1 %need, label %tn_grow, label %tn_append\n\
          tn_grow:\n\
          \x20 %cap_zero = icmp eq i64 %cap, 0\n\
          \x20 %cap_mul = mul i64 %cap, 2\n\
@@ -12127,11 +12153,17 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 %e_new = call i8* @realloc(i8* %e_old, i64 %cap_new)\n\
          \x20 store i8* %e_new, i8** %epp\n\
          \x20 store i64 %cap_new, i64* %capp\n\
-         \x20 br label %tn_emplace\n\
-         tn_emplace:\n\
+         \x20 br label %tn_append\n\
+         tn_append:\n\
+         \x20 %nn_a = load i64, i64* %nnp\n\
+         \x20 store i64 %nn_a, i64* %idx_p\n\
+         \x20 %nn_inc = add i64 %nn_a, 1\n\
+         \x20 store i64 %nn_inc, i64* %nnp\n\
+         \x20 br label %tn_clear\n\
+         tn_clear:\n\
          \x20 %c_arr = load i32*, i32** %cpp\n\
          \x20 %e_arr = load i8*, i8** %epp\n\
-         \x20 %nn_e = load i64, i64* %nnp\n\
+         \x20 %nn_e = load i64, i64* %idx_p\n\
          \x20 %base_offset = mul i64 %nn_e, 26\n\
          \x20 %k_p = alloca i64\n\
          \x20 store i64 0, i64* %k_p\n\
@@ -12141,8 +12173,8 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 %k_done = icmp sge i64 %k, 26\n\
          \x20 br i1 %k_done, label %tn_clear_end, label %tn_init_body\n\
          tn_init_body:\n\
-         \x20 %idx = add i64 %base_offset, %k\n\
-         \x20 %slot = getelementptr i32, i32* %c_arr, i64 %idx\n\
+         \x20 %idx_c = add i64 %base_offset, %k\n\
+         \x20 %slot = getelementptr i32, i32* %c_arr, i64 %idx_c\n\
          \x20 store i32 -1, i32* %slot\n\
          \x20 %k_inc = add i64 %k, 1\n\
          \x20 store i64 %k_inc, i64* %k_p\n\
@@ -12150,8 +12182,6 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          tn_clear_end:\n\
          \x20 %e_slot = getelementptr i8, i8* %e_arr, i64 %nn_e\n\
          \x20 store i8 0, i8* %e_slot\n\
-         \x20 %nn_inc = add i64 %nn_e, 1\n\
-         \x20 store i64 %nn_inc, i64* %nnp\n\
          \x20 ret i64 %nn_e\n\
          }\n\
          define %intent_trie @intent_trie_new() {\n\
@@ -12161,7 +12191,9 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 %r2 = insertvalue %intent_trie %r1, i64 0, 2\n\
          \x20 %r3 = insertvalue %intent_trie %r2, i64 0, 3\n\
          \x20 %r4 = insertvalue %intent_trie %r3, i64 0, 4\n\
-         \x20 store %intent_trie %r4, %intent_trie* %t_alloca\n\
+         \x20 %r5 = insertvalue %intent_trie %r4, i64 -1, 5\n\
+         \x20 %r6 = insertvalue %intent_trie %r5, i64 0, 6\n\
+         \x20 store %intent_trie %r6, %intent_trie* %t_alloca\n\
          \x20 %root = call i64 @intent_trie_new_node(%intent_trie* %t_alloca)\n\
          \x20 %final = load %intent_trie, %intent_trie* %t_alloca\n\
          \x20 ret %intent_trie %final\n\
@@ -12189,9 +12221,13 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 %nnp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 2\n\
          \x20 %capp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 3\n\
          \x20 %nwp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 4\n\
+         \x20 %fhp_d = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 5\n\
+         \x20 %fcp_d = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 6\n\
          \x20 store i64 0, i64* %nnp\n\
          \x20 store i64 0, i64* %capp\n\
          \x20 store i64 0, i64* %nwp\n\
+         \x20 store i64 -1, i64* %fhp_d\n\
+         \x20 store i64 0, i64* %fcp_d\n\
          \x20 ret void\n\
          }\n\
          define i1 @intent_trie_insert(%intent_trie* %t, i8* %s) {\n\
@@ -12316,27 +12352,176 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 %ok = icmp ne i64 %cur, -1\n\
          \x20 ret i1 %ok\n\
          }\n\
-         ; Closure #340: trie_delete. Flips the is_end bit on the\n\
-         ; node reached by walking `s`, decrements num_words. Returns\n\
-         ; true iff the word was present.\n\
+         ; Closure #344: trie_delete + arena compaction. Walks `s`\n\
+         ; while recording (parent_node, char_index) along the path,\n\
+         ; clears is_end on the terminal node, then walks back up\n\
+         ; freeing any node with no is_end and all-`-1` children.\n\
+         ; Freed nodes are pushed onto the freelist (free_head chain\n\
+         ; via children[idx*26 + 0]).\n\
          define i1 @intent_trie_delete(%intent_trie* %t, i8* %s) {\n\
-         \x20 %cur_d = call i64 @intent_trie_walk(%intent_trie* %t, i8* %s)\n\
-         \x20 %is_none_d = icmp eq i64 %cur_d, -1\n\
-         \x20 br i1 %is_none_d, label %td_false, label %td_check\n\
-         td_check:\n\
+         \x20 %valid = call i1 @intent_trie_valid_str(i8* %s)\n\
+         \x20 br i1 %valid, label %td_init, label %td_false\n\
+         td_init:\n\
+         \x20 ; Count len(s) to size the path buffers.\n\
+         \x20 %n_p = alloca i64\n\
+         \x20 store i64 0, i64* %n_p\n\
+         \x20 br label %td_n_loop\n\
+         td_n_loop:\n\
+         \x20 %ni = load i64, i64* %n_p\n\
+         \x20 %ns_slot = getelementptr i8, i8* %s, i64 %ni\n\
+         \x20 %nc = load i8, i8* %ns_slot\n\
+         \x20 %n_done = icmp eq i8 %nc, 0\n\
+         \x20 br i1 %n_done, label %td_alloc, label %td_n_inc\n\
+         td_n_inc:\n\
+         \x20 %ni_inc = add i64 %ni, 1\n\
+         \x20 store i64 %ni_inc, i64* %n_p\n\
+         \x20 br label %td_n_loop\n\
+         td_alloc:\n\
+         \x20 %n = load i64, i64* %n_p\n\
+         \x20 %np1 = add i64 %n, 1\n\
+         \x20 %pn_bytes = mul i64 %np1, 8\n\
+         \x20 %pn_i8 = call i8* @malloc(i64 %pn_bytes)\n\
+         \x20 %path_node = bitcast i8* %pn_i8 to i64*\n\
+         \x20 %pc_bytes = mul i64 %np1, 4\n\
+         \x20 %pc_i8 = call i8* @malloc(i64 %pc_bytes)\n\
+         \x20 %path_ch = bitcast i8* %pc_i8 to i32*\n\
+         \x20 ; path_node[0] = 0 (root)\n\
+         \x20 store i64 0, i64* %path_node\n\
+         \x20 %cpp_d = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 0\n\
          \x20 %epp_d = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 1\n\
-         \x20 %e_arr_d = load i8*, i8** %epp_d\n\
-         \x20 %e_slot_d = getelementptr i8, i8* %e_arr_d, i64 %cur_d\n\
-         \x20 %was = load i8, i8* %e_slot_d\n\
-         \x20 %was_set = icmp ne i8 %was, 0\n\
-         \x20 br i1 %was_set, label %td_clear, label %td_false\n\
-         td_clear:\n\
-         \x20 store i8 0, i8* %e_slot_d\n\
          \x20 %nwp_d = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 4\n\
-         \x20 %nw_d = load i64, i64* %nwp_d\n\
-         \x20 %nw_dec = sub i64 %nw_d, 1\n\
-         \x20 store i64 %nw_dec, i64* %nwp_d\n\
+         \x20 %fhp_d = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 5\n\
+         \x20 %fcp_d = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 6\n\
+         \x20 %cur_p_d = alloca i64\n\
+         \x20 store i64 0, i64* %cur_p_d\n\
+         \x20 %i_p_d = alloca i64\n\
+         \x20 store i64 0, i64* %i_p_d\n\
+         \x20 br label %td_w_loop\n\
+         td_w_loop:\n\
+         \x20 %iw = load i64, i64* %i_p_d\n\
+         \x20 %iw_done = icmp uge i64 %iw, %n\n\
+         \x20 br i1 %iw_done, label %td_check_end, label %td_w_body\n\
+         td_w_body:\n\
+         \x20 %ws_slot = getelementptr i8, i8* %s, i64 %iw\n\
+         \x20 %wc = load i8, i8* %ws_slot\n\
+         \x20 %wc64 = sext i8 %wc to i64\n\
+         \x20 %wc_off = sub i64 %wc64, 97\n\
+         \x20 %cur_w = load i64, i64* %cur_p_d\n\
+         \x20 %wbase = mul i64 %cur_w, 26\n\
+         \x20 %wchild_idx = add i64 %wbase, %wc_off\n\
+         \x20 %c_arr_w = load i32*, i32** %cpp_d\n\
+         \x20 %wslot = getelementptr i32, i32* %c_arr_w, i64 %wchild_idx\n\
+         \x20 %wchild32 = load i32, i32* %wslot\n\
+         \x20 %wis_none = icmp eq i32 %wchild32, -1\n\
+         \x20 br i1 %wis_none, label %td_free_bufs_false, label %td_w_advance\n\
+         td_w_advance:\n\
+         \x20 ; record char index at path_ch[iw], descend to next node\n\
+         \x20 %pc_slot = getelementptr i32, i32* %path_ch, i64 %iw\n\
+         \x20 %wc_off32 = trunc i64 %wc_off to i32\n\
+         \x20 store i32 %wc_off32, i32* %pc_slot\n\
+         \x20 %wchild = sext i32 %wchild32 to i64\n\
+         \x20 store i64 %wchild, i64* %cur_p_d\n\
+         \x20 %iw1 = add i64 %iw, 1\n\
+         \x20 %pn_slot = getelementptr i64, i64* %path_node, i64 %iw1\n\
+         \x20 store i64 %wchild, i64* %pn_slot\n\
+         \x20 store i64 %iw1, i64* %i_p_d\n\
+         \x20 br label %td_w_loop\n\
+         td_check_end:\n\
+         \x20 %cur_t = load i64, i64* %cur_p_d\n\
+         \x20 %e_arr_t = load i8*, i8** %epp_d\n\
+         \x20 %e_slot_t = getelementptr i8, i8* %e_arr_t, i64 %cur_t\n\
+         \x20 %was_t = load i8, i8* %e_slot_t\n\
+         \x20 %was_set_t = icmp ne i8 %was_t, 0\n\
+         \x20 br i1 %was_set_t, label %td_clear_t, label %td_free_bufs_false\n\
+         td_clear_t:\n\
+         \x20 store i8 0, i8* %e_slot_t\n\
+         \x20 %nw_t = load i64, i64* %nwp_d\n\
+         \x20 %nw_dec_t = sub i64 %nw_t, 1\n\
+         \x20 store i64 %nw_dec_t, i64* %nwp_d\n\
+         \x20 ; walk back up freeing dead nodes\n\
+         \x20 %step_p = alloca i64\n\
+         \x20 store i64 %n, i64* %step_p\n\
+         \x20 br label %td_up_loop\n\
+         td_up_loop:\n\
+         \x20 %step = load i64, i64* %step_p\n\
+         \x20 %step_zero = icmp eq i64 %step, 0\n\
+         \x20 br i1 %step_zero, label %td_free_bufs_true, label %td_up_body\n\
+         td_up_body:\n\
+         \x20 %pn_at = getelementptr i64, i64* %path_node, i64 %step\n\
+         \x20 %node_u = load i64, i64* %pn_at\n\
+         \x20 %is_root = icmp eq i64 %node_u, 0\n\
+         \x20 br i1 %is_root, label %td_free_bufs_true, label %td_up_check_end\n\
+         td_up_check_end:\n\
+         \x20 %e_arr_u = load i8*, i8** %epp_d\n\
+         \x20 %e_slot_u = getelementptr i8, i8* %e_arr_u, i64 %node_u\n\
+         \x20 %eu = load i8, i8* %e_slot_u\n\
+         \x20 %eu_set = icmp ne i8 %eu, 0\n\
+         \x20 br i1 %eu_set, label %td_free_bufs_true, label %td_up_check_children\n\
+         td_up_check_children:\n\
+         \x20 %has_p = alloca i1\n\
+         \x20 store i1 false, i1* %has_p\n\
+         \x20 %ku_p = alloca i64\n\
+         \x20 store i64 0, i64* %ku_p\n\
+         \x20 br label %td_kid_loop\n\
+         td_kid_loop:\n\
+         \x20 %ku = load i64, i64* %ku_p\n\
+         \x20 %ku_done = icmp sge i64 %ku, 26\n\
+         \x20 br i1 %ku_done, label %td_kid_end, label %td_kid_body\n\
+         td_kid_body:\n\
+         \x20 %ubase = mul i64 %node_u, 26\n\
+         \x20 %u_idx = add i64 %ubase, %ku\n\
+         \x20 %c_arr_u = load i32*, i32** %cpp_d\n\
+         \x20 %uslot = getelementptr i32, i32* %c_arr_u, i64 %u_idx\n\
+         \x20 %uval = load i32, i32* %uslot\n\
+         \x20 %u_ne = icmp ne i32 %uval, -1\n\
+         \x20 br i1 %u_ne, label %td_kid_set, label %td_kid_inc\n\
+         td_kid_set:\n\
+         \x20 store i1 true, i1* %has_p\n\
+         \x20 br label %td_kid_end\n\
+         td_kid_inc:\n\
+         \x20 %ku_inc = add i64 %ku, 1\n\
+         \x20 store i64 %ku_inc, i64* %ku_p\n\
+         \x20 br label %td_kid_loop\n\
+         td_kid_end:\n\
+         \x20 %has = load i1, i1* %has_p\n\
+         \x20 br i1 %has, label %td_free_bufs_true, label %td_up_unlink\n\
+         td_up_unlink:\n\
+         \x20 ; unlink from parent: children[parent*26 + path_ch[step-1]] = -1\n\
+         \x20 %step_m1 = sub i64 %step, 1\n\
+         \x20 %ppn = getelementptr i64, i64* %path_node, i64 %step_m1\n\
+         \x20 %parent_u = load i64, i64* %ppn\n\
+         \x20 %ppc = getelementptr i32, i32* %path_ch, i64 %step_m1\n\
+         \x20 %pchar32 = load i32, i32* %ppc\n\
+         \x20 %pchar = sext i32 %pchar32 to i64\n\
+         \x20 %pbase = mul i64 %parent_u, 26\n\
+         \x20 %p_idx = add i64 %pbase, %pchar\n\
+         \x20 %c_arr_pu = load i32*, i32** %cpp_d\n\
+         \x20 %ps = getelementptr i32, i32* %c_arr_pu, i64 %p_idx\n\
+         \x20 store i32 -1, i32* %ps\n\
+         \x20 ; push node onto freelist via children[node*26 + 0]\n\
+         \x20 %nbase = mul i64 %node_u, 26\n\
+         \x20 %ns0 = getelementptr i32, i32* %c_arr_pu, i64 %nbase\n\
+         \x20 %fh_cur = load i64, i64* %fhp_d\n\
+         \x20 %fh_cur32 = trunc i64 %fh_cur to i32\n\
+         \x20 store i32 %fh_cur32, i32* %ns0\n\
+         \x20 store i64 %node_u, i64* %fhp_d\n\
+         \x20 %fc_old_u = load i64, i64* %fcp_d\n\
+         \x20 %fc_inc_u = add i64 %fc_old_u, 1\n\
+         \x20 store i64 %fc_inc_u, i64* %fcp_d\n\
+         \x20 store i64 %step_m1, i64* %step_p\n\
+         \x20 br label %td_up_loop\n\
+         td_free_bufs_true:\n\
+         \x20 %pn_i8_t = bitcast i64* %path_node to i8*\n\
+         \x20 call void @free(i8* %pn_i8_t)\n\
+         \x20 %pc_i8_t = bitcast i32* %path_ch to i8*\n\
+         \x20 call void @free(i8* %pc_i8_t)\n\
          \x20 ret i1 true\n\
+         td_free_bufs_false:\n\
+         \x20 %pn_i8_f = bitcast i64* %path_node to i8*\n\
+         \x20 call void @free(i8* %pn_i8_f)\n\
+         \x20 %pc_i8_f = bitcast i32* %path_ch to i8*\n\
+         \x20 call void @free(i8* %pc_i8_f)\n\
+         \x20 br label %td_false\n\
          td_false:\n\
          \x20 ret i1 false\n\
          }\n\
@@ -12346,9 +12531,12 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 ret i64 %v\n\
          }\n\
          define i64 @intent_trie_node_count(%intent_trie* %t) {\n\
-         \x20 %nnp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 2\n\
-         \x20 %v = load i64, i64* %nnp\n\
-         \x20 ret i64 %v\n\
+         \x20 %nnp_nc = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 2\n\
+         \x20 %fcp_nc = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 6\n\
+         \x20 %nn_nc = load i64, i64* %nnp_nc\n\
+         \x20 %fc_nc = load i64, i64* %fcp_nc\n\
+         \x20 %live = sub i64 %nn_nc, %fc_nc\n\
+         \x20 ret i64 %live\n\
          }\n\n",
     );
 }
