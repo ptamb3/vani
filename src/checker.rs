@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -461,7 +461,7 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // built-in `Type::Task`, leading to confusing
     // "got Task" errors deep in the pipeline.
     const RESERVED_TYPE_NAMES: &[&str] = &[
-        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "HashSet", "HashMap", "BTreeSet", "BTreeMap", "OwnedStr", "Self",
+        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "HashSet", "HashMap", "BTreeSet", "BTreeMap", "UnionFind", "OwnedStr", "Self",
     ];
     for decl in &program.structs {
         if RESERVED_TYPE_NAMES.contains(&decl.name.as_str()) {
@@ -10765,6 +10765,13 @@ fn check_expr(
                         "len" => ("deque_len", false),
                         _ => ("", false),
                     },
+                    Some(Type::UnionFind) => match method.as_str() {
+                        "union" => ("union_find_union", true),
+                        "find" => ("union_find_find", true),
+                        "connected" => ("union_find_connected", true),
+                        "count" => ("union_find_count", false),
+                        _ => ("", false),
+                    },
                     _ => ("", false),
                 };
                 if !builtin_name.is_empty() {
@@ -13791,6 +13798,12 @@ fn check_call(
                 args, env, signatures, span, diagnostics,
             );
         }
+        "union_find_new" | "union_find_union" | "union_find_find"
+        | "union_find_connected" | "union_find_count" => {
+            return check_union_find_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "reverse" | "dedup" => {
             return check_reverse_dedup_builtin(
                 name, args, env, signatures, span, diagnostics,
@@ -16399,6 +16412,148 @@ fn check_vec_chain_builtin(
             name: "vec_chain".to_string(),
             name_span: span,
             args: vec![xs.expr, ys.expr],
+        },
+        ret_ty(),
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 4 #1 — Union-Find / disjoint-set
+/// (closure #325). First arena-based container under the
+/// affine model. v1 fixed i64 indices (no per-set payload).
+///
+///   union_find_new(n: i64) -> UnionFind
+///       n elements, each in its own singleton set.
+///   union_find_union(mut ref uf, a: i64, b: i64) -> bool
+///       merge a's and b's sets; returns true iff they were
+///       in different sets (i.e. a merge actually happened).
+///   union_find_find(mut ref uf, x: i64) -> i64
+///       root of x's set; path-compresses on the way up.
+///   union_find_connected(mut ref uf, a: i64, b: i64) -> bool
+///       whether a and b are in the same set.
+///   union_find_count(ref uf) -> i64
+///       number of disjoint sets currently in the structure.
+///
+/// `find` / `connected` take `mut ref` because path
+/// compression mutates the internal parent array. Only `count`
+/// is read-only.
+fn check_union_find_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args = match name {
+        "union_find_new" => 1,
+        "union_find_count" => 1,
+        "union_find_find" => 2,
+        "union_find_union" | "union_find_connected" => 3,
+        _ => unreachable!(),
+    };
+    let ret_ty = || -> Type {
+        match name {
+            "union_find_new" => Type::UnionFind,
+            "union_find_union" | "union_find_connected" => Type::Bool,
+            _ => Type::I64, // find, count
+        }
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}() expects {} argument{}, got {}",
+                name,
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback(ret_ty(), span);
+    }
+    if name == "union_find_new" {
+        // Single arg: n (i64). No receiver.
+        let n_raw = check_expr(&args[0], env, signatures, diagnostics);
+        let n = coerce_checked(
+            n_raw, &Type::I64, args[0].span,
+            "union_find_new size", diagnostics,
+        );
+        return CheckedExpr::new(
+            TypedExprKind::Call {
+                name: "union_find_new".to_string(),
+                name_span: span,
+                args: vec![n.expr],
+            },
+            Type::UnionFind,
+            None,
+            span,
+        );
+    }
+    let uf = check_expr(&args[0], env, signatures, diagnostics);
+    let is_mut_op = matches!(
+        name,
+        "union_find_union" | "union_find_find" | "union_find_connected"
+    );
+    match uf.ty() {
+        Type::Ref(inner) | Type::RefMut(inner) => {
+            if !matches!(**inner, Type::UnionFind) {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "{}() requires a `{}UnionFind` argument, got {}",
+                        name,
+                        if is_mut_op { "mut ref " } else { "ref " },
+                        uf.ty()
+                    ),
+                ));
+                return CheckedExpr::fallback(ret_ty(), span);
+            }
+        }
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "{}() requires a `{}UnionFind` argument, got {}",
+                    name,
+                    if is_mut_op { "mut ref " } else { "ref " },
+                    other
+                ),
+            ));
+            return CheckedExpr::fallback(ret_ty(), span);
+        }
+    };
+    if is_mut_op && !matches!(uf.ty(), Type::RefMut(_)) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() requires a `mut ref UnionFind` argument, got {}",
+                name,
+                uf.ty()
+            ),
+        ));
+    }
+    let mut typed_args = vec![uf.expr];
+    // union/connected take (uf, a, b); find takes (uf, x); count takes (uf).
+    let extra_idx_args = match name {
+        "union_find_find" => 1,
+        "union_find_union" | "union_find_connected" => 2,
+        _ => 0,
+    };
+    for i in 0..extra_idx_args {
+        let raw = check_expr(&args[i + 1], env, signatures, diagnostics);
+        let coerced = coerce_checked(
+            raw, &Type::I64, args[i + 1].span,
+            "union-find index", diagnostics,
+        );
+        typed_args.push(coerced.expr);
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
         },
         ret_ty(),
         None,

@@ -255,6 +255,7 @@ fn llvm_byte_size(ty: &Type) -> u64 {
         Type::HashMap(_, _) => 40, // {keys ptr, values ptr, occ ptr, len, capacity}
         Type::BTreeSet(_) => 24, // {keys ptr, len, capacity}
         Type::BTreeMap(_, _) => 32, // {keys ptr, values ptr, len, capacity}
+        Type::UnionFind => 32, // {parent ptr, rank ptr, n, sets}
         Type::Object(_) => 16, // fat pointer: vtable + data
         Type::Vec(_) => 24, // {data, len, cap} on 64-bit
         Type::Array { element, length } => llvm_byte_size(element) * length,
@@ -632,7 +633,9 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // BTreeSet<i64> (closure #306): { keys*, len, cap } — sorted-Vec backed.
     out.push_str("%intent_btreeset_i64 = type { i64*, i64, i64 }\n");
     // BTreeMap<i64, i64> (closure #307): { keys*, values*, len, cap } — sorted-Vec backed.
-    out.push_str("%intent_btreemap_i64_i64 = type { i64*, i64*, i64, i64 }\n\n");
+    out.push_str("%intent_btreemap_i64_i64 = type { i64*, i64*, i64, i64 }\n");
+    // UnionFind (closure #325): { parent*, rank*, n, sets } — disjoint-set arena.
+    out.push_str("%intent_union_find = type { i64*, i64*, i64, i64 }\n\n");
 
     emit_intent_str_concat_definition(&mut out);
 
@@ -859,6 +862,11 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
             r.borrow().contains_key("Option__i64")
         });
         emit_intent_btreemap_i64_i64_helpers_llvm(&mut out, has_option_i64);
+    }
+
+    // UnionFind helpers (closure #325, Level 4 #1).
+    if crate::backend_c::program_uses_union_find(program) {
+        emit_intent_union_find_helpers_llvm(&mut out);
     }
 
     for function in &program.functions {
@@ -1573,6 +1581,15 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 if let Some((_, addr)) = ctx.locals.get(name).cloned() {
                     out.push_str(&format!(
                         "  call void @intent_btreemap_i64_i64_drop(%intent_btreemap_i64_i64* {})\n",
+                        addr
+                    ));
+                }
+                return;
+            }
+            if matches!(ty, Type::UnionFind) {
+                if let Some((_, addr)) = ctx.locals.get(name).cloned() {
+                    out.push_str(&format!(
+                        "  call void @intent_union_find_drop(%intent_union_find* {})\n",
                         addr
                     ));
                 }
@@ -5073,6 +5090,57 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // UnionFind builtins (closure #325).
+            if name == "union_find_new" {
+                let n = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_union_find @intent_union_find_new(i64 {})\n",
+                    dest, n
+                ));
+                return dest;
+            }
+            if name == "union_find_union" {
+                let uf = emit_expr(&args[0], ctx, out);
+                let a = emit_expr(&args[1], ctx, out);
+                let b = emit_expr(&args[2], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i1 @intent_union_find_union(%intent_union_find* {}, i64 {}, i64 {})\n",
+                    dest, uf, a, b
+                ));
+                return dest;
+            }
+            if name == "union_find_find" {
+                let uf = emit_expr(&args[0], ctx, out);
+                let x = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_union_find_find(%intent_union_find* {}, i64 {})\n",
+                    dest, uf, x
+                ));
+                return dest;
+            }
+            if name == "union_find_connected" {
+                let uf = emit_expr(&args[0], ctx, out);
+                let a = emit_expr(&args[1], ctx, out);
+                let b = emit_expr(&args[2], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i1 @intent_union_find_connected(%intent_union_find* {}, i64 {}, i64 {})\n",
+                    dest, uf, a, b
+                ));
+                return dest;
+            }
+            if name == "union_find_count" {
+                let uf = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_union_find_count(%intent_union_find* {})\n",
+                    dest, uf
+                ));
+                return dest;
+            }
             // HashSet<i64> builtins (closure #304). Call
             // outlined helpers emitted at module scope.
             if name == "hashset_new" {
@@ -8245,6 +8313,182 @@ fn emit_intent_btreemap_i64_i64_helpers_llvm(out: &mut String, has_option_i64: b
              }\n\n",
         );
     }
+}
+
+/// Data-structures roadmap Level 4 #1 — UnionFind runtime
+/// helpers (closure #325). Disjoint-set with `parent` + `rank`
+/// arrays. Find uses iterative path compression; union uses
+/// union-by-rank. `sets` field tracks the number of distinct
+/// sets (decremented on each successful merge).
+fn emit_intent_union_find_helpers_llvm(out: &mut String) {
+    out.push_str(
+        "define %intent_union_find @intent_union_find_new(i64 %n_in) {\n\
+         \x20 %neg = icmp slt i64 %n_in, 0\n\
+         \x20 %n = select i1 %neg, i64 0, i64 %n_in\n\
+         \x20 %is_zero = icmp eq i64 %n, 0\n\
+         \x20 br i1 %is_zero, label %uf_empty, label %uf_alloc\n\
+         uf_alloc:\n\
+         \x20 %bytes = mul i64 %n, 8\n\
+         \x20 %p_i8 = call i8* @malloc(i64 %bytes)\n\
+         \x20 %parent = bitcast i8* %p_i8 to i64*\n\
+         \x20 %r_i8 = call i8* @calloc(i64 %n, i64 8)\n\
+         \x20 %rank = bitcast i8* %r_i8 to i64*\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 store i64 0, i64* %i_p\n\
+         \x20 br label %uf_init_loop\n\
+         uf_init_loop:\n\
+         \x20 %i = load i64, i64* %i_p\n\
+         \x20 %cont = icmp slt i64 %i, %n\n\
+         \x20 br i1 %cont, label %uf_init_body, label %uf_init_done\n\
+         uf_init_body:\n\
+         \x20 %slot = getelementptr i64, i64* %parent, i64 %i\n\
+         \x20 store i64 %i, i64* %slot\n\
+         \x20 %i_n = add i64 %i, 1\n\
+         \x20 store i64 %i_n, i64* %i_p\n\
+         \x20 br label %uf_init_loop\n\
+         uf_init_done:\n\
+         \x20 %r0 = insertvalue %intent_union_find undef, i64* %parent, 0\n\
+         \x20 %r1 = insertvalue %intent_union_find %r0, i64* %rank, 1\n\
+         \x20 %r2 = insertvalue %intent_union_find %r1, i64 %n, 2\n\
+         \x20 %r3 = insertvalue %intent_union_find %r2, i64 %n, 3\n\
+         \x20 ret %intent_union_find %r3\n\
+         uf_empty:\n\
+         \x20 %e0 = insertvalue %intent_union_find undef, i64* null, 0\n\
+         \x20 %e1 = insertvalue %intent_union_find %e0, i64* null, 1\n\
+         \x20 %e2 = insertvalue %intent_union_find %e1, i64 0, 2\n\
+         \x20 %e3 = insertvalue %intent_union_find %e2, i64 0, 3\n\
+         \x20 ret %intent_union_find %e3\n\
+         }\n\
+         define void @intent_union_find_drop(%intent_union_find* %uf) {\n\
+         \x20 %pp = getelementptr %intent_union_find, %intent_union_find* %uf, i32 0, i32 0\n\
+         \x20 %rp = getelementptr %intent_union_find, %intent_union_find* %uf, i32 0, i32 1\n\
+         \x20 %parent = load i64*, i64** %pp\n\
+         \x20 %rank = load i64*, i64** %rp\n\
+         \x20 %p_null = icmp eq i64* %parent, null\n\
+         \x20 br i1 %p_null, label %d_r, label %d_fp\n\
+         d_fp:\n\
+         \x20 %p_i8 = bitcast i64* %parent to i8*\n\
+         \x20 call void @free(i8* %p_i8)\n\
+         \x20 br label %d_r\n\
+         d_r:\n\
+         \x20 %r_null = icmp eq i64* %rank, null\n\
+         \x20 br i1 %r_null, label %d_done, label %d_fr\n\
+         d_fr:\n\
+         \x20 %r_i8 = bitcast i64* %rank to i8*\n\
+         \x20 call void @free(i8* %r_i8)\n\
+         \x20 br label %d_done\n\
+         d_done:\n\
+         \x20 store i64* null, i64** %pp\n\
+         \x20 store i64* null, i64** %rp\n\
+         \x20 %np = getelementptr %intent_union_find, %intent_union_find* %uf, i32 0, i32 2\n\
+         \x20 %sp = getelementptr %intent_union_find, %intent_union_find* %uf, i32 0, i32 3\n\
+         \x20 store i64 0, i64* %np\n\
+         \x20 store i64 0, i64* %sp\n\
+         \x20 ret void\n\
+         }\n\
+         ; find with iterative path compression. Out-of-range x returns x.\n\
+         define i64 @intent_union_find_find(%intent_union_find* %uf, i64 %x) {\n\
+         \x20 %pp = getelementptr %intent_union_find, %intent_union_find* %uf, i32 0, i32 0\n\
+         \x20 %np = getelementptr %intent_union_find, %intent_union_find* %uf, i32 0, i32 2\n\
+         \x20 %parent = load i64*, i64** %pp\n\
+         \x20 %n = load i64, i64* %np\n\
+         \x20 %lo = icmp slt i64 %x, 0\n\
+         \x20 %hi = icmp sge i64 %x, %n\n\
+         \x20 %oob = or i1 %lo, %hi\n\
+         \x20 br i1 %oob, label %ff_ret_x, label %ff_walk\n\
+         ff_ret_x:\n\
+         \x20 ret i64 %x\n\
+         ff_walk:\n\
+         \x20 ; Walk to root.\n\
+         \x20 %r_p = alloca i64\n\
+         \x20 store i64 %x, i64* %r_p\n\
+         \x20 br label %ff_loop\n\
+         ff_loop:\n\
+         \x20 %r = load i64, i64* %r_p\n\
+         \x20 %slot_r = getelementptr i64, i64* %parent, i64 %r\n\
+         \x20 %pr = load i64, i64* %slot_r\n\
+         \x20 %is_root = icmp eq i64 %pr, %r\n\
+         \x20 br i1 %is_root, label %ff_compress, label %ff_advance\n\
+         ff_advance:\n\
+         \x20 store i64 %pr, i64* %r_p\n\
+         \x20 br label %ff_loop\n\
+         ff_compress:\n\
+         \x20 ; Point every node on x→root walk straight at root.\n\
+         \x20 %root = load i64, i64* %r_p\n\
+         \x20 %cur_p = alloca i64\n\
+         \x20 store i64 %x, i64* %cur_p\n\
+         \x20 br label %ff_comp_loop\n\
+         ff_comp_loop:\n\
+         \x20 %cur = load i64, i64* %cur_p\n\
+         \x20 %slot_cur = getelementptr i64, i64* %parent, i64 %cur\n\
+         \x20 %p_cur = load i64, i64* %slot_cur\n\
+         \x20 %cur_is_root = icmp eq i64 %p_cur, %root\n\
+         \x20 br i1 %cur_is_root, label %ff_done, label %ff_comp_step\n\
+         ff_comp_step:\n\
+         \x20 store i64 %root, i64* %slot_cur\n\
+         \x20 store i64 %p_cur, i64* %cur_p\n\
+         \x20 br label %ff_comp_loop\n\
+         ff_done:\n\
+         \x20 ret i64 %root\n\
+         }\n\
+         define i1 @intent_union_find_union(%intent_union_find* %uf, i64 %a, i64 %b) {\n\
+         \x20 %ra = call i64 @intent_union_find_find(%intent_union_find* %uf, i64 %a)\n\
+         \x20 %rb = call i64 @intent_union_find_find(%intent_union_find* %uf, i64 %b)\n\
+         \x20 %same = icmp eq i64 %ra, %rb\n\
+         \x20 br i1 %same, label %u_no, label %u_do\n\
+         u_no:\n\
+         \x20 ret i1 false\n\
+         u_do:\n\
+         \x20 %pp = getelementptr %intent_union_find, %intent_union_find* %uf, i32 0, i32 0\n\
+         \x20 %rp = getelementptr %intent_union_find, %intent_union_find* %uf, i32 0, i32 1\n\
+         \x20 %sp = getelementptr %intent_union_find, %intent_union_find* %uf, i32 0, i32 3\n\
+         \x20 %parent = load i64*, i64** %pp\n\
+         \x20 %rank = load i64*, i64** %rp\n\
+         \x20 %slot_ra = getelementptr i64, i64* %rank, i64 %ra\n\
+         \x20 %slot_rb = getelementptr i64, i64* %rank, i64 %rb\n\
+         \x20 %ra_rk = load i64, i64* %slot_ra\n\
+         \x20 %rb_rk = load i64, i64* %slot_rb\n\
+         \x20 %lt = icmp slt i64 %ra_rk, %rb_rk\n\
+         \x20 br i1 %lt, label %u_a_under_b, label %u_check_gt\n\
+         u_a_under_b:\n\
+         \x20 ; ra becomes child of rb.\n\
+         \x20 %slot_pa1 = getelementptr i64, i64* %parent, i64 %ra\n\
+         \x20 store i64 %rb, i64* %slot_pa1\n\
+         \x20 br label %u_dec_sets\n\
+         u_check_gt:\n\
+         \x20 %gt = icmp sgt i64 %ra_rk, %rb_rk\n\
+         \x20 br i1 %gt, label %u_b_under_a, label %u_equal_rank\n\
+         u_b_under_a:\n\
+         \x20 %slot_pb1 = getelementptr i64, i64* %parent, i64 %rb\n\
+         \x20 store i64 %ra, i64* %slot_pb1\n\
+         \x20 br label %u_dec_sets\n\
+         u_equal_rank:\n\
+         \x20 ; Equal ranks — pick ra as the new root and bump its rank.\n\
+         \x20 %slot_pb2 = getelementptr i64, i64* %parent, i64 %rb\n\
+         \x20 store i64 %ra, i64* %slot_pb2\n\
+         \x20 %ra_rk_new = add i64 %ra_rk, 1\n\
+         \x20 store i64 %ra_rk_new, i64* %slot_ra\n\
+         \x20 br label %u_dec_sets\n\
+         u_dec_sets:\n\
+         \x20 %sets = load i64, i64* %sp\n\
+         \x20 %sets_pos = icmp sgt i64 %sets, 0\n\
+         \x20 %sets_dec = sub i64 %sets, 1\n\
+         \x20 %sets_new = select i1 %sets_pos, i64 %sets_dec, i64 %sets\n\
+         \x20 store i64 %sets_new, i64* %sp\n\
+         \x20 ret i1 true\n\
+         }\n\
+         define i1 @intent_union_find_connected(%intent_union_find* %uf, i64 %a, i64 %b) {\n\
+         \x20 %ra = call i64 @intent_union_find_find(%intent_union_find* %uf, i64 %a)\n\
+         \x20 %rb = call i64 @intent_union_find_find(%intent_union_find* %uf, i64 %b)\n\
+         \x20 %eq = icmp eq i64 %ra, %rb\n\
+         \x20 ret i1 %eq\n\
+         }\n\
+         define i64 @intent_union_find_count(%intent_union_find* %uf) {\n\
+         \x20 %sp = getelementptr %intent_union_find, %intent_union_find* %uf, i32 0, i32 3\n\
+         \x20 %sets = load i64, i64* %sp\n\
+         \x20 ret i64 %sets\n\
+         }\n\n",
+    );
 }
 
 /// Data-structures roadmap Level 2 — HashSet<i64> runtime
@@ -13276,7 +13520,7 @@ fn is_scalar(ty: &Type) -> bool {
         // <ty> <v>, <ty>* …` work uniformly. The builtins
         // (channel_new, mutex_new, mutex_lock) return SSA
         // values of these struct types.
-        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _))
+        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind)
         // Function pointers are pointer-sized scalars. The
         // alloca holds a single value of fn-ptr type (the
         // load returns a function-pointer SSA value the
@@ -13331,6 +13575,7 @@ pub(crate) fn llvm_type(ty: &Type) -> &'static str {
         Type::HashMap(_, _) => "%intent_hashmap_i64_i64",
         Type::BTreeSet(_) => "%intent_btreeset_i64",
         Type::BTreeMap(_, _) => "%intent_btreemap_i64_i64",
+        Type::UnionFind => "%intent_union_find",
         // Enums lower to a 32-bit tag — see `llvm_type_string`
         // for the same. T1.3.
         Type::Enum(_) => "i32",

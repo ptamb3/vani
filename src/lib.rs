@@ -12680,6 +12680,103 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn union_find_basics_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let uf: UnionFind = union_find_new(5);
+              let _: bool = union_find_union(mut ref uf, 0, 1);
+              let r: i64 = union_find_find(mut ref uf, 0);
+              let c: bool = union_find_connected(mut ref uf, 0, 1);
+              let n: i64 = union_find_count(ref uf);
+              if c { return r + n; } else { return 0; }
+            }
+        "#;
+        compile_to_c(source).expect("union_find basics must type-check in C");
+        compile_to_llvm(source).expect("union_find basics must compile to LLVM");
+    }
+
+    #[test]
+    fn union_find_union_rejects_non_mut_ref() {
+        let source = r#"
+            fn main() -> i64 {
+              let uf: UnionFind = union_find_new(5);
+              let _: bool = union_find_union(ref uf, 0, 1);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("by-ref union must fail");
+        assert!(
+            errors.iter().any(|e| e.message.contains("mut ref UnionFind")),
+            "expected mut-ref-UnionFind diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn union_find_reserves_name_against_user_struct() {
+        let source = r#"
+            struct UnionFind { x: i64 }
+            fn main() -> i64 { return 0; }
+        "#;
+        let errors = compile(source).expect_err("`struct UnionFind` must collide");
+        assert!(
+            errors.iter().any(|e| e.message.contains("built-in") || e.message.contains("reserved")),
+            "expected reserved-name diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn union_find_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let uf: UnionFind = union_find_new(4);
+              let _: bool = uf.union(0, 1);
+              let r: i64 = uf.find(0);
+              if uf.connected(0, 1) { return r + uf.count(); } else { return 0; }
+            }
+        "#;
+        compile_to_c(source).expect("uf method sugar in C");
+        compile_to_llvm(source).expect("uf method sugar in LLVM");
+    }
+
+    #[test]
+    fn union_find_emits_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let uf: UnionFind = union_find_new(3);
+              let _: bool = union_find_union(mut ref uf, 0, 1);
+              return union_find_find(mut ref uf, 0);
+            }
+        "#;
+        let c = compile_to_c(source).expect("union_find program compiles");
+        assert!(
+            c.contains("intent_union_find") && c.contains("intent_union_find_union")
+                && c.contains("intent_union_find_find") && c.contains("intent_union_find_drop"),
+            "C output must include the union_find runtime; got snippet:\n{}",
+            &c[..c.len().min(800)]
+        );
+    }
+
+    #[test]
+    fn union_find_emits_helpers_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let uf: UnionFind = union_find_new(3);
+              let _: bool = union_find_union(mut ref uf, 0, 1);
+              return union_find_find(mut ref uf, 0);
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("union_find LLVM compile");
+        assert!(
+            ll.contains("%intent_union_find = type")
+                && ll.contains("define i1 @intent_union_find_union")
+                && ll.contains("define i64 @intent_union_find_find"),
+            "LLVM output must include the union_find typedef + helpers"
+        );
+    }
+
+    #[test]
     fn btreemap_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

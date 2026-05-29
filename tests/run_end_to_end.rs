@@ -891,6 +891,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "try_keyword.vani",
         "tuple_eq.vani",
         "type_associated_fn.vani",
+        "union_find.vani",
         "unit_return.vani",
         "vec_invariants.vani",
         "vectors.vani",

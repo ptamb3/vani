@@ -549,6 +549,9 @@ pub fn emit_c(program: &TypedProgram) -> String {
         });
         emit_intent_btreemap_helpers_c_body(&mut body, has_option_i64);
     }
+    if program_uses_union_find(program) {
+        emit_intent_union_find_helpers_c_body(&mut body);
+    }
 
     for function in &program.functions {
         emit_prototype(function, &mut body);
@@ -1299,6 +1302,122 @@ fn emit_intent_btreemap_helpers_c_body(out: &mut String, has_option_i64: bool) {
              }\n\n",
         );
     }
+}
+
+/// Walk the program for any `UnionFind` type usage. Closure #325.
+pub(crate) fn program_uses_union_find(program: &TypedProgram) -> bool {
+    fn ty_uses(ty: &Type) -> bool {
+        match ty {
+            Type::UnionFind => true,
+            Type::Vec(inner) | Type::Ref(inner) | Type::RefMut(inner) => ty_uses(inner),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if ty_uses(&f.return_type) {
+            return true;
+        }
+        for p in &f.params {
+            if ty_uses(&p.ty) {
+                return true;
+            }
+        }
+        for s in &f.body {
+            if stmt_uses_union_find(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn stmt_uses_union_find(stmt: &crate::ir::TypedStmt) -> bool {
+    use crate::ir::TypedStmt as S;
+    fn ty_uses(ty: &Type) -> bool {
+        matches!(ty, Type::UnionFind)
+            || matches!(ty,
+                Type::Vec(i) | Type::Ref(i) | Type::RefMut(i) if ty_uses(i))
+    }
+    match stmt {
+        S::Let { ty, .. } | S::Reassign { ty, .. } | S::Drop { ty, .. } => ty_uses(ty),
+        S::If { then_body, else_body, .. } => {
+            then_body.iter().any(stmt_uses_union_find)
+                || else_body.iter().any(stmt_uses_union_find)
+        }
+        S::While { body, .. } | S::For { body, .. } | S::ForIter { body, .. } => {
+            body.iter().any(stmt_uses_union_find)
+        }
+        _ => false,
+    }
+}
+
+/// Data-structures roadmap Level 4 #1 — Union-Find runtime
+/// helpers (closure #325). v1 fixed i64 element type. Backing:
+/// parallel `parent` + `rank` i64 arrays. Find uses iterative
+/// path compression; union uses union-by-rank. `count` tracks
+/// the number of distinct sets — decremented on each
+/// successful merge.
+fn emit_intent_union_find_helpers_c_body(out: &mut String) {
+    out.push_str(
+        "typedef struct { int64_t* parent; int64_t* rank; uint64_t n; uint64_t sets; } intent_union_find;\n\
+         static INTENT_UNUSED intent_union_find intent_union_find_new(int64_t n) {\n\
+         \x20 intent_union_find uf;\n\
+         \x20 if (n < 0) n = 0;\n\
+         \x20 uf.n = (uint64_t)n;\n\
+         \x20 uf.sets = (uint64_t)n;\n\
+         \x20 if (n == 0) {\n\
+         \x20   uf.parent = (int64_t*)0; uf.rank = (int64_t*)0; return uf;\n\
+         \x20 }\n\
+         \x20 uf.parent = (int64_t*)malloc((uint64_t)n * sizeof(int64_t));\n\
+         \x20 uf.rank = (int64_t*)calloc((uint64_t)n, sizeof(int64_t));\n\
+         \x20 if (!uf.parent || !uf.rank) abort();\n\
+         \x20 for (int64_t i = 0; i < n; i++) uf.parent[i] = i;\n\
+         \x20 return uf;\n\
+         }\n\
+         static INTENT_UNUSED void intent_union_find_drop(intent_union_find* uf) {\n\
+         \x20 if (uf->parent) free(uf->parent);\n\
+         \x20 if (uf->rank) free(uf->rank);\n\
+         \x20 uf->parent = (int64_t*)0; uf->rank = (int64_t*)0;\n\
+         \x20 uf->n = 0; uf->sets = 0;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_union_find_find(intent_union_find* uf, int64_t x) {\n\
+         \x20 if (x < 0 || (uint64_t)x >= uf->n) return x;\n\
+         \x20 /* Walk to the root. */\n\
+         \x20 int64_t r = x;\n\
+         \x20 while (uf->parent[r] != r) r = uf->parent[r];\n\
+         \x20 /* Path-compress: point every node on the walk\n\
+         \x20  * straight at the root. */\n\
+         \x20 int64_t cur = x;\n\
+         \x20 while (uf->parent[cur] != r) {\n\
+         \x20   int64_t next = uf->parent[cur];\n\
+         \x20   uf->parent[cur] = r;\n\
+         \x20   cur = next;\n\
+         \x20 }\n\
+         \x20 return r;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_union_find_union(intent_union_find* uf, int64_t a, int64_t b) {\n\
+         \x20 int64_t ra = intent_union_find_find(uf, a);\n\
+         \x20 int64_t rb = intent_union_find_find(uf, b);\n\
+         \x20 if (ra == rb) return false;\n\
+         \x20 /* Union-by-rank: shorter tree becomes child. */\n\
+         \x20 if (uf->rank[ra] < uf->rank[rb]) {\n\
+         \x20   uf->parent[ra] = rb;\n\
+         \x20 } else if (uf->rank[ra] > uf->rank[rb]) {\n\
+         \x20   uf->parent[rb] = ra;\n\
+         \x20 } else {\n\
+         \x20   uf->parent[rb] = ra;\n\
+         \x20   uf->rank[ra] += 1;\n\
+         \x20 }\n\
+         \x20 if (uf->sets > 0) uf->sets -= 1;\n\
+         \x20 return true;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_union_find_connected(intent_union_find* uf, int64_t a, int64_t b) {\n\
+         \x20 return intent_union_find_find(uf, a) == intent_union_find_find(uf, b);\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_union_find_count(const intent_union_find* uf) {\n\
+         \x20 return (int64_t)uf->sets;\n\
+         }\n\n",
+    );
 }
 
 /// Data-structures roadmap Level 1 — FNV-1a hash helpers.
@@ -3912,6 +4031,11 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
                 out.push_str(&local_name(name));
                 out.push_str(");\n");
             }
+            Type::UnionFind => {
+                out.push_str("  intent_union_find_drop(&");
+                out.push_str(&local_name(name));
+                out.push_str(");\n");
+            }
             Type::Struct(struct_name) => {
                 // Auto-call the user's `Drop` impl when one
                 // exists. Two flavors:
@@ -6495,6 +6619,32 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_btreemap_i64_i64_len({})",
             emit_expr(&args[0])
         ),
+        // Closure #325: Union-Find dispatch.
+        "union_find_new" => format!(
+            "intent_union_find_new(({}))",
+            emit_expr(&args[0])
+        ),
+        "union_find_union" => format!(
+            "intent_union_find_union({}, ({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
+        "union_find_find" => format!(
+            "intent_union_find_find({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "union_find_connected" => format!(
+            "intent_union_find_connected({}, ({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
+        "union_find_count" => format!(
+            "intent_union_find_count({})",
+            emit_expr(&args[0])
+        ),
         "hashmap_new" => "intent_hashmap_i64_i64_new()".to_string(),
         "hashmap_insert" => format!(
             "intent_hashmap_i64_i64_insert({}, ({}), ({}))",
@@ -7056,6 +7206,8 @@ pub(crate) fn c_leaf_type(ty: &Type) -> &'static str {
         Type::BTreeSet(_) => "intent_btreeset_i64",
         // `BTreeMap<K, V>` — sorted-Vec backed parallel arrays. v1 (i64, i64) only.
         Type::BTreeMap(_, _) => "intent_btreemap_i64_i64",
+        // `UnionFind` — Level 4 #1 arena-based disjoint-set.
+        Type::UnionFind => "intent_union_find",
         // `fn(T1, T2) -> R` has no fixed leaf spelling in C —
         // function-pointer types are declarator-shaped
         // (`R (*name)(T1, T2)`). Callers that need to emit a
@@ -7387,7 +7539,7 @@ fn divisor_helper(ty: &Type) -> &'static str {
         Type::U64 => "intent_check_u64_divisor",
         Type::F32 => "intent_check_f32_divisor",
         Type::F64 => "intent_check_f64_divisor",
-        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
+        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
             unreachable!("non-numeric type cannot be a divisor")
         }
     }
@@ -7423,6 +7575,7 @@ fn shift_helper(ty: &Type) -> &'static str {
         | Type::HashMap(_, _)
         | Type::BTreeSet(_)
         | Type::BTreeMap(_, _)
+        | Type::UnionFind
         | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => unreachable!("shift count must be an integer"),
     }
 }

@@ -243,6 +243,18 @@ pointer (already in the language as of #279 FFI callbacks).
     `Vec<u32>` parent + `Vec<u32>` rank. Path compression
     works under affine because mutation goes through
     `mut ref parent` only.
+    *Shipped 2026-05-28 (closure #325) — first Level 4 item.*
+    `UnionFind` affine handle (parallel `parent` + `rank` i64
+    arrays, not Vec<u32> — keeps things uniform with the
+    existing i64-element family). 5 builtins: `union_find_new
+    / union / find / connected / count`. Path-compressed
+    iterative find; union-by-rank. `find` / `union` /
+    `connected` take `mut ref` (path compression mutates);
+    `count` is read-only. Method sugar: `uf.union(a, b)` /
+    `uf.find(x)` / `uf.connected(a, b)` / `uf.count()`. Drop
+    frees both arrays. Cross-backend parity green. Pending:
+    wider-than-i64 indices (`UnionFind<u32>` etc.); per-set
+    payload variant; serialize/deserialize.
 25. **Skip list** — ✅ AFFINE.
     Arena-based; forward-link levels stored as `Vec<u32>`
     per node.
@@ -552,7 +564,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-28, after closure #321 — Level 3 ergonomics polish cont.: method-call sugar for `[T; N]` Array receivers. `arr.sort()` / `arr.sort_by(cmp)` / `arr.reverse()` / `arr.find(v)` / `arr.contains(v)` / `arr.binary_search(v)` all desugar to the existing array builtins. Mirrors the Vec sugar arm. 3 new lib tests. Next focal area sequence: (#322) **vec_zip** — needs `Vec<(i64, i64)>` tuple-element-Vec; this is a real new feature requiring tuple-element Vec runtime helpers on both backends (the current LLVM backend panics on `Vec<(i64, i64)>` lowering). (#323) `.collect()` (once lazy iterators land); non-i64 element types in combinators (e.g. `Vec<f64>` mapper variants); type-changing map (`Vec<i64> -> Vec<Str>`); auto-fusion across non-adjacent statements; iterator combinator sugar on arrays (map/filter/fold). Closure follow-ups: non-Copy captures with move semantics; capture-by-ref second-class closures; passing closures as fn-ptr args (needs env+ptr struct value type); closure-name reuse across sibling scopes. After Level 3 closes: Level 4 arena-based BST/AVL/B-tree/Trie/graphs + algorithms. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries + iteration via closures, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, dedicated BinaryHeap<T> wrapper type, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-28, after closure #325 — **Level 4 #1** Union-Find / disjoint-set: first arena-based container. `UnionFind` affine handle + parallel `parent`/`rank` i64 arrays; path-compressed find + union-by-rank. 5 builtins + method sugar + new `examples/union_find.vani` + 6 new lib tests. Between #321 and #325 the Level 3 closures #322 (reductions sum/product/min/max/count/any/all), #323 (non-adjacent auto-fusion), and #324 (vec_chain) also shipped. **Level 4 is now open** — arena-based data structures are the rest of the roadmap. Next focal area sequence: (#326) **BinaryHeap<T> dedicated wrapper type** (Level 4 #2) — promote the Vec<i64>-backed heap to a first-class handle. (#327) **Bloom filter** (Level 4 #6) — fixed bit-vector. (#328) **BST/AVL via node arena** (Level 4 #3) — child-index i32s, first arena-based ordered container. (#329) **Graph + algorithms** (BFS / DFS / Dijkstra / topo / Kruskal — Kruskal now unblocked by UnionFind). (#330) Trie; (#331) Skip list. After Level 4: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

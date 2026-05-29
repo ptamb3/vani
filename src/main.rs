@@ -345,6 +345,9 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "vec_min" || name == "vec_max"
                 || name == "vec_count" || name == "vec_any" || name == "vec_all"
                 || name == "vec_chain"
+                || name == "union_find_new" || name == "union_find_union"
+                || name == "union_find_find" || name == "union_find_connected"
+                || name == "union_find_count"
             {
                 return false;
             }

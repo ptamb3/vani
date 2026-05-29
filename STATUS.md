@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-28 (closure #324 — Level 3 `vec_chain(ref xs, ref ys) -> Vec<i64>` builtin: concatenates two Vec<i64>s into a fresh allocation. Output capacity is exactly `xs.len() + ys.len()`. Tree-C uses memcpy; Tree-LLVM uses two memmoves. Method sugar `xs.chain(ref ys)`. 3 new lib tests.)
-**Test totals:** 1190 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 79 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-28 (closure #325 — **Level 4 #1** Union-Find / disjoint-set: first arena-based container under the affine model. New `UnionFind` affine handle type backed by parallel `parent` + `rank` i64 arrays. 5 builtins: `union_find_new(n)`, `union_find_union(mut ref uf, a, b)` (returns true iff merge actually happened), `union_find_find(mut ref uf, x)` (path-compresses), `union_find_connected(mut ref uf, a, b)`, `union_find_count(ref uf)`. Method sugar: `uf.union(a, b)` / `uf.find(x)` / `uf.connected(a, b)` / `uf.count()`. Scope-exit Drop frees both arrays. New `examples/union_find.vani` with a small connected-components demo + path-compression sanity check; 6 new lib tests. **Level 4 has now opened** — arena-based containers are the rest of the roadmap.)
+**Test totals:** 1196 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 80 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,

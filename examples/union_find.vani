@@ -1,0 +1,67 @@
+// build & run:
+//   intentc run examples/union_find.vani                          # LLVM backend
+//   intentc run examples/union_find.vani --backend=c              # C backend
+//   intentc build examples/union_find.vani -o /tmp/uf && /tmp/uf
+
+intent "Union-Find / disjoint-set (Level 4 #1) — affine arena container";
+
+// v1 design: classic union-find with parent + rank arrays.
+// Find uses iterative path compression; union uses
+// union-by-rank — both near-O(1) amortized via the
+// Ackermann-inverse bound.
+//
+//   union_find_new(n)                  -> UnionFind
+//       n elements, each in its own singleton set.
+//   union_find_union(mut ref uf, a, b) -> bool
+//       merge a's and b's sets; returns true iff they were
+//       in different sets (an actual merge happened).
+//   union_find_find(mut ref uf, x)     -> i64
+//       root of x's set; path-compresses on the way up.
+//   union_find_connected(mut ref uf, a, b) -> bool
+//       same as `find(a) == find(b)` but reads more
+//       naturally.
+//   union_find_count(ref uf)           -> i64
+//       number of disjoint sets currently in the structure.
+//
+// Affine compliance ✅: the UnionFind handle owns the parent +
+// rank arrays; scope-exit Drop frees them. find/union/connected
+// require `mut ref` because path compression mutates parent[];
+// count is read-only.
+
+fn main() -> i64 {
+  // Mini connected-components demo: 8 isolated nodes, merge a
+  // few edges, then check which clusters formed.
+  let uf: UnionFind = union_find_new(8);
+  print "initial set count:", uf.count();
+
+  // Edges:  0—1, 1—2, 5—6, 3—4, 4—5
+  // Components should end up as: {0,1,2}, {3,4,5,6}, {7}
+  let _ = uf.union(0, 1);
+  let _ = uf.union(1, 2);
+  let _ = uf.union(5, 6);
+  let _ = uf.union(3, 4);
+  let _ = uf.union(4, 5);
+
+  print "final set count:", uf.count();          // 3
+  print "connected(0, 2):", uf.connected(0, 2);  // true
+  print "connected(0, 3):", uf.connected(0, 3);  // false
+  print "connected(3, 6):", uf.connected(3, 6);  // true
+  print "connected(7, 0):", uf.connected(7, 0);  // false (7 alone)
+
+  // Redundant merge returns false (already same set).
+  print "redundant union(0,2):", uf.union(0, 2);  // false
+
+  // Path-compression sanity: after a long chain, find still
+  // points everything at the same root.
+  let chain: UnionFind = union_find_new(6);
+  let _ = chain.union(0, 1);
+  let _ = chain.union(1, 2);
+  let _ = chain.union(2, 3);
+  let _ = chain.union(3, 4);
+  let _ = chain.union(4, 5);
+  print "chain root(0):", chain.find(0);
+  print "chain root(5):", chain.find(5);
+  print "chain count:", chain.count();  // 1
+
+  return 0;
+}

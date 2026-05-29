@@ -1609,6 +1609,11 @@ impl Parser {
                 self.expect_close_angle()?;
                 return Ok(Type::BTreeMap(Box::new(k), Box::new(v)));
             }
+            if name == "UnionFind" {
+                // No type params — bare name like `Condvar`.
+                self.bump();
+                return Ok(Type::UnionFind);
+            }
             if name == "Atomic" {
                 self.bump();
                 self.expect_keyword("'<'", |kind| matches!(kind, TokenKind::Less))?;
