@@ -17,9 +17,13 @@ intent "BTreeSet<i64> — ordered set on sorted-Vec backing (Level 2 #5)";
 //   btreeset_contains(ref s, v) -> bool
 //   btreeset_remove(mut ref s, v) -> bool      true iff was present
 //   btreeset_len(ref s) -> i64
+//   btreeset_range(ref s, lo, hi, mut ref out: Vec<i64>) -> i64   [closure #346]
+//       Appends every key k in [lo, hi] (inclusive) to `out` in
+//       sorted ascending order; returns the count appended.
+//       O(log n + matches).
 //
-// Restrictions: v1 = i64 element only; iteration / range queries
-// land with the closure infrastructure in Level 3.
+// Restrictions: v1 = i64 element only; full iteration via closures
+// queued in Level 3.
 
 fn main() -> i64 {
   let s: BTreeSet<i64> = btreeset_new();
@@ -70,6 +74,25 @@ fn main() -> i64 {
   }
   print "drained from 0..40 step 2:", drained;
   print "final len:", btreeset_len(ref s);
+
+  // Closure #346: range query. Returns every key in [lo, hi] in
+  // sorted ascending order. Bounds are inclusive on both sides.
+  // The output Vec is appended to (not cleared), so callers can
+  // reuse it for batch collections; here we pass a fresh empty.
+  let mid: Vec<i64> = vec();
+  let n_mid: i64 = s.range(40, 70, mut ref mid);
+  print "range 40..=70 count:", n_mid;
+  for i from 0 to n_mid {
+    print "  k:", mid[i];
+  }
+
+  // Empty range when lo > hi or no keys in [lo, hi].
+  let none: Vec<i64> = vec();
+  let n_none: i64 = btreeset_range(ref s, 1000, 9999, mut ref none);
+  print "range 1000..=9999 count (0):", n_none;
+  let inv: Vec<i64> = vec();
+  let n_inv: i64 = btreeset_range(ref s, 100, 50, mut ref inv);
+  print "range 100..=50 (lo>hi) count (0):", n_inv;
 
   return 0;
 }

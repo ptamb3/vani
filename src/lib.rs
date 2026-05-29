@@ -15308,6 +15308,115 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn btreeset_range_typecheck_and_compile() {
+        // Closure #346: btreeset_range(ref s, lo, hi, mut ref out: Vec<i64>) -> i64.
+        let source = r#"
+            fn main() -> i64 {
+              let s: BTreeSet<i64> = btreeset_new();
+              let _: bool = btreeset_insert(mut ref s, 3);
+              let _: bool = btreeset_insert(mut ref s, 5);
+              let out: Vec<i64> = vec();
+              let n: i64 = btreeset_range(ref s, 1, 4, mut ref out);
+              let m: i64 = s.range(0, 100, mut ref out);
+              return n + m;
+            }
+        "#;
+        compile_to_c(source).expect("btreeset_range must type-check in C");
+        compile_to_llvm(source).expect("btreeset_range must compile to LLVM");
+    }
+
+    #[test]
+    fn btreeset_range_rejects_non_mut_ref_out() {
+        // The output Vec must be passed `mut ref`, not `ref`.
+        let source = r#"
+            fn main() -> i64 {
+              let s: BTreeSet<i64> = btreeset_new();
+              let out: Vec<i64> = vec();
+              let _: i64 = btreeset_range(ref s, 0, 10, ref out);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("by-ref out must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref Vec<i64>")),
+            "expected mut-ref-Vec<i64> diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn btreeset_range_emits_helpers() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: BTreeSet<i64> = btreeset_new();
+              let out: Vec<i64> = vec();
+              let _: i64 = btreeset_range(ref s, 0, 10, mut ref out);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("btreeset_range C compile");
+        assert!(
+            c.contains("intent_btreeset_i64_range"),
+            "C output must include the range helper"
+        );
+        let ll = compile_to_llvm(source).expect("btreeset_range LLVM compile");
+        assert!(
+            ll.contains("@intent_btreeset_i64_range"),
+            "LLVM output must include the range helper"
+        );
+    }
+
+    #[test]
+    fn btreemap_range_keys_values_typecheck_and_compile() {
+        // Closure #346: range_keys + range_values mirror set range
+        // but on the BTreeMap parallel-Vec backing.
+        let source = r#"
+            fn main() -> i64 {
+              let m: BTreeMap<i64, i64> = btreemap_new();
+              let _: Option<i64> = btreemap_insert(mut ref m, 1, 10);
+              let _: Option<i64> = btreemap_insert(mut ref m, 5, 50);
+              let ks: Vec<i64> = vec();
+              let vs: Vec<i64> = vec();
+              let n: i64 = btreemap_range_keys(ref m, 0, 4, mut ref ks);
+              let q: i64 = btreemap_range_values(ref m, 0, 4, mut ref vs);
+              let n2: i64 = m.range_keys(0, 100, mut ref ks);
+              let q2: i64 = m.range_values(0, 100, mut ref vs);
+              return n + q + n2 + q2;
+            }
+        "#;
+        compile_to_c(source).expect("btreemap range queries must type-check");
+        compile_to_llvm(source).expect("btreemap range queries must compile to LLVM");
+    }
+
+    #[test]
+    fn btreemap_range_emits_helpers() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: BTreeMap<i64, i64> = btreemap_new();
+              let ks: Vec<i64> = vec();
+              let vs: Vec<i64> = vec();
+              let _: i64 = btreemap_range_keys(ref m, 0, 10, mut ref ks);
+              let _: i64 = btreemap_range_values(ref m, 0, 10, mut ref vs);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("btreemap range C compile");
+        assert!(
+            c.contains("intent_btreemap_i64_i64_range_keys")
+                && c.contains("intent_btreemap_i64_i64_range_values"),
+            "C output must include both range helpers"
+        );
+        let ll = compile_to_llvm(source).expect("btreemap range LLVM compile");
+        assert!(
+            ll.contains("@intent_btreemap_i64_i64_range_keys")
+                && ll.contains("@intent_btreemap_i64_i64_range_values"),
+            "LLVM output must include both range helpers"
+        );
+    }
+
+    #[test]
     fn btreeset_reserves_name_against_user_struct() {
         let source = r#"
             struct BTreeSet { x: i64 }

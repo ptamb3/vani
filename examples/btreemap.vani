@@ -19,6 +19,13 @@ intent "BTreeMap<i64, i64> — ordered key/value map on sorted-Vec backing (Leve
 //   btreemap_remove(mut ref m, k) -> Option<i64>
 //       returns previous value if present, or None
 //   btreemap_len(ref m) -> i64
+//   btreemap_range_keys(ref m, lo, hi, mut ref out: Vec<i64>) -> i64     [closure #346]
+//       Appends each key k in [lo, hi] to `out` in sorted
+//       ascending order; returns the count appended.
+//   btreemap_range_values(ref m, lo, hi, mut ref out: Vec<i64>) -> i64    [closure #346]
+//       Same loop, but appends the corresponding value. Calling
+//       both with the same (lo, hi) yields parallel key/value
+//       output Vecs.
 //
 // AFFINE-TENSION note: for Copy V (i64 in v1), `get` returns
 // `Option<V>` by-value safely. Non-Copy V (Vec / OwnedStr)
@@ -85,6 +92,24 @@ fn main() -> i64 {
   }
   print "drained from 0..20 step 2:", drained;
   print "final len:", btreemap_len(ref m);
+
+  // Closure #346: range queries. range_keys + range_values fill
+  // parallel output Vecs with every (k, v) entry where k is in
+  // [lo, hi] (inclusive). Both are O(log n + matches).
+  let ks: Vec<i64> = vec();
+  let vs: Vec<i64> = vec();
+  let n_keys: i64 = m.range_keys(40, 60, mut ref ks);
+  let n_vals: i64 = m.range_values(40, 60, mut ref vs);
+  print "range_keys 40..=60 count:", n_keys;
+  print "range_values 40..=60 count:", n_vals;
+  for i from 0 to n_keys {
+    print "  k,v:", ks[i], vs[i];
+  }
+
+  // Empty range — lo > hi.
+  let inv: Vec<i64> = vec();
+  let n_inv: i64 = btreemap_range_keys(ref m, 60, 40, mut ref inv);
+  print "range_keys 60..=40 (lo>hi) count (0):", n_inv;
 
   return 0;
 }

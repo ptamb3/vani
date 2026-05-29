@@ -541,13 +541,15 @@ pub fn emit_c(program: &TypedProgram) -> String {
         emit_intent_hashmap_helpers_c_body(&mut body, has_option_i64);
     }
     if program_uses_i64_btreeset(program) {
-        emit_intent_btreeset_helpers_c_body(&mut body);
+        let emit_vec_dep = program_uses_graph_vec_builtin(program);
+        emit_intent_btreeset_helpers_c_body(&mut body, emit_vec_dep);
     }
     if program_uses_i64_i64_btreemap(program) {
         let has_option_i64 = ENUM_PAYLOAD_REGISTRY.with(|r| {
             r.borrow().contains_key("Option__i64")
         });
-        emit_intent_btreemap_helpers_c_body(&mut body, has_option_i64);
+        let emit_vec_dep = program_uses_graph_vec_builtin(program);
+        emit_intent_btreemap_helpers_c_body(&mut body, has_option_i64, emit_vec_dep);
     }
     if program_uses_union_find(program) {
         emit_intent_union_find_helpers_c_body(&mut body);
@@ -1235,7 +1237,7 @@ fn stmt_uses_i64_btreeset(stmt: &crate::ir::TypedStmt) -> bool {
 /// lookup (O(log n)), memmove shift for insert / remove
 /// (O(n)). Naturally sorted iteration order. Real B-tree
 /// arena variant queued for Level 4.
-fn emit_intent_btreeset_helpers_c_body(out: &mut String) {
+fn emit_intent_btreeset_helpers_c_body(out: &mut String, emit_vec_dep: bool) {
     out.push_str(
         "typedef struct { int64_t* keys; uint64_t len; uint64_t capacity; } intent_btreeset_i64;\n\
          static INTENT_UNUSED intent_btreeset_i64 intent_btreeset_i64_new(void) {\n\
@@ -1283,6 +1285,30 @@ fn emit_intent_btreeset_helpers_c_body(out: &mut String) {
          \x20 return true;\n\
          }\n\n",
     );
+    if emit_vec_dep {
+        out.push_str(
+            "/* Closure #346: range query. Appends every key k in\n\
+             \x20 * [lo, hi] (inclusive) to `out` in sorted ascending\n\
+             \x20 * order. Returns the number of keys appended.\n\
+             \x20 * O(log n + matches). */\n\
+             static INTENT_UNUSED int64_t intent_btreeset_i64_range(const intent_btreeset_i64* s, int64_t lo, int64_t hi, intent_vec_int64_t* out) {\n\
+             \x20 if (lo > hi) return 0;\n\
+             \x20 uint64_t i = intent_btreeset_i64__lower_bound(s, lo);\n\
+             \x20 int64_t added = 0;\n\
+             \x20 while (i < s->len && s->keys[i] <= hi) {\n\
+             \x20   if (out->len >= out->capacity) {\n\
+             \x20     uint64_t new_cap = out->capacity == 0 ? 8 : out->capacity * 2;\n\
+             \x20     out->data = (int64_t*)realloc(out->data, (size_t)new_cap * sizeof(int64_t));\n\
+             \x20     if (!out->data) abort();\n\
+             \x20     out->capacity = new_cap;\n\
+             \x20   }\n\
+             \x20   out->data[out->len++] = s->keys[i];\n\
+             \x20   added++; i++;\n\
+             \x20 }\n\
+             \x20 return added;\n\
+             }\n\n",
+        );
+    }
 }
 
 /// Walk the program for any `BTreeMap<i64, i64>` type usage.
@@ -1345,7 +1371,7 @@ fn stmt_uses_i64_i64_btreemap(stmt: &crate::ir::TypedStmt) -> bool {
 /// / `btreemap_remove` return `Option<i64>` and so are gated on
 /// the Option__i64 enum being registered. `_contains_key` /
 /// `_len` are always emitted.
-fn emit_intent_btreemap_helpers_c_body(out: &mut String, has_option_i64: bool) {
+fn emit_intent_btreemap_helpers_c_body(out: &mut String, has_option_i64: bool, emit_vec_dep: bool) {
     out.push_str(
         "typedef struct { int64_t* keys; int64_t* values; uint64_t len; uint64_t capacity; } intent_btreemap_i64_i64;\n\
          static INTENT_UNUSED intent_btreemap_i64_i64 intent_btreemap_i64_i64_new(void) {\n\
@@ -1415,6 +1441,47 @@ fn emit_intent_btreemap_helpers_c_body(out: &mut String, has_option_i64: bool) {
              \x20 }\n\
              \x20 m->len--;\n\
              \x20 return r;\n\
+             }\n\n",
+        );
+    }
+    if emit_vec_dep {
+        out.push_str(
+            "/* Closure #346: range queries on a BTreeMap. Two\n\
+             \x20 * parallel helpers: range_keys appends every key k in\n\
+             \x20 * [lo, hi] to `out`; range_values appends each\n\
+             \x20 * corresponding value (parallel order). Returns the\n\
+             \x20 * number of entries appended. O(log n + matches). */\n\
+             static INTENT_UNUSED int64_t intent_btreemap_i64_i64_range_keys(const intent_btreemap_i64_i64* m, int64_t lo, int64_t hi, intent_vec_int64_t* out) {\n\
+             \x20 if (lo > hi) return 0;\n\
+             \x20 uint64_t i = intent_btreemap_i64_i64__lower_bound(m, lo);\n\
+             \x20 int64_t added = 0;\n\
+             \x20 while (i < m->len && m->keys[i] <= hi) {\n\
+             \x20   if (out->len >= out->capacity) {\n\
+             \x20     uint64_t new_cap = out->capacity == 0 ? 8 : out->capacity * 2;\n\
+             \x20     out->data = (int64_t*)realloc(out->data, (size_t)new_cap * sizeof(int64_t));\n\
+             \x20     if (!out->data) abort();\n\
+             \x20     out->capacity = new_cap;\n\
+             \x20   }\n\
+             \x20   out->data[out->len++] = m->keys[i];\n\
+             \x20   added++; i++;\n\
+             \x20 }\n\
+             \x20 return added;\n\
+             }\n\
+             static INTENT_UNUSED int64_t intent_btreemap_i64_i64_range_values(const intent_btreemap_i64_i64* m, int64_t lo, int64_t hi, intent_vec_int64_t* out) {\n\
+             \x20 if (lo > hi) return 0;\n\
+             \x20 uint64_t i = intent_btreemap_i64_i64__lower_bound(m, lo);\n\
+             \x20 int64_t added = 0;\n\
+             \x20 while (i < m->len && m->keys[i] <= hi) {\n\
+             \x20   if (out->len >= out->capacity) {\n\
+             \x20     uint64_t new_cap = out->capacity == 0 ? 8 : out->capacity * 2;\n\
+             \x20     out->data = (int64_t*)realloc(out->data, (size_t)new_cap * sizeof(int64_t));\n\
+             \x20     if (!out->data) abort();\n\
+             \x20     out->capacity = new_cap;\n\
+             \x20   }\n\
+             \x20   out->data[out->len++] = m->values[i];\n\
+             \x20   added++; i++;\n\
+             \x20 }\n\
+             \x20 return added;\n\
              }\n\n",
         );
     }
@@ -2088,18 +2155,24 @@ pub(crate) fn program_uses_graph(program: &TypedProgram) -> bool {
     false
 }
 
-/// Walk the program for a call to either `graph_astar` or
-/// `graph_topo_sort` (closures #334 / #335). These two helpers
-/// reference the Vec<i64> runtime struct, so we only emit them
-/// when the program actually uses them — otherwise programs
-/// that use Graph without Vec<i64> would fail to compile.
+/// Walk the program for any builtin that emits code referencing
+/// the `intent_vec_int64_t` runtime struct: `graph_astar` /
+/// `graph_topo_sort` (closures #334 / #335) and the BTreeSet /
+/// BTreeMap range queries (closure #346). We only emit those
+/// helpers when actually used — otherwise programs that use
+/// Graph or BTree* without `Vec<i64>` would fail to compile.
 pub(crate) fn program_uses_graph_vec_builtin(program: &TypedProgram) -> bool {
     use crate::ir::TypedExprKind as E;
     use crate::ir::TypedStmt as S;
     fn expr_uses(expr: &crate::ir::TypedExpr) -> bool {
         match &expr.kind {
             E::Call { name, args, .. } => {
-                if name == "graph_astar" || name == "graph_topo_sort" {
+                if name == "graph_astar"
+                    || name == "graph_topo_sort"
+                    || name == "btreeset_range"
+                    || name == "btreemap_range_keys"
+                    || name == "btreemap_range_values"
+                {
                     return true;
                 }
                 args.iter().any(expr_uses)
@@ -8287,6 +8360,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_btreeset_i64_len({})",
             emit_expr(&args[0])
         ),
+        "btreeset_range" => format!(
+            "intent_btreeset_i64_range({}, ({}), ({}), {})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2]),
+            emit_expr(&args[3])
+        ),
         "btreemap_new" => "intent_btreemap_i64_i64_new()".to_string(),
         "btreemap_insert" => format!(
             "intent_btreemap_i64_i64_insert({}, ({}), ({}))",
@@ -8312,6 +8392,20 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         "btreemap_len" => format!(
             "intent_btreemap_i64_i64_len({})",
             emit_expr(&args[0])
+        ),
+        "btreemap_range_keys" => format!(
+            "intent_btreemap_i64_i64_range_keys({}, ({}), ({}), {})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2]),
+            emit_expr(&args[3])
+        ),
+        "btreemap_range_values" => format!(
+            "intent_btreemap_i64_i64_range_values({}, ({}), ({}), {})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2]),
+            emit_expr(&args[3])
         ),
         // Closure #325: Union-Find dispatch.
         "union_find_new" => format!(

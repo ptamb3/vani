@@ -904,18 +904,22 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         emit_intent_hashmap_i64_i64_helpers_llvm(&mut out, has_option_i64);
     }
 
-    // BTreeSet<i64> helpers (closure #306).
+    // BTreeSet<i64> helpers (closure #306). Range query helper
+    // (closure #346) requires intent_vec_int64_t; gated.
     if crate::backend_c::program_uses_i64_btreeset(program) {
-        emit_intent_btreeset_i64_helpers_llvm(&mut out);
+        let emit_vec_dep = crate::backend_c::program_uses_graph_vec_builtin(program);
+        emit_intent_btreeset_i64_helpers_llvm(&mut out, emit_vec_dep);
     }
 
     // BTreeMap<i64, i64> helpers (closure #307). Gates Option-
     // returning get/insert/remove on Option__i64 being registered.
+    // Range query helpers (closure #346) require intent_vec_int64_t.
     if crate::backend_c::program_uses_i64_i64_btreemap(program) {
         let has_option_i64 = LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
             r.borrow().contains_key("Option__i64")
         });
-        emit_intent_btreemap_i64_i64_helpers_llvm(&mut out, has_option_i64);
+        let emit_vec_dep = crate::backend_c::program_uses_graph_vec_builtin(program);
+        emit_intent_btreemap_i64_i64_helpers_llvm(&mut out, has_option_i64, emit_vec_dep);
     }
 
     // UnionFind helpers (closure #325, Level 4 #1).
@@ -5135,6 +5139,18 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            if name == "btreeset_range" {
+                let s = emit_expr(&args[0], ctx, out);
+                let lo = emit_expr(&args[1], ctx, out);
+                let hi = emit_expr(&args[2], ctx, out);
+                let o = emit_expr(&args[3], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_btreeset_i64_range(%intent_btreeset_i64* {}, i64 {}, i64 {}, %intent_vec_i64* {})\n",
+                    dest, s, lo, hi, o
+                ));
+                return dest;
+            }
             // HashMap<i64, i64> builtins (closure #305).
             if name == "hashmap_new" {
                 let dest = ctx.fresh_tmp();
@@ -5250,6 +5266,19 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!(
                     "  {} = call i64 @intent_btreemap_i64_i64_len(%intent_btreemap_i64_i64* {})\n",
                     dest, m
+                ));
+                return dest;
+            }
+            if name == "btreemap_range_keys" || name == "btreemap_range_values" {
+                let m = emit_expr(&args[0], ctx, out);
+                let lo = emit_expr(&args[1], ctx, out);
+                let hi = emit_expr(&args[2], ctx, out);
+                let o = emit_expr(&args[3], ctx, out);
+                let op = name.strip_prefix("btreemap_").unwrap();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_btreemap_i64_i64_{}(%intent_btreemap_i64_i64* {}, i64 {}, i64 {}, %intent_vec_i64* {})\n",
+                    dest, op, m, lo, hi, o
                 ));
                 return dest;
             }
@@ -8020,8 +8049,9 @@ fn emit_intent_hash_helpers_llvm(out: &mut String) {
 /// Data-structures roadmap Level 2 — BTreeSet<i64> runtime
 /// helpers. v1 backed by a sorted Vec<i64>: binary_search
 /// for lookup (O(log n)), memmove shift for insert / remove
-/// (O(n)).
-fn emit_intent_btreeset_i64_helpers_llvm(out: &mut String) {
+/// (O(n)). Range query (closure #346) is gated on
+/// `intent_vec_int64_t` being available.
+fn emit_intent_btreeset_i64_helpers_llvm(out: &mut String, emit_vec_dep: bool) {
     out.push_str(
         "define %intent_btreeset_i64 @intent_btreeset_i64_new() {\n\
          \x20 %r0 = insertvalue %intent_btreeset_i64 undef, i64* null, 0\n\
@@ -8193,6 +8223,76 @@ fn emit_intent_btreeset_i64_helpers_llvm(out: &mut String) {
          \x20 ret i1 false\n\
          }\n\n",
     );
+    if emit_vec_dep {
+        out.push_str(
+            "; Closure #346: range query. Appends every key k in\n\
+             ; [lo, hi] to `out` in sorted ascending order. Returns\n\
+             ; the count appended. Grows `out` one element at a time\n\
+             ; (capacity doubling, matching the C backend).\n\
+             define i64 @intent_btreeset_i64_range(%intent_btreeset_i64* %s, i64 %lo, i64 %hi, %intent_vec_i64* %out) {\n\
+             \x20 %lo_gt_hi = icmp sgt i64 %lo, %hi\n\
+             \x20 br i1 %lo_gt_hi, label %rng_zero, label %rng_init\n\
+             rng_zero:\n\
+             \x20 ret i64 0\n\
+             rng_init:\n\
+             \x20 %lb = call i64 @intent_btreeset_i64__lower_bound(%intent_btreeset_i64* %s, i64 %lo)\n\
+             \x20 %kpp_r = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 0\n\
+             \x20 %lp_r  = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 1\n\
+             \x20 %odp = getelementptr %intent_vec_i64, %intent_vec_i64* %out, i32 0, i32 0\n\
+             \x20 %olp = getelementptr %intent_vec_i64, %intent_vec_i64* %out, i32 0, i32 1\n\
+             \x20 %ocp = getelementptr %intent_vec_i64, %intent_vec_i64* %out, i32 0, i32 2\n\
+             \x20 %i_p_r = alloca i64\n\
+             \x20 store i64 %lb, i64* %i_p_r\n\
+             \x20 %added_p_r = alloca i64\n\
+             \x20 store i64 0, i64* %added_p_r\n\
+             \x20 br label %rng_loop\n\
+             rng_loop:\n\
+             \x20 %i_r = load i64, i64* %i_p_r\n\
+             \x20 %len_r = load i64, i64* %lp_r\n\
+             \x20 %off_end = icmp uge i64 %i_r, %len_r\n\
+             \x20 br i1 %off_end, label %rng_done, label %rng_check_key\n\
+             rng_check_key:\n\
+             \x20 %keys_r = load i64*, i64** %kpp_r\n\
+             \x20 %slot_r = getelementptr i64, i64* %keys_r, i64 %i_r\n\
+             \x20 %k_r = load i64, i64* %slot_r\n\
+             \x20 %too_big = icmp sgt i64 %k_r, %hi\n\
+             \x20 br i1 %too_big, label %rng_done, label %rng_grow_check\n\
+             rng_grow_check:\n\
+             \x20 %olen = load i64, i64* %olp\n\
+             \x20 %ocap = load i64, i64* %ocp\n\
+             \x20 %full = icmp uge i64 %olen, %ocap\n\
+             \x20 br i1 %full, label %rng_grow, label %rng_store\n\
+             rng_grow:\n\
+             \x20 %cap_z = icmp eq i64 %ocap, 0\n\
+             \x20 %cap_d = mul i64 %ocap, 2\n\
+             \x20 %new_cap_r = select i1 %cap_z, i64 8, i64 %cap_d\n\
+             \x20 %nc_bytes_r = mul i64 %new_cap_r, 8\n\
+             \x20 %old_data_r = load i64*, i64** %odp\n\
+             \x20 %old_i8_r = bitcast i64* %old_data_r to i8*\n\
+             \x20 %new_i8_r = call i8* @realloc(i8* %old_i8_r, i64 %nc_bytes_r)\n\
+             \x20 %new_data_r = bitcast i8* %new_i8_r to i64*\n\
+             \x20 store i64* %new_data_r, i64** %odp\n\
+             \x20 store i64 %new_cap_r, i64* %ocp\n\
+             \x20 br label %rng_store\n\
+             rng_store:\n\
+             \x20 %odata = load i64*, i64** %odp\n\
+             \x20 %olen2 = load i64, i64* %olp\n\
+             \x20 %dst_slot = getelementptr i64, i64* %odata, i64 %olen2\n\
+             \x20 store i64 %k_r, i64* %dst_slot\n\
+             \x20 %olen_inc = add i64 %olen2, 1\n\
+             \x20 store i64 %olen_inc, i64* %olp\n\
+             \x20 %added_old = load i64, i64* %added_p_r\n\
+             \x20 %added_inc = add i64 %added_old, 1\n\
+             \x20 store i64 %added_inc, i64* %added_p_r\n\
+             \x20 %i_inc_r = add i64 %i_r, 1\n\
+             \x20 store i64 %i_inc_r, i64* %i_p_r\n\
+             \x20 br label %rng_loop\n\
+             rng_done:\n\
+             \x20 %result_r = load i64, i64* %added_p_r\n\
+             \x20 ret i64 %result_r\n\
+             }\n\n",
+        );
+    }
 }
 
 /// Data-structures roadmap Level 2 — HashMap<i64, i64>
@@ -8657,7 +8757,7 @@ fn emit_intent_hashmap_i64_i64_helpers_llvm(out: &mut String, has_option_i64: bo
 /// for lookup (O(log n)), memmove shift for insert / remove
 /// (O(n)). `get` / `insert` / `remove` return `%Enum_Option__i64`
 /// and so are gated on Option__i64 being registered.
-fn emit_intent_btreemap_i64_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
+fn emit_intent_btreemap_i64_i64_helpers_llvm(out: &mut String, has_option_i64: bool, emit_vec_dep: bool) {
     out.push_str(
         "define %intent_btreemap_i64_i64 @intent_btreemap_i64_i64_new() {\n\
          \x20 %r0 = insertvalue %intent_btreemap_i64_i64 undef, i64* null, 0\n\
@@ -8903,6 +9003,143 @@ fn emit_intent_btreemap_i64_i64_helpers_llvm(out: &mut String, has_option_i64: b
              \x20 %n0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n\
              \x20 %n1 = insertvalue %Enum_Option__i64 %n0, i64 0, 1\n\
              \x20 ret %Enum_Option__i64 %n1\n\
+             }\n\n",
+        );
+    }
+    if emit_vec_dep {
+        out.push_str(
+            "; Closure #346: range queries on a BTreeMap. Two parallel\n\
+             ; helpers: range_keys appends every key k in [lo, hi] to\n\
+             ; `out`; range_values appends the corresponding values\n\
+             ; (parallel order to range_keys). Returns the number of\n\
+             ; entries appended. O(log n + matches).\n\
+             define i64 @intent_btreemap_i64_i64_range_keys(%intent_btreemap_i64_i64* %m, i64 %lo, i64 %hi, %intent_vec_i64* %out) {\n\
+             \x20 %rk_lo_gt = icmp sgt i64 %lo, %hi\n\
+             \x20 br i1 %rk_lo_gt, label %rk_zero, label %rk_init\n\
+             rk_zero:\n\
+             \x20 ret i64 0\n\
+             rk_init:\n\
+             \x20 %rk_lb = call i64 @intent_btreemap_i64_i64__lower_bound(%intent_btreemap_i64_i64* %m, i64 %lo)\n\
+             \x20 %rk_kpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 0\n\
+             \x20 %rk_lp  = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 2\n\
+             \x20 %rk_odp = getelementptr %intent_vec_i64, %intent_vec_i64* %out, i32 0, i32 0\n\
+             \x20 %rk_olp = getelementptr %intent_vec_i64, %intent_vec_i64* %out, i32 0, i32 1\n\
+             \x20 %rk_ocp = getelementptr %intent_vec_i64, %intent_vec_i64* %out, i32 0, i32 2\n\
+             \x20 %rk_i_p = alloca i64\n\
+             \x20 store i64 %rk_lb, i64* %rk_i_p\n\
+             \x20 %rk_added_p = alloca i64\n\
+             \x20 store i64 0, i64* %rk_added_p\n\
+             \x20 br label %rk_loop\n\
+             rk_loop:\n\
+             \x20 %rk_i = load i64, i64* %rk_i_p\n\
+             \x20 %rk_len = load i64, i64* %rk_lp\n\
+             \x20 %rk_off = icmp uge i64 %rk_i, %rk_len\n\
+             \x20 br i1 %rk_off, label %rk_done, label %rk_check\n\
+             rk_check:\n\
+             \x20 %rk_keys = load i64*, i64** %rk_kpp\n\
+             \x20 %rk_slot = getelementptr i64, i64* %rk_keys, i64 %rk_i\n\
+             \x20 %rk_k = load i64, i64* %rk_slot\n\
+             \x20 %rk_big = icmp sgt i64 %rk_k, %hi\n\
+             \x20 br i1 %rk_big, label %rk_done, label %rk_grow_chk\n\
+             rk_grow_chk:\n\
+             \x20 %rk_olen = load i64, i64* %rk_olp\n\
+             \x20 %rk_ocap = load i64, i64* %rk_ocp\n\
+             \x20 %rk_full = icmp uge i64 %rk_olen, %rk_ocap\n\
+             \x20 br i1 %rk_full, label %rk_grow, label %rk_store\n\
+             rk_grow:\n\
+             \x20 %rk_cz = icmp eq i64 %rk_ocap, 0\n\
+             \x20 %rk_cd = mul i64 %rk_ocap, 2\n\
+             \x20 %rk_nc = select i1 %rk_cz, i64 8, i64 %rk_cd\n\
+             \x20 %rk_nb = mul i64 %rk_nc, 8\n\
+             \x20 %rk_od = load i64*, i64** %rk_odp\n\
+             \x20 %rk_oi8 = bitcast i64* %rk_od to i8*\n\
+             \x20 %rk_ni8 = call i8* @realloc(i8* %rk_oi8, i64 %rk_nb)\n\
+             \x20 %rk_nd = bitcast i8* %rk_ni8 to i64*\n\
+             \x20 store i64* %rk_nd, i64** %rk_odp\n\
+             \x20 store i64 %rk_nc, i64* %rk_ocp\n\
+             \x20 br label %rk_store\n\
+             rk_store:\n\
+             \x20 %rk_dd = load i64*, i64** %rk_odp\n\
+             \x20 %rk_ol2 = load i64, i64* %rk_olp\n\
+             \x20 %rk_ds = getelementptr i64, i64* %rk_dd, i64 %rk_ol2\n\
+             \x20 store i64 %rk_k, i64* %rk_ds\n\
+             \x20 %rk_oli = add i64 %rk_ol2, 1\n\
+             \x20 store i64 %rk_oli, i64* %rk_olp\n\
+             \x20 %rk_ao = load i64, i64* %rk_added_p\n\
+             \x20 %rk_ai = add i64 %rk_ao, 1\n\
+             \x20 store i64 %rk_ai, i64* %rk_added_p\n\
+             \x20 %rk_ii = add i64 %rk_i, 1\n\
+             \x20 store i64 %rk_ii, i64* %rk_i_p\n\
+             \x20 br label %rk_loop\n\
+             rk_done:\n\
+             \x20 %rk_res = load i64, i64* %rk_added_p\n\
+             \x20 ret i64 %rk_res\n\
+             }\n\
+             define i64 @intent_btreemap_i64_i64_range_values(%intent_btreemap_i64_i64* %m, i64 %lo, i64 %hi, %intent_vec_i64* %out) {\n\
+             \x20 %rv_lo_gt = icmp sgt i64 %lo, %hi\n\
+             \x20 br i1 %rv_lo_gt, label %rv_zero, label %rv_init\n\
+             rv_zero:\n\
+             \x20 ret i64 0\n\
+             rv_init:\n\
+             \x20 %rv_lb = call i64 @intent_btreemap_i64_i64__lower_bound(%intent_btreemap_i64_i64* %m, i64 %lo)\n\
+             \x20 %rv_kpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 0\n\
+             \x20 %rv_vpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 1\n\
+             \x20 %rv_lp  = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 2\n\
+             \x20 %rv_odp = getelementptr %intent_vec_i64, %intent_vec_i64* %out, i32 0, i32 0\n\
+             \x20 %rv_olp = getelementptr %intent_vec_i64, %intent_vec_i64* %out, i32 0, i32 1\n\
+             \x20 %rv_ocp = getelementptr %intent_vec_i64, %intent_vec_i64* %out, i32 0, i32 2\n\
+             \x20 %rv_i_p = alloca i64\n\
+             \x20 store i64 %rv_lb, i64* %rv_i_p\n\
+             \x20 %rv_added_p = alloca i64\n\
+             \x20 store i64 0, i64* %rv_added_p\n\
+             \x20 br label %rv_loop\n\
+             rv_loop:\n\
+             \x20 %rv_i = load i64, i64* %rv_i_p\n\
+             \x20 %rv_len = load i64, i64* %rv_lp\n\
+             \x20 %rv_off = icmp uge i64 %rv_i, %rv_len\n\
+             \x20 br i1 %rv_off, label %rv_done, label %rv_check\n\
+             rv_check:\n\
+             \x20 %rv_keys = load i64*, i64** %rv_kpp\n\
+             \x20 %rv_kslot = getelementptr i64, i64* %rv_keys, i64 %rv_i\n\
+             \x20 %rv_k = load i64, i64* %rv_kslot\n\
+             \x20 %rv_big = icmp sgt i64 %rv_k, %hi\n\
+             \x20 br i1 %rv_big, label %rv_done, label %rv_grow_chk\n\
+             rv_grow_chk:\n\
+             \x20 %rv_olen = load i64, i64* %rv_olp\n\
+             \x20 %rv_ocap = load i64, i64* %rv_ocp\n\
+             \x20 %rv_full = icmp uge i64 %rv_olen, %rv_ocap\n\
+             \x20 br i1 %rv_full, label %rv_grow, label %rv_store\n\
+             rv_grow:\n\
+             \x20 %rv_cz = icmp eq i64 %rv_ocap, 0\n\
+             \x20 %rv_cd = mul i64 %rv_ocap, 2\n\
+             \x20 %rv_nc = select i1 %rv_cz, i64 8, i64 %rv_cd\n\
+             \x20 %rv_nb = mul i64 %rv_nc, 8\n\
+             \x20 %rv_od = load i64*, i64** %rv_odp\n\
+             \x20 %rv_oi8 = bitcast i64* %rv_od to i8*\n\
+             \x20 %rv_ni8 = call i8* @realloc(i8* %rv_oi8, i64 %rv_nb)\n\
+             \x20 %rv_nd = bitcast i8* %rv_ni8 to i64*\n\
+             \x20 store i64* %rv_nd, i64** %rv_odp\n\
+             \x20 store i64 %rv_nc, i64* %rv_ocp\n\
+             \x20 br label %rv_store\n\
+             rv_store:\n\
+             \x20 %rv_vals = load i64*, i64** %rv_vpp\n\
+             \x20 %rv_vslot = getelementptr i64, i64* %rv_vals, i64 %rv_i\n\
+             \x20 %rv_v = load i64, i64* %rv_vslot\n\
+             \x20 %rv_dd = load i64*, i64** %rv_odp\n\
+             \x20 %rv_ol2 = load i64, i64* %rv_olp\n\
+             \x20 %rv_ds = getelementptr i64, i64* %rv_dd, i64 %rv_ol2\n\
+             \x20 store i64 %rv_v, i64* %rv_ds\n\
+             \x20 %rv_oli = add i64 %rv_ol2, 1\n\
+             \x20 store i64 %rv_oli, i64* %rv_olp\n\
+             \x20 %rv_ao = load i64, i64* %rv_added_p\n\
+             \x20 %rv_ai = add i64 %rv_ao, 1\n\
+             \x20 store i64 %rv_ai, i64* %rv_added_p\n\
+             \x20 %rv_ii = add i64 %rv_i, 1\n\
+             \x20 store i64 %rv_ii, i64* %rv_i_p\n\
+             \x20 br label %rv_loop\n\
+             rv_done:\n\
+             \x20 %rv_res = load i64, i64* %rv_added_p\n\
+             \x20 ret i64 %rv_res\n\
              }\n\n",
         );
     }
