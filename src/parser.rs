@@ -1632,6 +1632,10 @@ impl Parser {
                 self.expect_close_angle()?;
                 return Ok(Type::Bst(Box::new(element)));
             }
+            if name == "Graph" {
+                self.bump();
+                return Ok(Type::Graph);
+            }
             if name == "Atomic" {
                 self.bump();
                 self.expect_keyword("'<'", |kind| matches!(kind, TokenKind::Less))?;

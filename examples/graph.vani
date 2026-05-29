@@ -1,0 +1,61 @@
+// build & run:
+//   intentc run examples/graph.vani                          # LLVM backend
+//   intentc run examples/graph.vani --backend=c              # C backend
+//   intentc build examples/graph.vani -o /tmp/graph && /tmp/graph
+
+intent "Graph — weighted directed graph + BFS / DFS / Dijkstra (Level 4 #5)";
+
+// `Graph` is a first-class affine handle for a weighted
+// directed graph. Vertices are i64 indices in [0, num_nodes).
+// Edges are per-edge parallel arrays (src, dst : i32; weight :
+// i64). The struct does not store an adjacency-list index —
+// each algorithm scans all edges per visited vertex, which is
+// fine for v1 sized examples; a CSR-style row-pointer cache is
+// a follow-up optimization.
+//
+// 7 builtins + method sugar:
+//   graph_new(n)                  -> Graph
+//   g.add_edge(src, dst, w)       -> i64 (new edge count)
+//   g.num_nodes() / .num_edges()  -> i64
+//   g.bfs_reach(start)            -> i64 (count of nodes reachable from start)
+//   g.dfs_reach(start)            -> i64 (same, via iterative DFS — sanity check)
+//   g.dijkstra(src, dst)          -> Option<i64> (shortest path; None if unreachable)
+//
+// Affine ownership: scope-exit Drop frees the three edge arrays.
+
+fn unwrap_or(o: Option<i64>, def: i64) -> i64 {
+  return match o {
+    Option.Some(v) then v,
+    Option.None then def,
+  };
+}
+
+fn main() -> i64 {
+  // 5 nodes (0..5). Build a small weighted DAG.
+  let g: Graph = graph_new(5);
+  let _ = g.add_edge(0, 1, 4);
+  let _ = g.add_edge(0, 2, 1);
+  let _ = g.add_edge(2, 1, 2);
+  let _ = g.add_edge(1, 3, 1);
+  let _ = g.add_edge(2, 3, 5);
+  let _ = g.add_edge(3, 4, 3);
+  // Node 4 is reachable through 0->2->1->3->4 with total 7.
+  // But 0->1->3->4 = 4+1+3 = 8, and 0->2->3->4 = 1+5+3 = 9.
+  // Dijkstra should pick 0->2->1->3->4 = 1+2+1+3 = 7.
+
+  print "num_nodes:", g.num_nodes();
+  print "num_edges:", g.num_edges();
+
+  print "bfs_reach(0):", g.bfs_reach(0);
+  print "dfs_reach(0):", g.dfs_reach(0);
+
+  // Self-distance is always 0.
+  print "dijkstra(0,0):", unwrap_or(g.dijkstra(0, 0), 0 - 1);
+  print "dijkstra(0,4):", unwrap_or(g.dijkstra(0, 4), 0 - 1);
+
+  // A disconnected node: add node 4 has no outgoing edge to 0
+  // because the graph is directed, so dijkstra(4, 0) is None.
+  print "dijkstra(4,0):", unwrap_or(g.dijkstra(4, 0), 0 - 1);
+
+  return 0;
+}

@@ -13119,6 +13119,119 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn graph_basics_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(5);
+              let _: i64 = graph_add_edge(mut ref g, 0, 1, 4);
+              let _: i64 = graph_num_nodes(ref g);
+              let _: i64 = graph_num_edges(ref g);
+              let _: i64 = graph_bfs_reach(ref g, 0);
+              let _: i64 = graph_dfs_reach(ref g, 0);
+              let _: Option<i64> = graph_dijkstra(ref g, 0, 1);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("graph basics must type-check in C");
+        compile_to_llvm(source).expect("graph basics must compile to LLVM");
+    }
+
+    #[test]
+    fn graph_add_edge_rejects_non_mut_ref() {
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(3);
+              let _: i64 = graph_add_edge(ref g, 0, 1, 1);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("graph_add_edge by-ref must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref Graph")),
+            "expected mut-ref-Graph diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn graph_reserves_name_against_user_struct() {
+        let source = r#"
+            struct Graph { x: i64 }
+            fn main() -> i64 { return 0; }
+        "#;
+        let errors = compile(source).expect_err("`struct Graph` must collide");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("Graph") && e.message.contains("reserved")),
+            "expected reserved-name diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn graph_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(3);
+              let _: i64 = g.add_edge(0, 1, 5);
+              let _: i64 = g.num_nodes();
+              let _: i64 = g.num_edges();
+              let _: i64 = g.bfs_reach(0);
+              let _: i64 = g.dfs_reach(0);
+              let _: Option<i64> = g.dijkstra(0, 2);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("graph method sugar must type-check in C");
+        compile_to_llvm(source).expect("graph method sugar must compile to LLVM");
+    }
+
+    #[test]
+    fn graph_emits_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(3);
+              let _: i64 = graph_add_edge(mut ref g, 0, 1, 1);
+              let _: Option<i64> = graph_dijkstra(ref g, 0, 1);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("graph program compiles");
+        assert!(
+            c.contains("intent_graph")
+                && c.contains("intent_graph_add_edge")
+                && c.contains("intent_graph_bfs_reach")
+                && c.contains("intent_graph_dijkstra")
+                && c.contains("intent_graph_drop"),
+            "C output must include the Graph runtime; got snippet:\n{}",
+            &c[..c.len().min(800)]
+        );
+    }
+
+    #[test]
+    fn graph_emits_helpers_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(3);
+              let _: i64 = graph_add_edge(mut ref g, 0, 1, 1);
+              let _: Option<i64> = graph_dijkstra(ref g, 0, 1);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("graph LLVM compile");
+        assert!(
+            ll.contains("%intent_graph = type")
+                && ll.contains("@intent_graph_add_edge")
+                && ll.contains("@intent_graph_bfs_reach")
+                && ll.contains("@intent_graph_dijkstra"),
+            "LLVM output must include the Graph typedef + helpers"
+        );
+    }
+
+    #[test]
     fn btreemap_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

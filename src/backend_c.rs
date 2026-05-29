@@ -567,6 +567,12 @@ pub fn emit_c(program: &TypedProgram) -> String {
         });
         emit_intent_bst_i64_helpers_c_body(&mut body, has_option_i64);
     }
+    if program_uses_graph(program) {
+        let has_option_i64 = ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        emit_intent_graph_helpers_c_body(&mut body, has_option_i64);
+    }
 
     for function in &program.functions {
         emit_prototype(function, &mut body);
@@ -1835,6 +1841,176 @@ fn emit_intent_bst_i64_helpers_c_body(out: &mut String, has_option_i64: bool) {
              \x20 int64_t cur = b->root;\n\
              \x20 while (b->right[cur] != -1) cur = (int64_t)b->right[cur];\n\
              \x20 r.tag = 0; r.payload = b->keys[cur]; return r;\n\
+             }\n\n",
+        );
+    }
+}
+
+/// Walk the program for any `Graph` type usage. Closure #329.
+pub(crate) fn program_uses_graph(program: &TypedProgram) -> bool {
+    fn ty_uses(ty: &Type) -> bool {
+        match ty {
+            Type::Graph => true,
+            Type::Vec(inner) | Type::Ref(inner) | Type::RefMut(inner) => ty_uses(inner),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if ty_uses(&f.return_type) {
+            return true;
+        }
+        for p in &f.params {
+            if ty_uses(&p.ty) {
+                return true;
+            }
+        }
+        for s in &f.body {
+            if stmt_uses_graph(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn stmt_uses_graph(stmt: &crate::ir::TypedStmt) -> bool {
+    use crate::ir::TypedStmt as S;
+    fn ty_uses(ty: &Type) -> bool {
+        matches!(ty, Type::Graph)
+            || matches!(ty,
+                Type::Vec(i) | Type::Ref(i) | Type::RefMut(i) if ty_uses(i))
+    }
+    match stmt {
+        S::Let { ty, .. } | S::Reassign { ty, .. } | S::Drop { ty, .. } => ty_uses(ty),
+        S::If { then_body, else_body, .. } => {
+            then_body.iter().any(stmt_uses_graph)
+                || else_body.iter().any(stmt_uses_graph)
+        }
+        S::While { body, .. } | S::For { body, .. } | S::ForIter { body, .. } => {
+            body.iter().any(stmt_uses_graph)
+        }
+        _ => false,
+    }
+}
+
+/// Data-structures roadmap Level 4 #5 — Graph runtime helpers
+/// (closure #329). Weighted directed graph storing per-edge
+/// parallel arrays (edge_src, edge_dst : i32; edge_weight : i64).
+/// BFS / DFS reachability use heap-allocated visited + queue/stack
+/// arrays. Dijkstra uses an O(V^2) inner loop (linear scan for
+/// next-min) — no dependency on BinaryHeap. graph_dijkstra
+/// returns Option<i64>, gated on Option__i64 being registered.
+fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool) {
+    out.push_str(
+        "typedef struct { int64_t num_nodes; int32_t* edge_src; int32_t* edge_dst; int64_t* edge_weight; int64_t num_edges; int64_t edge_capacity; } intent_graph;\n\
+         static INTENT_UNUSED intent_graph intent_graph_new(int64_t n) {\n\
+         \x20 intent_graph g;\n\
+         \x20 g.num_nodes = (n < 0) ? 0 : n;\n\
+         \x20 g.edge_src = (int32_t*)0; g.edge_dst = (int32_t*)0; g.edge_weight = (int64_t*)0;\n\
+         \x20 g.num_edges = 0; g.edge_capacity = 0;\n\
+         \x20 return g;\n\
+         }\n\
+         static INTENT_UNUSED void intent_graph_drop(intent_graph* g) {\n\
+         \x20 if (g->edge_src) free(g->edge_src);\n\
+         \x20 if (g->edge_dst) free(g->edge_dst);\n\
+         \x20 if (g->edge_weight) free(g->edge_weight);\n\
+         \x20 g->edge_src = (int32_t*)0; g->edge_dst = (int32_t*)0; g->edge_weight = (int64_t*)0;\n\
+         \x20 g->num_nodes = 0; g->num_edges = 0; g->edge_capacity = 0;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_graph_add_edge(intent_graph* g, int64_t src, int64_t dst, int64_t w) {\n\
+         \x20 if (g->num_edges >= g->edge_capacity) {\n\
+         \x20   g->edge_capacity = g->edge_capacity ? g->edge_capacity * 2 : 8;\n\
+         \x20   g->edge_src = (int32_t*)realloc(g->edge_src, (size_t)g->edge_capacity * sizeof(int32_t));\n\
+         \x20   g->edge_dst = (int32_t*)realloc(g->edge_dst, (size_t)g->edge_capacity * sizeof(int32_t));\n\
+         \x20   g->edge_weight = (int64_t*)realloc(g->edge_weight, (size_t)g->edge_capacity * sizeof(int64_t));\n\
+         \x20   if (!g->edge_src || !g->edge_dst || !g->edge_weight) abort();\n\
+         \x20 }\n\
+         \x20 g->edge_src[g->num_edges] = (int32_t)src;\n\
+         \x20 g->edge_dst[g->num_edges] = (int32_t)dst;\n\
+         \x20 g->edge_weight[g->num_edges] = w;\n\
+         \x20 g->num_edges++;\n\
+         \x20 return g->num_edges;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_graph_num_nodes(const intent_graph* g) {\n\
+         \x20 return g->num_nodes;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_graph_num_edges(const intent_graph* g) {\n\
+         \x20 return g->num_edges;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_graph_bfs_reach(const intent_graph* g, int64_t start) {\n\
+         \x20 if (g->num_nodes <= 0 || start < 0 || start >= g->num_nodes) return 0;\n\
+         \x20 uint8_t* visited = (uint8_t*)calloc((size_t)g->num_nodes, 1);\n\
+         \x20 int64_t* queue = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
+         \x20 if (!visited || !queue) abort();\n\
+         \x20 int64_t qh = 0, qt = 0, count = 0;\n\
+         \x20 queue[qt++] = start; visited[start] = 1; count = 1;\n\
+         \x20 while (qh < qt) {\n\
+         \x20   int64_t u = queue[qh++];\n\
+         \x20   for (int64_t e = 0; e < g->num_edges; e++) {\n\
+         \x20     if ((int64_t)g->edge_src[e] != u) continue;\n\
+         \x20     int64_t v = (int64_t)g->edge_dst[e];\n\
+         \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
+         \x20     if (!visited[v]) { visited[v] = 1; queue[qt++] = v; count++; }\n\
+         \x20   }\n\
+         \x20 }\n\
+         \x20 free(visited); free(queue);\n\
+         \x20 return count;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_graph_dfs_reach(const intent_graph* g, int64_t start) {\n\
+         \x20 if (g->num_nodes <= 0 || start < 0 || start >= g->num_nodes) return 0;\n\
+         \x20 uint8_t* visited = (uint8_t*)calloc((size_t)g->num_nodes, 1);\n\
+         \x20 int64_t* stack = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
+         \x20 if (!visited || !stack) abort();\n\
+         \x20 int64_t sp = 0, count = 0;\n\
+         \x20 stack[sp++] = start; visited[start] = 1; count = 1;\n\
+         \x20 while (sp > 0) {\n\
+         \x20   int64_t u = stack[--sp];\n\
+         \x20   for (int64_t e = 0; e < g->num_edges; e++) {\n\
+         \x20     if ((int64_t)g->edge_src[e] != u) continue;\n\
+         \x20     int64_t v = (int64_t)g->edge_dst[e];\n\
+         \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
+         \x20     if (!visited[v]) { visited[v] = 1; stack[sp++] = v; count++; }\n\
+         \x20   }\n\
+         \x20 }\n\
+         \x20 free(visited); free(stack);\n\
+         \x20 return count;\n\
+         }\n",
+    );
+    if has_option_i64 {
+        out.push_str(
+            "static INTENT_UNUSED Enum_Option__i64 intent_graph_dijkstra(const intent_graph* g, int64_t src, int64_t dst) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (g->num_nodes <= 0 || src < 0 || src >= g->num_nodes || dst < 0 || dst >= g->num_nodes) {\n\
+             \x20   r.tag = 1; r.payload = 0; return r;\n\
+             \x20 }\n\
+             \x20 if (src == dst) { r.tag = 0; r.payload = 0; return r; }\n\
+             \x20 int64_t INF = 0x7fffffffffffffffLL;\n\
+             \x20 int64_t* dist = (int64_t*)malloc((size_t)g->num_nodes * sizeof(int64_t));\n\
+             \x20 uint8_t* done = (uint8_t*)calloc((size_t)g->num_nodes, 1);\n\
+             \x20 if (!dist || !done) abort();\n\
+             \x20 for (int64_t i = 0; i < g->num_nodes; i++) dist[i] = INF;\n\
+             \x20 dist[src] = 0;\n\
+             \x20 for (int64_t iter = 0; iter < g->num_nodes; iter++) {\n\
+             \x20   int64_t u = -1; int64_t best = INF;\n\
+             \x20   for (int64_t i = 0; i < g->num_nodes; i++) {\n\
+             \x20     if (!done[i] && dist[i] < best) { best = dist[i]; u = i; }\n\
+             \x20   }\n\
+             \x20   if (u == -1 || best == INF) break;\n\
+             \x20   done[u] = 1;\n\
+             \x20   if (u == dst) break;\n\
+             \x20   for (int64_t e = 0; e < g->num_edges; e++) {\n\
+             \x20     if ((int64_t)g->edge_src[e] != u) continue;\n\
+             \x20     int64_t v = (int64_t)g->edge_dst[e];\n\
+             \x20     if (v < 0 || v >= g->num_nodes) continue;\n\
+             \x20     int64_t nd = best + g->edge_weight[e];\n\
+             \x20     if (nd < dist[v]) dist[v] = nd;\n\
+             \x20   }\n\
+             \x20 }\n\
+             \x20 int64_t d = dist[dst];\n\
+             \x20 free(dist); free(done);\n\
+             \x20 if (d == INF) { r.tag = 1; r.payload = 0; }\n\
+             \x20 else { r.tag = 0; r.payload = d; }\n\
+             \x20 return r;\n\
              }\n\n",
         );
     }
@@ -4468,6 +4644,11 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
             }
             Type::Bst(_) => {
                 out.push_str("  intent_bst_i64_drop(&");
+                out.push_str(&local_name(name));
+                out.push_str(");\n");
+            }
+            Type::Graph => {
+                out.push_str("  intent_graph_drop(&");
                 out.push_str(&local_name(name));
                 out.push_str(");\n");
             }
@@ -7152,6 +7333,42 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_bst_i64_max({})",
             emit_expr(&args[0])
         ),
+        // Closure #329: Graph dispatch.
+        "graph_new" => format!(
+            "intent_graph_new(({}))",
+            emit_expr(&args[0])
+        ),
+        "graph_add_edge" => format!(
+            "intent_graph_add_edge({}, ({}), ({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2]),
+            emit_expr(&args[3])
+        ),
+        "graph_num_nodes" => format!(
+            "intent_graph_num_nodes({})",
+            emit_expr(&args[0])
+        ),
+        "graph_num_edges" => format!(
+            "intent_graph_num_edges({})",
+            emit_expr(&args[0])
+        ),
+        "graph_bfs_reach" => format!(
+            "intent_graph_bfs_reach({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "graph_dfs_reach" => format!(
+            "intent_graph_dfs_reach({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "graph_dijkstra" => format!(
+            "intent_graph_dijkstra({}, ({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         "hashmap_new" => "intent_hashmap_i64_i64_new()".to_string(),
         "hashmap_insert" => format!(
             "intent_hashmap_i64_i64_insert({}, ({}), ({}))",
@@ -7721,6 +7938,8 @@ pub(crate) fn c_leaf_type(ty: &Type) -> &'static str {
         Type::BloomFilter => "intent_bloom_filter",
         // `Bst<T>` — Level 4 #3 binary search tree on node arena. v1 i64.
         Type::Bst(_) => "intent_bst_i64",
+        // `Graph` — Level 4 #5 weighted directed graph. v1 i64 weights.
+        Type::Graph => "intent_graph",
         // `fn(T1, T2) -> R` has no fixed leaf spelling in C —
         // function-pointer types are declarator-shaped
         // (`R (*name)(T1, T2)`). Callers that need to emit a
@@ -8052,7 +8271,7 @@ fn divisor_helper(ty: &Type) -> &'static str {
         Type::U64 => "intent_check_u64_divisor",
         Type::F32 => "intent_check_f32_divisor",
         Type::F64 => "intent_check_f64_divisor",
-        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::BloomFilter | Type::Bst(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
+        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::BloomFilter | Type::Bst(_) | Type::Graph | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
             unreachable!("non-numeric type cannot be a divisor")
         }
     }
@@ -8092,6 +8311,7 @@ fn shift_helper(ty: &Type) -> &'static str {
         | Type::BinaryHeap(_)
         | Type::BloomFilter
         | Type::Bst(_)
+        | Type::Graph
         | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => unreachable!("shift count must be an integer"),
     }
 }

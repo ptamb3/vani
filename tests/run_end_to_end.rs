@@ -853,6 +853,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "fn_pointers.vani",
         "for_loops.vani",
         "generic_functions.vani",
+        "graph.vani",
         "hash.vani",
         "hashmap.vani",
         "hashset.vani",

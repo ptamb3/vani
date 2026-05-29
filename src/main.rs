@@ -357,6 +357,10 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "bst_new" || name == "bst_insert"
                 || name == "bst_contains" || name == "bst_remove"
                 || name == "bst_len" || name == "bst_min" || name == "bst_max"
+                || name == "graph_new" || name == "graph_add_edge"
+                || name == "graph_num_nodes" || name == "graph_num_edges"
+                || name == "graph_bfs_reach" || name == "graph_dfs_reach"
+                || name == "graph_dijkstra"
             {
                 return false;
             }

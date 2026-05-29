@@ -251,6 +251,23 @@ pointer (already in the language as of #279 FFI callbacks).
     Algorithms: BFS, DFS, Dijkstra (needs `BinaryHeap<T>`, now
     shipped at #326), A*, topological sort, Kruskal / Prim
     (Kruskal unblocked by `UnionFind` #325).
+    *Shipped 2026-05-29 (closure #329) — Level 4 #5.*
+    `Graph` affine handle backed by `{ i64 num_nodes, i32*
+    edge_src, i32* edge_dst, i64* edge_weight, i64 num_edges,
+    i64 edge_capacity }`. v1 uses a plain per-edge parallel
+    array (no CSR-style row-pointer cache yet — each algorithm
+    scans all edges per visited vertex). 7 builtins:
+    `graph_new(n) / add_edge(s,d,w) / num_nodes / num_edges
+    / bfs_reach(start) / dfs_reach(start) / dijkstra(src, dst)`.
+    Dijkstra uses O(V²) inner-loop linear scan to avoid a
+    BinaryHeap dependency at this stage; non-negative weights
+    required. `bfs_reach` / `dfs_reach` return reachable-node
+    counts including the start vertex. Method sugar:
+    `g.add_edge(s,d,w)` / `.num_nodes()` / etc. Drop frees the
+    three edge arrays. Pending: A*, topological sort, Kruskal
+    (now unblocked by `UnionFind` #325) / Prim, CSR-style
+    adjacency cache, undirected variant, edges visiting via
+    closures, generic weight types.
 24. **Union-Find / Disjoint-Set** — ✅ AFFINE.
     `Vec<u32>` parent + `Vec<u32>` rank. Path compression
     works under affine because mutation goes through
@@ -607,7 +624,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #328 — **Level 4 #3** `Bst<T>` binary search tree on a node arena: first arena-based ordered container. Backing `{ i64* keys, i32* left, i32* right, i64 root, i64 len, i64 capacity }`. 7 builtins (`bst_new` / `insert` / `contains` / `remove` / `len` / `min` / `max`) + method sugar. `min` / `max` return `Option<i64>`. `remove` handles 0/1/2 child cases via in-order successor; deleted slots stay tombstoned in the arena. v1 unbalanced — AVL / RB rotations on the i32-index design queued for a follow-up. Drop frees all three arrays. New `examples/bst.vani` + 6 new lib tests. Closures #326 (BinaryHeap<T>) and #327 (BloomFilter) shipped immediately before. **Level 4 is now 4/9 complete.** Next focal area sequence: (#329) **Graph + algorithms** (Level 4 #5) — `Vec<Node>` + `Vec<Vec<u32>>` adjacency; BFS / DFS / Dijkstra (now unblocked by `BinaryHeap<T>`); Kruskal (unblocked by `UnionFind`); topo / A* / Prim. (#330) Trie (Level 4 #4) — arena with per-node `[i32; 26]` child indices. (#331) Skip list. (#332+) AVL / red-black on the Bst arena. After Level 4: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-29, after closure #329 — **Level 4 #5** `Graph` weighted directed graph + algorithms: backing `{ i64 num_nodes, i32* edge_src, i32* edge_dst, i64* edge_weight, i64 num_edges, i64 edge_capacity }`. 7 builtins (`graph_new` / `add_edge` / `num_nodes` / `num_edges` / `bfs_reach` / `dfs_reach` / `dijkstra`) + method sugar. BFS / DFS reachability use heap-allocated visited + queue/stack arrays scanned over all edges per pop (O((V+E)·E) for v1 — fine for small graphs; CSR row-pointer cache queued). Dijkstra uses an O(V²) inner-loop linear scan (no BinaryHeap dependency) and returns `Option<i64>`. Closures #326 (BinaryHeap<T>), #327 (BloomFilter), and #328 (Bst<T>) shipped immediately before. **Level 4 is now 5/9 complete.** Next focal area sequence: (#330) **Trie** (Level 4 #4) — arena with per-node `[i32; 26]` child indices, insert/contains/prefix search on lowercase a-z strings. (#331) **Skip list** (Level 4 #7) — arena-based, forward-link levels stored as `Vec<u32>` per node. (#332+) AVL / red-black rotations on the Bst arena. (#333+) Graph extensions: A* / topological sort / Kruskal (now unblocked by `UnionFind`) / Prim, CSR-style adjacency cache, undirected variant. After Level 4: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)
