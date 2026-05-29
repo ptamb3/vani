@@ -5609,6 +5609,13 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "vec_filter_fold"
                     | "vec_map_filter"
                     | "vec_map_filter_fold"
+                    | "vec_sum"
+                    | "vec_product"
+                    | "vec_min"
+                    | "vec_max"
+                    | "vec_count"
+                    | "vec_any"
+                    | "vec_all"
             ) {
                 let elt = vec_element_of_first_arg(args)
                     .expect("vec builtins take a Vec as the first arg");
@@ -5642,6 +5649,14 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     "map_filter"
                 } else if name == "vec_map_filter_fold" {
                     "map_filter_fold"
+                } else if let Some(op) = name.strip_prefix("vec_") {
+                    // closure #322 reductions all share this
+                    // strip-the-`vec_` prefix shape.
+                    if matches!(op, "sum" | "product" | "min" | "max" | "count" | "any" | "all") {
+                        op
+                    } else {
+                        name.as_str()
+                    }
                 } else {
                     name.as_str()
                 };
@@ -9817,6 +9832,252 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
         out.push_str("  %r = load i64, i64* %acc_p\n");
         out.push_str("  ret i64 %r\n");
         out.push_str("}\n");
+        // Closure #322: reductions on Vec<i64> — sum, product,
+        // min, max, count, any, all. Each is a single tight
+        // loop with a fixed kernel.
+        let sum_name = format!("@intent_vec_{}__sum", tag);
+        out.push_str(&format!(
+            "define i64 {sn}({sty}* %xs_p) {{\n",
+            sn = sum_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %data = load i64*, i64** %data_p\n");
+        out.push_str("  %n = load i64, i64* %len_p\n");
+        out.push_str("  %acc_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %acc_p\n");
+        out.push_str("  %i_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %i_p\n");
+        out.push_str("  br label %sum_loop\n");
+        out.push_str("sum_loop:\n");
+        out.push_str("  %i = load i64, i64* %i_p\n");
+        out.push_str("  %cont = icmp slt i64 %i, %n\n");
+        out.push_str("  br i1 %cont, label %sum_body, label %sum_done\n");
+        out.push_str("sum_body:\n");
+        out.push_str("  %slot = getelementptr i64, i64* %data, i64 %i\n");
+        out.push_str("  %v = load i64, i64* %slot\n");
+        out.push_str("  %acc = load i64, i64* %acc_p\n");
+        out.push_str("  %next = add i64 %acc, %v\n");
+        out.push_str("  store i64 %next, i64* %acc_p\n");
+        out.push_str("  %i_n = add i64 %i, 1\n");
+        out.push_str("  store i64 %i_n, i64* %i_p\n");
+        out.push_str("  br label %sum_loop\n");
+        out.push_str("sum_done:\n");
+        out.push_str("  %r = load i64, i64* %acc_p\n");
+        out.push_str("  ret i64 %r\n");
+        out.push_str("}\n");
+
+        let product_name = format!("@intent_vec_{}__product", tag);
+        out.push_str(&format!(
+            "define i64 {sn}({sty}* %xs_p) {{\n",
+            sn = product_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %data = load i64*, i64** %data_p\n");
+        out.push_str("  %n = load i64, i64* %len_p\n");
+        out.push_str("  %acc_p = alloca i64\n");
+        out.push_str("  store i64 1, i64* %acc_p\n");
+        out.push_str("  %i_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %i_p\n");
+        out.push_str("  br label %prod_loop\n");
+        out.push_str("prod_loop:\n");
+        out.push_str("  %i = load i64, i64* %i_p\n");
+        out.push_str("  %cont = icmp slt i64 %i, %n\n");
+        out.push_str("  br i1 %cont, label %prod_body, label %prod_done\n");
+        out.push_str("prod_body:\n");
+        out.push_str("  %slot = getelementptr i64, i64* %data, i64 %i\n");
+        out.push_str("  %v = load i64, i64* %slot\n");
+        out.push_str("  %acc = load i64, i64* %acc_p\n");
+        out.push_str("  %next = mul i64 %acc, %v\n");
+        out.push_str("  store i64 %next, i64* %acc_p\n");
+        out.push_str("  %i_n = add i64 %i, 1\n");
+        out.push_str("  store i64 %i_n, i64* %i_p\n");
+        out.push_str("  br label %prod_loop\n");
+        out.push_str("prod_done:\n");
+        out.push_str("  %r = load i64, i64* %acc_p\n");
+        out.push_str("  ret i64 %r\n");
+        out.push_str("}\n");
+
+        // min/max share structure. Bail on empty Vec with default.
+        for (op, cmp_pred) in [("min", "slt"), ("max", "sgt")].iter() {
+            let helper_name = format!("@intent_vec_{}__{}", tag, op);
+            out.push_str(&format!(
+                "define i64 {sn}({sty}* %xs_p, i64 %def) {{\n",
+                sn = helper_name,
+                sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+                sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+                sty = s_ty,
+            ));
+            out.push_str("  %data = load i64*, i64** %data_p\n");
+            out.push_str("  %n = load i64, i64* %len_p\n");
+            out.push_str("  %empty = icmp eq i64 %n, 0\n");
+            out.push_str(&format!(
+                "  br i1 %empty, label %{op}_default, label %{op}_start\n",
+                op = op,
+            ));
+            out.push_str(&format!("{op}_default:\n", op = op));
+            out.push_str("  ret i64 %def\n");
+            out.push_str(&format!("{op}_start:\n", op = op));
+            out.push_str("  %first = load i64, i64* %data\n");
+            out.push_str("  %m_p = alloca i64\n");
+            out.push_str("  store i64 %first, i64* %m_p\n");
+            out.push_str("  %i_p = alloca i64\n");
+            out.push_str("  store i64 1, i64* %i_p\n");
+            out.push_str(&format!("  br label %{op}_loop\n", op = op));
+            out.push_str(&format!("{op}_loop:\n", op = op));
+            out.push_str("  %i = load i64, i64* %i_p\n");
+            out.push_str("  %cont = icmp slt i64 %i, %n\n");
+            out.push_str(&format!(
+                "  br i1 %cont, label %{op}_body, label %{op}_done\n",
+                op = op,
+            ));
+            out.push_str(&format!("{op}_body:\n", op = op));
+            out.push_str("  %slot = getelementptr i64, i64* %data, i64 %i\n");
+            out.push_str("  %v = load i64, i64* %slot\n");
+            out.push_str("  %m_old = load i64, i64* %m_p\n");
+            out.push_str(&format!(
+                "  %better = icmp {pred} i64 %v, %m_old\n",
+                pred = cmp_pred,
+            ));
+            out.push_str("  %m_new = select i1 %better, i64 %v, i64 %m_old\n");
+            out.push_str("  store i64 %m_new, i64* %m_p\n");
+            out.push_str("  %i_n = add i64 %i, 1\n");
+            out.push_str("  store i64 %i_n, i64* %i_p\n");
+            out.push_str(&format!("  br label %{op}_loop\n", op = op));
+            out.push_str(&format!("{op}_done:\n", op = op));
+            out.push_str("  %r = load i64, i64* %m_p\n");
+            out.push_str("  ret i64 %r\n");
+            out.push_str("}\n");
+        }
+
+        // count(p) → i64: number of matching elements.
+        let count_name = format!("@intent_vec_{}__count", tag);
+        out.push_str(&format!(
+            "define i64 {sn}({sty}* %xs_p, i1 (i64)* %p) {{\n",
+            sn = count_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %data = load i64*, i64** %data_p\n");
+        out.push_str("  %n = load i64, i64* %len_p\n");
+        out.push_str("  %c_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %c_p\n");
+        out.push_str("  %i_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %i_p\n");
+        out.push_str("  br label %cnt_loop\n");
+        out.push_str("cnt_loop:\n");
+        out.push_str("  %i = load i64, i64* %i_p\n");
+        out.push_str("  %cont = icmp slt i64 %i, %n\n");
+        out.push_str("  br i1 %cont, label %cnt_body, label %cnt_done\n");
+        out.push_str("cnt_body:\n");
+        out.push_str("  %slot = getelementptr i64, i64* %data, i64 %i\n");
+        out.push_str("  %v = load i64, i64* %slot\n");
+        out.push_str("  %kept = call i1 %p(i64 %v)\n");
+        out.push_str("  %h_add = zext i1 %kept to i64\n");
+        out.push_str("  %c_old = load i64, i64* %c_p\n");
+        out.push_str("  %c_new = add i64 %c_old, %h_add\n");
+        out.push_str("  store i64 %c_new, i64* %c_p\n");
+        out.push_str("  %i_n = add i64 %i, 1\n");
+        out.push_str("  store i64 %i_n, i64* %i_p\n");
+        out.push_str("  br label %cnt_loop\n");
+        out.push_str("cnt_done:\n");
+        out.push_str("  %r = load i64, i64* %c_p\n");
+        out.push_str("  ret i64 %r\n");
+        out.push_str("}\n");
+
+        // any/all → i1: short-circuit return.
+        for (op, expected, default_after) in [
+            ("any", "true", "false"),
+            ("all", "false", "true"),
+        ].iter() {
+            let helper_name = format!("@intent_vec_{}__{}", tag, op);
+            out.push_str(&format!(
+                "define i1 {sn}({sty}* %xs_p, i1 (i64)* %p) {{\n",
+                sn = helper_name,
+                sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+                sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+                sty = s_ty,
+            ));
+            out.push_str("  %data = load i64*, i64** %data_p\n");
+            out.push_str("  %n = load i64, i64* %len_p\n");
+            out.push_str("  %i_p = alloca i64\n");
+            out.push_str("  store i64 0, i64* %i_p\n");
+            out.push_str(&format!("  br label %{op}_loop\n", op = op));
+            out.push_str(&format!("{op}_loop:\n", op = op));
+            out.push_str("  %i = load i64, i64* %i_p\n");
+            out.push_str("  %cont = icmp slt i64 %i, %n\n");
+            out.push_str(&format!(
+                "  br i1 %cont, label %{op}_body, label %{op}_done\n",
+                op = op,
+            ));
+            out.push_str(&format!("{op}_body:\n", op = op));
+            out.push_str("  %slot = getelementptr i64, i64* %data, i64 %i\n");
+            out.push_str("  %v = load i64, i64* %slot\n");
+            out.push_str("  %kept = call i1 %p(i64 %v)\n");
+            // For any: short-circuit when kept=true. For all:
+            // short-circuit when kept=false.
+            if *op == "any" {
+                out.push_str(&format!(
+                    "  br i1 %kept, label %{op}_hit, label %{op}_next\n",
+                    op = op,
+                ));
+            } else {
+                out.push_str(&format!(
+                    "  br i1 %kept, label %{op}_next, label %{op}_hit\n",
+                    op = op,
+                ));
+            }
+            out.push_str(&format!("{op}_next:\n", op = op));
+            out.push_str("  %i_n = add i64 %i, 1\n");
+            out.push_str("  store i64 %i_n, i64* %i_p\n");
+            out.push_str(&format!("  br label %{op}_loop\n", op = op));
+            out.push_str(&format!("{op}_hit:\n", op = op));
+            out.push_str(&format!(
+                "  ret i1 {expected}\n",
+                expected = expected,
+            ));
+            out.push_str(&format!("{op}_done:\n", op = op));
+            out.push_str(&format!(
+                "  ret i1 {default}\n",
+                default = default_after,
+            ));
+            out.push_str("}\n");
+        }
+
         // vec_take / vec_drop (closure #313): eager slicing.
         // Negative n clamps to 0; n > len clamps to len. Result
         // Vec is freshly allocated via malloc; caller owns + drops.

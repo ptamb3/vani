@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -10522,6 +10522,14 @@ fn check_expr(
                             "filter_fold" => ("vec_filter_fold", false),
                             "map_filter" => ("vec_map_filter", false),
                             "map_filter_fold" => ("vec_map_filter_fold", false),
+                            // Closure #322 reductions.
+                            "sum" => ("vec_sum", false),
+                            "product" => ("vec_product", false),
+                            "min" => ("vec_min", false),
+                            "max" => ("vec_max", false),
+                            "count" => ("vec_count", false),
+                            "any" => ("vec_any", false),
+                            "all" => ("vec_all", false),
                             "take" => ("vec_take", false),
                             "drop" => ("vec_drop", false),
                             // Read-only search builtins.
@@ -13705,6 +13713,12 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "vec_sum" | "vec_product" | "vec_min" | "vec_max"
+        | "vec_count" | "vec_any" | "vec_all" => {
+            return check_vec_reduction_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "reverse" | "dedup" => {
             return check_reverse_dedup_builtin(
                 name, args, env, signatures, span, diagnostics,
@@ -16130,6 +16144,120 @@ fn check_vec_fused_family_builtin(
                 ));
             }
             typed_args.push(g.expr);
+        }
+        _ => unreachable!(),
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        ret_ty(),
+        None,
+        span,
+    )
+}
+
+/// Data-structures roadmap Level 3 — reduction combinators on
+/// Vec<i64> (closure #322). Single-pass loop with a fixed
+/// kernel — useful shorthands that don't need a user-supplied
+/// fn-ptr for the common cases:
+///
+///   vec_sum(ref xs) -> i64
+///   vec_product(ref xs) -> i64
+///   vec_min(ref xs, default: i64) -> i64
+///   vec_max(ref xs, default: i64) -> i64
+///   vec_count(ref xs, p: fn(i64) -> bool) -> i64
+///   vec_any(ref xs, p: fn(i64) -> bool) -> bool
+///   vec_all(ref xs, p: fn(i64) -> bool) -> bool
+///
+/// Each is reducible to `vec_fold` but ships as a dedicated
+/// builtin for readability + minimal-overhead codegen.
+fn check_vec_reduction_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args: usize = match name {
+        "vec_sum" | "vec_product" => 1,
+        "vec_min" | "vec_max" => 2,
+        "vec_count" | "vec_any" | "vec_all" => 2,
+        _ => unreachable!(),
+    };
+    let ret_ty = || -> Type {
+        match name {
+            "vec_any" | "vec_all" => Type::Bool,
+            _ => Type::I64,
+        }
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}() expects {} argument{}, got {}",
+                name,
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback(ret_ty(), span);
+    }
+    let xs = check_expr(&args[0], env, signatures, diagnostics);
+    let element_type = match xs.ty() {
+        Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
+            Type::Vec(element) => (**element).clone(),
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!("{}() requires a `ref Vec<i64>` argument, got {}", name, xs.ty()),
+                ));
+                return CheckedExpr::fallback(ret_ty(), span);
+            }
+        },
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!("{}() requires a `ref Vec<i64>` argument, got {}", name, other),
+            ));
+            return CheckedExpr::fallback(ret_ty(), span);
+        }
+    };
+    if !matches!(element_type, Type::I64) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() only supports `Vec<i64>` in v1, got element type {}",
+                name, element_type
+            ),
+        ));
+        return CheckedExpr::fallback(ret_ty(), span);
+    }
+    let mut typed_args = vec![xs.expr];
+    match name {
+        "vec_sum" | "vec_product" => {}
+        "vec_min" | "vec_max" => {
+            let def_raw = check_expr(&args[1], env, signatures, diagnostics);
+            let def = coerce_checked(
+                def_raw, &Type::I64, args[1].span,
+                "default value for empty Vec", diagnostics,
+            );
+            typed_args.push(def.expr);
+        }
+        "vec_count" | "vec_any" | "vec_all" => {
+            let p = check_expr(&args[1], env, signatures, diagnostics);
+            let want = Type::FnPtr(vec![Type::I64], Box::new(Type::Bool));
+            if p.ty() != &want {
+                diagnostics.push(Diagnostic::new(
+                    args[1].span,
+                    format!("{} predicate must be `fn(i64) -> bool`, got {}", name, p.ty()),
+                ));
+            }
+            typed_args.push(p.expr);
         }
         _ => unreachable!(),
     }

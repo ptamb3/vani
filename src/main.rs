@@ -341,6 +341,9 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "vec_take" || name == "vec_drop" || name == "vec_map_fold"
                 || name == "vec_filter_fold" || name == "vec_map_filter"
                 || name == "vec_map_filter_fold"
+                || name == "vec_sum" || name == "vec_product"
+                || name == "vec_min" || name == "vec_max"
+                || name == "vec_count" || name == "vec_any" || name == "vec_all"
             {
                 return false;
             }

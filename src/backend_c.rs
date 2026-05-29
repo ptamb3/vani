@@ -2845,6 +2845,65 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
 \n}}\n",
             sn = struct_name,
         ));
+        // vec_sum / vec_product / vec_min / vec_max /
+        // vec_count / vec_any / vec_all (closure #322): single-
+        // pass reductions with fixed kernels.
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__sum(const {sn}* xs) {{\
+\n    int64_t acc = 0;\
+\n    for (uint64_t i = 0; i < xs->len; i++) acc += xs->data[i];\
+\n    return acc;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__product(const {sn}* xs) {{\
+\n    int64_t acc = 1;\
+\n    for (uint64_t i = 0; i < xs->len; i++) acc *= xs->data[i];\
+\n    return acc;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__min(const {sn}* xs, int64_t def) {{\
+\n    if (xs->len == 0) return def;\
+\n    int64_t m = xs->data[0];\
+\n    for (uint64_t i = 1; i < xs->len; i++) if (xs->data[i] < m) m = xs->data[i];\
+\n    return m;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__max(const {sn}* xs, int64_t def) {{\
+\n    if (xs->len == 0) return def;\
+\n    int64_t m = xs->data[0];\
+\n    for (uint64_t i = 1; i < xs->len; i++) if (xs->data[i] > m) m = xs->data[i];\
+\n    return m;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__count(const {sn}* xs, {sn}__pred_fn p) {{\
+\n    int64_t c = 0;\
+\n    for (uint64_t i = 0; i < xs->len; i++) if (p(xs->data[i])) c++;\
+\n    return c;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED bool {sn}__any(const {sn}* xs, {sn}__pred_fn p) {{\
+\n    for (uint64_t i = 0; i < xs->len; i++) if (p(xs->data[i])) return true;\
+\n    return false;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED bool {sn}__all(const {sn}* xs, {sn}__pred_fn p) {{\
+\n    for (uint64_t i = 0; i < xs->len; i++) if (!p(xs->data[i])) return false;\
+\n    return true;\
+\n}}\n",
+            sn = struct_name,
+        ));
         // vec_take / vec_drop (closure #313): eager slicing.
         // take returns the first min(n, len) elements; drop
         // returns the rest. Negative n clamps to 0. The result
@@ -6161,6 +6220,41 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                     emit_expr(&args[2])
                 ),
                 _ => unreachable!("vec_map_filter() arg 0 must be ref Vec<i64>"),
+            }
+        }
+        "vec_sum" | "vec_product" => {
+            // Closure #322. args = ref xs.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({})",
+                    vec_helper(element, name.strip_prefix("vec_").unwrap()),
+                    emit_expr(&args[0])
+                ),
+                _ => unreachable!("{}() arg 0 must be ref Vec<i64>", name),
+            }
+        }
+        "vec_min" | "vec_max" => {
+            // Closure #322. args = ref xs, default.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, ({}))",
+                    vec_helper(element, name.strip_prefix("vec_").unwrap()),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1])
+                ),
+                _ => unreachable!("{}() arg 0 must be ref Vec<i64>", name),
+            }
+        }
+        "vec_count" | "vec_any" | "vec_all" => {
+            // Closure #322. args = ref xs, predicate.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, {})",
+                    vec_helper(element, name.strip_prefix("vec_").unwrap()),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1])
+                ),
+                _ => unreachable!("{}() arg 0 must be ref Vec<i64>", name),
             }
         }
         "vec_map_filter_fold" => {

@@ -13328,6 +13328,83 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_reductions_sum_product() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              return vec_sum(ref xs) + vec_product(ref xs);
+            }
+        "#;
+        compile_to_c(source).expect("vec_sum / vec_product in C");
+        compile_to_llvm(source).expect("vec_sum / vec_product in LLVM");
+    }
+
+    #[test]
+    fn vec_reductions_min_max() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(3, 1, 4, 1, 5);
+              return vec_min(ref xs, 0) + vec_max(ref xs, 0);
+            }
+        "#;
+        compile_to_c(source).expect("vec_min / vec_max in C");
+        compile_to_llvm(source).expect("vec_min / vec_max in LLVM");
+    }
+
+    #[test]
+    fn vec_reductions_count_any_all() {
+        let source = r#"
+            pure fn pos(x: i64) -> bool { return x > 0; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              if vec_all(ref xs, pos) {
+                if vec_any(ref xs, pos) {
+                  return vec_count(ref xs, pos);
+                }
+              }
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("vec_count / any / all in C");
+        compile_to_llvm(source).expect("vec_count / any / all in LLVM");
+    }
+
+    #[test]
+    fn vec_reductions_method_sugar() {
+        let source = r#"
+            pure fn pos(x: i64) -> bool { return x > 0; }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let s: i64 = xs.sum();
+              let p: i64 = xs.product();
+              let m: i64 = xs.min(0);
+              let mx: i64 = xs.max(0);
+              let c: i64 = xs.count(pos);
+              if xs.any(pos) {
+                if xs.all(pos) {
+                  return s + p + m + mx + c;
+                }
+              }
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("reduction method sugar in C");
+        compile_to_llvm(source).expect("reduction method sugar in LLVM");
+    }
+
+    #[test]
+    fn vec_min_rejects_wrong_default_type() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              return vec_min(ref xs, true);
+            }
+        "#;
+        let errors = compile(source).expect_err("non-i64 default must fail");
+        assert!(!errors.is_empty(), "expected diagnostic");
+    }
+
+    #[test]
     fn array_method_sugar_sort_and_reverse() {
         let source = r#"
             fn main() -> i64 {
