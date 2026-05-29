@@ -689,6 +689,7 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
 
     emit_intent_str_concat_definition(&mut out);
     emit_intent_str_trim_definition(&mut out);
+    emit_intent_str_replace_definition(&mut out);
 
     // Format-string globals used by `print`. We emit them all
     // unconditionally; they're tiny and `lli` will optimize away
@@ -5858,6 +5859,17 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            if name == "str_replace" {
+                let s = emit_expr(&args[0], ctx, out);
+                let from = emit_expr(&args[1], ctx, out);
+                let to = emit_expr(&args[2], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i8* @intent_str_replace(i8* {}, i8* {}, i8* {})\n",
+                    dest, s, from, to
+                ));
+                return dest;
+            }
             if name == "str_contains" {
                 let s = emit_expr(&args[0], ctx, out);
                 let n = emit_expr(&args[1], ctx, out);
@@ -7784,6 +7796,111 @@ pub(crate) fn emit_intent_str_concat_definition(out: &mut String) {
     out.push_str("  call void @free(i8* %r)\n");
     out.push_str("  br label %done\n");
     out.push_str("done:\n");
+    out.push_str("  ret i8* %buf\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #349: heap-allocating `str_replace`. Returns a
+/// fresh OwnedStr where every non-overlapping occurrence of
+/// `from` in `s` has been replaced by `to`. Empty `from` is
+/// a no-op (otherwise the search loop would diverge). NULL
+/// strings are treated as empty.
+///
+/// Two-pass implementation: count occurrences for sizing,
+/// then walk + copy. Same shape as the C helper.
+pub(crate) fn emit_intent_str_replace_definition(out: &mut String) {
+    out.push_str("define i8* @intent_str_replace(i8* %s, i8* %from, i8* %to) {\n");
+    // vāṇī's Str surface doesn't produce NULL — string literals
+    // resolve to private constants and OwnedStr always points
+    // at a malloc'd buffer. Skip NULL normalization in the IR.
+    out.push_str("  %fn_len = call i64 @strlen(i8* %from)\n");
+    out.push_str("  %s_len = call i64 @strlen(i8* %s)\n");
+    out.push_str("  %fn_zero = icmp eq i64 %fn_len, 0\n");
+    out.push_str("  br i1 %fn_zero, label %rep_dup, label %rep_count_init\n");
+    // Empty `from` ⇒ just dup `s` (no replacement loop).
+    out.push_str("rep_dup:\n");
+    out.push_str("  %dup_total = add i64 %s_len, 1\n");
+    out.push_str("  %dup_buf = call i8* @malloc(i64 %dup_total)\n");
+    out.push_str("  %_dc = call i8* @memcpy(i8* %dup_buf, i8* %s, i64 %dup_total)\n");
+    out.push_str("  ret i8* %dup_buf\n");
+    // Pass 1: count non-overlapping matches.
+    out.push_str("rep_count_init:\n");
+    out.push_str("  %to_len = call i64 @strlen(i8* %to)\n");
+    out.push_str("  %hits_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %hits_p\n");
+    out.push_str("  %cp_p = alloca i8*\n");
+    out.push_str("  store i8* %s, i8** %cp_p\n");
+    out.push_str("  br label %rep_count_loop\n");
+    out.push_str("rep_count_loop:\n");
+    out.push_str("  %cp = load i8*, i8** %cp_p\n");
+    out.push_str("  %m_c = call i8* @strstr(i8* %cp, i8* %from)\n");
+    out.push_str("  %m_c_null = icmp eq i8* %m_c, null\n");
+    out.push_str("  br i1 %m_c_null, label %rep_alloc, label %rep_count_inc\n");
+    out.push_str("rep_count_inc:\n");
+    out.push_str("  %h_old = load i64, i64* %hits_p\n");
+    out.push_str("  %h_new = add i64 %h_old, 1\n");
+    out.push_str("  store i64 %h_new, i64* %hits_p\n");
+    out.push_str("  %next_cp = getelementptr i8, i8* %m_c, i64 %fn_len\n");
+    out.push_str("  store i8* %next_cp, i8** %cp_p\n");
+    out.push_str("  br label %rep_count_loop\n");
+    // Allocate output buffer: s_len - hits*fn_len + hits*to_len + 1.
+    out.push_str("rep_alloc:\n");
+    out.push_str("  %hits = load i64, i64* %hits_p\n");
+    out.push_str("  %removed = mul i64 %hits, %fn_len\n");
+    out.push_str("  %added = mul i64 %hits, %to_len\n");
+    out.push_str("  %net1 = sub i64 %s_len, %removed\n");
+    out.push_str("  %new_len = add i64 %net1, %added\n");
+    out.push_str("  %total = add i64 %new_len, 1\n");
+    out.push_str("  %buf = call i8* @malloc(i64 %total)\n");
+    // Pass 2: walk + copy spans + replacements.
+    out.push_str("  %src_p = alloca i8*\n");
+    out.push_str("  store i8* %s, i8** %src_p\n");
+    out.push_str("  %dst_p = alloca i8*\n");
+    out.push_str("  store i8* %buf, i8** %dst_p\n");
+    out.push_str("  br label %rep_walk_loop\n");
+    out.push_str("rep_walk_loop:\n");
+    out.push_str("  %src = load i8*, i8** %src_p\n");
+    out.push_str("  %m_w = call i8* @strstr(i8* %src, i8* %from)\n");
+    out.push_str("  %m_w_null = icmp eq i8* %m_w, null\n");
+    out.push_str("  br i1 %m_w_null, label %rep_tail, label %rep_copy_span\n");
+    out.push_str("rep_copy_span:\n");
+    // span = m - src (in bytes)
+    out.push_str("  %src_int = ptrtoint i8* %src to i64\n");
+    out.push_str("  %m_int = ptrtoint i8* %m_w to i64\n");
+    out.push_str("  %span = sub i64 %m_int, %src_int\n");
+    out.push_str("  %span_pos = icmp ugt i64 %span, 0\n");
+    out.push_str("  br i1 %span_pos, label %rep_memcpy_span, label %rep_after_span\n");
+    out.push_str("rep_memcpy_span:\n");
+    out.push_str("  %dst_pre = load i8*, i8** %dst_p\n");
+    out.push_str("  %_cspan = call i8* @memcpy(i8* %dst_pre, i8* %src, i64 %span)\n");
+    out.push_str("  br label %rep_after_span\n");
+    out.push_str("rep_after_span:\n");
+    out.push_str("  %dst_mid = load i8*, i8** %dst_p\n");
+    out.push_str("  %dst_after_span = getelementptr i8, i8* %dst_mid, i64 %span\n");
+    out.push_str("  %to_pos = icmp ugt i64 %to_len, 0\n");
+    out.push_str("  br i1 %to_pos, label %rep_memcpy_to, label %rep_after_to\n");
+    out.push_str("rep_memcpy_to:\n");
+    out.push_str("  %_cto = call i8* @memcpy(i8* %dst_after_span, i8* %to, i64 %to_len)\n");
+    out.push_str("  br label %rep_after_to\n");
+    out.push_str("rep_after_to:\n");
+    out.push_str("  %dst_after_to = getelementptr i8, i8* %dst_after_span, i64 %to_len\n");
+    out.push_str("  store i8* %dst_after_to, i8** %dst_p\n");
+    out.push_str("  %src_next = getelementptr i8, i8* %m_w, i64 %fn_len\n");
+    out.push_str("  store i8* %src_next, i8** %src_p\n");
+    out.push_str("  br label %rep_walk_loop\n");
+    // Tail: copy the remainder + NUL.
+    out.push_str("rep_tail:\n");
+    out.push_str("  %src_final = load i8*, i8** %src_p\n");
+    out.push_str("  %tail_len = call i64 @strlen(i8* %src_final)\n");
+    out.push_str("  %dst_final = load i8*, i8** %dst_p\n");
+    out.push_str("  %tail_pos = icmp ugt i64 %tail_len, 0\n");
+    out.push_str("  br i1 %tail_pos, label %rep_memcpy_tail, label %rep_terminate\n");
+    out.push_str("rep_memcpy_tail:\n");
+    out.push_str("  %_ctail = call i8* @memcpy(i8* %dst_final, i8* %src_final, i64 %tail_len)\n");
+    out.push_str("  br label %rep_terminate\n");
+    out.push_str("rep_terminate:\n");
+    out.push_str("  %nul_p = getelementptr i8, i8* %dst_final, i64 %tail_len\n");
+    out.push_str("  store i8 0, i8* %nul_p\n");
     out.push_str("  ret i8* %buf\n");
     out.push_str("}\n\n");
 }

@@ -3,26 +3,26 @@
 //   intentc run examples/string_ops.vani --backend=c              # C backend
 //   intentc build examples/string_ops.vani -o /tmp/string_ops && /tmp/string_ops
 
-intent "String surface — search predicates, parsers, and trim";
+intent "String surface — predicates, parsers, trim, replace";
 
-// Six builtins for working with borrowed `Str` values. Most
-// are read-only and allocation-free; `str_trim` (closure #348)
-// is the first heap-allocating member, returning a fresh
-// `OwnedStr` (drop fires at scope exit).
+// Seven builtins for working with borrowed `Str` values.
+// Most are read-only and allocation-free; the heap-allocating
+// members (`str_trim`, `str_replace`) return fresh `OwnedStr`
+// handles whose Drop fires at scope exit.
 //
 //   str_contains(s, needle) -> bool
 //   str_starts_with(s, prefix) -> bool
 //   str_ends_with(s, suffix) -> bool
-//   str_trim(s) -> OwnedStr         [closure #348]
+//   str_trim(s) -> OwnedStr            [closure #348]
+//   str_replace(s, from, to) -> OwnedStr [closure #349]
 //   parse_int(s) -> Option<i64>
 //   parse_float(s) -> Option<f64>
 //
 // Lower to libc primitives (strstr / strncmp / strcmp /
-// strtoll / strtod) in both backends. `str_trim` mallocs a
-// fresh buffer, copies the non-whitespace span, and NUL-
-// terminates. Future heap-allocating string ops (split /
-// replace returning `OwnedStr` or `Vec<OwnedStr>`) remain
-// queued.
+// strtoll / strtod) in both backends. `str_trim` and
+// `str_replace` malloc fresh buffers; `str_replace` does a
+// two-pass count-then-copy to size the output exactly.
+// `str_split -> Vec<OwnedStr>` remains queued as a follow-up.
 
 fn main() -> i64 {
   let s: Str = "hello world";
@@ -92,6 +92,27 @@ fn main() -> i64 {
   // All-whitespace input → empty OwnedStr.
   let all_ws: OwnedStr = str_trim("   \t\n   ");
   print "trim all-ws (empty):", all_ws;
+
+  // Closure #349: str_replace. Replaces every non-overlapping
+  // occurrence of `from` with `to`. Two-pass implementation
+  // sizes the output exactly so there's no over-allocation.
+  let single: OwnedStr = str_replace("hello world", "world", "vāṇī");
+  print "replace single match:", single;
+
+  let many: OwnedStr = str_replace("abc abc abc", "a", "XYZ");
+  print "replace 1->many (grows):", many;
+
+  let shrink: OwnedStr = str_replace("foo bar foo bar", "foo", "FB");
+  print "replace many->shorter:", shrink;
+
+  // Empty `to` deletes; useful for stripping a substring.
+  let stripped: OwnedStr = str_replace("aXbXcX", "X", "");
+  print "replace with empty (delete):", stripped;
+
+  // Empty `from` is a no-op (otherwise the search loop would
+  // diverge); the helper hands back a fresh copy of `s`.
+  let unchanged: OwnedStr = str_replace("hello", "", "Z");
+  print "replace empty from (no-op):", unchanged;
 
   return 0;
 }

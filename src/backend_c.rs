@@ -637,6 +637,7 @@ pub fn emit_c(program: &TypedProgram) -> String {
     emit_runtime_helpers(&mut out, &body);
     emit_intent_str_concat_c(&mut out);
     emit_intent_str_trim_c(&mut out);
+    emit_intent_str_replace_c(&mut out);
     emit_concurrency_runtime_helpers(&mut out, &body, &channel_specs);
     emit_intent_rng_helpers_c(&mut out, &body);
     emit_intent_hash_helpers_c(&mut out, &body);
@@ -4087,6 +4088,67 @@ pub(crate) fn emit_intent_str_concat_c(out: &mut String) {
          \x20 if (l_owned) free((void*)l);\n\
          \x20 if (r_owned) free((void*)r);\n\
          \x20 return out;\n\
+         }\n\n",
+    );
+}
+
+/// Closure #349: heap-allocating `str_replace`. Returns a
+/// fresh OwnedStr where every occurrence of `from` in `s` has
+/// been replaced by `to`. Empty `from` is treated as no-op (a
+/// matching loop would otherwise diverge). NULL `s` returns a
+/// fresh empty string; NULL `from`/`to` are treated as empty.
+/// Two-pass: first count occurrences to size the buffer, then
+/// walk + copy. Reuses no input bytes — caller can drop the
+/// inputs independently.
+pub(crate) fn emit_intent_str_replace_c(out: &mut String) {
+    out.push_str(
+        "static char* intent_str_replace(const char* s, const char* from, const char* to) INTENT_UNUSED;\n\
+         static char* intent_str_replace(const char* s, const char* from, const char* to) {\n\
+         \x20 if (!s) s = \"\";\n\
+         \x20 if (!from) from = \"\";\n\
+         \x20 if (!to) to = \"\";\n\
+         \x20 size_t fn_len = strlen(from);\n\
+         \x20 size_t s_len = strlen(s);\n\
+         \x20 if (fn_len == 0) {\n\
+         \x20   char* dup = (char*)malloc(s_len + 1);\n\
+         \x20   if (!dup) abort();\n\
+         \x20   memcpy(dup, s, s_len + 1);\n\
+         \x20   return dup;\n\
+         \x20 }\n\
+         \x20 size_t to_len = strlen(to);\n\
+         \x20 /* Pass 1: count non-overlapping matches. */\n\
+         \x20 size_t hits = 0;\n\
+         \x20 {\n\
+         \x20   const char* p = s;\n\
+         \x20   while (1) {\n\
+         \x20     const char* m = strstr(p, from);\n\
+         \x20     if (!m) break;\n\
+         \x20     hits++;\n\
+         \x20     p = m + fn_len;\n\
+         \x20   }\n\
+         \x20 }\n\
+         \x20 /* New length: original - hits*from + hits*to. */\n\
+         \x20 size_t new_len = s_len + hits * to_len - hits * fn_len;\n\
+         \x20 char* out_buf = (char*)malloc(new_len + 1);\n\
+         \x20 if (!out_buf) abort();\n\
+         \x20 /* Pass 2: walk + copy spans + replacements. */\n\
+         \x20 const char* src = s;\n\
+         \x20 char* dst = out_buf;\n\
+         \x20 while (1) {\n\
+         \x20   const char* m = strstr(src, from);\n\
+         \x20   if (!m) break;\n\
+         \x20   size_t span = (size_t)(m - src);\n\
+         \x20   if (span > 0) memcpy(dst, src, span);\n\
+         \x20   dst += span;\n\
+         \x20   if (to_len > 0) memcpy(dst, to, to_len);\n\
+         \x20   dst += to_len;\n\
+         \x20   src = m + fn_len;\n\
+         \x20 }\n\
+         \x20 /* Copy the tail after the last match (or all of s). */\n\
+         \x20 size_t tail = strlen(src);\n\
+         \x20 if (tail > 0) memcpy(dst, src, tail);\n\
+         \x20 dst[tail] = 0;\n\
+         \x20 return out_buf;\n\
          }\n\n",
     );
 }
@@ -8378,6 +8440,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         }
         "str_trim" => {
             format!("intent_str_trim(({}))", emit_expr(&args[0]))
+        }
+        "str_replace" => {
+            format!(
+                "intent_str_replace(({}), ({}), ({}))",
+                emit_expr(&args[0]),
+                emit_expr(&args[1]),
+                emit_expr(&args[2])
+            )
         }
         "parse_int" => {
             // strtoll converts the prefix; we require the

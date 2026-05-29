@@ -12377,6 +12377,61 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_replace_returns_owned_str_typecheck() {
+        // Closure #349: str_replace(s, from, to) -> OwnedStr —
+        // 3-arg heap-allocating substring replace.
+        let source = r#"
+            fn main() -> i64 {
+              let r: OwnedStr = str_replace("hello", "l", "L");
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str_replace must type-check in C");
+        compile_to_llvm(source).expect("str_replace must compile to LLVM");
+    }
+
+    #[test]
+    fn str_replace_rejects_wrong_arity() {
+        // 2-arg call to str_replace should fail with a clear
+        // arity diagnostic (the helper takes 3: s / from / to).
+        let source = r#"
+            fn main() -> i64 {
+              let r: OwnedStr = str_replace("hello", "l");
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err(
+            "str_replace with 2 args must fail with arity error"
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("str_replace")
+                && e.message.contains("3")),
+            "expected str_replace arity diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn str_replace_emits_helper_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let r: OwnedStr = str_replace("abc", "b", "Z");
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("str_replace C compile");
+        assert!(
+            c.contains("intent_str_replace"),
+            "C output must include the intent_str_replace helper"
+        );
+        let ll = compile_to_llvm(source).expect("str_replace LLVM compile");
+        assert!(
+            ll.contains("define i8* @intent_str_replace("),
+            "LLVM output must include the @intent_str_replace define"
+        );
+    }
+
+    #[test]
     fn parse_int_returns_option_i64() {
         let source = r#"
             fn main() -> i64 {
