@@ -354,6 +354,9 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "bloom_filter_new" || name == "bloom_filter_insert"
                 || name == "bloom_filter_contains" || name == "bloom_filter_len"
                 || name == "bloom_filter_count"
+                || name == "bst_new" || name == "bst_insert"
+                || name == "bst_contains" || name == "bst_remove"
+                || name == "bst_len" || name == "bst_min" || name == "bst_max"
             {
                 return false;
             }

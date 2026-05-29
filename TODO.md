@@ -226,6 +226,18 @@ pointer (already in the language as of #279 FFI callbacks).
     `left: i32 / right: i32 / parent: i32` indices (`-1` = none).
     Rotations swap indices, never move whole nodes. Every node
     is owned by exactly one slot in the arena.
+    *Shipped 2026-05-29 (closure #328) — Level 4 #3.*
+    `Bst<T>` affine handle backed by `{ i64* keys, i32* left,
+    i32* right, i64 root, i64 len, i64 capacity }`. 7 builtins:
+    `bst_new / insert / contains / remove / len / min / max`.
+    Method sugar: `b.insert(x)` / `.contains(x)` / `.remove(x)`
+    / `.len()` / `.min()` / `.max()`. `min` / `max` return
+    `Option<i64>`. `remove` uses the in-order successor for the
+    two-children case; arena slots from removed nodes stay
+    tombstoned (no compaction). Drop frees all three arrays.
+    Pending: AVL / red-black rotations on the same arena
+    (the i32-index design makes rotations pointer-free); arena
+    compaction; non-i64 keys via the Hash / Ord interface.
 21. **B-tree (disk-friendly variant)** — ✅ AFFINE.
     Same arena pattern as #20.
 22. **Trie (prefix tree)** — ✅ AFFINE.
@@ -595,7 +607,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #327 — **Level 4 #6** `BloomFilter` probabilistic membership tester: bit-array backing `{ u8* bits, num_bits, num_hashes, insert_count }`; 5 builtins (`bloom_filter_new` / `insert` / `contains` / `len` / `count`) + method sugar; double-hashing on FNV-1a (h1 = `intent_hash_i64`, h2 = a parallel-seed FNV mix); LLVM hash helpers gate now also fires on Bloom usage; Drop frees the bit array; v1 keys are i64. New `examples/bloom_filter.vani` insert/contains demo + 7 new lib tests. Closure #326 (Level 4 #2) BinaryHeap<T> wrapper shipped immediately before. **Level 4 is now 3/9 complete.** Next focal area sequence: (#328) **BST/AVL via node arena** (Level 4 #3) — child-index i32s, first arena-based ordered container. (#329) **Graph + algorithms** (BFS / DFS / Dijkstra now unblocked by `BinaryHeap<T>`; Kruskal unblocked by UnionFind; topo / A* / Prim). (#330) Trie; (#331) Skip list. After Level 4: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-29, after closure #328 — **Level 4 #3** `Bst<T>` binary search tree on a node arena: first arena-based ordered container. Backing `{ i64* keys, i32* left, i32* right, i64 root, i64 len, i64 capacity }`. 7 builtins (`bst_new` / `insert` / `contains` / `remove` / `len` / `min` / `max`) + method sugar. `min` / `max` return `Option<i64>`. `remove` handles 0/1/2 child cases via in-order successor; deleted slots stay tombstoned in the arena. v1 unbalanced — AVL / RB rotations on the i32-index design queued for a follow-up. Drop frees all three arrays. New `examples/bst.vani` + 6 new lib tests. Closures #326 (BinaryHeap<T>) and #327 (BloomFilter) shipped immediately before. **Level 4 is now 4/9 complete.** Next focal area sequence: (#329) **Graph + algorithms** (Level 4 #5) — `Vec<Node>` + `Vec<Vec<u32>>` adjacency; BFS / DFS / Dijkstra (now unblocked by `BinaryHeap<T>`); Kruskal (unblocked by `UnionFind`); topo / A* / Prim. (#330) Trie (Level 4 #4) — arena with per-node `[i32; 26]` child indices. (#331) Skip list. (#332+) AVL / red-black on the Bst arena. After Level 4: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

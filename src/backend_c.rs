@@ -561,6 +561,12 @@ pub fn emit_c(program: &TypedProgram) -> String {
     if program_uses_bloom_filter(program) {
         emit_intent_bloom_filter_helpers_c_body(&mut body);
     }
+    if program_uses_i64_bst(program) {
+        let has_option_i64 = ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        emit_intent_bst_i64_helpers_c_body(&mut body, has_option_i64);
+    }
 
     for function in &program.functions {
         emit_prototype(function, &mut body);
@@ -1657,6 +1663,181 @@ fn emit_intent_bloom_filter_helpers_c_body(out: &mut String) {
          \x20 return bf->insert_count;\n\
          }\n\n",
     );
+}
+
+/// Walk the program for any `Bst<i64>` type usage. Closure #328.
+pub(crate) fn program_uses_i64_bst(program: &TypedProgram) -> bool {
+    fn ty_uses(ty: &Type) -> bool {
+        match ty {
+            Type::Bst(element) if matches!(**element, Type::I64) => true,
+            Type::Vec(inner) | Type::Ref(inner) | Type::RefMut(inner) => ty_uses(inner),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if ty_uses(&f.return_type) {
+            return true;
+        }
+        for p in &f.params {
+            if ty_uses(&p.ty) {
+                return true;
+            }
+        }
+        for s in &f.body {
+            if stmt_uses_i64_bst(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn stmt_uses_i64_bst(stmt: &crate::ir::TypedStmt) -> bool {
+    use crate::ir::TypedStmt as S;
+    fn ty_uses(ty: &Type) -> bool {
+        matches!(ty, Type::Bst(element) if matches!(**element, Type::I64))
+            || matches!(ty,
+                Type::Vec(i) | Type::Ref(i) | Type::RefMut(i) if ty_uses(i))
+    }
+    match stmt {
+        S::Let { ty, .. } | S::Reassign { ty, .. } | S::Drop { ty, .. } => ty_uses(ty),
+        S::If { then_body, else_body, .. } => {
+            then_body.iter().any(stmt_uses_i64_bst)
+                || else_body.iter().any(stmt_uses_i64_bst)
+        }
+        S::While { body, .. } | S::For { body, .. } | S::ForIter { body, .. } => {
+            body.iter().any(stmt_uses_i64_bst)
+        }
+        _ => false,
+    }
+}
+
+/// Data-structures roadmap Level 4 #3 — Bst<i64> runtime helpers
+/// (closure #328). Node arena pattern: parallel `keys` (i64) +
+/// `left`/`right` (i32 child indices, -1 = no child) arrays.
+/// Root is stored as an i64 index (-1 if empty). Capacity grows
+/// 2x on demand. v1 i64 element only; AVL / red-black balancing
+/// is queued for a follow-up closure. min/max return
+/// `Option<i64>` — gated on Option__i64 being registered.
+fn emit_intent_bst_i64_helpers_c_body(out: &mut String, has_option_i64: bool) {
+    out.push_str(
+        "typedef struct { int64_t* keys; int32_t* left; int32_t* right; int64_t root; int64_t len; int64_t capacity; } intent_bst_i64;\n\
+         static INTENT_UNUSED intent_bst_i64 intent_bst_i64_new(void) {\n\
+         \x20 intent_bst_i64 b; b.keys = (int64_t*)0; b.left = (int32_t*)0; b.right = (int32_t*)0;\n\
+         \x20 b.root = -1; b.len = 0; b.capacity = 0; return b;\n\
+         }\n\
+         static INTENT_UNUSED void intent_bst_i64_drop(intent_bst_i64* b) {\n\
+         \x20 if (b->keys) free(b->keys);\n\
+         \x20 if (b->left) free(b->left);\n\
+         \x20 if (b->right) free(b->right);\n\
+         \x20 b->keys = (int64_t*)0; b->left = (int32_t*)0; b->right = (int32_t*)0;\n\
+         \x20 b->root = -1; b->len = 0; b->capacity = 0;\n\
+         }\n\
+         static INTENT_UNUSED void intent_bst_i64_grow(intent_bst_i64* b) {\n\
+         \x20 int64_t new_cap = b->capacity ? b->capacity * 2 : 8;\n\
+         \x20 b->keys  = (int64_t*)realloc(b->keys,  (size_t)new_cap * sizeof(int64_t));\n\
+         \x20 b->left  = (int32_t*)realloc(b->left,  (size_t)new_cap * sizeof(int32_t));\n\
+         \x20 b->right = (int32_t*)realloc(b->right, (size_t)new_cap * sizeof(int32_t));\n\
+         \x20 if (!b->keys || !b->left || !b->right) abort();\n\
+         \x20 b->capacity = new_cap;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_bst_i64_insert(intent_bst_i64* b, int64_t x) {\n\
+         \x20 if (b->root == -1) {\n\
+         \x20   if (b->len >= b->capacity) intent_bst_i64_grow(b);\n\
+         \x20   int64_t idx = b->len;\n\
+         \x20   b->keys[idx] = x; b->left[idx] = -1; b->right[idx] = -1;\n\
+         \x20   b->root = idx; b->len++; return true;\n\
+         \x20 }\n\
+         \x20 int64_t cur = b->root;\n\
+         \x20 while (1) {\n\
+         \x20   int64_t k = b->keys[cur];\n\
+         \x20   if (x == k) return false;\n\
+         \x20   if (x < k) {\n\
+         \x20     if (b->left[cur] == -1) {\n\
+         \x20       if (b->len >= b->capacity) intent_bst_i64_grow(b);\n\
+         \x20       int64_t idx = b->len;\n\
+         \x20       b->keys[idx] = x; b->left[idx] = -1; b->right[idx] = -1;\n\
+         \x20       b->left[cur] = (int32_t)idx; b->len++; return true;\n\
+         \x20     }\n\
+         \x20     cur = (int64_t)b->left[cur];\n\
+         \x20   } else {\n\
+         \x20     if (b->right[cur] == -1) {\n\
+         \x20       if (b->len >= b->capacity) intent_bst_i64_grow(b);\n\
+         \x20       int64_t idx = b->len;\n\
+         \x20       b->keys[idx] = x; b->left[idx] = -1; b->right[idx] = -1;\n\
+         \x20       b->right[cur] = (int32_t)idx; b->len++; return true;\n\
+         \x20     }\n\
+         \x20     cur = (int64_t)b->right[cur];\n\
+         \x20   }\n\
+         \x20 }\n\
+         }\n\
+         static INTENT_UNUSED bool intent_bst_i64_contains(const intent_bst_i64* b, int64_t x) {\n\
+         \x20 int64_t cur = b->root;\n\
+         \x20 while (cur != -1) {\n\
+         \x20   int64_t k = b->keys[cur];\n\
+         \x20   if (x == k) return true;\n\
+         \x20   cur = (x < k) ? (int64_t)b->left[cur] : (int64_t)b->right[cur];\n\
+         \x20 }\n\
+         \x20 return false;\n\
+         }\n\
+         /* Remove by key. Tombstone strategy: we logically detach\n\
+          * the node by overwriting its key with that of the in-order\n\
+          * successor; the dead slot stays in the arena (no compaction).\n\
+          * Returns true iff a key was removed. */\n\
+         static INTENT_UNUSED bool intent_bst_i64_remove(intent_bst_i64* b, int64_t x) {\n\
+         \x20 if (b->root == -1) return false;\n\
+         \x20 int64_t parent = -1; int64_t cur = b->root; int is_left_child = 0;\n\
+         \x20 while (cur != -1) {\n\
+         \x20   int64_t k = b->keys[cur];\n\
+         \x20   if (x == k) break;\n\
+         \x20   parent = cur;\n\
+         \x20   if (x < k) { cur = (int64_t)b->left[cur]; is_left_child = 1; }\n\
+         \x20   else       { cur = (int64_t)b->right[cur]; is_left_child = 0; }\n\
+         \x20 }\n\
+         \x20 if (cur == -1) return false;\n\
+         \x20 int32_t replacement;\n\
+         \x20 if (b->left[cur] == -1 && b->right[cur] == -1) {\n\
+         \x20   replacement = -1;\n\
+         \x20 } else if (b->left[cur] == -1) {\n\
+         \x20   replacement = b->right[cur];\n\
+         \x20 } else if (b->right[cur] == -1) {\n\
+         \x20   replacement = b->left[cur];\n\
+         \x20 } else {\n\
+         \x20   /* Two children: copy in-order successor's key up. */\n\
+         \x20   int64_t succ_parent = cur; int64_t succ = (int64_t)b->right[cur];\n\
+         \x20   while (b->left[succ] != -1) { succ_parent = succ; succ = (int64_t)b->left[succ]; }\n\
+         \x20   b->keys[cur] = b->keys[succ];\n\
+         \x20   if (succ_parent == cur) b->right[succ_parent] = b->right[succ];\n\
+         \x20   else b->left[succ_parent] = b->right[succ];\n\
+         \x20   b->len--; return true;\n\
+         \x20 }\n\
+         \x20 if (parent == -1) b->root = (int64_t)replacement;\n\
+         \x20 else if (is_left_child) b->left[parent] = replacement;\n\
+         \x20 else b->right[parent] = replacement;\n\
+         \x20 b->len--; return true;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_bst_i64_len(const intent_bst_i64* b) {\n\
+         \x20 return b->len;\n\
+         }\n",
+    );
+    if has_option_i64 {
+        out.push_str(
+            "static INTENT_UNUSED Enum_Option__i64 intent_bst_i64_min(const intent_bst_i64* b) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (b->root == -1) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 int64_t cur = b->root;\n\
+             \x20 while (b->left[cur] != -1) cur = (int64_t)b->left[cur];\n\
+             \x20 r.tag = 0; r.payload = b->keys[cur]; return r;\n\
+             }\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_bst_i64_max(const intent_bst_i64* b) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (b->root == -1) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 int64_t cur = b->root;\n\
+             \x20 while (b->right[cur] != -1) cur = (int64_t)b->right[cur];\n\
+             \x20 r.tag = 0; r.payload = b->keys[cur]; return r;\n\
+             }\n\n",
+        );
+    }
 }
 
 /// Data-structures roadmap Level 1 — FNV-1a hash helpers.
@@ -4282,6 +4463,11 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
             }
             Type::BloomFilter => {
                 out.push_str("  intent_bloom_filter_drop(&");
+                out.push_str(&local_name(name));
+                out.push_str(");\n");
+            }
+            Type::Bst(_) => {
+                out.push_str("  intent_bst_i64_drop(&");
                 out.push_str(&local_name(name));
                 out.push_str(");\n");
             }
@@ -6937,6 +7123,35 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_bloom_filter_count({})",
             emit_expr(&args[0])
         ),
+        // Closure #328: Bst dispatch.
+        "bst_new" => "intent_bst_i64_new()".to_string(),
+        "bst_insert" => format!(
+            "intent_bst_i64_insert({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "bst_contains" => format!(
+            "intent_bst_i64_contains({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "bst_remove" => format!(
+            "intent_bst_i64_remove({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "bst_len" => format!(
+            "intent_bst_i64_len({})",
+            emit_expr(&args[0])
+        ),
+        "bst_min" => format!(
+            "intent_bst_i64_min({})",
+            emit_expr(&args[0])
+        ),
+        "bst_max" => format!(
+            "intent_bst_i64_max({})",
+            emit_expr(&args[0])
+        ),
         "hashmap_new" => "intent_hashmap_i64_i64_new()".to_string(),
         "hashmap_insert" => format!(
             "intent_hashmap_i64_i64_insert({}, ({}), ({}))",
@@ -7504,6 +7719,8 @@ pub(crate) fn c_leaf_type(ty: &Type) -> &'static str {
         Type::BinaryHeap(_) => "intent_binary_heap_i64",
         // `BloomFilter` — Level 4 #6 probabilistic membership tester.
         Type::BloomFilter => "intent_bloom_filter",
+        // `Bst<T>` — Level 4 #3 binary search tree on node arena. v1 i64.
+        Type::Bst(_) => "intent_bst_i64",
         // `fn(T1, T2) -> R` has no fixed leaf spelling in C —
         // function-pointer types are declarator-shaped
         // (`R (*name)(T1, T2)`). Callers that need to emit a
@@ -7835,7 +8052,7 @@ fn divisor_helper(ty: &Type) -> &'static str {
         Type::U64 => "intent_check_u64_divisor",
         Type::F32 => "intent_check_f32_divisor",
         Type::F64 => "intent_check_f64_divisor",
-        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::BloomFilter | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
+        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::BloomFilter | Type::Bst(_) | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
             unreachable!("non-numeric type cannot be a divisor")
         }
     }
@@ -7874,6 +8091,7 @@ fn shift_helper(ty: &Type) -> &'static str {
         | Type::UnionFind
         | Type::BinaryHeap(_)
         | Type::BloomFilter
+        | Type::Bst(_)
         | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => unreachable!("shift count must be an integer"),
     }
 }

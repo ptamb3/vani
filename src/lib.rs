@@ -13007,6 +13007,118 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn bst_basics_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let b: Bst<i64> = bst_new();
+              let _: bool = bst_insert(mut ref b, 5);
+              let _: bool = bst_contains(ref b, 5);
+              let _: bool = bst_remove(mut ref b, 5);
+              let _: i64 = bst_len(ref b);
+              let _: Option<i64> = bst_min(ref b);
+              let _: Option<i64> = bst_max(ref b);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("bst basics must type-check in C");
+        compile_to_llvm(source).expect("bst basics must compile to LLVM");
+    }
+
+    #[test]
+    fn bst_insert_rejects_non_mut_ref() {
+        let source = r#"
+            fn main() -> i64 {
+              let b: Bst<i64> = bst_new();
+              let _: bool = bst_insert(ref b, 1);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("bst_insert by-ref must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref Bst")),
+            "expected mut-ref-Bst diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn bst_reserves_name_against_user_struct() {
+        let source = r#"
+            struct Bst { x: i64 }
+            fn main() -> i64 { return 0; }
+        "#;
+        let errors = compile(source).expect_err("`struct Bst` must collide");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("Bst") && e.message.contains("reserved")),
+            "expected reserved-name diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn bst_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let b: Bst<i64> = bst_new();
+              let _: bool = b.insert(1);
+              let _: bool = b.contains(1);
+              let _: bool = b.remove(1);
+              let _: Option<i64> = b.min();
+              let _: Option<i64> = b.max();
+              return b.len();
+            }
+        "#;
+        compile_to_c(source).expect("bst method sugar must type-check in C");
+        compile_to_llvm(source).expect("bst method sugar must compile to LLVM");
+    }
+
+    #[test]
+    fn bst_emits_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let b: Bst<i64> = bst_new();
+              let _: bool = bst_insert(mut ref b, 1);
+              let _: bool = bst_contains(ref b, 1);
+              let _: Option<i64> = bst_min(ref b);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("bst program compiles");
+        assert!(
+            c.contains("intent_bst_i64")
+                && c.contains("intent_bst_i64_insert")
+                && c.contains("intent_bst_i64_contains")
+                && c.contains("intent_bst_i64_drop"),
+            "C output must include the Bst runtime; got snippet:\n{}",
+            &c[..c.len().min(800)]
+        );
+    }
+
+    #[test]
+    fn bst_emits_helpers_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let b: Bst<i64> = bst_new();
+              let _: bool = bst_insert(mut ref b, 1);
+              let _: bool = bst_contains(ref b, 1);
+              let _: Option<i64> = bst_min(ref b);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("bst LLVM compile");
+        assert!(
+            ll.contains("%intent_bst_i64 = type")
+                && ll.contains("@intent_bst_i64_insert")
+                && ll.contains("@intent_bst_i64_contains"),
+            "LLVM output must include the Bst typedef + helpers"
+        );
+    }
+
+    #[test]
     fn btreemap_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

@@ -830,6 +830,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "borrows.vani",
         "bounded_generics.vani",
         "bounds_elision.vani",
+        "bst.vani",
         "btreemap.vani",
         "btreeset.vani",
         "closures.vani",
