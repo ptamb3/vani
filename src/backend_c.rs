@@ -573,6 +573,9 @@ pub fn emit_c(program: &TypedProgram) -> String {
         });
         emit_intent_graph_helpers_c_body(&mut body, has_option_i64);
     }
+    if program_uses_trie(program) {
+        emit_intent_trie_helpers_c_body(&mut body);
+    }
 
     for function in &program.functions {
         emit_prototype(function, &mut body);
@@ -2014,6 +2017,150 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool) {
              }\n\n",
         );
     }
+}
+
+/// Walk the program for any `Trie` type usage. Closure #330.
+pub(crate) fn program_uses_trie(program: &TypedProgram) -> bool {
+    fn ty_uses(ty: &Type) -> bool {
+        match ty {
+            Type::Trie => true,
+            Type::Vec(inner) | Type::Ref(inner) | Type::RefMut(inner) => ty_uses(inner),
+            _ => false,
+        }
+    }
+    for f in &program.functions {
+        if ty_uses(&f.return_type) {
+            return true;
+        }
+        for p in &f.params {
+            if ty_uses(&p.ty) {
+                return true;
+            }
+        }
+        for s in &f.body {
+            if stmt_uses_trie(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn stmt_uses_trie(stmt: &crate::ir::TypedStmt) -> bool {
+    use crate::ir::TypedStmt as S;
+    fn ty_uses(ty: &Type) -> bool {
+        matches!(ty, Type::Trie)
+            || matches!(ty,
+                Type::Vec(i) | Type::Ref(i) | Type::RefMut(i) if ty_uses(i))
+    }
+    match stmt {
+        S::Let { ty, .. } | S::Reassign { ty, .. } | S::Drop { ty, .. } => ty_uses(ty),
+        S::If { then_body, else_body, .. } => {
+            then_body.iter().any(stmt_uses_trie)
+                || else_body.iter().any(stmt_uses_trie)
+        }
+        S::While { body, .. } | S::For { body, .. } | S::ForIter { body, .. } => {
+            body.iter().any(stmt_uses_trie)
+        }
+        _ => false,
+    }
+}
+
+/// Data-structures roadmap Level 4 #4 — Trie runtime helpers
+/// (closure #330). Prefix tree on a node arena restricted to
+/// lowercase a-z keys. `children` is a flat array of 26 ×
+/// num_nodes i32 child indices (-1 = no child); `is_end`
+/// is a per-node bool. Insertion / lookup short-circuit to
+/// false on any non-a-z input character.
+fn emit_intent_trie_helpers_c_body(out: &mut String) {
+    out.push_str(
+        "typedef struct { int32_t* children; uint8_t* is_end; int64_t num_nodes; int64_t capacity; int64_t num_words; } intent_trie;\n\
+         static INTENT_UNUSED bool intent_trie_valid_char(int c) {\n\
+         \x20 return c >= 'a' && c <= 'z';\n\
+         }\n\
+         static INTENT_UNUSED bool intent_trie_valid_str(const char* s) {\n\
+         \x20 if (!s) return false;\n\
+         \x20 for (const char* p = s; *p; p++) {\n\
+         \x20   if (!intent_trie_valid_char((unsigned char)*p)) return false;\n\
+         \x20 }\n\
+         \x20 return true;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_trie_new_node(intent_trie* t) {\n\
+         \x20 if (t->num_nodes >= t->capacity) {\n\
+         \x20   t->capacity = t->capacity ? t->capacity * 2 : 8;\n\
+         \x20   t->children = (int32_t*)realloc(t->children, (size_t)t->capacity * 26 * sizeof(int32_t));\n\
+         \x20   t->is_end = (uint8_t*)realloc(t->is_end, (size_t)t->capacity * sizeof(uint8_t));\n\
+         \x20   if (!t->children || !t->is_end) abort();\n\
+         \x20 }\n\
+         \x20 int64_t idx = t->num_nodes;\n\
+         \x20 for (int c = 0; c < 26; c++) t->children[idx * 26 + c] = -1;\n\
+         \x20 t->is_end[idx] = 0;\n\
+         \x20 t->num_nodes++;\n\
+         \x20 return idx;\n\
+         }\n\
+         static INTENT_UNUSED intent_trie intent_trie_new(void) {\n\
+         \x20 intent_trie t;\n\
+         \x20 t.children = (int32_t*)0; t.is_end = (uint8_t*)0;\n\
+         \x20 t.num_nodes = 0; t.capacity = 0; t.num_words = 0;\n\
+         \x20 (void)intent_trie_new_node(&t);  /* root = 0 */\n\
+         \x20 return t;\n\
+         }\n\
+         static INTENT_UNUSED void intent_trie_drop(intent_trie* t) {\n\
+         \x20 if (t->children) free(t->children);\n\
+         \x20 if (t->is_end) free(t->is_end);\n\
+         \x20 t->children = (int32_t*)0; t->is_end = (uint8_t*)0;\n\
+         \x20 t->num_nodes = 0; t->capacity = 0; t->num_words = 0;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_trie_insert(intent_trie* t, const char* s) {\n\
+         \x20 if (!intent_trie_valid_str(s)) return false;\n\
+         \x20 if (*s == 0) {\n\
+         \x20   if (t->is_end[0]) return false;\n\
+         \x20   t->is_end[0] = 1; t->num_words++; return true;\n\
+         \x20 }\n\
+         \x20 int64_t cur = 0;\n\
+         \x20 for (const char* p = s; *p; p++) {\n\
+         \x20   int c = (unsigned char)*p - 'a';\n\
+         \x20   int32_t next = t->children[cur * 26 + c];\n\
+         \x20   if (next == -1) {\n\
+         \x20     int64_t nx = intent_trie_new_node(t);\n\
+         \x20     t->children[cur * 26 + c] = (int32_t)nx;\n\
+         \x20     cur = nx;\n\
+         \x20   } else {\n\
+         \x20     cur = (int64_t)next;\n\
+         \x20   }\n\
+         \x20 }\n\
+         \x20 if (t->is_end[cur]) return false;\n\
+         \x20 t->is_end[cur] = 1; t->num_words++; return true;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_trie_walk(const intent_trie* t, const char* s) {\n\
+         \x20 /* Returns the node index reached after walking s,\n\
+          * or -1 if s contains a non-a-z char or runs off-tree. */\n\
+         \x20 if (!intent_trie_valid_str(s)) return -1;\n\
+         \x20 int64_t cur = 0;\n\
+         \x20 for (const char* p = s; *p; p++) {\n\
+         \x20   int c = (unsigned char)*p - 'a';\n\
+         \x20   int32_t next = t->children[cur * 26 + c];\n\
+         \x20   if (next == -1) return -1;\n\
+         \x20   cur = (int64_t)next;\n\
+         \x20 }\n\
+         \x20 return cur;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_trie_contains(const intent_trie* t, const char* s) {\n\
+         \x20 int64_t cur = intent_trie_walk(t, s);\n\
+         \x20 if (cur == -1) return false;\n\
+         \x20 return t->is_end[cur] != 0;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_trie_starts_with(const intent_trie* t, const char* s) {\n\
+         \x20 int64_t cur = intent_trie_walk(t, s);\n\
+         \x20 return cur != -1;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_trie_len(const intent_trie* t) {\n\
+         \x20 return t->num_words;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_trie_node_count(const intent_trie* t) {\n\
+         \x20 return t->num_nodes;\n\
+         }\n\n",
+    );
 }
 
 /// Data-structures roadmap Level 1 — FNV-1a hash helpers.
@@ -4649,6 +4796,11 @@ fn emit_stmt(stmt: &TypedStmt, out: &mut String) {
             }
             Type::Graph => {
                 out.push_str("  intent_graph_drop(&");
+                out.push_str(&local_name(name));
+                out.push_str(");\n");
+            }
+            Type::Trie => {
+                out.push_str("  intent_trie_drop(&");
                 out.push_str(&local_name(name));
                 out.push_str(");\n");
             }
@@ -7369,6 +7521,31 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2])
         ),
+        // Closure #330: Trie dispatch.
+        "trie_new" => "intent_trie_new()".to_string(),
+        "trie_insert" => format!(
+            "intent_trie_insert({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "trie_contains" => format!(
+            "intent_trie_contains({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "trie_starts_with" => format!(
+            "intent_trie_starts_with({}, ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "trie_len" => format!(
+            "intent_trie_len({})",
+            emit_expr(&args[0])
+        ),
+        "trie_node_count" => format!(
+            "intent_trie_node_count({})",
+            emit_expr(&args[0])
+        ),
         "hashmap_new" => "intent_hashmap_i64_i64_new()".to_string(),
         "hashmap_insert" => format!(
             "intent_hashmap_i64_i64_insert({}, ({}), ({}))",
@@ -7940,6 +8117,8 @@ pub(crate) fn c_leaf_type(ty: &Type) -> &'static str {
         Type::Bst(_) => "intent_bst_i64",
         // `Graph` — Level 4 #5 weighted directed graph. v1 i64 weights.
         Type::Graph => "intent_graph",
+        // `Trie` — Level 4 #4 prefix tree on node arena. v1 a-z alphabet.
+        Type::Trie => "intent_trie",
         // `fn(T1, T2) -> R` has no fixed leaf spelling in C —
         // function-pointer types are declarator-shaped
         // (`R (*name)(T1, T2)`). Callers that need to emit a
@@ -8271,7 +8450,7 @@ fn divisor_helper(ty: &Type) -> &'static str {
         Type::U64 => "intent_check_u64_divisor",
         Type::F32 => "intent_check_f32_divisor",
         Type::F64 => "intent_check_f64_divisor",
-        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::BloomFilter | Type::Bst(_) | Type::Graph | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
+        Type::Bool | Type::Str | Type::OwnedStr | Type::Array { .. } | Type::Vec(_) | Type::Ref(_) | Type::RefMut(_) | Type::Task | Type::Atomic(_) | Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::BloomFilter | Type::Bst(_) | Type::Graph | Type::Trie | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => {
             unreachable!("non-numeric type cannot be a divisor")
         }
     }
@@ -8312,6 +8491,7 @@ fn shift_helper(ty: &Type) -> &'static str {
         | Type::BloomFilter
         | Type::Bst(_)
         | Type::Graph
+        | Type::Trie
         | Type::FnPtr(_, _) | Type::Tuple(_) | Type::Struct(_) | Type::Enum(_) | Type::Apply { .. } | Type::Param(_) | Type::Object(_) => unreachable!("shift count must be an integer"),
     }
 }

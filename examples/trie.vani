@@ -1,0 +1,54 @@
+// build & run:
+//   intentc run examples/trie.vani                          # LLVM backend
+//   intentc run examples/trie.vani --backend=c              # C backend
+//   intentc build examples/trie.vani -o /tmp/trie && /tmp/trie
+
+intent "Trie — prefix tree on a node arena (Level 4 #4)";
+
+// `Trie` is a first-class affine handle for a prefix tree
+// restricted to lowercase a-z keys (v1). Backing is a flat
+// 26 × num_nodes i32 child-index array (`-1` = no child) plus
+// a per-node `is_end` byte tracking word boundaries:
+//
+//   children: i32*  — children[node*26 + ch] = child index or -1
+//   is_end:   u8*   — bool per node
+//   num_nodes / capacity / num_words
+//
+// 6 builtins + method sugar:
+//   trie_new()                       -> Trie
+//   t.insert(s)                      -> bool (true if new word)
+//   t.contains(s)                    -> bool (exact match)
+//   t.starts_with(prefix)            -> bool (any word starts with prefix)
+//   t.len()                          -> i64  (number of words)
+//   t.node_count()                   -> i64  (arena node count)
+//
+// Insert / lookup short-circuit to false on any non-a-z input
+// character, so user code can ask the question without
+// pre-filtering. Scope-exit Drop frees both arrays.
+
+fn main() -> i64 {
+  let t: Trie = trie_new();
+
+  // Insert a handful of words and a duplicate.
+  let _ = t.insert("car");
+  let _ = t.insert("cart");
+  let _ = t.insert("dog");
+  let _ = t.insert("dove");
+  print "insert dup:", t.insert("car");
+  print "insert invalid:", t.insert("Hi!");
+
+  print "len:", t.len();
+  print "node_count:", t.node_count();
+
+  // Exact-match queries.
+  print "contains car:", t.contains("car");
+  print "contains ca:", t.contains("ca");
+  print "contains cat:", t.contains("cat");
+
+  // Prefix queries.
+  print "starts_with ca:", t.starts_with("ca");
+  print "starts_with do:", t.starts_with("do");
+  print "starts_with z:", t.starts_with("z");
+
+  return 0;
+}

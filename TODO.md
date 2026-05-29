@@ -244,6 +244,18 @@ pointer (already in the language as of #279 FFI callbacks).
     Arena with child-index map per node
     (`Vec<(u8 or char, u32)>` or `[i32; 26]`). Same drop walk
     as Vec-of-struct.
+    *Shipped 2026-05-29 (closure #330) — Level 4 #4.*
+    `Trie` affine handle backed by `{ i32* children (flat 26 ×
+    num_nodes), u8* is_end, i64 num_nodes, i64 capacity, i64
+    num_words }`. v1 fixed alphabet a-z; insert / contains /
+    starts_with short-circuit to false on any non-a-z input
+    character. 6 builtins: `trie_new / insert / contains /
+    starts_with / len / node_count`. Method sugar: `t.insert(s)`
+    / `.contains(s)` / `.starts_with(p)` / `.len()` /
+    `.node_count()`. Drop frees both arrays. Pending: arbitrary
+    byte / char alphabet (per-node `Vec<(u8, u32)>` sparse
+    children); compressed (radix) trie variant; delete; ordered
+    enumeration of words.
 23. **Graph (general)** — ✅ AFFINE.
     `Vec<Node>` for vertex data + `Vec<Vec<u32>>` adjacency
     list. Indices not pointers. Cycles are fine — the cycle
@@ -624,7 +636,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #329 — **Level 4 #5** `Graph` weighted directed graph + algorithms: backing `{ i64 num_nodes, i32* edge_src, i32* edge_dst, i64* edge_weight, i64 num_edges, i64 edge_capacity }`. 7 builtins (`graph_new` / `add_edge` / `num_nodes` / `num_edges` / `bfs_reach` / `dfs_reach` / `dijkstra`) + method sugar. BFS / DFS reachability use heap-allocated visited + queue/stack arrays scanned over all edges per pop (O((V+E)·E) for v1 — fine for small graphs; CSR row-pointer cache queued). Dijkstra uses an O(V²) inner-loop linear scan (no BinaryHeap dependency) and returns `Option<i64>`. Closures #326 (BinaryHeap<T>), #327 (BloomFilter), and #328 (Bst<T>) shipped immediately before. **Level 4 is now 5/9 complete.** Next focal area sequence: (#330) **Trie** (Level 4 #4) — arena with per-node `[i32; 26]` child indices, insert/contains/prefix search on lowercase a-z strings. (#331) **Skip list** (Level 4 #7) — arena-based, forward-link levels stored as `Vec<u32>` per node. (#332+) AVL / red-black rotations on the Bst arena. (#333+) Graph extensions: A* / topological sort / Kruskal (now unblocked by `UnionFind`) / Prim, CSR-style adjacency cache, undirected variant. After Level 4: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
+## ⏳ Resume here (paused 2026-05-29, after closure #330 — **Level 4 #4** `Trie` prefix tree on a node arena (lowercase a-z keys v1). Backing `{ i32* children (flat 26 × num_nodes), u8* is_end, i64 num_nodes, i64 capacity, i64 num_words }`. 6 builtins (`trie_new` / `insert` / `contains` / `starts_with` / `len` / `node_count`) + method sugar. Insert / lookup short-circuit to false on any non-a-z input character. Drop frees both arrays. New `examples/trie.vani` + 6 new lib tests. Closures #326 (BinaryHeap<T>), #327 (BloomFilter), #328 (Bst<T>), and #329 (Graph + BFS/DFS/Dijkstra) shipped immediately before. **Level 4 is now 6/9 complete.** Next focal area sequence: (#331) **Skip list** (Level 4 #7) — arena-based with forward-link levels per node; probabilistic balancing. (#332) AVL / red-black rotations on the Bst arena (rotations swap i32 indices). (#333+) Graph extensions: A* / topological sort / Kruskal (now unblocked by `UnionFind`) / Prim, CSR adjacency cache, undirected variant. (#334) Trie extensions: arbitrary alphabet via per-node `Vec<(u8, u32)>` sparse children; radix-compressed variant; delete; ordered enumeration. After Level 4: closure-as-value type for passing let-bound closures with captures to combinators; tuple-element Vec for `vec_zip`; non-Copy captures; `.collect()` + lazy iterators; non-i64 element types in combinators. Deferred: hashmap_remove, hashset_remove, non-Copy V (Option<ref V> AFFINE-TENSION shift), wider K/V widths, btreeset/btreemap range queries, expression-body anon-fn shorthand, generic anon fns, SipHash, hash_f64, Hash/Ord interface for user structs, heap-allocating str_split / str_trim / str_replace, async, Kosh.)
 
 **Session updates synced to docs 2026-05-27:**
 closures #269 (extern "C" fn FFI decl) → #270 (linker flag `--link-with`)

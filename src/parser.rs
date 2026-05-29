@@ -1636,6 +1636,10 @@ impl Parser {
                 self.bump();
                 return Ok(Type::Graph);
             }
+            if name == "Trie" {
+                self.bump();
+                return Ok(Type::Trie);
+            }
             if name == "Atomic" {
                 self.bump();
                 self.expect_keyword("'<'", |kind| matches!(kind, TokenKind::Less))?;

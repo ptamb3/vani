@@ -361,6 +361,9 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "graph_num_nodes" || name == "graph_num_edges"
                 || name == "graph_bfs_reach" || name == "graph_dfs_reach"
                 || name == "graph_dijkstra"
+                || name == "trie_new" || name == "trie_insert"
+                || name == "trie_contains" || name == "trie_starts_with"
+                || name == "trie_len" || name == "trie_node_count"
             {
                 return false;
             }

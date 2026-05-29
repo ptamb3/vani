@@ -260,6 +260,7 @@ fn llvm_byte_size(ty: &Type) -> u64 {
         Type::BloomFilter => 32, // {bits ptr, num_bits, num_hashes, insert_count}
         Type::Bst(_) => 40, // {keys ptr, left ptr, right ptr, root, len, capacity}
         Type::Graph => 48, // {num_nodes, edge_src ptr, edge_dst ptr, edge_weight ptr, num_edges, edge_capacity}
+        Type::Trie => 40, // {children ptr, is_end ptr, num_nodes, capacity, num_words}
         Type::Object(_) => 16, // fat pointer: vtable + data
         Type::Vec(_) => 24, // {data, len, cap} on 64-bit
         Type::Array { element, length } => llvm_byte_size(element) * length,
@@ -647,7 +648,9 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // Bst<i64> (closure #328): { keys*, left*, right*, root, len, capacity } — BST on node arena.
     out.push_str("%intent_bst_i64 = type { i64*, i32*, i32*, i64, i64, i64 }\n");
     // Graph (closure #329): { num_nodes, edge_src*, edge_dst*, edge_weight*, num_edges, edge_capacity } — weighted directed graph.
-    out.push_str("%intent_graph = type { i64, i32*, i32*, i64*, i64, i64 }\n\n");
+    out.push_str("%intent_graph = type { i64, i32*, i32*, i64*, i64, i64 }\n");
+    // Trie (closure #330): { children*, is_end*, num_nodes, capacity, num_words } — prefix tree on a-z alphabet (26-wide flat children).
+    out.push_str("%intent_trie = type { i32*, i8*, i64, i64, i64 }\n\n");
 
     emit_intent_str_concat_definition(&mut out);
 
@@ -914,6 +917,11 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
             r.borrow().contains_key("Option__i64")
         });
         emit_intent_graph_helpers_llvm(&mut out, has_option_i64);
+    }
+
+    // Trie helpers (closure #330, Level 4 #4).
+    if crate::backend_c::program_uses_trie(program) {
+        emit_intent_trie_helpers_llvm(&mut out);
     }
 
     for function in &program.functions {
@@ -1673,6 +1681,15 @@ fn emit_stmt(stmt: &TypedStmt, ctx: &mut FnCtx, out: &mut String) {
                 if let Some((_, addr)) = ctx.locals.get(name).cloned() {
                     out.push_str(&format!(
                         "  call void @intent_graph_drop(%intent_graph* {})\n",
+                        addr
+                    ));
+                }
+                return;
+            }
+            if matches!(ty, Type::Trie) {
+                if let Some((_, addr)) = ctx.locals.get(name).cloned() {
+                    out.push_str(&format!(
+                        "  call void @intent_trie_drop(%intent_trie* {})\n",
                         addr
                     ));
                 }
@@ -5436,6 +5453,36 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!(
                     "  {} = call %Enum_Option__i64 @intent_graph_dijkstra(%intent_graph* {}, i64 {}, i64 {})\n",
                     dest, g, src, dst
+                ));
+                return dest;
+            }
+            // Trie builtins (closure #330, Level 4 #4).
+            if name == "trie_new" {
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_trie @intent_trie_new()\n",
+                    dest
+                ));
+                return dest;
+            }
+            if name == "trie_insert" || name == "trie_contains" || name == "trie_starts_with" {
+                let t = emit_expr(&args[0], ctx, out);
+                let s = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                let suffix = name.strip_prefix("trie_").unwrap();
+                out.push_str(&format!(
+                    "  {} = call i1 @intent_trie_{}(%intent_trie* {}, i8* {})\n",
+                    dest, suffix, t, s
+                ));
+                return dest;
+            }
+            if name == "trie_len" || name == "trie_node_count" {
+                let t = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                let suffix = name.strip_prefix("trie_").unwrap();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_trie_{}(%intent_trie* {})\n",
+                    dest, suffix, t
                 ));
                 return dest;
             }
@@ -10135,6 +10182,265 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool) {
              }\n\n",
         );
     }
+}
+
+/// Data-structures roadmap Level 4 #4 — Trie runtime helpers
+/// (closure #330). Prefix tree on a flat 26-wide child-index
+/// arena with parallel `is_end` byte array. Insert / lookup
+/// short-circuit to false on any non-a-z character.
+fn emit_intent_trie_helpers_llvm(out: &mut String) {
+    out.push_str(
+        "define i1 @intent_trie_valid_str(i8* %s) {\n\
+         \x20 %s_null = icmp eq i8* %s, null\n\
+         \x20 br i1 %s_null, label %tv_false, label %tv_init\n\
+         tv_init:\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 store i64 0, i64* %i_p\n\
+         \x20 br label %tv_loop\n\
+         tv_loop:\n\
+         \x20 %i = load i64, i64* %i_p\n\
+         \x20 %slot = getelementptr i8, i8* %s, i64 %i\n\
+         \x20 %ch = load i8, i8* %slot\n\
+         \x20 %is_zero = icmp eq i8 %ch, 0\n\
+         \x20 br i1 %is_zero, label %tv_true, label %tv_test\n\
+         tv_test:\n\
+         \x20 %ch64 = sext i8 %ch to i64\n\
+         \x20 %lo = icmp slt i64 %ch64, 97\n\
+         \x20 %hi = icmp sgt i64 %ch64, 122\n\
+         \x20 %bad = or i1 %lo, %hi\n\
+         \x20 br i1 %bad, label %tv_false, label %tv_next\n\
+         tv_next:\n\
+         \x20 %i_inc = add i64 %i, 1\n\
+         \x20 store i64 %i_inc, i64* %i_p\n\
+         \x20 br label %tv_loop\n\
+         tv_true:\n\
+         \x20 ret i1 true\n\
+         tv_false:\n\
+         \x20 ret i1 false\n\
+         }\n\
+         define i64 @intent_trie_new_node(%intent_trie* %t) {\n\
+         \x20 %cpp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 0\n\
+         \x20 %epp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 1\n\
+         \x20 %nnp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 2\n\
+         \x20 %capp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 3\n\
+         \x20 %nn = load i64, i64* %nnp\n\
+         \x20 %cap = load i64, i64* %capp\n\
+         \x20 %need = icmp sge i64 %nn, %cap\n\
+         \x20 br i1 %need, label %tn_grow, label %tn_emplace\n\
+         tn_grow:\n\
+         \x20 %cap_zero = icmp eq i64 %cap, 0\n\
+         \x20 %cap_mul = mul i64 %cap, 2\n\
+         \x20 %cap_new = select i1 %cap_zero, i64 8, i64 %cap_mul\n\
+         \x20 %c_bytes = mul i64 %cap_new, 104\n\
+         \x20 %c_old = load i32*, i32** %cpp\n\
+         \x20 %c_old_i8 = bitcast i32* %c_old to i8*\n\
+         \x20 %c_new_i8 = call i8* @realloc(i8* %c_old_i8, i64 %c_bytes)\n\
+         \x20 %c_new = bitcast i8* %c_new_i8 to i32*\n\
+         \x20 store i32* %c_new, i32** %cpp\n\
+         \x20 %e_old = load i8*, i8** %epp\n\
+         \x20 %e_new = call i8* @realloc(i8* %e_old, i64 %cap_new)\n\
+         \x20 store i8* %e_new, i8** %epp\n\
+         \x20 store i64 %cap_new, i64* %capp\n\
+         \x20 br label %tn_emplace\n\
+         tn_emplace:\n\
+         \x20 %c_arr = load i32*, i32** %cpp\n\
+         \x20 %e_arr = load i8*, i8** %epp\n\
+         \x20 %nn_e = load i64, i64* %nnp\n\
+         \x20 %base_offset = mul i64 %nn_e, 26\n\
+         \x20 %k_p = alloca i64\n\
+         \x20 store i64 0, i64* %k_p\n\
+         \x20 br label %tn_init_loop\n\
+         tn_init_loop:\n\
+         \x20 %k = load i64, i64* %k_p\n\
+         \x20 %k_done = icmp sge i64 %k, 26\n\
+         \x20 br i1 %k_done, label %tn_clear_end, label %tn_init_body\n\
+         tn_init_body:\n\
+         \x20 %idx = add i64 %base_offset, %k\n\
+         \x20 %slot = getelementptr i32, i32* %c_arr, i64 %idx\n\
+         \x20 store i32 -1, i32* %slot\n\
+         \x20 %k_inc = add i64 %k, 1\n\
+         \x20 store i64 %k_inc, i64* %k_p\n\
+         \x20 br label %tn_init_loop\n\
+         tn_clear_end:\n\
+         \x20 %e_slot = getelementptr i8, i8* %e_arr, i64 %nn_e\n\
+         \x20 store i8 0, i8* %e_slot\n\
+         \x20 %nn_inc = add i64 %nn_e, 1\n\
+         \x20 store i64 %nn_inc, i64* %nnp\n\
+         \x20 ret i64 %nn_e\n\
+         }\n\
+         define %intent_trie @intent_trie_new() {\n\
+         \x20 %t_alloca = alloca %intent_trie\n\
+         \x20 %r0 = insertvalue %intent_trie undef, i32* null, 0\n\
+         \x20 %r1 = insertvalue %intent_trie %r0, i8* null, 1\n\
+         \x20 %r2 = insertvalue %intent_trie %r1, i64 0, 2\n\
+         \x20 %r3 = insertvalue %intent_trie %r2, i64 0, 3\n\
+         \x20 %r4 = insertvalue %intent_trie %r3, i64 0, 4\n\
+         \x20 store %intent_trie %r4, %intent_trie* %t_alloca\n\
+         \x20 %root = call i64 @intent_trie_new_node(%intent_trie* %t_alloca)\n\
+         \x20 %final = load %intent_trie, %intent_trie* %t_alloca\n\
+         \x20 ret %intent_trie %final\n\
+         }\n\
+         define void @intent_trie_drop(%intent_trie* %t) {\n\
+         \x20 %cpp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 0\n\
+         \x20 %epp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 1\n\
+         \x20 %c_arr = load i32*, i32** %cpp\n\
+         \x20 %e_arr = load i8*, i8** %epp\n\
+         \x20 %c_null = icmp eq i32* %c_arr, null\n\
+         \x20 br i1 %c_null, label %d_e, label %d_fc\n\
+         d_fc:\n\
+         \x20 %c_i8 = bitcast i32* %c_arr to i8*\n\
+         \x20 call void @free(i8* %c_i8)\n\
+         \x20 br label %d_e\n\
+         d_e:\n\
+         \x20 %e_null = icmp eq i8* %e_arr, null\n\
+         \x20 br i1 %e_null, label %d_done, label %d_fe\n\
+         d_fe:\n\
+         \x20 call void @free(i8* %e_arr)\n\
+         \x20 br label %d_done\n\
+         d_done:\n\
+         \x20 store i32* null, i32** %cpp\n\
+         \x20 store i8* null, i8** %epp\n\
+         \x20 %nnp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 2\n\
+         \x20 %capp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 3\n\
+         \x20 %nwp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 4\n\
+         \x20 store i64 0, i64* %nnp\n\
+         \x20 store i64 0, i64* %capp\n\
+         \x20 store i64 0, i64* %nwp\n\
+         \x20 ret void\n\
+         }\n\
+         define i1 @intent_trie_insert(%intent_trie* %t, i8* %s) {\n\
+         \x20 %valid = call i1 @intent_trie_valid_str(i8* %s)\n\
+         \x20 br i1 %valid, label %ti_init, label %ti_false\n\
+         ti_false:\n\
+         \x20 ret i1 false\n\
+         ti_init:\n\
+         \x20 %cpp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 0\n\
+         \x20 %epp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 1\n\
+         \x20 %nwp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 4\n\
+         \x20 %cur_p = alloca i64\n\
+         \x20 store i64 0, i64* %cur_p\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 store i64 0, i64* %i_p\n\
+         \x20 br label %ti_loop\n\
+         ti_loop:\n\
+         \x20 %i = load i64, i64* %i_p\n\
+         \x20 %s_slot = getelementptr i8, i8* %s, i64 %i\n\
+         \x20 %ch = load i8, i8* %s_slot\n\
+         \x20 %is_end_ch = icmp eq i8 %ch, 0\n\
+         \x20 br i1 %is_end_ch, label %ti_mark, label %ti_step\n\
+         ti_step:\n\
+         \x20 %ch64 = sext i8 %ch to i64\n\
+         \x20 %c_off = sub i64 %ch64, 97\n\
+         \x20 %cur = load i64, i64* %cur_p\n\
+         \x20 %base = mul i64 %cur, 26\n\
+         \x20 %child_idx = add i64 %base, %c_off\n\
+         \x20 %c_arr = load i32*, i32** %cpp\n\
+         \x20 %child_slot = getelementptr i32, i32* %c_arr, i64 %child_idx\n\
+         \x20 %child32 = load i32, i32* %child_slot\n\
+         \x20 %child = sext i32 %child32 to i64\n\
+         \x20 %is_none = icmp eq i64 %child, -1\n\
+         \x20 br i1 %is_none, label %ti_alloc, label %ti_descend\n\
+         ti_alloc:\n\
+         \x20 %new_node = call i64 @intent_trie_new_node(%intent_trie* %t)\n\
+         \x20 %c_arr2 = load i32*, i32** %cpp\n\
+         \x20 %child_slot2 = getelementptr i32, i32* %c_arr2, i64 %child_idx\n\
+         \x20 %new_i32 = trunc i64 %new_node to i32\n\
+         \x20 store i32 %new_i32, i32* %child_slot2\n\
+         \x20 store i64 %new_node, i64* %cur_p\n\
+         \x20 br label %ti_advance\n\
+         ti_descend:\n\
+         \x20 store i64 %child, i64* %cur_p\n\
+         \x20 br label %ti_advance\n\
+         ti_advance:\n\
+         \x20 %i_inc = add i64 %i, 1\n\
+         \x20 store i64 %i_inc, i64* %i_p\n\
+         \x20 br label %ti_loop\n\
+         ti_mark:\n\
+         \x20 %cur_f = load i64, i64* %cur_p\n\
+         \x20 %e_arr = load i8*, i8** %epp\n\
+         \x20 %e_slot = getelementptr i8, i8* %e_arr, i64 %cur_f\n\
+         \x20 %prev = load i8, i8* %e_slot\n\
+         \x20 %was_end = icmp ne i8 %prev, 0\n\
+         \x20 br i1 %was_end, label %ti_dup, label %ti_set\n\
+         ti_dup:\n\
+         \x20 ret i1 false\n\
+         ti_set:\n\
+         \x20 store i8 1, i8* %e_slot\n\
+         \x20 %nw = load i64, i64* %nwp\n\
+         \x20 %nw_inc = add i64 %nw, 1\n\
+         \x20 store i64 %nw_inc, i64* %nwp\n\
+         \x20 ret i1 true\n\
+         }\n\
+         define i64 @intent_trie_walk(%intent_trie* %t, i8* %s) {\n\
+         \x20 %valid = call i1 @intent_trie_valid_str(i8* %s)\n\
+         \x20 br i1 %valid, label %tw_init, label %tw_none\n\
+         tw_init:\n\
+         \x20 %cpp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 0\n\
+         \x20 %cur_p = alloca i64\n\
+         \x20 store i64 0, i64* %cur_p\n\
+         \x20 %i_p = alloca i64\n\
+         \x20 store i64 0, i64* %i_p\n\
+         \x20 br label %tw_loop\n\
+         tw_loop:\n\
+         \x20 %i = load i64, i64* %i_p\n\
+         \x20 %s_slot = getelementptr i8, i8* %s, i64 %i\n\
+         \x20 %ch = load i8, i8* %s_slot\n\
+         \x20 %is_end_ch = icmp eq i8 %ch, 0\n\
+         \x20 br i1 %is_end_ch, label %tw_return, label %tw_step\n\
+         tw_step:\n\
+         \x20 %ch64 = sext i8 %ch to i64\n\
+         \x20 %c_off = sub i64 %ch64, 97\n\
+         \x20 %cur = load i64, i64* %cur_p\n\
+         \x20 %base = mul i64 %cur, 26\n\
+         \x20 %child_idx = add i64 %base, %c_off\n\
+         \x20 %c_arr = load i32*, i32** %cpp\n\
+         \x20 %child_slot = getelementptr i32, i32* %c_arr, i64 %child_idx\n\
+         \x20 %child32 = load i32, i32* %child_slot\n\
+         \x20 %is_none = icmp eq i32 %child32, -1\n\
+         \x20 br i1 %is_none, label %tw_none, label %tw_advance\n\
+         tw_advance:\n\
+         \x20 %child = sext i32 %child32 to i64\n\
+         \x20 store i64 %child, i64* %cur_p\n\
+         \x20 %i_inc = add i64 %i, 1\n\
+         \x20 store i64 %i_inc, i64* %i_p\n\
+         \x20 br label %tw_loop\n\
+         tw_return:\n\
+         \x20 %cur_final = load i64, i64* %cur_p\n\
+         \x20 ret i64 %cur_final\n\
+         tw_none:\n\
+         \x20 ret i64 -1\n\
+         }\n\
+         define i1 @intent_trie_contains(%intent_trie* %t, i8* %s) {\n\
+         \x20 %cur = call i64 @intent_trie_walk(%intent_trie* %t, i8* %s)\n\
+         \x20 %is_none = icmp eq i64 %cur, -1\n\
+         \x20 br i1 %is_none, label %tc_false, label %tc_check\n\
+         tc_check:\n\
+         \x20 %epp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 1\n\
+         \x20 %e_arr = load i8*, i8** %epp\n\
+         \x20 %e_slot = getelementptr i8, i8* %e_arr, i64 %cur\n\
+         \x20 %v = load i8, i8* %e_slot\n\
+         \x20 %is_set = icmp ne i8 %v, 0\n\
+         \x20 ret i1 %is_set\n\
+         tc_false:\n\
+         \x20 ret i1 false\n\
+         }\n\
+         define i1 @intent_trie_starts_with(%intent_trie* %t, i8* %s) {\n\
+         \x20 %cur = call i64 @intent_trie_walk(%intent_trie* %t, i8* %s)\n\
+         \x20 %is_none = icmp eq i64 %cur, -1\n\
+         \x20 %ok = icmp ne i64 %cur, -1\n\
+         \x20 ret i1 %ok\n\
+         }\n\
+         define i64 @intent_trie_len(%intent_trie* %t) {\n\
+         \x20 %nwp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 4\n\
+         \x20 %v = load i64, i64* %nwp\n\
+         \x20 ret i64 %v\n\
+         }\n\
+         define i64 @intent_trie_node_count(%intent_trie* %t) {\n\
+         \x20 %nnp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 2\n\
+         \x20 %v = load i64, i64* %nnp\n\
+         \x20 ret i64 %v\n\
+         }\n\n",
+    );
 }
 
 /// Data-structures roadmap Level 2 — HashSet<i64> runtime
@@ -15166,7 +15472,7 @@ fn is_scalar(ty: &Type) -> bool {
         // <ty> <v>, <ty>* …` work uniformly. The builtins
         // (channel_new, mutex_new, mutex_lock) return SSA
         // values of these struct types.
-        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::BloomFilter | Type::Bst(_) | Type::Graph)
+        || matches!(ty, Type::Channel(_, _) | Type::Mutex(_) | Type::Guard(_) | Type::Condvar | Type::Deque(_) | Type::HashSet(_) | Type::HashMap(_, _) | Type::BTreeSet(_) | Type::BTreeMap(_, _) | Type::UnionFind | Type::BinaryHeap(_) | Type::BloomFilter | Type::Bst(_) | Type::Graph | Type::Trie)
         // Function pointers are pointer-sized scalars. The
         // alloca holds a single value of fn-ptr type (the
         // load returns a function-pointer SSA value the
@@ -15226,6 +15532,7 @@ pub(crate) fn llvm_type(ty: &Type) -> &'static str {
         Type::BloomFilter => "%intent_bloom_filter",
         Type::Bst(_) => "%intent_bst_i64",
         Type::Graph => "%intent_graph",
+        Type::Trie => "%intent_trie",
         // Enums lower to a 32-bit tag — see `llvm_type_string`
         // for the same. T1.3.
         Type::Enum(_) => "i32",

@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_str", "hash_combine", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_len", "trie_node_count", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -461,7 +461,7 @@ pub fn check(program: Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     // built-in `Type::Task`, leading to confusing
     // "got Task" errors deep in the pipeline.
     const RESERVED_TYPE_NAMES: &[&str] = &[
-        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "HashSet", "HashMap", "BTreeSet", "BTreeMap", "UnionFind", "BinaryHeap", "BloomFilter", "Bst", "Graph", "OwnedStr", "Self",
+        "Task", "Atomic", "Mutex", "Guard", "Channel", "Condvar", "Deque", "HashSet", "HashMap", "BTreeSet", "BTreeMap", "UnionFind", "BinaryHeap", "BloomFilter", "Bst", "Graph", "Trie", "OwnedStr", "Self",
     ];
     for decl in &program.structs {
         if RESERVED_TYPE_NAMES.contains(&decl.name.as_str()) {
@@ -10807,6 +10807,14 @@ fn check_expr(
                         "dijkstra" => ("graph_dijkstra", false),
                         _ => ("", false),
                     },
+                    Some(Type::Trie) => match method.as_str() {
+                        "insert" => ("trie_insert", true),
+                        "contains" => ("trie_contains", false),
+                        "starts_with" => ("trie_starts_with", false),
+                        "len" => ("trie_len", false),
+                        "node_count" => ("trie_node_count", false),
+                        _ => ("", false),
+                    },
                     _ => ("", false),
                 };
                 if !builtin_name.is_empty() {
@@ -13862,6 +13870,12 @@ fn check_call(
         | "graph_num_edges" | "graph_bfs_reach" | "graph_dfs_reach"
         | "graph_dijkstra" => {
             return check_graph_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
+        "trie_new" | "trie_insert" | "trie_contains"
+        | "trie_starts_with" | "trie_len" | "trie_node_count" => {
+            return check_trie_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
         }
@@ -17141,6 +17155,123 @@ fn check_graph_builtin(
             &format!("graph arg {}", i), diagnostics,
         );
         typed_args.push(coerced.expr);
+    }
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        ret_ty(),
+        None,
+        span,
+    )
+}
+
+/// Trie builtins — closure #330, Level 4 #4.
+///
+///   trie_new() -> Trie
+///   trie_insert(mut ref t, s: Str) -> bool
+///       True iff a new word was added. Returns false on
+///       duplicate or if s contains any non-a-z character.
+///   trie_contains(ref t, s: Str) -> bool
+///   trie_starts_with(ref t, prefix: Str) -> bool
+///   trie_len(ref t) -> i64
+///   trie_node_count(ref t) -> i64
+fn check_trie_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    let want_args = match name {
+        "trie_new" => 0,
+        "trie_len" | "trie_node_count" => 1,
+        "trie_insert" | "trie_contains" | "trie_starts_with" => 2,
+        _ => unreachable!(),
+    };
+    let ret_ty = || -> Type {
+        match name {
+            "trie_new" => Type::Trie,
+            "trie_insert" | "trie_contains" | "trie_starts_with" => Type::Bool,
+            _ => Type::I64,
+        }
+    };
+    if args.len() != want_args {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "{}() expects {} argument{}, got {}",
+                name,
+                want_args,
+                if want_args == 1 { "" } else { "s" },
+                args.len()
+            ),
+        ));
+        return CheckedExpr::fallback(ret_ty(), span);
+    }
+    if name == "trie_new" {
+        return CheckedExpr::new(
+            TypedExprKind::Call {
+                name: "trie_new".to_string(),
+                name_span: span,
+                args: Vec::new(),
+            },
+            Type::Trie,
+            None,
+            span,
+        );
+    }
+    let t = check_expr(&args[0], env, signatures, diagnostics);
+    let is_mut_op = matches!(name, "trie_insert");
+    match t.ty() {
+        Type::Ref(inner) | Type::RefMut(inner) => {
+            if !matches!(**inner, Type::Trie) {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "{}() requires a `{}Trie` argument, got {}",
+                        name,
+                        if is_mut_op { "mut ref " } else { "ref " },
+                        t.ty()
+                    ),
+                ));
+                return CheckedExpr::fallback(ret_ty(), span);
+            }
+        }
+        other => {
+            diagnostics.push(Diagnostic::new(
+                args[0].span,
+                format!(
+                    "{}() requires a `{}Trie` argument, got {}",
+                    name,
+                    if is_mut_op { "mut ref " } else { "ref " },
+                    other
+                ),
+            ));
+            return CheckedExpr::fallback(ret_ty(), span);
+        }
+    }
+    if is_mut_op && !matches!(t.ty(), Type::RefMut(_)) {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "{}() requires a `mut ref Trie` argument, got {}",
+                name,
+                t.ty()
+            ),
+        ));
+    }
+    let mut typed_args = vec![t.expr];
+    if matches!(name, "trie_insert" | "trie_contains" | "trie_starts_with") {
+        let s_raw = check_expr(&args[1], env, signatures, diagnostics);
+        let s = coerce_checked(
+            s_raw, &Type::Str, args[1].span,
+            "trie key", diagnostics,
+        );
+        typed_args.push(s.expr);
     }
     CheckedExpr::new(
         TypedExprKind::Call {

@@ -13232,6 +13232,114 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn trie_basics_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let t: Trie = trie_new();
+              let _: bool = trie_insert(mut ref t, "abc");
+              let _: bool = trie_contains(ref t, "abc");
+              let _: bool = trie_starts_with(ref t, "ab");
+              let _: i64 = trie_len(ref t);
+              let _: i64 = trie_node_count(ref t);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("trie basics must type-check in C");
+        compile_to_llvm(source).expect("trie basics must compile to LLVM");
+    }
+
+    #[test]
+    fn trie_insert_rejects_non_mut_ref() {
+        let source = r#"
+            fn main() -> i64 {
+              let t: Trie = trie_new();
+              let _: bool = trie_insert(ref t, "abc");
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("trie_insert by-ref must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("mut ref Trie")),
+            "expected mut-ref-Trie diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn trie_reserves_name_against_user_struct() {
+        let source = r#"
+            struct Trie { x: i64 }
+            fn main() -> i64 { return 0; }
+        "#;
+        let errors = compile(source).expect_err("`struct Trie` must collide");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("Trie") && e.message.contains("reserved")),
+            "expected reserved-name diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn trie_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let t: Trie = trie_new();
+              let _: bool = t.insert("abc");
+              let _: bool = t.contains("abc");
+              let _: bool = t.starts_with("ab");
+              let _: i64 = t.node_count();
+              return t.len();
+            }
+        "#;
+        compile_to_c(source).expect("trie method sugar must type-check in C");
+        compile_to_llvm(source).expect("trie method sugar must compile to LLVM");
+    }
+
+    #[test]
+    fn trie_emits_helpers_in_c() {
+        let source = r#"
+            fn main() -> i64 {
+              let t: Trie = trie_new();
+              let _: bool = trie_insert(mut ref t, "abc");
+              let _: bool = trie_contains(ref t, "abc");
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("trie program compiles");
+        assert!(
+            c.contains("intent_trie")
+                && c.contains("intent_trie_insert")
+                && c.contains("intent_trie_contains")
+                && c.contains("intent_trie_drop"),
+            "C output must include the Trie runtime; got snippet:\n{}",
+            &c[..c.len().min(800)]
+        );
+    }
+
+    #[test]
+    fn trie_emits_helpers_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let t: Trie = trie_new();
+              let _: bool = trie_insert(mut ref t, "abc");
+              let _: bool = trie_contains(ref t, "abc");
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("trie LLVM compile");
+        assert!(
+            ll.contains("%intent_trie = type")
+                && ll.contains("@intent_trie_insert")
+                && ll.contains("@intent_trie_contains"),
+            "LLVM output must include the Trie typedef + helpers"
+        );
+    }
+
+    #[test]
     fn btreemap_basics_typecheck_and_compile() {
         let source = r#"
             fn main() -> i64 {

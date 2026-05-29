@@ -892,6 +892,7 @@ fn llvm_backend_run_produces_same_output_as_c() {
         "struct_owned_field.vani",
         "tasks.vani",
         "tracker.vani",
+        "trie.vani",
         "try_keyword.vani",
         "tuple_eq.vani",
         "type_associated_fn.vani",
