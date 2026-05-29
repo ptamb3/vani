@@ -739,14 +739,14 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #351 — **SipHash-2-4 keyed hash family**. `siphash_i64(k0, k1, x)` and `siphash_str(k0, k1, s)` join the FNV-1a family with an adversarial-resistant alternative. Canonical SipHash-2-4 with 2 compression rounds per 8-byte block and 4 finalization rounds; initial state derives from the standard "somepseudorandomlygeneratedbytes" constants XOR with `(k0, k1)`. Shared `intent_siphash24_bytes(k0, k1, ptr, n)` core in both backends; thin `_i64` and `_str` wrappers stage the bytes / call strlen. **Spec vector verified**: empty message with key `0x000102…0f` → `0x726fdb47dd0e0e31` = `8246050544436514353` on both backends. C uses an `INTENT_SIP_ROUND` macro for compactness; LLVM uses a per-round-tagged IR generator (`emit_sipround_llvm`) so 8 chained rounds get unique SSA names. Gating: new `program_uses_siphash` walker in LLVM; C piggybacks on the loose `intent_siphash` substring check inside `emit_intent_hash_helpers_c`. Extended `examples/hash.vani` covers determinism, key sensitivity, spec vector, and input distinction. 4 new lib tests pin 3-arg typecheck, arity diagnostic, and helper-name emission. 1276 lib + 54 parity green across 90 examples. Closure #350 (`str_split`) shipped immediately before.)
+## ⏳ Resume here (paused 2026-05-29, after closure #352 — **`btreeset_min` / `btreeset_max` + `btreemap_min_key` / `btreemap_max_key`**. O(1) ends-access on the sorted-Vec backings, parallel to `skiplist_min` / `skiplist_max` (#341). All four return `Option<i64>` (None on empty). Method sugar: `s.min()` / `s.max()` on BTreeSet, `m.min_key()` / `m.max_key()` on BTreeMap. Extended both BTree examples and added 4 new lib tests. Both backends byte-identical. 1280 lib + 54 parity green. Closure #351 (SipHash-2-4) shipped immediately before. **Note**: this took the slot originally queued for Hash/Ord interface — that work is genuinely multi-session and got pushed to #353+ in favor of completing the quick O(1) BTree API.)
 
-### Granular queue (2026-05-29, after #351)
+### Granular queue (refreshed 2026-05-29, after #352)
 
 Ordered by tractability + value. Each item is one or more
 closures; pick top-of-queue when the previous one ships.
 
-1. **#352 — `Hash` / `Ord` interface for user struct keys.**
+1. **#353 — `Hash` / `Ord` interface for user struct keys.**
    Lets users put their own struct types into `HashSet<T>` /
    `HashMap<K, V>` / `BTreeSet<T>` / `BTreeMap<K, V>` by
    implementing a trait. Probably ships as:
@@ -763,13 +763,13 @@ closures; pick top-of-queue when the previous one ships.
    large — interface decls + container monomorphization plumbing
    in both backends.
 
-2. **#353 — Anonymous-fn shorthand `|x| x + 1`.** Parser sugar
+2. **#354 — Anonymous-fn shorthand `|x| x + 1`.** Parser sugar
    that desugars to the existing AnonFn AST node (closure #308).
    The body desugars to `fn(x: i64) -> i64 { return x + 1; }`
    with the parameter type and return type inferred from
-   context. Independent of #352 — can interleave.
+   context. Independent of #353 — can interleave.
 
-3. **#354+ — Closure-as-value richer support (multi-session).**
+3. **#355+ — Closure-as-value richer support (multi-session).**
    Decomposes into:
    - 3a: Capture-by-ref second-class closures (callable only
      within the captured ref's lifetime).
@@ -783,20 +783,19 @@ closures; pick top-of-queue when the previous one ships.
    - 3f: Tuple-element Vec — needed for `vec_zip(xs, ys) ->
      Vec<(T, U)>`.
 
-4. **#355 — Trie sparse children.** Replace the 1024-byte-per-
+4. **#356 — Trie sparse children.** Replace the 1024-byte-per-
    node fixed alphabet (closure #345 generalized 26-wide to
    256-wide) with `Vec<(u8, u32)>` per node + binary search on
    character lookup. Trades memory (most nodes have ≤10
    children) for slightly slower lookup. Possibly two closures:
    the refactor, then ordered-enumeration helper.
 
-5. **#356 — `btreeset_min` / `btreeset_max` / `btreemap_min_key`
-   / `btreemap_max_key`.** Parallel to `skiplist_min`/`max`
-   (#341). O(1) since the sorted-Vec backing stores them at
-   index 0 and len-1.
-
-6. **#357 — `vec_zip(xs, ys) -> Vec<(T, U)>`.** Depends on
+5. **#357 — `vec_zip(xs, ys) -> Vec<(T, U)>`.** Depends on
    tuple-element Vec from 3f.
+
+(Previously #356 was `btreeset_min`/`btreeset_max` and friends
+— that shipped early as #352, ahead of the Hash/Ord interface
+which moved to #353.)
 
 #### Deferred (intent recorded, not actively queued)
 

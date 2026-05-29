@@ -549,8 +549,11 @@ pub fn emit_c(program: &TypedProgram) -> String {
         emit_intent_hashmap_helpers_c_body(&mut body, has_option_i64);
     }
     if program_uses_i64_btreeset(program) {
+        let has_option_i64 = ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
         let emit_vec_dep = program_uses_graph_vec_builtin(program);
-        emit_intent_btreeset_helpers_c_body(&mut body, emit_vec_dep);
+        emit_intent_btreeset_helpers_c_body(&mut body, has_option_i64, emit_vec_dep);
     }
     if program_uses_i64_i64_btreemap(program) {
         let has_option_i64 = ENUM_PAYLOAD_REGISTRY.with(|r| {
@@ -1247,7 +1250,7 @@ fn stmt_uses_i64_btreeset(stmt: &crate::ir::TypedStmt) -> bool {
 /// lookup (O(log n)), memmove shift for insert / remove
 /// (O(n)). Naturally sorted iteration order. Real B-tree
 /// arena variant queued for Level 4.
-fn emit_intent_btreeset_helpers_c_body(out: &mut String, emit_vec_dep: bool) {
+fn emit_intent_btreeset_helpers_c_body(out: &mut String, has_option_i64: bool, emit_vec_dep: bool) {
     out.push_str(
         "typedef struct { int64_t* keys; uint64_t len; uint64_t capacity; } intent_btreeset_i64;\n\
          static INTENT_UNUSED intent_btreeset_i64 intent_btreeset_i64_new(void) {\n\
@@ -1316,6 +1319,23 @@ fn emit_intent_btreeset_helpers_c_body(out: &mut String, emit_vec_dep: bool) {
              \x20   added++; i++;\n\
              \x20 }\n\
              \x20 return added;\n\
+             }\n\n",
+        );
+    }
+    if has_option_i64 {
+        out.push_str(
+            "/* Closure #352: O(1) min / max on the sorted-Vec backing.\n\
+             \x20 * Keys are stored ascending, so keys[0] = min and\n\
+             \x20 * keys[len-1] = max. Returns Option<i64> (None on empty). */\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_btreeset_i64_min(const intent_btreeset_i64* s) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (s->len == 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 r.tag = 0; r.payload = s->keys[0]; return r;\n\
+             }\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_btreeset_i64_max(const intent_btreeset_i64* s) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (s->len == 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 r.tag = 0; r.payload = s->keys[s->len - 1]; return r;\n\
              }\n\n",
         );
     }
@@ -1451,6 +1471,19 @@ fn emit_intent_btreemap_helpers_c_body(out: &mut String, has_option_i64: bool, e
              \x20 }\n\
              \x20 m->len--;\n\
              \x20 return r;\n\
+             }\n\
+             /* Closure #352: O(1) min / max key on the sorted-Vec\n\
+             \x20 * backing. keys[0] = smallest key, keys[len-1] = largest.\n\
+             \x20 * Returns Option<i64> (None on empty). */\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_btreemap_i64_i64_min_key(const intent_btreemap_i64_i64* m) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (m->len == 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 r.tag = 0; r.payload = m->keys[0]; return r;\n\
+             }\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_btreemap_i64_i64_max_key(const intent_btreemap_i64_i64* m) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (m->len == 0) { r.tag = 1; r.payload = 0; return r; }\n\
+             \x20 r.tag = 0; r.payload = m->keys[m->len - 1]; return r;\n\
              }\n\n",
         );
     }
@@ -8696,6 +8729,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[2]),
             emit_expr(&args[3])
         ),
+        "btreeset_min" => format!(
+            "intent_btreeset_i64_min({})",
+            emit_expr(&args[0])
+        ),
+        "btreeset_max" => format!(
+            "intent_btreeset_i64_max({})",
+            emit_expr(&args[0])
+        ),
         "btreemap_new" => "intent_btreemap_i64_i64_new()".to_string(),
         "btreemap_insert" => format!(
             "intent_btreemap_i64_i64_insert({}, ({}), ({}))",
@@ -8735,6 +8776,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2]),
             emit_expr(&args[3])
+        ),
+        "btreemap_min_key" => format!(
+            "intent_btreemap_i64_i64_min_key({})",
+            emit_expr(&args[0])
+        ),
+        "btreemap_max_key" => format!(
+            "intent_btreemap_i64_i64_max_key({})",
+            emit_expr(&args[0])
         ),
         // Closure #325: Union-Find dispatch.
         "union_find_new" => format!(

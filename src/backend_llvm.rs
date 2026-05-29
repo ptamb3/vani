@@ -930,8 +930,11 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // BTreeSet<i64> helpers (closure #306). Range query helper
     // (closure #346) requires intent_vec_int64_t; gated.
     if crate::backend_c::program_uses_i64_btreeset(program) {
+        let has_option_i64 = LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
         let emit_vec_dep = crate::backend_c::program_uses_graph_vec_builtin(program);
-        emit_intent_btreeset_i64_helpers_llvm(&mut out, emit_vec_dep);
+        emit_intent_btreeset_i64_helpers_llvm(&mut out, has_option_i64, emit_vec_dep);
     }
 
     // BTreeMap<i64, i64> helpers (closure #307). Gates Option-
@@ -5174,6 +5177,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            if name == "btreeset_min" || name == "btreeset_max" {
+                let s = emit_expr(&args[0], ctx, out);
+                let op = name.strip_prefix("btreeset_").unwrap();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %Enum_Option__i64 @intent_btreeset_i64_{}(%intent_btreeset_i64* {})\n",
+                    dest, op, s
+                ));
+                return dest;
+            }
             // HashMap<i64, i64> builtins (closure #305).
             if name == "hashmap_new" {
                 let dest = ctx.fresh_tmp();
@@ -5302,6 +5315,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!(
                     "  {} = call i64 @intent_btreemap_i64_i64_{}(%intent_btreemap_i64_i64* {}, i64 {}, i64 {}, %intent_vec_i64* {})\n",
                     dest, op, m, lo, hi, o
+                ));
+                return dest;
+            }
+            if name == "btreemap_min_key" || name == "btreemap_max_key" {
+                let m = emit_expr(&args[0], ctx, out);
+                let op = name.strip_prefix("btreemap_").unwrap();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %Enum_Option__i64 @intent_btreemap_i64_i64_{}(%intent_btreemap_i64_i64* {})\n",
+                    dest, op, m
                 ));
                 return dest;
             }
@@ -8711,7 +8734,7 @@ fn emit_intent_hash_helpers_llvm(out: &mut String) {
 /// for lookup (O(log n)), memmove shift for insert / remove
 /// (O(n)). Range query (closure #346) is gated on
 /// `intent_vec_int64_t` being available.
-fn emit_intent_btreeset_i64_helpers_llvm(out: &mut String, emit_vec_dep: bool) {
+fn emit_intent_btreeset_i64_helpers_llvm(out: &mut String, has_option_i64: bool, emit_vec_dep: bool) {
     out.push_str(
         "define %intent_btreeset_i64 @intent_btreeset_i64_new() {\n\
          \x20 %r0 = insertvalue %intent_btreeset_i64 undef, i64* null, 0\n\
@@ -8952,6 +8975,46 @@ fn emit_intent_btreeset_i64_helpers_llvm(out: &mut String, emit_vec_dep: bool) {
              \x20 ret i64 %result_r\n\
              }\n\n",
         );
+    }
+    if has_option_i64 {
+        // Closure #352: O(1) min / max — read keys[0] / keys[len-1]
+        // straight off the sorted-Vec backing.
+        out.push_str("define %Enum_Option__i64 @intent_btreeset_i64_min(%intent_btreeset_i64* %s) {\n");
+        out.push_str("  %lp_min = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 1\n");
+        out.push_str("  %len_min = load i64, i64* %lp_min\n");
+        out.push_str("  %is_empty_min = icmp eq i64 %len_min, 0\n");
+        out.push_str("  br i1 %is_empty_min, label %bs_min_none, label %bs_min_some\n");
+        out.push_str("bs_min_some:\n");
+        out.push_str("  %kpp_min = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 0\n");
+        out.push_str("  %keys_min = load i64*, i64** %kpp_min\n");
+        out.push_str("  %v_min = load i64, i64* %keys_min\n");
+        out.push_str("  %r_min_0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n");
+        out.push_str("  %r_min_1 = insertvalue %Enum_Option__i64 %r_min_0, i64 %v_min, 1\n");
+        out.push_str("  ret %Enum_Option__i64 %r_min_1\n");
+        out.push_str("bs_min_none:\n");
+        out.push_str("  %n_min_0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n");
+        out.push_str("  %n_min_1 = insertvalue %Enum_Option__i64 %n_min_0, i64 0, 1\n");
+        out.push_str("  ret %Enum_Option__i64 %n_min_1\n");
+        out.push_str("}\n");
+        out.push_str("define %Enum_Option__i64 @intent_btreeset_i64_max(%intent_btreeset_i64* %s) {\n");
+        out.push_str("  %lp_max = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 1\n");
+        out.push_str("  %len_max = load i64, i64* %lp_max\n");
+        out.push_str("  %is_empty_max = icmp eq i64 %len_max, 0\n");
+        out.push_str("  br i1 %is_empty_max, label %bs_max_none, label %bs_max_some\n");
+        out.push_str("bs_max_some:\n");
+        out.push_str("  %kpp_max = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 0\n");
+        out.push_str("  %keys_max = load i64*, i64** %kpp_max\n");
+        out.push_str("  %last_idx = sub i64 %len_max, 1\n");
+        out.push_str("  %slot_max = getelementptr i64, i64* %keys_max, i64 %last_idx\n");
+        out.push_str("  %v_max = load i64, i64* %slot_max\n");
+        out.push_str("  %r_max_0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n");
+        out.push_str("  %r_max_1 = insertvalue %Enum_Option__i64 %r_max_0, i64 %v_max, 1\n");
+        out.push_str("  ret %Enum_Option__i64 %r_max_1\n");
+        out.push_str("bs_max_none:\n");
+        out.push_str("  %n_max_0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n");
+        out.push_str("  %n_max_1 = insertvalue %Enum_Option__i64 %n_max_0, i64 0, 1\n");
+        out.push_str("  ret %Enum_Option__i64 %n_max_1\n");
+        out.push_str("}\n\n");
     }
 }
 
@@ -9802,6 +9865,46 @@ fn emit_intent_btreemap_i64_i64_helpers_llvm(out: &mut String, has_option_i64: b
              \x20 ret i64 %rv_res\n\
              }\n\n",
         );
+    }
+    if has_option_i64 {
+        // Closure #352: O(1) min_key / max_key on the sorted
+        // parallel-Vec backing. Read keys[0] / keys[len-1].
+        out.push_str("define %Enum_Option__i64 @intent_btreemap_i64_i64_min_key(%intent_btreemap_i64_i64* %m) {\n");
+        out.push_str("  %lp_mn = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 2\n");
+        out.push_str("  %len_mn = load i64, i64* %lp_mn\n");
+        out.push_str("  %is_empty_mn = icmp eq i64 %len_mn, 0\n");
+        out.push_str("  br i1 %is_empty_mn, label %bm_min_none, label %bm_min_some\n");
+        out.push_str("bm_min_some:\n");
+        out.push_str("  %kpp_mn = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 0\n");
+        out.push_str("  %keys_mn = load i64*, i64** %kpp_mn\n");
+        out.push_str("  %v_mn = load i64, i64* %keys_mn\n");
+        out.push_str("  %r_mn_0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n");
+        out.push_str("  %r_mn_1 = insertvalue %Enum_Option__i64 %r_mn_0, i64 %v_mn, 1\n");
+        out.push_str("  ret %Enum_Option__i64 %r_mn_1\n");
+        out.push_str("bm_min_none:\n");
+        out.push_str("  %n_mn_0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n");
+        out.push_str("  %n_mn_1 = insertvalue %Enum_Option__i64 %n_mn_0, i64 0, 1\n");
+        out.push_str("  ret %Enum_Option__i64 %n_mn_1\n");
+        out.push_str("}\n");
+        out.push_str("define %Enum_Option__i64 @intent_btreemap_i64_i64_max_key(%intent_btreemap_i64_i64* %m) {\n");
+        out.push_str("  %lp_mx = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 2\n");
+        out.push_str("  %len_mx = load i64, i64* %lp_mx\n");
+        out.push_str("  %is_empty_mx = icmp eq i64 %len_mx, 0\n");
+        out.push_str("  br i1 %is_empty_mx, label %bm_max_none, label %bm_max_some\n");
+        out.push_str("bm_max_some:\n");
+        out.push_str("  %kpp_mx = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 0\n");
+        out.push_str("  %keys_mx = load i64*, i64** %kpp_mx\n");
+        out.push_str("  %last_idx_mx = sub i64 %len_mx, 1\n");
+        out.push_str("  %slot_mx = getelementptr i64, i64* %keys_mx, i64 %last_idx_mx\n");
+        out.push_str("  %v_mx = load i64, i64* %slot_mx\n");
+        out.push_str("  %r_mx_0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n");
+        out.push_str("  %r_mx_1 = insertvalue %Enum_Option__i64 %r_mx_0, i64 %v_mx, 1\n");
+        out.push_str("  ret %Enum_Option__i64 %r_mx_1\n");
+        out.push_str("bm_max_none:\n");
+        out.push_str("  %n_mx_0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n");
+        out.push_str("  %n_mx_1 = insertvalue %Enum_Option__i64 %n_mx_0, i64 0, 1\n");
+        out.push_str("  ret %Enum_Option__i64 %n_mx_1\n");
+        out.push_str("}\n\n");
     }
 }
 

@@ -15552,6 +15552,90 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn btreeset_min_max_typecheck_and_compile() {
+        // Closure #352: btreeset_min / btreeset_max return Option<i64>
+        // — None on empty, Some(keys[0]) / Some(keys[len-1]) otherwise.
+        let source = r#"
+            fn main() -> i64 {
+              let s: BTreeSet<i64> = btreeset_new();
+              let _: bool = btreeset_insert(mut ref s, 5);
+              let mn: Option<i64> = btreeset_min(ref s);
+              let mx: Option<i64> = btreeset_max(ref s);
+              let mn2: Option<i64> = s.min();
+              let mx2: Option<i64> = s.max();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("btreeset min/max must type-check");
+        compile_to_llvm(source).expect("btreeset min/max must compile to LLVM");
+    }
+
+    #[test]
+    fn btreeset_min_max_emits_helpers() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: BTreeSet<i64> = btreeset_new();
+              let _: Option<i64> = btreeset_min(ref s);
+              let _: Option<i64> = btreeset_max(ref s);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("btreeset min/max C compile");
+        assert!(
+            c.contains("intent_btreeset_i64_min")
+                && c.contains("intent_btreeset_i64_max"),
+            "C output must include both min/max helpers"
+        );
+        let ll = compile_to_llvm(source).expect("btreeset min/max LLVM compile");
+        assert!(
+            ll.contains("@intent_btreeset_i64_min")
+                && ll.contains("@intent_btreeset_i64_max"),
+            "LLVM output must include both min/max defines"
+        );
+    }
+
+    #[test]
+    fn btreemap_min_max_key_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: BTreeMap<i64, i64> = btreemap_new();
+              let _: Option<i64> = btreemap_insert(mut ref m, 5, 50);
+              let mk: Option<i64> = btreemap_min_key(ref m);
+              let mx: Option<i64> = btreemap_max_key(ref m);
+              let mk2: Option<i64> = m.min_key();
+              let mx2: Option<i64> = m.max_key();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("btreemap min/max_key must type-check");
+        compile_to_llvm(source).expect("btreemap min/max_key must compile to LLVM");
+    }
+
+    #[test]
+    fn btreemap_min_max_key_emits_helpers() {
+        let source = r#"
+            fn main() -> i64 {
+              let m: BTreeMap<i64, i64> = btreemap_new();
+              let _: Option<i64> = btreemap_min_key(ref m);
+              let _: Option<i64> = btreemap_max_key(ref m);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("btreemap min/max_key C compile");
+        assert!(
+            c.contains("intent_btreemap_i64_i64_min_key")
+                && c.contains("intent_btreemap_i64_i64_max_key"),
+            "C output must include both min_key/max_key helpers"
+        );
+        let ll = compile_to_llvm(source).expect("btreemap min/max_key LLVM compile");
+        assert!(
+            ll.contains("@intent_btreemap_i64_i64_min_key")
+                && ll.contains("@intent_btreemap_i64_i64_max_key"),
+            "LLVM output must include both min_key/max_key defines"
+        );
+    }
+
+    #[test]
     fn btreemap_range_emits_helpers() {
         let source = r#"
             fn main() -> i64 {

@@ -21,9 +21,20 @@ intent "BTreeSet<i64> — ordered set on sorted-Vec backing (Level 2 #5)";
 //       Appends every key k in [lo, hi] (inclusive) to `out` in
 //       sorted ascending order; returns the count appended.
 //       O(log n + matches).
+//   btreeset_min(ref s) -> Option<i64>                            [closure #352]
+//   btreeset_max(ref s) -> Option<i64>                            [closure #352]
+//       O(1) — keys[0] is the smallest, keys[len-1] the largest
+//       since the backing is sorted ascending. None on empty.
 //
 // Restrictions: v1 = i64 element only; full iteration via closures
 // queued in Level 3.
+
+fn unwrap_or(o: Option<i64>, def: i64) -> i64 {
+  return match o {
+    Option.Some(v) then v,
+    Option.None then def,
+  };
+}
 
 fn main() -> i64 {
   let s: BTreeSet<i64> = btreeset_new();
@@ -93,6 +104,12 @@ fn main() -> i64 {
   let inv: Vec<i64> = vec();
   let n_inv: i64 = btreeset_range(ref s, 100, 50, mut ref inv);
   print "range 100..=50 (lo>hi) count (0):", n_inv;
+
+  // Closure #352: O(1) min / max via direct array access on
+  // the sorted-Vec backing. Returns Option<i64> (None on
+  // empty). Method sugar reads `s.min()` / `s.max()`.
+  print "min:", unwrap_or(s.min(), 0 - 1);
+  print "max:", unwrap_or(s.max(), 0 - 1);
 
   return 0;
 }

@@ -26,6 +26,11 @@ intent "BTreeMap<i64, i64> — ordered key/value map on sorted-Vec backing (Leve
 //       Same loop, but appends the corresponding value. Calling
 //       both with the same (lo, hi) yields parallel key/value
 //       output Vecs.
+//   btreemap_min_key(ref m) -> Option<i64>                          [closure #352]
+//   btreemap_max_key(ref m) -> Option<i64>                          [closure #352]
+//       O(1) — keys[0] is the smallest key, keys[len-1] the
+//       largest. None on empty. To get the matching value, pair
+//       with `btreemap_get(m, min_key)` after unwrapping.
 //
 // AFFINE-TENSION note: for Copy V (i64 in v1), `get` returns
 // `Option<V>` by-value safely. Non-Copy V (Vec / OwnedStr)
@@ -110,6 +115,11 @@ fn main() -> i64 {
   let inv: Vec<i64> = vec();
   let n_inv: i64 = btreemap_range_keys(ref m, 60, 40, mut ref inv);
   print "range_keys 60..=40 (lo>hi) count (0):", n_inv;
+
+  // Closure #352: O(1) min_key / max_key via direct array
+  // access on the sorted parallel-Vec backing.
+  print "min_key (Some v):", unwrap_or(m.min_key(), 0 - 1);
+  print "max_key (Some v):", unwrap_or(m.max_key(), 0 - 1);
 
   return 0;
 }

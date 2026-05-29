@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "str_trim", "str_replace", "str_split", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_f64", "hash_str", "hash_combine", "siphash_i64", "siphash_str", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_remove", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_remove", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreeset_range", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "btreemap_range_keys", "btreemap_range_values", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "graph_has_cycle", "graph_mst_kruskal", "graph_mst_prim", "graph_astar", "graph_topo_sort", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_delete", "trie_len", "trie_node_count", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_remove", "skiplist_len", "skiplist_min", "skiplist_max", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "str_trim", "str_replace", "str_split", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_f64", "hash_str", "hash_combine", "siphash_i64", "siphash_str", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_remove", "hashset_len", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_remove", "hashmap_len", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreeset_range", "btreeset_min", "btreeset_max", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "btreemap_range_keys", "btreemap_range_values", "btreemap_min_key", "btreemap_max_key", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "graph_has_cycle", "graph_mst_kruskal", "graph_mst_prim", "graph_astar", "graph_topo_sort", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_delete", "trie_len", "trie_node_count", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_remove", "skiplist_len", "skiplist_min", "skiplist_max", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -5798,6 +5798,8 @@ fn monomorphize_type_decls_in_program(
                 | "deque_peek_back" | "deque_peek_front"
                 | "hashmap_get" | "hashmap_insert" | "hashmap_remove"
                 | "btreemap_get" | "btreemap_insert" | "btreemap_remove"
+                | "btreemap_min_key" | "btreemap_max_key"
+                | "btreeset_min" | "btreeset_max"
                 | "binary_heap_pop" | "binary_heap_peek"
                 | "bst_min" | "bst_max"
                 | "graph_dijkstra"
@@ -10756,6 +10758,8 @@ fn check_expr(
                         "len" => ("btreemap_len", false),
                         "range_keys" => ("btreemap_range_keys", false),
                         "range_values" => ("btreemap_range_values", false),
+                        "min_key" => ("btreemap_min_key", false),
+                        "max_key" => ("btreemap_max_key", false),
                         _ => ("", false),
                     },
                     Some(Type::BTreeSet(_)) => match method.as_str() {
@@ -10764,6 +10768,8 @@ fn check_expr(
                         "remove" => ("btreeset_remove", true),
                         "len" => ("btreeset_len", false),
                         "range" => ("btreeset_range", false),
+                        "min" => ("btreeset_min", false),
+                        "max" => ("btreeset_max", false),
                         _ => ("", false),
                     },
                     Some(Type::Deque(_)) => match method.as_str() {
@@ -13992,7 +13998,9 @@ fn check_call(
         | "btreeset_contains"
         | "btreeset_remove"
         | "btreeset_len"
-        | "btreeset_range" => {
+        | "btreeset_range"
+        | "btreeset_min"
+        | "btreeset_max" => {
             return check_btreeset_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
@@ -14004,7 +14012,9 @@ fn check_call(
         | "btreemap_remove"
         | "btreemap_len"
         | "btreemap_range_keys"
-        | "btreemap_range_values" => {
+        | "btreemap_range_values"
+        | "btreemap_min_key"
+        | "btreemap_max_key" => {
             return check_btreemap_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
@@ -18656,7 +18666,7 @@ fn check_btreeset_builtin(
 ) -> CheckedExpr {
     let want_args = match name {
         "btreeset_new" => 0,
-        "btreeset_len" => 1,
+        "btreeset_len" | "btreeset_min" | "btreeset_max" => 1,
         "btreeset_range" => 4,
         _ => 2,
     };
@@ -18674,6 +18684,9 @@ fn check_btreeset_builtin(
         let ret_ty = match name {
             "btreeset_new" => Type::BTreeSet(Box::new(Type::I64)),
             "btreeset_insert" | "btreeset_contains" | "btreeset_remove" => Type::Bool,
+            "btreeset_min" | "btreeset_max" => {
+                Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+            }
             _ => Type::I64,
         };
         return CheckedExpr::fallback(ret_ty, span);
@@ -18789,6 +18802,9 @@ fn check_btreeset_builtin(
     }
     let ret_ty = match name {
         "btreeset_insert" | "btreeset_contains" | "btreeset_remove" => Type::Bool,
+        "btreeset_min" | "btreeset_max" => {
+            Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
+        }
         _ => Type::I64,
     };
     CheckedExpr::new(
@@ -18829,7 +18845,7 @@ fn check_btreemap_builtin(
 ) -> CheckedExpr {
     let want_args = match name {
         "btreemap_new" => 0,
-        "btreemap_len" => 1,
+        "btreemap_len" | "btreemap_min_key" | "btreemap_max_key" => 1,
         "btreemap_get" | "btreemap_contains_key" | "btreemap_remove" => 2,
         "btreemap_insert" => 3,
         "btreemap_range_keys" | "btreemap_range_values" => 4,
@@ -18850,7 +18866,8 @@ fn check_btreemap_builtin(
             "btreemap_new" => {
                 Type::BTreeMap(Box::new(Type::I64), Box::new(Type::I64))
             }
-            "btreemap_insert" | "btreemap_get" | "btreemap_remove" => {
+            "btreemap_insert" | "btreemap_get" | "btreemap_remove"
+            | "btreemap_min_key" | "btreemap_max_key" => {
                 Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
             }
             "btreemap_contains_key" => Type::Bool,
@@ -18886,7 +18903,8 @@ fn check_btreemap_builtin(
                     ),
                 ));
                 let ret_ty = match name {
-                    "btreemap_insert" | "btreemap_get" | "btreemap_remove" => {
+                    "btreemap_insert" | "btreemap_get" | "btreemap_remove"
+                    | "btreemap_min_key" | "btreemap_max_key" => {
                         Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
                     }
                     "btreemap_contains_key" => Type::Bool,
@@ -18906,7 +18924,8 @@ fn check_btreemap_builtin(
                 ),
             ));
             let ret_ty = match name {
-                "btreemap_insert" | "btreemap_get" | "btreemap_remove" => {
+                "btreemap_insert" | "btreemap_get" | "btreemap_remove"
+                | "btreemap_min_key" | "btreemap_max_key" => {
                     Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
                 }
                 "btreemap_contains_key" => Type::Bool,
@@ -18986,7 +19005,8 @@ fn check_btreemap_builtin(
         typed_args.push(out_raw.expr);
     }
     let ret_ty = match name {
-        "btreemap_insert" | "btreemap_get" | "btreemap_remove" => {
+        "btreemap_insert" | "btreemap_get" | "btreemap_remove"
+        | "btreemap_min_key" | "btreemap_max_key" => {
             Type::Enum(mangle_generic_decl("Option", &[Type::I64]))
         }
         "btreemap_contains_key" => Type::Bool,

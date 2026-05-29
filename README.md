@@ -65,7 +65,7 @@ orchestration, and testing, but Rust is the better default for a
 compiler that must be fast, memory-safe, deterministic, and close to
 ABI / native code generation.
 
-## Feature set (closures #1–#351)
+## Feature set (closures #1–#352)
 
 vāṇī today is a working systems language with the following shipped
 features. Surface that **reads natural-language** sits on top of a
@@ -2863,8 +2863,8 @@ real use cases:
 | Deque | `Deque<i64>` ring buffer w/ 8 builtins (new / push_back / push_front / pop_back / pop_front / peek_back / peek_front / len) (closure #303) | ✅ AFFINE |
 | HashSet | `HashSet<i64>` open-addressing hash set w/ 3-state slot tag (empty / occupied / tombstone); 5 builtins (new / insert / contains / remove / len) + method sugar; `(len + tombstones) ≥ capacity / 2` triggers a rehash that clears tombstones (closure #304 + remove in **#342**) | ✅ AFFINE |
 | HashMap | `HashMap<i64, i64>` open-addressing key/value map w/ 3-state slot tag (empty / occupied / tombstone); 6 builtins (new / insert / get / contains_key / remove / len) + method sugar; `(len + tombstones) ≥ capacity / 2` triggers a rehash that clears tombstones (closure #305 + remove in **#343**) | ✅ AFFINE under v1 Copy-V; ⚠️ AFFINE-TENSION when V goes non-Copy |
-| BTreeSet | `BTreeSet<i64>` ordered set on sorted-Vec backing w/ 6 builtins (new / insert / contains / remove / len / range) + method sugar; `range(lo, hi, mut ref out)` appends every key in `[lo, hi]` to `out` in sorted ascending order (closure #306 + range in **#346**) | ✅ AFFINE |
-| BTreeMap | `BTreeMap<i64, i64>` ordered key/value map on parallel-sorted-Vec backing w/ 8 builtins (new / insert / get / contains_key / remove / len / range_keys / range_values) + method sugar; `range_keys` and `range_values` append every entry in `[lo, hi]` to parallel `out` Vecs (closure #307 + range queries in **#346**) | ✅ AFFINE under v1 Copy-V; ⚠️ AFFINE-TENSION when V goes non-Copy |
+| BTreeSet | `BTreeSet<i64>` ordered set on sorted-Vec backing w/ 8 builtins (new / insert / contains / remove / len / range / min / max) + method sugar; `range(lo, hi, mut ref out)` appends every key in `[lo, hi]` to `out` in sorted ascending order; `min`/`max` are O(1) and return `Option<i64>` (closure #306 + range in **#346** + min/max in **#352**) | ✅ AFFINE |
+| BTreeMap | `BTreeMap<i64, i64>` ordered key/value map on parallel-sorted-Vec backing w/ 10 builtins (new / insert / get / contains_key / remove / len / range_keys / range_values / min_key / max_key) + method sugar; `range_keys` and `range_values` append every entry in `[lo, hi]` to parallel `out` Vecs; `min_key`/`max_key` are O(1) and return `Option<i64>` (closure #307 + range queries in **#346** + min_key/max_key in **#352**) | ✅ AFFINE under v1 Copy-V; ⚠️ AFFINE-TENSION when V goes non-Copy |
 | UnionFind | Disjoint-set with path-compressed find + union-by-rank; parallel `parent`/`rank` i64 arrays; 5 builtins + method sugar (closure #325, **first Level 4 arena container**) | ✅ AFFINE |
 | BinaryHeap (dedicated) | `BinaryHeap<T>` first-class affine handle (i64 v1) backed by `i64*` + `len` + `cap`; min-heap; 5 builtins (`new` / `push` / `pop` / `peek` / `len`) + method sugar; `pop`/`peek` return `Option<i64>` (closure #326, **Level 4 #2**) | ✅ AFFINE |
 | BloomFilter | `BloomFilter` probabilistic membership tester; bit array + `num_bits` + `num_hashes` + `insert_count`; double-hashing on FNV-1a; 5 builtins (`new` / `insert` / `contains` / `len` / `count`) + method sugar; false positives possible, false negatives impossible; v1 keys are i64 (closure #327, **Level 4 #6**) | ✅ AFFINE |
