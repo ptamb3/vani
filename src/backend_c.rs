@@ -1704,6 +1704,21 @@ fn emit_intent_union_find_helpers_c_body(out: &mut String) {
          }\n\
          static INTENT_UNUSED int64_t intent_union_find_count(const intent_union_find* uf) {\n\
          \x20 return (int64_t)uf->sets;\n\
+         }\n\
+         /* Closure #355: clear() — reset to all-singletons state.\n\
+          * Each parent[i] = i, rank[i] = 0, sets = n. Keeps n\n\
+          * (construction-time size) so the structure stays usable.\n\
+          * Returns prior set count (uf.sets before reset). */\n\
+         static INTENT_UNUSED int64_t intent_union_find_clear(intent_union_find* uf) {\n\
+         \x20 int64_t prior = (int64_t)uf->sets;\n\
+         \x20 if (uf->parent && uf->n > 0) {\n\
+         \x20   for (uint64_t i = 0; i < uf->n; i++) uf->parent[i] = (int64_t)i;\n\
+         \x20 }\n\
+         \x20 if (uf->rank && uf->n > 0) {\n\
+         \x20   memset(uf->rank, 0, (size_t)(uf->n * sizeof(int64_t)));\n\
+         \x20 }\n\
+         \x20 uf->sets = uf->n;\n\
+         \x20 return prior;\n\
          }\n\n",
     );
 }
@@ -2623,6 +2638,24 @@ fn emit_intent_graph_helpers_c_body(out: &mut String, has_option_i64: bool, emit
          }\n\
          static INTENT_UNUSED int64_t intent_graph_num_edges(const intent_graph* g) {\n\
          \x20 return g->num_edges;\n\
+         }\n\
+         /* Closure #355: clear() — free all edge storage + CSR\n\
+          * caches, reset edge count to 0. Keeps num_nodes\n\
+          * (construction-time identity) so the graph stays\n\
+          * a valid empty-edge graph on the same node set.\n\
+          * Returns prior num_edges. */\n\
+         static INTENT_UNUSED int64_t intent_graph_clear(intent_graph* g) {\n\
+         \x20 int64_t prior = g->num_edges;\n\
+         \x20 if (g->edge_src) free(g->edge_src);\n\
+         \x20 if (g->edge_dst) free(g->edge_dst);\n\
+         \x20 if (g->edge_weight) free(g->edge_weight);\n\
+         \x20 g->edge_src = (int32_t*)0;\n\
+         \x20 g->edge_dst = (int32_t*)0;\n\
+         \x20 g->edge_weight = (int64_t*)0;\n\
+         \x20 g->num_edges = 0;\n\
+         \x20 g->edge_capacity = 0;\n\
+         \x20 intent_graph_invalidate_csr(g);\n\
+         \x20 return prior;\n\
          }\n\
          /* Closure #336: BFS now iterates neighbors via the CSR\n\
           * adjacency cache, dropping per-pop edge iteration from\n\
@@ -8961,6 +8994,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_union_find_count({})",
             emit_expr(&args[0])
         ),
+        "union_find_clear" => format!(
+            "intent_union_find_clear({})",
+            emit_expr(&args[0])
+        ),
         // Closure #326: BinaryHeap dispatch.
         "binary_heap_new" => "intent_binary_heap_i64_new()".to_string(),
         "binary_heap_push" => format!(
@@ -9063,6 +9100,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         ),
         "graph_num_edges" => format!(
             "intent_graph_num_edges({})",
+            emit_expr(&args[0])
+        ),
+        "graph_clear" => format!(
+            "intent_graph_clear({})",
             emit_expr(&args[0])
         ),
         "graph_bfs_reach" => format!(

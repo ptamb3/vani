@@ -15552,6 +15552,49 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn graph_union_find_clear_typecheck_and_compile() {
+        // Closure #355: graph_clear keeps num_nodes, drops all
+        // edges + CSR caches. union_find_clear resets to all-
+        // singletons (parent[i]=i, sets=n), keeps n.
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(5);
+              let uf: UnionFind = union_find_new(5);
+              let _: i64 = graph_clear(mut ref g);
+              let _: i64 = union_find_clear(mut ref uf);
+              let _: i64 = g.clear();
+              let _: i64 = uf.clear();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("graph/union_find clear must type-check");
+        compile_to_llvm(source).expect("graph/union_find clear must compile to LLVM");
+    }
+
+    #[test]
+    fn graph_union_find_clear_emits_helpers() {
+        let source = r#"
+            fn main() -> i64 {
+              let g: Graph = graph_new(3);
+              let uf: UnionFind = union_find_new(3);
+              let _: i64 = g.clear();
+              let _: i64 = uf.clear();
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("graph/uf clear C");
+        assert!(
+            c.contains("intent_graph_clear") && c.contains("intent_union_find_clear"),
+            "C output must include both clear helpers"
+        );
+        let ll = compile_to_llvm(source).expect("graph/uf clear LLVM");
+        assert!(
+            ll.contains("@intent_graph_clear") && ll.contains("@intent_union_find_clear"),
+            "LLVM output must include both clear defines"
+        );
+    }
+
+    #[test]
     fn level4_container_clear_suite_typecheck_and_compile() {
         // Closure #354: Deque/BinaryHeap/BloomFilter/Bst/Trie/
         // SkipList each gain `_clear(mut ref c) -> i64`. The

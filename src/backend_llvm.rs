@@ -5407,6 +5407,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            if name == "union_find_clear" {
+                let uf = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_union_find_clear(%intent_union_find* {})\n",
+                    dest, uf
+                ));
+                return dest;
+            }
             // BinaryHeap<i64> builtins (closure #326).
             if name == "binary_heap_new" {
                 let dest = ctx.fresh_tmp();
@@ -5617,7 +5626,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
-            if name == "graph_num_nodes" || name == "graph_num_edges" {
+            if name == "graph_num_nodes" || name == "graph_num_edges" || name == "graph_clear" {
                 let g = emit_expr(&args[0], ctx, out);
                 let dest = ctx.fresh_tmp();
                 let suffix = name.strip_prefix("graph_").unwrap();
@@ -10256,6 +10265,43 @@ fn emit_intent_union_find_helpers_llvm(out: &mut String) {
          \x20 ret i64 %sets\n\
          }\n\n",
     );
+    // Closure #355: clear() — reset to all-singletons. Iterate
+    // parent[i] = i, memset rank to 0, sets = n. Keeps n.
+    // Returns prior sets count.
+    out.push_str("define i64 @intent_union_find_clear(%intent_union_find* %uf) {\n");
+    out.push_str("  %ufc_sp = getelementptr %intent_union_find, %intent_union_find* %uf, i32 0, i32 3\n");
+    out.push_str("  %ufc_prior = load i64, i64* %ufc_sp\n");
+    out.push_str("  %ufc_np = getelementptr %intent_union_find, %intent_union_find* %uf, i32 0, i32 2\n");
+    out.push_str("  %ufc_n = load i64, i64* %ufc_np\n");
+    out.push_str("  %ufc_n_zero = icmp eq i64 %ufc_n, 0\n");
+    out.push_str("  br i1 %ufc_n_zero, label %ufc_done, label %ufc_init\n");
+    out.push_str("ufc_init:\n");
+    out.push_str("  %ufc_pp = getelementptr %intent_union_find, %intent_union_find* %uf, i32 0, i32 0\n");
+    out.push_str("  %ufc_rp = getelementptr %intent_union_find, %intent_union_find* %uf, i32 0, i32 1\n");
+    out.push_str("  %ufc_parent = load i64*, i64** %ufc_pp\n");
+    out.push_str("  %ufc_rank = load i64*, i64** %ufc_rp\n");
+    // memset rank to 0
+    out.push_str("  %ufc_rank_i8 = bitcast i64* %ufc_rank to i8*\n");
+    out.push_str("  %ufc_rank_bytes = mul i64 %ufc_n, 8\n");
+    out.push_str("  %_ufc_m = call i8* @memset(i8* %ufc_rank_i8, i32 0, i64 %ufc_rank_bytes)\n");
+    // Loop parent[i] = i
+    out.push_str("  %ufc_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %ufc_i_p\n");
+    out.push_str("  br label %ufc_loop\n");
+    out.push_str("ufc_loop:\n");
+    out.push_str("  %ufc_i = load i64, i64* %ufc_i_p\n");
+    out.push_str("  %ufc_i_done = icmp uge i64 %ufc_i, %ufc_n\n");
+    out.push_str("  br i1 %ufc_i_done, label %ufc_done, label %ufc_body\n");
+    out.push_str("ufc_body:\n");
+    out.push_str("  %ufc_slot = getelementptr i64, i64* %ufc_parent, i64 %ufc_i\n");
+    out.push_str("  store i64 %ufc_i, i64* %ufc_slot\n");
+    out.push_str("  %ufc_i_inc = add i64 %ufc_i, 1\n");
+    out.push_str("  store i64 %ufc_i_inc, i64* %ufc_i_p\n");
+    out.push_str("  br label %ufc_loop\n");
+    out.push_str("ufc_done:\n");
+    out.push_str("  store i64 %ufc_n, i64* %ufc_sp\n");
+    out.push_str("  ret i64 %ufc_prior\n");
+    out.push_str("}\n\n");
 }
 
 /// Data-structures roadmap Level 4 #2 — BinaryHeap<i64> runtime
@@ -12006,6 +12052,51 @@ fn emit_intent_graph_helpers_llvm(out: &mut String, has_option_i64: bool, emit_v
          \x20 %p = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 4\n\
          \x20 %v = load i64, i64* %p\n\
          \x20 ret i64 %v\n\
+         }\n\
+         ; Closure #355: clear() — free all edge storage + CSR\n\
+         ; caches via invalidate_csr, reset num_edges + capacity\n\
+         ; to 0. Keeps num_nodes (construction-time identity).\n\
+         ; Returns prior num_edges.\n\
+         define i64 @intent_graph_clear(%intent_graph* %g) {\n\
+         \x20 %gc_nep = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 4\n\
+         \x20 %gc_prior = load i64, i64* %gc_nep\n\
+         \x20 ; Free edge arrays.\n\
+         \x20 %gc_srcp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 1\n\
+         \x20 %gc_dstp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 2\n\
+         \x20 %gc_wp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 3\n\
+         \x20 %gc_src = load i32*, i32** %gc_srcp\n\
+         \x20 %gc_dst = load i32*, i32** %gc_dstp\n\
+         \x20 %gc_w = load i64*, i64** %gc_wp\n\
+         \x20 %gc_src_null = icmp eq i32* %gc_src, null\n\
+         \x20 br i1 %gc_src_null, label %gc_dst_l, label %gc_fsrc\n\
+         gc_fsrc:\n\
+         \x20 %gc_src_i8 = bitcast i32* %gc_src to i8*\n\
+         \x20 call void @free(i8* %gc_src_i8)\n\
+         \x20 br label %gc_dst_l\n\
+         gc_dst_l:\n\
+         \x20 %gc_dst_null = icmp eq i32* %gc_dst, null\n\
+         \x20 br i1 %gc_dst_null, label %gc_w_l, label %gc_fdst\n\
+         gc_fdst:\n\
+         \x20 %gc_dst_i8 = bitcast i32* %gc_dst to i8*\n\
+         \x20 call void @free(i8* %gc_dst_i8)\n\
+         \x20 br label %gc_w_l\n\
+         gc_w_l:\n\
+         \x20 %gc_w_null = icmp eq i64* %gc_w, null\n\
+         \x20 br i1 %gc_w_null, label %gc_finalize, label %gc_fw\n\
+         gc_fw:\n\
+         \x20 %gc_w_i8 = bitcast i64* %gc_w to i8*\n\
+         \x20 call void @free(i8* %gc_w_i8)\n\
+         \x20 br label %gc_finalize\n\
+         gc_finalize:\n\
+         \x20 store i32* null, i32** %gc_srcp\n\
+         \x20 store i32* null, i32** %gc_dstp\n\
+         \x20 store i64* null, i64** %gc_wp\n\
+         \x20 %gc_cp = getelementptr %intent_graph, %intent_graph* %g, i32 0, i32 5\n\
+         \x20 store i64 0, i64* %gc_nep\n\
+         \x20 store i64 0, i64* %gc_cp\n\
+         \x20 ; Drop CSR caches via the existing invalidate helper.\n\
+         \x20 call void @intent_graph_invalidate_csr(%intent_graph* %g)\n\
+         \x20 ret i64 %gc_prior\n\
          }\n\
          ; Closure #336: BFS via CSR — O(V+E) instead of O(V*E).\n\
          define i64 @intent_graph_bfs_reach(%intent_graph* %g, i64 %start) {\n\

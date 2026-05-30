@@ -739,7 +739,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #354 — **Level 4 container `clear()` suite for Deque / BinaryHeap / BloomFilter / Bst / Trie / SkipList**. Completes the 2-closure container-clear lump started in #353. Three reset flavors: free-and-zero (Deque / BinaryHeap / Bst), `memset`-and-keep-config (BloomFilter), and keep-buffer-reset-to-sentinel-state (Trie / SkipList). LLVM declares an extern `@memset(i8*, i32, i64)` for the BloomFilter helper. Method sugar `.clear()` across all six. Both backends byte-identical. 2 new lib tests pin typecheck + helper-name emission. 1285 lib + 54 parity green. Closure #353 (HashSet/HashMap/BTreeSet/BTreeMap clear) shipped immediately before. **Every container in the language now has a `.clear()` method**, ready for buffer-reuse patterns.)
+## ⏳ Resume here (paused 2026-05-29, after closure #355 — **`graph_clear` + `union_find_clear`**. Completes the 3-closure container-clear lump (#353 → #354 → #355). Graph resets edges + CSR caches while keeping `num_nodes`; UnionFind resets to all-singletons (`parent[i]=i`, `rank[i]=0` via memset, `sets=n`) while keeping `n`. Method sugar `g.clear()` and `uf.clear()`. 2 new lib tests. 1287 lib + 54 parity green. **All 12 containers in the language now have a `.clear()` method**: HashSet, HashMap, BTreeSet, BTreeMap, Deque, BinaryHeap, BloomFilter, Bst, Trie, SkipList, Graph, UnionFind. Ready for buffer-reuse patterns across container types.)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 
