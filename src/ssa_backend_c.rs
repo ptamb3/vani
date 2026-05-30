@@ -2148,6 +2148,25 @@ fn emit_instr(
                     return Ok(());
                 }
             }
+            // Closure #362: `clamp(x, lo, hi)` — same inline
+            // nested-ternary shape as min/max. SSA operands
+            // are single identifiers so the multi-evaluation
+            // is safe.
+            if name == "clamp" && arg_strs.len() == 3 {
+                // Same user-shadowing escape hatch as tree-C: a
+                // user-defined `fn clamp(x: i64) -> i64` with a
+                // non-3-arg signature falls through to the
+                // regular `fn_clamp` user-fn dispatch.
+                if let [x, lo, hi] = arg_strs.as_slice() {
+                    writeln!(
+                        out,
+                        "  v_{} = (({x}) < ({lo}) ? ({lo}) : (({x}) > ({hi}) ? ({hi}) : ({x})));",
+                        instr.result.0, x = x, lo = lo, hi = hi
+                    )
+                    .unwrap();
+                    return Ok(());
+                }
+            }
             // Closure #154: `clone_at(xs, i)` returns a deep
             // copy of slot i. Was falling through to the
             // `fn_clone_at(...)` user-fn shape (undeclared

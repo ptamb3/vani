@@ -3762,18 +3762,29 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
             } else {
             // `min(a, b)` / `max(a, b)`: pure intrinsics. Lower
-            // inline via `icmp` + `select`. Signedness follows the
-            // operand type.
-            if matches!(name.as_str(), "min" | "max") {
+            // inline via `icmp` (integers) or `fcmp` (floats) +
+            // `select`. Closure #362: f64 / f32 routes through
+            // `fcmp olt` (ordered less-than — `o` rejects NaN
+            // on either operand). Previously this path emitted
+            // `icmp` for any operand type, producing invalid IR
+            // that referenced an undefined `@fn_min`.
+            if matches!(name.as_str(), "min" | "max") && args.len() == 2 {
                 let a = emit_expr(&args[0], ctx, out);
                 let b = emit_expr(&args[1], ctx, out);
                 let lty = llvm_type(&args[0].ty);
-                let signed = args[0].ty.is_signed_integer();
-                let pred_lt = if signed { "slt" } else { "ult" };
+                let is_float = matches!(args[0].ty.deref(), Type::F64 | Type::F32);
+                let pred_lt = if is_float {
+                    "olt"
+                } else if args[0].ty.is_signed_integer() {
+                    "slt"
+                } else {
+                    "ult"
+                };
+                let cmp_op = if is_float { "fcmp" } else { "icmp" };
                 let cmp = ctx.fresh_tmp();
                 out.push_str(&format!(
-                    "  {} = icmp {} {} {}, {}\n",
-                    cmp, pred_lt, lty, a, b
+                    "  {} = {} {} {} {}, {}\n",
+                    cmp, cmp_op, pred_lt, lty, a, b
                 ));
                 let dest = ctx.fresh_tmp();
                 let (lo_val, hi_val) = if name == "min" {
@@ -3784,6 +3795,54 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!(
                     "  {} = select i1 {}, {} {}, {} {}\n",
                     dest, cmp, lty, lo_val, lty, hi_val
+                ));
+                return dest;
+            }
+            // `clamp(x, lo, hi)` — closure #362. Equivalent to
+            // `min(max(x, lo), hi)` but emitted inline. Same
+            // integer/float dispatch as min/max.
+            if name == "clamp" && args.len() == 3 {
+                let x = emit_expr(&args[0], ctx, out);
+                let lo = emit_expr(&args[1], ctx, out);
+                let hi = emit_expr(&args[2], ctx, out);
+                let lty = llvm_type(&args[0].ty);
+                let is_float = matches!(args[0].ty.deref(), Type::F64 | Type::F32);
+                let pred_lt = if is_float {
+                    "olt"
+                } else if args[0].ty.is_signed_integer() {
+                    "slt"
+                } else {
+                    "ult"
+                };
+                let pred_gt = if is_float {
+                    "ogt"
+                } else if args[0].ty.is_signed_integer() {
+                    "sgt"
+                } else {
+                    "ugt"
+                };
+                let cmp_op = if is_float { "fcmp" } else { "icmp" };
+                // tmp1 = (x < lo) ? lo : x
+                let lt_lo = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = {} {} {} {}, {}\n",
+                    lt_lo, cmp_op, pred_lt, lty, x, lo
+                ));
+                let after_lo = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = select i1 {}, {} {}, {} {}\n",
+                    after_lo, lt_lo, lty, lo, lty, x
+                ));
+                // result = (after_lo > hi) ? hi : after_lo
+                let gt_hi = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = {} {} {} {}, {}\n",
+                    gt_hi, cmp_op, pred_gt, lty, after_lo, hi
+                ));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = select i1 {}, {} {}, {} {}\n",
+                    dest, gt_hi, lty, hi, lty, after_lo
                 ));
                 return dest;
             }

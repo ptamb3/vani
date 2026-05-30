@@ -14064,6 +14064,18 @@ fn check_call(
         "min" | "max" => {
             return check_min_max_builtin(name, args, env, signatures, span, diagnostics);
         }
+        // Closure #362: `clamp(x, lo, hi)` — pure intrinsic. Only
+        // dispatched to the builtin path when the user hasn't
+        // shadowed the name with a user-defined `fn clamp`.
+        // The pre-existing `min` / `max` dispatch doesn't have
+        // this shadow check because the language predates them
+        // and no user-defined homonyms exist in the test corpus;
+        // for `clamp` we keep the shadowing escape hatch so the
+        // SMT-verifier test that names its bounded fn `clamp`
+        // continues to compile.
+        "clamp" if signatures.get(name).is_none() => {
+            return check_clamp_builtin(args, env, signatures, span, diagnostics);
+        }
         "atomic_new"
         | "atomic_load"
         | "atomic_store"
@@ -14328,6 +14340,53 @@ fn check_min_max_builtin(
             name: name.to_string(),
             name_span: span,
             args: vec![lhs.expr, rhs.expr],
+        },
+        result_type,
+        None,
+        span,
+    )
+}
+
+/// Closure #362: `clamp(x, lo, hi)` — pure built-in intrinsic that
+/// returns `x` clipped to `[lo, hi]`. Three operands promote through
+/// the same `promoted_numeric_type` chain as `min` / `max`, so an
+/// `i64` `x` with an `i32` `lo` and `f64` `hi` would promote to
+/// `f64`. Lowering: C inlines a nested ternary; LLVM emits two
+/// `icmp`/`fcmp` + `select` pairs.
+fn check_clamp_builtin(
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    if args.len() != 3 {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!("'clamp' takes exactly 3 arguments, got {}", args.len()),
+        ));
+        return CheckedExpr::fallback_integer(span);
+    }
+    let x = check_expr(&args[0], env, signatures, diagnostics);
+    let lo = check_expr(&args[1], env, signatures, diagnostics);
+    let hi = check_expr(&args[2], env, signatures, diagnostics);
+    // Two-step promotion: promote(x, lo) first, then promote with hi.
+    let Some(t1) = promoted_numeric_type(&x, &lo, diagnostics) else {
+        return CheckedExpr::fallback_integer(span);
+    };
+    let x = coerce_numeric_operand(x, &t1);
+    let lo = coerce_numeric_operand(lo, &t1);
+    let Some(result_type) = promoted_numeric_type(&x, &hi, diagnostics) else {
+        return CheckedExpr::fallback_integer(span);
+    };
+    let x = coerce_numeric_operand(x, &result_type);
+    let lo = coerce_numeric_operand(lo, &result_type);
+    let hi = coerce_numeric_operand(hi, &result_type);
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: "clamp".to_string(),
+            name_span: span,
+            args: vec![x.expr, lo.expr, hi.expr],
         },
         result_type,
         None,

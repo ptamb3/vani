@@ -8465,6 +8465,24 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             let b = emit_expr(&args[1]);
             return format!("(({}) > ({}) ? ({}) : ({}))", a, b, a, b);
         }
+        "clamp" if args.len() == 3 => {
+            // Inline `(x < lo ? lo : (x > hi ? hi : x))`. Same
+            // multi-evaluation caveat as min/max — operands may
+            // be evaluated up to three times, but the effects
+            // checker rejects impure operands in places where
+            // this matters. The 3-arg gate is the C-backend
+            // half of the user-shadowing escape hatch: a user-
+            // defined `fn clamp(x: i64) -> i64` (a non-3-arg
+            // homonym) falls through to the `fn_clamp` user-fn
+            // path below.
+            let x = emit_expr(&args[0]);
+            let lo = emit_expr(&args[1]);
+            let hi = emit_expr(&args[2]);
+            return format!(
+                "(({x}) < ({lo}) ? ({lo}) : (({x}) > ({hi}) ? ({hi}) : ({x})))",
+                x = x, lo = lo, hi = hi
+            );
+        }
         // Atomic builtins. Each call lowers to a single
         // C11 `<stdatomic.h>` operation with seq_cst memory
         // order. Element type T is recovered from the call's

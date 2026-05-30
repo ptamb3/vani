@@ -4074,6 +4074,85 @@ fn emit_instr(
                 }
                 return Ok(());
             }
+            // Closure #362: `min(a, b)` / `max(a, b)` / `clamp(x,
+            // lo, hi)` — pure intrinsics. Previously fell through
+            // to `@fn_min` / `@fn_max` (undefined), breaking
+            // every direct primitive use on the SSA-LLVM backend.
+            // (User-defined generic `fn min<T>` for bounded types
+            // still routes through the regular `@fn_<name>` path
+            // because its signature is registered in `fn_sigs`,
+            // shadowing the builtin name. The check_call dispatch
+            // for `"min"|"max"` only fires when no user signature
+            // exists — so a user fn re-using the name wins.)
+            if matches!(name.as_str(), "min" | "max" | "clamp")
+                && fn_sigs.get(name.as_str()).is_none()
+                && ((name == "clamp" && args.len() == 3)
+                    || ((name == "min" || name == "max") && args.len() == 2))
+            {
+                // Operand-type resolution: the checker has promoted
+                // all args to a common numeric type, which is the
+                // same as the call's return type (instr.ty). Use
+                // that as the source-of-truth when the operand
+                // itself is a Const (operand_type returns None
+                // for Consts, defaulting to i64 would break f64).
+                let a_ty = operand_type(&args[0], value_types)
+                    .unwrap_or_else(|| instr.ty.clone());
+                let lty = llvm_type_string(&a_ty)?;
+                let is_float = matches!(a_ty.deref(), Type::F64 | Type::F32);
+                let pred_lt = if is_float {
+                    "olt"
+                } else if a_ty.is_signed_integer() {
+                    "slt"
+                } else {
+                    "ult"
+                };
+                let pred_gt = if is_float {
+                    "ogt"
+                } else if a_ty.is_signed_integer() {
+                    "sgt"
+                } else {
+                    "ugt"
+                };
+                let cmp_op = if is_float { "fcmp" } else { "icmp" };
+                if name == "clamp" {
+                    let x = operand_str(&args[0]);
+                    let lo = operand_str(&args[1]);
+                    let hi = operand_str(&args[2]);
+                    let lt_lo = format!("%v_{}.lt_lo", instr.result.0);
+                    out.push_str(&format!(
+                        "  {} = {} {} {} {}, {}\n",
+                        lt_lo, cmp_op, pred_lt, lty, x, lo
+                    ));
+                    let after_lo = format!("%v_{}.after_lo", instr.result.0);
+                    out.push_str(&format!(
+                        "  {} = select i1 {}, {} {}, {} {}\n",
+                        after_lo, lt_lo, lty, lo, lty, x
+                    ));
+                    let gt_hi = format!("%v_{}.gt_hi", instr.result.0);
+                    out.push_str(&format!(
+                        "  {} = {} {} {} {}, {}\n",
+                        gt_hi, cmp_op, pred_gt, lty, after_lo, hi
+                    ));
+                    out.push_str(&format!(
+                        "  %v_{} = select i1 {}, {} {}, {} {}\n",
+                        instr.result.0, gt_hi, lty, hi, lty, after_lo
+                    ));
+                    return Ok(());
+                }
+                let a = operand_str(&args[0]);
+                let b = operand_str(&args[1]);
+                let cmp = format!("%v_{}.cmp", instr.result.0);
+                out.push_str(&format!(
+                    "  {} = {} {} {} {}, {}\n",
+                    cmp, cmp_op, pred_lt, lty, a, b
+                ));
+                let (lo_val, hi_val) = if name == "min" { (a, b) } else { (b, a) };
+                out.push_str(&format!(
+                    "  %v_{} = select i1 {}, {} {}, {} {}\n",
+                    instr.result.0, cmp, lty, lo_val, lty, hi_val
+                ));
+                return Ok(());
+            }
             // Vec builtins call through the shared runtime
             // helpers emitted in the module preamble.
             if matches!(name.as_str(), "vec" | "push" | "set" | "clone") {

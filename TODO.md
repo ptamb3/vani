@@ -739,7 +739,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-30, after closure #361 — **`bool_to_str(b: bool) -> OwnedStr`**. Rounds out the to_str family alongside `i64_to_str` (#358) and `f64_to_str` (#359). Returns a malloc'd copy of `"true"` / `"false"` for symmetry with the other to_str helpers. C helper lives in the existing `emit_intent_i64_to_str_c` emitter (`INTENT_UNUSED`-gated). LLVM mirrors via `define i8* @intent_bool_to_str(i1 %b)` using `select` between `@.fmt.true` / `@.fmt.false` + `memcpy` into a `malloc`'d buffer. Both backends byte-identical: `true / false / has_two=true`. 3 new lib tests pin typecheck + helper-name emission + non-bool rejection. 1303 lib + 54 parity green. Closure #360 (Option<f64> ergonomics) shipped immediately before.)
+## ⏳ Resume here (paused 2026-05-30, after closure #362 — **`clamp(x, lo, hi)` + f64 min/max LLVM fix**. New polymorphic intrinsic `clamp(x, lo, hi)` returns `x` clipped to `[lo, hi]`. Two-step numeric promotion mirrors `min`/`max` so mixed-type calls like `clamp(5, 0.0, 10)` lift to f64. C inlines a nested ternary; LLVM emits icmp/fcmp + select pairs. Wired across all four backends (tree-C, SSA-C, tree-LLVM, SSA-LLVM). Bonus: fixed a latent bug where `min`/`max` on f64 emitted invalid IR (`icmp slt` on doubles, undefined `@fn_min`/`@fn_max` references). SSA-LLVM previously had no dispatch arm at all for primitive min/max — added one parallel to the existing SSA-C ternary form. User-shadow escape hatch preserved: a non-3-arg `fn clamp(...)` routes through the regular user-fn dispatch. 5 new lib tests. 1308 lib + 54 parity green. Closure #361 (bool_to_str) shipped immediately before.)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 

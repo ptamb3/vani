@@ -15687,6 +15687,99 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn clamp_i64_typecheck_and_compile() {
+        // Closure #362: clamp(x, lo, hi) — polymorphic intrinsic
+        // returning x clipped to [lo, hi]. Pure ternary lowering
+        // on both backends.
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = clamp(5, 0, 10);
+              let b: i64 = clamp(0 - 3, 0, 10);
+              let c: i64 = clamp(99, 0, 10);
+              return a + b + c;
+            }
+        "#;
+        compile_to_c(source).expect("clamp i64 must type-check");
+        compile_to_llvm(source).expect("clamp i64 must compile to LLVM");
+    }
+
+    #[test]
+    fn clamp_f64_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = clamp(5.5, 0.0, 10.0);
+              let b: f64 = clamp(0.0 - 1.5, 0.0, 10.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("clamp f64 must type-check");
+        compile_to_llvm(source).expect("clamp f64 must compile to LLVM");
+    }
+
+    #[test]
+    fn min_max_f64_lowers_via_fcmp_in_llvm() {
+        // Closure #362: previously min/max on f64 emitted an
+        // invalid `icmp` that referenced `@fn_min` (undefined)
+        // on the SSA-LLVM backend. Now both backends route
+        // floating-point operands through `fcmp olt` / `fcmp ogt`.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = min(3.14, 2.71);
+              let b: f64 = max(3.14, 2.71);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("f64 min/max must type-check");
+        let ll = compile_to_llvm(source).expect("f64 min/max must compile to LLVM");
+        // tree-LLVM emits both min and max via `fcmp olt` (the same
+        // comparator, with operand order swapped for max). Just
+        // verify that the f64 path stops emitting `icmp` (the
+        // pre-#362 bug) and routes through fcmp on doubles.
+        assert!(
+            ll.contains("fcmp olt double"),
+            "LLVM output must lower f64 min/max via fcmp on doubles"
+        );
+        assert!(
+            !ll.contains("icmp slt double") && !ll.contains("icmp ult double"),
+            "LLVM output must not emit icmp on double operands"
+        );
+    }
+
+    #[test]
+    fn clamp_arity_3_required() {
+        // The builtin requires exactly 3 args. Calls with fewer
+        // / more arguments either route to a user-defined fn
+        // (if one is in scope) or surface a checker diagnostic.
+        let source_too_few = r#"
+            fn main() -> i64 {
+              return clamp(5, 0);
+            }
+        "#;
+        assert!(compile_to_c(source_too_few).is_err(),
+            "clamp must reject 2-arg call when no user fn is in scope");
+    }
+
+    #[test]
+    fn clamp_user_shadow_falls_through_to_user_fn() {
+        // A user-defined `fn clamp` with a different signature
+        // shadows the builtin (the language predates the builtin,
+        // so we keep the escape hatch). The SMT verifier's
+        // early-return test uses this pattern.
+        let source = r#"
+            fn clamp(x: i64) -> i64 {
+              if x < 0 { return 0; }
+              return x;
+            }
+            fn main() -> i64 {
+              let v: i64 = clamp(7);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("user fn clamp must shadow builtin");
+        compile_to_llvm(source).expect("user fn clamp must shadow builtin on LLVM");
+    }
+
+    #[test]
     fn bool_to_str_typecheck_and_compile() {
         // Closure #361: bool_to_str(b: bool) -> OwnedStr — rounds
         // out the to_str family alongside i64_to_str / f64_to_str.
