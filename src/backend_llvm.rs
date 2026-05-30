@@ -884,6 +884,7 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // caller exists the typedef may not be present either.
     if crate::backend_c::program_uses_str_split(program) {
         emit_intent_str_split_definition(&mut out);
+        emit_intent_str_join_definition(&mut out);
     }
 
     // Closure #356: emit Vec<i64> utility helpers (vec_range /
@@ -6406,6 +6407,17 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #379: str_join(ref strs, sep) -> OwnedStr.
+            if name == "str_join" {
+                let xs = emit_expr(&args[0], ctx, out);
+                let sep = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i8* @intent_str_join(%intent_vec_i8p* {}, i8* {})\n",
+                    dest, xs, sep
+                ));
+                return dest;
+            }
             if name == "str_contains" {
                 let s = emit_expr(&args[0], ctx, out);
                 let n = emit_expr(&args[1], ctx, out);
@@ -9154,6 +9166,94 @@ pub(crate) fn emit_intent_vec_int64_utility_definitions(out: &mut String) {
     out.push_str("  %vu_r1 = insertvalue %intent_vec_i64 %vu_r0, i64 %vu_out_len, 1\n");
     out.push_str("  %vu_r2 = insertvalue %intent_vec_i64 %vu_r1, i64 %vu_len, 2\n");
     out.push_str("  ret %intent_vec_i64 %vu_r2\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #379: `str_join(ref strs, sep) -> OwnedStr` LLVM half.
+/// Mirrors the C tree backend's two-pass concat — sum lengths,
+/// allocate, then memcpy with separator between elements.
+pub(crate) fn emit_intent_str_join_definition(out: &mut String) {
+    out.push_str("define i8* @intent_str_join(%intent_vec_i8p* %xs, i8* %sep) {\n");
+    // len_p = &xs->len; data_p = &xs->data
+    out.push_str("  %sj_lp = getelementptr %intent_vec_i8p, %intent_vec_i8p* %xs, i32 0, i32 1\n");
+    out.push_str("  %sj_dp = getelementptr %intent_vec_i8p, %intent_vec_i8p* %xs, i32 0, i32 0\n");
+    out.push_str("  %sj_len = load i64, i64* %sj_lp\n");
+    out.push_str("  %sj_empty = icmp eq i64 %sj_len, 0\n");
+    out.push_str("  br i1 %sj_empty, label %sj_ret_empty, label %sj_proceed\n");
+    out.push_str("sj_ret_empty:\n");
+    out.push_str("  %sj_e = call i8* @malloc(i64 1)\n");
+    out.push_str("  store i8 0, i8* %sj_e\n");
+    out.push_str("  ret i8* %sj_e\n");
+    out.push_str("sj_proceed:\n");
+    // sep_l = strlen(sep) (sep is never NULL in vāṇी surface)
+    out.push_str("  %sj_sep_l = call i64 @strlen(i8* %sep)\n");
+    out.push_str("  %sj_src = load i8**, i8*** %sj_dp\n");
+    // Pass 1: total = sum(strlen(xs[i])) + sep_l * (len - 1)
+    out.push_str("  %sj_total_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sj_total_p\n");
+    out.push_str("  %sj_i1_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sj_i1_p\n");
+    out.push_str("  br label %sj_p1_head\n");
+    out.push_str("sj_p1_head:\n");
+    out.push_str("  %sj_i1 = load i64, i64* %sj_i1_p\n");
+    out.push_str("  %sj_p1_done = icmp uge i64 %sj_i1, %sj_len\n");
+    out.push_str("  br i1 %sj_p1_done, label %sj_alloc, label %sj_p1_body\n");
+    out.push_str("sj_p1_body:\n");
+    out.push_str("  %sj_slot1 = getelementptr i8*, i8** %sj_src, i64 %sj_i1\n");
+    out.push_str("  %sj_s1 = load i8*, i8** %sj_slot1\n");
+    out.push_str("  %sj_l1 = call i64 @strlen(i8* %sj_s1)\n");
+    out.push_str("  %sj_t_old = load i64, i64* %sj_total_p\n");
+    out.push_str("  %sj_t_new = add i64 %sj_t_old, %sj_l1\n");
+    out.push_str("  store i64 %sj_t_new, i64* %sj_total_p\n");
+    out.push_str("  %sj_i1_next = add i64 %sj_i1, 1\n");
+    out.push_str("  store i64 %sj_i1_next, i64* %sj_i1_p\n");
+    out.push_str("  br label %sj_p1_head\n");
+    out.push_str("sj_alloc:\n");
+    out.push_str("  %sj_total = load i64, i64* %sj_total_p\n");
+    // sep_total = sep_l * (len - 1)
+    out.push_str("  %sj_minus1 = sub i64 %sj_len, 1\n");
+    out.push_str("  %sj_sep_total = mul i64 %sj_sep_l, %sj_minus1\n");
+    out.push_str("  %sj_grand = add i64 %sj_total, %sj_sep_total\n");
+    out.push_str("  %sj_alloc_n = add i64 %sj_grand, 1\n");
+    out.push_str("  %sj_out = call i8* @malloc(i64 %sj_alloc_n)\n");
+    // Pass 2: write content + separators
+    out.push_str("  %sj_i2_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sj_i2_p\n");
+    out.push_str("  %sj_w_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sj_w_p\n");
+    out.push_str("  br label %sj_p2_head\n");
+    out.push_str("sj_p2_head:\n");
+    out.push_str("  %sj_i2 = load i64, i64* %sj_i2_p\n");
+    out.push_str("  %sj_p2_done = icmp uge i64 %sj_i2, %sj_len\n");
+    out.push_str("  br i1 %sj_p2_done, label %sj_fin, label %sj_p2_sep\n");
+    out.push_str("sj_p2_sep:\n");
+    out.push_str("  %sj_need_sep = icmp ugt i64 %sj_i2, 0\n");
+    out.push_str("  %sj_sep_nonzero = icmp ugt i64 %sj_sep_l, 0\n");
+    out.push_str("  %sj_emit_sep = and i1 %sj_need_sep, %sj_sep_nonzero\n");
+    out.push_str("  br i1 %sj_emit_sep, label %sj_p2_write_sep, label %sj_p2_skip_sep\n");
+    out.push_str("sj_p2_write_sep:\n");
+    out.push_str("  %sj_w_pre_sep = load i64, i64* %sj_w_p\n");
+    out.push_str("  %sj_dst_sep = getelementptr i8, i8* %sj_out, i64 %sj_w_pre_sep\n");
+    out.push_str("  %_sj_cs = call i8* @memcpy(i8* %sj_dst_sep, i8* %sep, i64 %sj_sep_l)\n");
+    out.push_str("  %sj_w_after_sep = add i64 %sj_w_pre_sep, %sj_sep_l\n");
+    out.push_str("  store i64 %sj_w_after_sep, i64* %sj_w_p\n");
+    out.push_str("  br label %sj_p2_skip_sep\n");
+    out.push_str("sj_p2_skip_sep:\n");
+    out.push_str("  %sj_slot2 = getelementptr i8*, i8** %sj_src, i64 %sj_i2\n");
+    out.push_str("  %sj_s2 = load i8*, i8** %sj_slot2\n");
+    out.push_str("  %sj_l2 = call i64 @strlen(i8* %sj_s2)\n");
+    out.push_str("  %sj_w_pre = load i64, i64* %sj_w_p\n");
+    out.push_str("  %sj_dst = getelementptr i8, i8* %sj_out, i64 %sj_w_pre\n");
+    out.push_str("  %_sj_c = call i8* @memcpy(i8* %sj_dst, i8* %sj_s2, i64 %sj_l2)\n");
+    out.push_str("  %sj_w_new = add i64 %sj_w_pre, %sj_l2\n");
+    out.push_str("  store i64 %sj_w_new, i64* %sj_w_p\n");
+    out.push_str("  %sj_i2_next = add i64 %sj_i2, 1\n");
+    out.push_str("  store i64 %sj_i2_next, i64* %sj_i2_p\n");
+    out.push_str("  br label %sj_p2_head\n");
+    out.push_str("sj_fin:\n");
+    out.push_str("  %sj_nul_p = getelementptr i8, i8* %sj_out, i64 %sj_grand\n");
+    out.push_str("  store i8 0, i8* %sj_nul_p\n");
+    out.push_str("  ret i8* %sj_out\n");
     out.push_str("}\n\n");
 }
 

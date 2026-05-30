@@ -15687,6 +15687,42 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_join_typecheck_and_compile() {
+        // Closure #379: str_join(ref strs: Vec<OwnedStr>, sep) -> OwnedStr.
+        let source = r#"
+            fn main() -> i64 {
+              let parts: Vec<OwnedStr> = str_split("a,b,c", ",");
+              let s: OwnedStr = str_join(ref parts, " | ");
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str_join must type-check");
+        compile_to_llvm(source).expect("str_join must compile to LLVM");
+    }
+
+    #[test]
+    fn str_join_emits_helper_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let parts: Vec<OwnedStr> = str_split("a,b", ",");
+              let s: OwnedStr = str_join(ref parts, "-");
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("str_join C");
+        assert!(
+            c.contains("intent_str_join(") && c.contains("static char* intent_str_join"),
+            "C output must declare + call intent_str_join"
+        );
+        let ll = compile_to_llvm(source).expect("str_join LLVM");
+        assert!(
+            ll.contains("define i8* @intent_str_join(%intent_vec_i8p*")
+                && ll.contains("call i8* @intent_str_join(%intent_vec_i8p*"),
+            "LLVM output must define + call @intent_str_join"
+        );
+    }
+
+    #[test]
     fn vec_position_typecheck_and_compile() {
         // Closure #378: vec_position(ref xs, pred) -> Option<i64>.
         let source = r#"

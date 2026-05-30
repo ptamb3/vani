@@ -497,6 +497,7 @@ pub fn emit_c(program: &TypedProgram) -> String {
     // helper when no caller exists.
     if program_uses_str_split(program) {
         emit_intent_str_split_c(&mut body);
+        emit_intent_str_join_c(&mut body);
     }
 
     // Closure #356: Vec<i64> utility helpers (vec_range /
@@ -2365,7 +2366,10 @@ pub(crate) fn program_uses_str_split(program: &TypedProgram) -> bool {
     fn expr_uses(expr: &crate::ir::TypedExpr) -> bool {
         match &expr.kind {
             E::Call { name, args, .. } => {
-                if name == "str_split" {
+                // Closure #379: str_join shares the
+                // `intent_vec_owned_str` dependency with str_split,
+                // so it piggybacks on the same usage gate.
+                if name == "str_split" || name == "str_join" {
                     return true;
                 }
                 args.iter().any(expr_uses)
@@ -4695,6 +4699,47 @@ pub(crate) fn emit_intent_vec_int64_utility_helpers_c(out: &mut String) {
          \x20   if (!seen) { v.data[v.len++] = xs->data[i]; }\n\
          \x20 }\n\
          \x20 return v;\n\
+         }\n\n",
+    );
+}
+
+/// Closure #379: `str_join(ref strs, sep) -> OwnedStr`. Two-pass
+/// concat: compute the total byte length, allocate once, then
+/// memcpy each segment with sep between them.
+pub(crate) fn emit_intent_str_join_c(out: &mut String) {
+    out.push_str(
+        "static char* intent_str_join(const intent_vec_owned_str* xs, const char* sep) INTENT_UNUSED;\n\
+         static char* intent_str_join(const intent_vec_owned_str* xs, const char* sep) {\n\
+         \x20 if (!xs || xs->len == 0) {\n\
+         \x20   char* e = (char*)malloc(1);\n\
+         \x20   if (!e) abort();\n\
+         \x20   e[0] = 0;\n\
+         \x20   return e;\n\
+         \x20 }\n\
+         \x20 size_t sep_l = sep ? strlen(sep) : 0;\n\
+         \x20 size_t total = 0;\n\
+         \x20 for (uint64_t i = 0; i < xs->len; i++) {\n\
+         \x20   const char* s = xs->data[i];\n\
+         \x20   if (s) total += strlen(s);\n\
+         \x20 }\n\
+         \x20 if (xs->len > 1) total += sep_l * (xs->len - 1);\n\
+         \x20 char* out = (char*)malloc(total + 1);\n\
+         \x20 if (!out) abort();\n\
+         \x20 char* p = out;\n\
+         \x20 for (uint64_t i = 0; i < xs->len; i++) {\n\
+         \x20   if (i > 0 && sep_l > 0) {\n\
+         \x20     memcpy(p, sep, sep_l);\n\
+         \x20     p += sep_l;\n\
+         \x20   }\n\
+         \x20   const char* s = xs->data[i];\n\
+         \x20   if (s) {\n\
+         \x20     size_t sl = strlen(s);\n\
+         \x20     memcpy(p, s, sl);\n\
+         \x20     p += sl;\n\
+         \x20   }\n\
+         \x20 }\n\
+         \x20 out[total] = 0;\n\
+         \x20 return out;\n\
          }\n\n",
     );
 }
@@ -9337,6 +9382,12 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[1]),
             )
         }
+        // Closure #379: str_join(ref strs, sep) -> OwnedStr.
+        "str_join" => format!(
+            "intent_str_join(({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+        ),
         // Closure #369: ASCII case conversion -> OwnedStr.
         "str_to_upper" => {
             format!("intent_str_to_upper(({}))", emit_expr(&args[0]))
