@@ -15687,6 +15687,56 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_iota_typecheck_and_compile() {
+        // Closure #382: vec_iota(n) -> Vec<i64> = [0..n).
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec_iota(5);
+              let empty: Vec<i64> = vec_iota(0);
+              let neg: Vec<i64> = vec_iota(0 - 3);
+              return xs[0];
+            }
+        "#;
+        compile_to_c(source).expect("vec_iota must type-check");
+        compile_to_llvm(source).expect("vec_iota must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_iota_emits_helper() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec_iota(3);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("vec_iota C");
+        assert!(c.contains("intent_vec_int64_t_iota("),
+            "C must call intent_vec_int64_t_iota");
+        let ll = compile_to_llvm(source).expect("vec_iota LLVM");
+        assert!(
+            ll.contains("define %intent_vec_i64 @intent_vec_int64_t_iota(i64")
+                && ll.contains("call %intent_vec_i64 @intent_vec_int64_t_iota(i64"),
+            "LLVM must define + call @intent_vec_int64_t_iota"
+        );
+    }
+
+    #[test]
+    fn str_method_sugar_pad_lines() {
+        // Closure #382: method sugar for #381's str helpers.
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "hi";
+              let l: OwnedStr = s.pad_left(5, "*");
+              let r: OwnedStr = s.pad_right(5, "-");
+              let ls: Vec<OwnedStr> = "a\nb".lines();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str pad/lines method sugar must type-check");
+        compile_to_llvm(source).expect("str pad/lines method sugar must compile to LLVM");
+    }
+
+    #[test]
     fn str_pad_typecheck_and_compile() {
         // Closure #381: str_pad_left / str_pad_right.
         let source = r#"

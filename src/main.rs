@@ -371,6 +371,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "vec_range" || name == "vec_repeat"
                 || name == "vec_extend" || name == "vec_concat"
                 || name == "vec_reverse_copy" || name == "vec_unique"
+                || name == "vec_iota"
                 || name == "option_unwrap_or"
                 || name == "option_is_some" || name == "option_is_none"
                 || name == "option_map"

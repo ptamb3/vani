@@ -4983,6 +4983,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #382: vec_iota(n) -> Vec<i64>.
+            if name == "vec_iota" {
+                let n = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_vec_i64 @intent_vec_int64_t_iota(i64 {})\n",
+                    dest, n
+                ));
+                return dest;
+            }
             // Closure #371: vec_reverse_copy / vec_unique.
             if name == "vec_reverse_copy" || name == "vec_unique" {
                 let xs = emit_expr(&args[0], ctx, out);
@@ -9112,6 +9122,39 @@ pub(crate) fn emit_intent_vec_int64_utility_definitions(out: &mut String) {
     out.push_str("  %vc_r1 = insertvalue %intent_vec_i64 %vc_r0, i64 %vc_total, 1\n");
     out.push_str("  %vc_r2 = insertvalue %intent_vec_i64 %vc_r1, i64 %vc_total, 2\n");
     out.push_str("  ret %intent_vec_i64 %vc_r2\n");
+    out.push_str("}\n\n");
+
+    // ---- Closure #382: vec_iota(n) -> Vec<i64>. Fills [0, n).
+    out.push_str("define %intent_vec_i64 @intent_vec_int64_t_iota(i64 %n) {\n");
+    out.push_str("  %vi_zero_or_neg = icmp sle i64 %n, 0\n");
+    out.push_str("  br i1 %vi_zero_or_neg, label %vi_ret_empty, label %vi_alloc\n");
+    out.push_str("vi_ret_empty:\n");
+    out.push_str("  %vi_e0 = insertvalue %intent_vec_i64 undef, i64* null, 0\n");
+    out.push_str("  %vi_e1 = insertvalue %intent_vec_i64 %vi_e0, i64 0, 1\n");
+    out.push_str("  %vi_e2 = insertvalue %intent_vec_i64 %vi_e1, i64 0, 2\n");
+    out.push_str("  ret %intent_vec_i64 %vi_e2\n");
+    out.push_str("vi_alloc:\n");
+    out.push_str("  %vi_bytes = mul i64 %n, 8\n");
+    out.push_str("  %vi_buf_i8 = call i8* @malloc(i64 %vi_bytes)\n");
+    out.push_str("  %vi_buf = bitcast i8* %vi_buf_i8 to i64*\n");
+    out.push_str("  %vi_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %vi_i_p\n");
+    out.push_str("  br label %vi_head\n");
+    out.push_str("vi_head:\n");
+    out.push_str("  %vi_i = load i64, i64* %vi_i_p\n");
+    out.push_str("  %vi_done = icmp sge i64 %vi_i, %n\n");
+    out.push_str("  br i1 %vi_done, label %vi_fin, label %vi_body\n");
+    out.push_str("vi_body:\n");
+    out.push_str("  %vi_slot = getelementptr i64, i64* %vi_buf, i64 %vi_i\n");
+    out.push_str("  store i64 %vi_i, i64* %vi_slot\n");
+    out.push_str("  %vi_i_next = add i64 %vi_i, 1\n");
+    out.push_str("  store i64 %vi_i_next, i64* %vi_i_p\n");
+    out.push_str("  br label %vi_head\n");
+    out.push_str("vi_fin:\n");
+    out.push_str("  %vi_r0 = insertvalue %intent_vec_i64 undef, i64* %vi_buf, 0\n");
+    out.push_str("  %vi_r1 = insertvalue %intent_vec_i64 %vi_r0, i64 %n, 1\n");
+    out.push_str("  %vi_r2 = insertvalue %intent_vec_i64 %vi_r1, i64 %n, 2\n");
+    out.push_str("  ret %intent_vec_i64 %vi_r2\n");
     out.push_str("}\n\n");
 
     // ---- Closure #371: vec_reverse_copy(ref xs) -> Vec<i64>

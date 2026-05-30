@@ -2462,6 +2462,7 @@ pub(crate) fn program_uses_graph_vec_builtin(program: &TypedProgram) -> bool {
                     || name == "vec_concat"
                     || name == "vec_reverse_copy"
                     || name == "vec_unique"
+                    || name == "vec_iota"
                 {
                     return true;
                 }
@@ -4668,6 +4669,20 @@ pub(crate) fn emit_intent_vec_int64_utility_helpers_c(out: &mut String) {
          \x20 if (ys->len > 0) memcpy(v.data + xs->len, ys->data, (size_t)ys->len * sizeof(int64_t));\n\
          \x20 v.len = total;\n\
          \x20 v.capacity = total;\n\
+         \x20 return v;\n\
+         }\n\
+         /* Closure #382: vec_iota(n) -> Vec<i64>. Fills [0, n).\n\
+          * Specialization of vec_range(0, n) — slightly tighter than\n\
+          * the general range form since we always start at 0. */\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_iota(int64_t n) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_iota(int64_t n) {\n\
+         \x20 intent_vec_int64_t v; v.data = (int64_t*)0; v.len = 0; v.capacity = 0;\n\
+         \x20 if (n <= 0) return v;\n\
+         \x20 v.capacity = (uint64_t)n;\n\
+         \x20 v.data = (int64_t*)malloc(v.capacity * sizeof(int64_t));\n\
+         \x20 if (!v.data) abort();\n\
+         \x20 for (int64_t i = 0; i < n; i++) v.data[i] = i;\n\
+         \x20 v.len = (uint64_t)n;\n\
          \x20 return v;\n\
          }\n\
          /* Closure #371: vec_reverse_copy / vec_unique. Both take a\n\
@@ -9136,6 +9151,11 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_vec_int64_t_concat({}, {})",
             emit_expr(&args[0]),
             emit_expr(&args[1])
+        ),
+        // Closure #382: vec_iota(n) -> Vec<i64>.
+        "vec_iota" => format!(
+            "intent_vec_int64_t_iota(({}))",
+            emit_expr(&args[0])
         ),
         // Closure #371: fresh-allocating reverse / dedup.
         "vec_reverse_copy" => format!(

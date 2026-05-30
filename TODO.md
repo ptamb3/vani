@@ -739,9 +739,9 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-30, after closure #377 — **`option_map(o, f) -> Option<i64>` + method sugar `o.map(f)`**. Functor-style map: applies `f: fn(i64) -> i64` to the Some payload or passes None through. C: inline statement-expression. LLVM: explicit some/none branch with extractvalue + indirect call + insertvalue + phi. Method sugar added to the Option-method dispatch from #376. Composes with closure shorthand from #374: `o.map(|x| x * 2)`. 3 new lib tests. 1350 lib + 54 parity green. Closure #376 (Option<T> method sugar) shipped immediately before.
+## ⏳ Resume here (paused 2026-05-30, after closure #382 — **`vec_iota(n)` + str method sugar for pad / lines / parse_bool**. Specialization of `vec_range(0, n)` returning `[0..n)`. Tighter than the general range form. Method sugar entries `s.pad_left/.pad_right/.lines/.parse_bool` added to the existing str method-dispatch table from #375. 3 new lib tests. 1365 lib + 54 parity green. Closure #381 (str_pad / str_lines) shipped immediately before.
 
-**Autonomous-loop arc shipped closures #367–#377 (11 closures in this run):**
+**Autonomous-loop arc shipped closures #367–#382 (16 closures across this run):**
 - #367 f64 math constants (pi/e/inf/nan)
 - #368 str_repeat
 - #369 str_to_upper / str_to_lower
@@ -749,14 +749,19 @@ canonical path (compiler-lowered state machines on an arena).
 - #371 vec_reverse_copy + vec_unique
 - #372 f64_round + f64_trunc_to_i64
 - #373 parse_bool + Option<bool> machinery
-- #374 anonymous-fn shorthand `|x| x + 1`
+- #374 anonymous-fn shorthand `|x| x + 1` (with bool-return inference in #378)
 - #375 Str/OwnedStr method-call sugar
 - #376 Option<T> method-call sugar (.unwrap_or / .is_some / .is_none)
 - #377 option_map + .map() method sugar
+- #378 vec_position + closure-shorthand bool-return inference
+- #379 str_join
+- #380 i64_gcd + i64_lcm + i64_pow
+- #381 str_pad_left / str_pad_right + str_lines
+- #382 vec_iota + str method sugar for pad / lines / parse_bool
 
 **Remaining granular queue:** Trie sparse children (multi-session — replace 256-wide alphabet with `Vec<(u8, u32)>` + binary search per node).
 
-**Deferred multi-session items:** Hash/Ord interface for user struct keys; richer closures (capture-by-ref, .collect(), non-i64 vec_map/fold, tuple-element Vec); vec_zip (depends on tuple-element Vec).)
+**Deferred multi-session items:** Hash/Ord interface for user struct keys; richer closures (capture-by-ref, .collect(), non-i64 vec_map/fold, tuple-element Vec); vec_zip (depends on tuple-element Vec); HashMap<Str, V> / HashMap<i64, Str> wider K/V widths.)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 
