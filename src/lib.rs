@@ -15643,6 +15643,66 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn option_f64_ergonomics_typecheck_and_compile() {
+        // Closure #360: option_unwrap_or_f64 / option_is_some_f64
+        // / option_is_none_f64 — parallels the #357 i64 triad on
+        // the existing Option<f64> monomorph (already plumbed for
+        // parse_float).
+        let source = r#"
+            fn main() -> i64 {
+              let s: Option<f64> = parse_float("3.14");
+              let n: Option<f64> = parse_float("xx");
+              let v: f64 = option_unwrap_or_f64(s, 0.0);
+              let d: f64 = option_unwrap_or_f64(n, 0.0 - 1.0);
+              let s_ok: bool = option_is_some_f64(parse_float("2.5"));
+              let n_ok: bool = option_is_none_f64(parse_float("xx"));
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("Option<f64> ergonomics must type-check");
+        compile_to_llvm(source).expect("Option<f64> ergonomics must compile to LLVM");
+    }
+
+    #[test]
+    fn option_f64_ergonomics_emit_helpers_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let o: Option<f64> = parse_float("1.0");
+              let v: f64 = option_unwrap_or_f64(o, 0.0);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("option_f64 C");
+        assert!(
+            c.contains("intent_option_f64_unwrap_or")
+                && c.contains("Enum_Option__f64"),
+            "C output must include intent_option_f64_unwrap_or + Enum_Option__f64"
+        );
+        let ll = compile_to_llvm(source).expect("option_f64 LLVM");
+        assert!(
+            ll.contains("define double @intent_option_f64_unwrap_or(%Enum_Option__f64 ")
+                && ll.contains("%Enum_Option__f64"),
+            "LLVM output must include the option_f64 define + Enum_Option__f64 struct"
+        );
+    }
+
+    #[test]
+    fn option_f64_unwrap_or_rejects_option_i64() {
+        // Cross-type sanity: passing an Option<i64> to the f64
+        // variant must be a type error (no silent coercion).
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec[1, 2, 3];
+              let o: Option<i64> = xs.find(2);
+              let v: f64 = option_unwrap_or_f64(o, 0.0);
+              return 0;
+            }
+        "#;
+        let err = compile_to_c(source);
+        assert!(err.is_err(), "Option<i64> must not coerce to Option<f64>");
+    }
+
+    #[test]
     fn option_i64_ergonomics_typecheck_and_compile() {
         // Closure #357: option_unwrap_or / option_is_some /
         // option_is_none — eliminate the per-example match

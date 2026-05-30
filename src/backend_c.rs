@@ -519,6 +519,18 @@ pub fn emit_c(program: &TypedProgram) -> String {
             emit_intent_option_i64_helpers_c(&mut body);
         }
     }
+    // Closure #360: Option<f64> ergonomics — same triad as #357
+    // but on the Enum_Option__f64 struct (already plumbed for
+    // parse_float). Gated on Option__f64 being in the payload
+    // registry.
+    {
+        let has_option_f64 = ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__f64")
+        });
+        if has_option_f64 {
+            emit_intent_option_f64_helpers_c(&mut body);
+        }
+    }
 
     for intent in &program.intents {
         body.push_str("/* intent: ");
@@ -4541,6 +4553,26 @@ pub(crate) fn emit_intent_option_i64_helpers_c(out: &mut String) {
          }\n\
          static INTENT_UNUSED bool intent_option_i64_is_none(Enum_Option__i64 o) INTENT_UNUSED;\n\
          static INTENT_UNUSED bool intent_option_i64_is_none(Enum_Option__i64 o) {\n\
+         \x20 return o.tag != 0;\n\
+         }\n\n",
+    );
+}
+
+/// Closure #360: Option<f64> ergonomic helpers (parallels #357
+/// but on `Enum_Option__f64`, which is already plumbed for
+/// parse_float's return type).
+pub(crate) fn emit_intent_option_f64_helpers_c(out: &mut String) {
+    out.push_str(
+        "static INTENT_UNUSED double intent_option_f64_unwrap_or(Enum_Option__f64 o, double def) INTENT_UNUSED;\n\
+         static INTENT_UNUSED double intent_option_f64_unwrap_or(Enum_Option__f64 o, double def) {\n\
+         \x20 return (o.tag == 0) ? o.payload : def;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_option_f64_is_some(Enum_Option__f64 o) INTENT_UNUSED;\n\
+         static INTENT_UNUSED bool intent_option_f64_is_some(Enum_Option__f64 o) {\n\
+         \x20 return o.tag == 0;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_option_f64_is_none(Enum_Option__f64 o) INTENT_UNUSED;\n\
+         static INTENT_UNUSED bool intent_option_f64_is_none(Enum_Option__f64 o) {\n\
          \x20 return o.tag != 0;\n\
          }\n\n",
     );
@@ -8746,6 +8778,19 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         ),
         "option_is_none" => format!(
             "intent_option_i64_is_none(({}))",
+            emit_expr(&args[0])
+        ),
+        "option_unwrap_or_f64" => format!(
+            "intent_option_f64_unwrap_or(({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "option_is_some_f64" => format!(
+            "intent_option_f64_is_some(({}))",
+            emit_expr(&args[0])
+        ),
+        "option_is_none_f64" => format!(
+            "intent_option_f64_is_none(({}))",
             emit_expr(&args[0])
         ),
         "vec_range" => format!(
