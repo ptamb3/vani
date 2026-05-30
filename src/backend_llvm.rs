@@ -6995,6 +6995,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "vec_map"
                     | "vec_fold"
                     | "vec_filter"
+                    | "vec_position"
                     | "vec_take"
                     | "vec_drop"
                     | "vec_map_fold"
@@ -7030,6 +7031,8 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     "fold"
                 } else if name == "vec_filter" {
                     "filter"
+                } else if name == "vec_position" {
+                    "position"
                 } else if name == "vec_take" {
                     "take"
                 } else if name == "vec_drop" {
@@ -17971,6 +17974,64 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
             sty = s_ty,
         ));
         out.push_str("}\n");
+
+        // Closure #378: vec_position(ref xs, pred) -> Option<i64>.
+        // Walks xs sequentially; returns Option.Some(i) on the
+        // first match, Option.None otherwise. The body references
+        // `%Enum_Option__i64`, so we can only emit this helper
+        // when that struct type is in scope (i.e. the program's
+        // checker registered an Option<i64> instantiation via
+        // the auto-mono walker — see `walk_expr_for_search_builtins`
+        // in checker.rs, which lists vec_position as an Option<i64>
+        // forcer). Skipping the helper otherwise keeps the
+        // existing programs that use Vec<i64> without ever
+        // touching Option<i64> compiling clean.
+        let has_option_i64 = LLVM_ENUM_PAYLOAD_REGISTRY
+            .with(|r| r.borrow().contains_key("Option__i64"));
+        if has_option_i64 {
+        let position_name = format!("@intent_vec_{}__position", tag);
+        out.push_str(&format!(
+            "define %Enum_Option__i64 {sn}({sty}* %xs_p, i1 (i64)* %p) {{\n",
+            sn = position_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %vpo_data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %vpo_len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %vpo_src = load i64*, i64** %vpo_data_p\n");
+        out.push_str("  %vpo_n = load i64, i64* %vpo_len_p\n");
+        out.push_str("  %vpo_i_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %vpo_i_p\n");
+        out.push_str("  br label %vpo_head\n");
+        out.push_str("vpo_head:\n");
+        out.push_str("  %vpo_i = load i64, i64* %vpo_i_p\n");
+        out.push_str("  %vpo_done = icmp uge i64 %vpo_i, %vpo_n\n");
+        out.push_str("  br i1 %vpo_done, label %vpo_none, label %vpo_body\n");
+        out.push_str("vpo_body:\n");
+        out.push_str("  %vpo_slot = getelementptr i64, i64* %vpo_src, i64 %vpo_i\n");
+        out.push_str("  %vpo_val = load i64, i64* %vpo_slot\n");
+        out.push_str("  %vpo_hit = call i1 %p(i64 %vpo_val)\n");
+        out.push_str("  br i1 %vpo_hit, label %vpo_some, label %vpo_step\n");
+        out.push_str("vpo_step:\n");
+        out.push_str("  %vpo_i_next = add i64 %vpo_i, 1\n");
+        out.push_str("  store i64 %vpo_i_next, i64* %vpo_i_p\n");
+        out.push_str("  br label %vpo_head\n");
+        out.push_str("vpo_some:\n");
+        out.push_str("  %vpo_some0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n");
+        out.push_str("  %vpo_some1 = insertvalue %Enum_Option__i64 %vpo_some0, i64 %vpo_i, 1\n");
+        out.push_str("  ret %Enum_Option__i64 %vpo_some1\n");
+        out.push_str("vpo_none:\n");
+        out.push_str("  %vpo_none0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n");
+        out.push_str("  %vpo_none1 = insertvalue %Enum_Option__i64 %vpo_none0, i64 0, 1\n");
+        out.push_str("  ret %Enum_Option__i64 %vpo_none1\n");
+        out.push_str("}\n");
+        } // end if has_option_i64
+
         out.push_str(&format!(
             "define i64 {sn}({sty}* %xs_p, i64 %init, i64 (i64, i64)* %g) {{\n",
             sn = fold_name,

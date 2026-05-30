@@ -3348,6 +3348,32 @@ impl Parser {
                 self.expect_keyword("'|'", |k| matches!(k, TokenKind::Pipe))?;
                 let body_expr = self.parse_expr()?;
                 let body_span = body_expr.span;
+                // Closure #374 follow-up: peek at the body's
+                // top-level operator to infer the return type.
+                // Comparison + logical ops produce bool; otherwise
+                // default to i64. Lets `|x| x > 5` and
+                // `|x| x % 2 == 0` work as predicates for
+                // vec_filter / vec_position. Composing closures
+                // with binary OR / AND / boolean Not still
+                // returns bool. Bool-literal body also returns
+                // bool. Anything else (arithmetic, index, etc.)
+                // defaults to i64 — matches the dominant
+                // vec_map / sort_by / vec_fold use cases.
+                let return_type = match &body_expr.kind {
+                    ExprKind::Binary { op, .. } => match op {
+                        BinaryOp::Eq | BinaryOp::Ne
+                        | BinaryOp::Lt | BinaryOp::Le
+                        | BinaryOp::Gt | BinaryOp::Ge
+                        | BinaryOp::And | BinaryOp::Or => Type::Bool,
+                        _ => Type::I64,
+                    },
+                    ExprKind::Unary { op, .. } => match op {
+                        UnaryOp::Not => Type::Bool,
+                        _ => Type::I64,
+                    },
+                    ExprKind::Bool(_) => Type::Bool,
+                    _ => Type::I64,
+                };
                 let body = vec![Stmt::Return {
                     expr: body_expr,
                     span: body_span,
@@ -3355,7 +3381,7 @@ impl Parser {
                 Ok(Expr {
                     kind: ExprKind::AnonFn {
                         params,
-                        return_type: Type::I64,
+                        return_type,
                         body,
                         fn_span: pipe_span,
                     },

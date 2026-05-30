@@ -5692,6 +5692,27 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
 \n}}\n",
             sn = struct_name,
         ));
+        // Closure #378: vec_position(ref xs, pred) -> Option<i64>.
+        // First-index helper; mirrors filter's scan loop but
+        // short-circuits on the first hit and returns the index.
+        // Gated on Option__i64 being in the payload registry —
+        // otherwise the `Enum_Option__i64` typedef wouldn't be
+        // declared and the helper would fail to compile.
+        let has_option_i64 = ENUM_PAYLOAD_REGISTRY
+            .with(|r| r.borrow().contains_key("Option__i64"));
+        if has_option_i64 {
+            out.push_str(&format!(
+                "static INTENT_UNUSED Enum_Option__i64 {sn}__position(const {sn}* xs, {sn}__pred_fn p) {{\
+\n    Enum_Option__i64 r;\
+\n    for (uint64_t i = 0; i < xs->len; i++) {{\
+\n        if (p(xs->data[i])) {{ r.tag = 0; r.payload = (int64_t)i; return r; }}\
+\n    }}\
+\n    r.tag = 1;\
+\n    return r;\
+\n}}\n",
+                sn = struct_name,
+            ));
+        }
         // dedup: remove consecutive duplicates. Returns the
         // post-dedup length so the caller can verify the work
         // was done. Sort first if you want unique-set behavior.
@@ -9042,6 +9063,18 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                     emit_expr(&args[1])
                 ),
                 _ => unreachable!("vec_filter() arg 0 must be ref Vec<i64>"),
+            }
+        }
+        // Closure #378: vec_position(ref xs, pred) -> Option<i64>.
+        "vec_position" => {
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, {})",
+                    vec_helper(element, "position"),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1])
+                ),
+                _ => unreachable!("vec_position() arg 0 must be ref Vec<i64>"),
             }
         }
         "vec_take" | "vec_drop" => {

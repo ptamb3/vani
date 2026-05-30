@@ -15687,6 +15687,49 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_position_typecheck_and_compile() {
+        // Closure #378: vec_position(ref xs, pred) -> Option<i64>.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20, 30, 40);
+              let p: Option<i64> = vec_position(ref xs, |x| x > 25);
+              let v: i64 = p.unwrap_or(0 - 1);
+              return v;
+            }
+        "#;
+        compile_to_c(source).expect("vec_position must type-check");
+        compile_to_llvm(source).expect("vec_position must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_position_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20, 30);
+              let p: Option<i64> = xs.position(|x| x == 20);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("xs.position must type-check");
+        compile_to_llvm(source).expect("xs.position must compile to LLVM");
+    }
+
+    #[test]
+    fn anon_fn_shorthand_infers_bool_return_for_comparisons() {
+        // Closure #378 follow-up: |x| x > 5 parses as
+        // fn(x: i64) -> bool. Used as a vec_filter predicate.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 5, 3, 7);
+              let evens: Vec<i64> = vec_filter(ref xs, |x| x > 3);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("|x| comparison must type-check as fn -> bool");
+        compile_to_llvm(source).expect("|x| comparison must compile to LLVM");
+    }
+
+    #[test]
     fn option_map_typecheck_and_compile() {
         // Closure #377: option_map(o, f) and o.map(f) for
         // Option<i64>. f must be fn(i64) -> i64.
