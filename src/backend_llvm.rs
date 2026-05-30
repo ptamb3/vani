@@ -6683,6 +6683,53 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #370: sort_desc composes sort + reverse at
+            // the call site so no new runtime helper is needed.
+            // Handled BEFORE the generic Array / Vec dispatches
+            // below so the two-call shape stays explicit.
+            if name == "sort_desc" {
+                match args[0].ty.deref() {
+                    Type::Array { length, .. } => {
+                        let length = *length;
+                        let arr_ptr = emit_expr(&args[0], ctx, out);
+                        let data_ptr = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = getelementptr [{} x i64], [{} x i64]* {}, i32 0, i32 0\n",
+                            data_ptr, length, length, arr_ptr
+                        ));
+                        let r1 = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = call i64 @intent_array_i64__sort(i64* {}, i64 {})\n",
+                            r1, data_ptr, length
+                        ));
+                        let r2 = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = call i64 @intent_array_i64__reverse(i64* {}, i64 {})\n",
+                            r2, data_ptr, length
+                        ));
+                        // Return 0 — sort_desc has unit semantics.
+                        return "0".to_string();
+                    }
+                    Type::Vec(element) => {
+                        let element = (**element).clone();
+                        let xs = emit_expr(&args[0], ctx, out);
+                        let elt_tag = crate::backend_llvm::vec_struct_tag(&element);
+                        let vec_ty = crate::backend_llvm::vec_struct_name(&element);
+                        let r1 = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = call i64 @intent_vec_{}__sort({}* {})\n",
+                            r1, elt_tag, vec_ty, xs
+                        ));
+                        let r2 = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = call i64 @intent_vec_{}__reverse({}* {})\n",
+                            r2, elt_tag, vec_ty, xs
+                        ));
+                        return "0".to_string();
+                    }
+                    _ => unreachable!("sort_desc arg 0 must be (mut ref) Vec<_> or [T; N]"),
+                }
+            }
             // Array variants of sort / sort_by / reverse /
             // find / contains / binary_search dispatch to
             // `@intent_array_i64__<op>` helpers emitted in

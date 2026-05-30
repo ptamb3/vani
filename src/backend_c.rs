@@ -8865,6 +8865,27 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 _ => unreachable!("sort() arg 0 must be (mut ref) Vec<_> or [T; N]"),
             }
         }
+        // Closure #370: in-place descending sort. Composes
+        // sort() + reverse() at the call site to avoid a new
+        // runtime helper (and an extra `vec_helper` entry).
+        // Statement-expression returns 0 so the call type-checks
+        // as i64 like the other in-place mutators.
+        "sort_desc" => {
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "({{ {sort}({xs}); {rev}({xs}); 0; }})",
+                    sort = vec_helper(element, "sort"),
+                    rev = vec_helper(element, "reverse"),
+                    xs = emit_expr(&args[0]),
+                ),
+                Type::Array { length, .. } => format!(
+                    "({{ intent_array_int64_t__sort((int64_t*)({xs}), (uint64_t){len}LL); intent_array_int64_t__reverse((int64_t*)({xs}), (uint64_t){len}LL); 0; }})",
+                    xs = emit_expr(&args[0]),
+                    len = length,
+                ),
+                _ => unreachable!("sort_desc() arg 0 must be (mut ref) Vec<_> or [T; N]"),
+            }
+        }
         "sort_by" => {
             // In-place sort with user comparator
             // `fn(i64, i64) -> i64`. v1: i64 element.

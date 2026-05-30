@@ -15687,6 +15687,48 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_sort_desc_typecheck_and_compile() {
+        // Closure #370: in-place descending sort. Composes
+        // sort + reverse at the call site.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(5, 2, 8, 1);
+              sort_desc(mut ref xs);
+              return xs[0];
+            }
+        "#;
+        compile_to_c(source).expect("sort_desc must type-check");
+        compile_to_llvm(source).expect("sort_desc must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_sort_desc_method_sugar_works() {
+        // xs.sort_desc() should desugar to sort_desc(mut ref xs).
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(3, 1, 2);
+              xs.sort_desc();
+              return xs[0];
+            }
+        "#;
+        compile_to_c(source).expect("method-sugar sort_desc must type-check");
+        compile_to_llvm(source).expect("method-sugar sort_desc must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_sort_desc_rejects_by_value() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(3, 1, 2);
+              sort_desc(xs);
+              return 0;
+            }
+        "#;
+        assert!(compile_to_c(source).is_err(),
+            "sort_desc must require mut ref");
+    }
+
+    #[test]
     fn str_case_conversion_typecheck_and_compile() {
         // Closure #369: str_to_upper / str_to_lower -> OwnedStr.
         let source = r#"
