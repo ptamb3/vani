@@ -15687,6 +15687,49 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn anon_fn_shorthand_single_param() {
+        // Closure #374: `|x| x * 2` desugars to AnonFn with
+        // x: i64 -> i64 body `return x * 2;`.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let doubled: Vec<i64> = vec_map(ref xs, |x| x * 2);
+              return doubled[0];
+            }
+        "#;
+        compile_to_c(source).expect("|x| shorthand must type-check");
+        compile_to_llvm(source).expect("|x| shorthand must compile to LLVM");
+    }
+
+    #[test]
+    fn anon_fn_shorthand_two_params() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(5, 2, 8, 1);
+              sort_by(mut ref xs, |a, b| b - a);
+              return xs[0];
+            }
+        "#;
+        compile_to_c(source).expect("|a, b| shorthand must type-check");
+        compile_to_llvm(source).expect("|a, b| shorthand must compile to LLVM");
+    }
+
+    #[test]
+    fn anon_fn_shorthand_does_not_break_bitwise_or() {
+        // `|` as a primary-position token starts a closure; as
+        // an infix operator it stays bitwise-OR. Regression
+        // guard.
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = 5 | 3;
+              return a;
+            }
+        "#;
+        compile_to_c(source).expect("bitwise-OR must still parse");
+        compile_to_llvm(source).expect("bitwise-OR must still compile to LLVM");
+    }
+
+    #[test]
     fn parse_bool_typecheck_and_compile() {
         // Closure #373: parse_bool(s) -> Option<bool>. Recognizes
         // "true" / "false" exactly (case-sensitive).

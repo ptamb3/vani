@@ -3315,6 +3315,53 @@ impl Parser {
                     span: token.span.merge(close_span),
                 })
             }
+            TokenKind::Pipe => {
+                // Closure #374: anonymous-fn shorthand `|x| x + 1`
+                // and `|x, y| x + y`. Desugars to an AnonFn AST
+                // node with all parameters typed `i64` and return
+                // type `i64` (matches the existing v1 closures
+                // surface — all closures take + return i64). Body
+                // is `return <expr>;`. Disambiguation: at primary
+                // position `|` always starts a closure shorthand;
+                // bitwise-or `a | b` is a binary infix operator,
+                // never a primary leader. Empty param list
+                // requires `||` which lexes as the OrOr token,
+                // so `|| expr` is naturally unreachable through
+                // this path — keep the shorthand requiring at
+                // least one parameter.
+                let pipe_span = token.span;
+                let mut params: Vec<Param> = Vec::new();
+                loop {
+                    let pname_tok = self.expect_ident()?;
+                    let pname_span = pname_tok.span;
+                    let pname = ident_text(pname_tok);
+                    params.push(Param {
+                        name: pname,
+                        ty: Type::I64,
+                        name_span: pname_span,
+                        span: pname_span,
+                    });
+                    if self.match_token(|k| matches!(k, TokenKind::Comma)).is_none() {
+                        break;
+                    }
+                }
+                self.expect_keyword("'|'", |k| matches!(k, TokenKind::Pipe))?;
+                let body_expr = self.parse_expr()?;
+                let body_span = body_expr.span;
+                let body = vec![Stmt::Return {
+                    expr: body_expr,
+                    span: body_span,
+                }];
+                Ok(Expr {
+                    kind: ExprKind::AnonFn {
+                        params,
+                        return_type: Type::I64,
+                        body,
+                        fn_span: pipe_span,
+                    },
+                    span: pipe_span.merge(body_span),
+                })
+            }
             TokenKind::Fn => {
                 // Anonymous fn expression — `fn(p: T) -> R { body }`.
                 // Body is parsed as a regular fn body (Vec<Stmt> with
