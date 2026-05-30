@@ -10663,6 +10663,65 @@ fn check_expr(
                 }
             }
 
+            // Closure #375 — method-call sugar for `Str` /
+            // `OwnedStr` receivers. Mirrors the Vec sugar
+            // pattern but the str-family builtins take Str by
+            // value (no ref-injection needed). `s.len()` is
+            // already handled by the generic Len rewrite above
+            // (Str/OwnedStr fall through the same path).
+            //
+            // We accept both Var receivers (`s.contains("x")`)
+            // and string-literal receivers (`"abc".repeat(3)`).
+            // The literal case is determined by checking the
+            // ExprKind directly — a Str literal is always
+            // type Str, even though we can't look it up in env.
+            {
+                let recv_is_str_literal = matches!(
+                    &receiver.kind, ExprKind::Str(_)
+                );
+                let recv_is_var_strish = match &receiver.kind {
+                    ExprKind::Var(recv_name) => env
+                        .lookup(recv_name)
+                        .map(|i| matches!(i.ty, Type::Str | Type::OwnedStr))
+                        .unwrap_or(false),
+                    _ => false,
+                };
+                let is_strish = recv_is_str_literal || recv_is_var_strish;
+                if is_strish {
+                    let builtin: &str = match method.as_str() {
+                        "contains" => "str_contains",
+                        "starts_with" => "str_starts_with",
+                        "ends_with" => "str_ends_with",
+                        "trim" => "str_trim",
+                        "replace" => "str_replace",
+                        "split" => "str_split",
+                        "index_of" => "str_index_of",
+                        "repeat" => "str_repeat",
+                        "to_upper" => "str_to_upper",
+                        "to_lower" => "str_to_lower",
+                        // substring has no `str_` prefix today.
+                        "substring" => "substring",
+                        _ => "",
+                    };
+                    if !builtin.is_empty() {
+                        let recv_clone = (**receiver).clone();
+                        let mut new_args: Vec<Expr> = Vec::with_capacity(args.len() + 1);
+                        new_args.push(recv_clone);
+                        for a in args {
+                            new_args.push(a.clone());
+                        }
+                        return check_call(
+                            builtin,
+                            *method_span,
+                            &new_args,
+                            env,
+                            signatures,
+                            expr.span,
+                            diagnostics,
+                        );
+                    }
+                }
+            }
             // Closure #321 — method-call sugar for `[T; N]`
             // Arrays. Mirrors the Vec sugar arm above but
             // dispatches to the array-prefixed builtins

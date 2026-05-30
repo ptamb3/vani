@@ -739,20 +739,22 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-30, after closure #367 — **f64 math constants `f64_pi() / f64_e() / f64_inf() / f64_nan()`**. Four zero-arg builtins returning `f64`. C uses decimal-literal constants + `<math.h>` `INFINITY`/`NAN` macros; LLVM uses exact IEEE-754 hex-float double literals. The dispatch arm short-circuits the per-arg coerce loop. Cross-trip with #364's classifiers verified. 3 new lib tests. 1323 lib + 54 parity green. Closure #366 (substring) shipped immediately before.
+## ⏳ Resume here (paused 2026-05-30, after closure #375 — **Str/OwnedStr method-call sugar**. `s.contains/starts_with/ends_with/trim/replace/split/index_of/repeat/to_upper/to_lower/substring(...)` all desugar to the corresponding `str_*` builtin. Accepts both `Var` receivers and string-literal receivers (`"abc".repeat(3)`). No backend changes — rewrite happens in the checker's method-call dispatch. 3 new lib tests. 1345 lib + 54 parity green. Closure #374 (anonymous-fn shorthand `|x| ...`) shipped immediately before.
 
-**Autonomous-loop arc in progress (closures #359 onward).** Next-tier granular queue:
+**Autonomous-loop arc shipped closures #367–#375 (9 closures in this run):**
+- #367 f64 math constants (pi/e/inf/nan)
+- #368 str_repeat
+- #369 str_to_upper / str_to_lower
+- #370 sort_desc (in-place descending)
+- #371 vec_reverse_copy + vec_unique
+- #372 f64_round + f64_trunc_to_i64
+- #373 parse_bool + Option<bool> machinery
+- #374 anonymous-fn shorthand `|x| x + 1`
+- #375 Str/OwnedStr method-call sugar
 
-1. **#368 — `str_repeat(s: Str, n: i64) -> OwnedStr`**. Concat `s` with itself `n` times. Negative `n` produces empty. C: dedicated `intent_str_repeat` helper; LLVM: parallel define.
-2. **#369 — `str_to_upper(s) / str_to_lower(s) -> OwnedStr`**. ASCII case conversion (non-ASCII bytes passed through unchanged). C uses `toupper`/`tolower` from `<ctype.h>`; LLVM inlines a byte-loop with conditional add 32.
-3. **#370 — `vec_sort_desc(mut ref xs)`**. In-place descending sort. Reuse existing sort_by with a fixed `>` comparator (no new closures needed in vāṇी source).
-4. **#371 — `vec_reverse_copy(ref xs) / vec_unique(ref xs) -> Vec<i64>`**. Fresh-allocating variants of in-place reverse/dedup.
-5. **#372 — `f64_round(x) -> i64 / f64_trunc_to_i64(x) -> i64`**. Float→int rounding (round half to even) and truncate.
-6. **#373 — `parse_bool(s: Str) -> Option<bool>`**. Recognizes `"true"`/`"false"`. Needs `Option<bool>` enum monomorph machinery.
-7. **#374 — Anon-fn shorthand `|x| x + 1`**. Parser sugar that desugars to AnonFn AST with context-inferred types.
-8. **#375 — Trie sparse children**. Replace 256-wide fixed alphabet with `Vec<(u8, u32)>` + binary search per node.
+**Remaining granular queue:** Trie sparse children (multi-session — replace 256-wide alphabet with `Vec<(u8, u32)>` + binary search per node).
 
-Deferred multi-session items: Hash/Ord interface for user struct keys; richer closures (capture-by-ref, .collect(), non-i64 vec_map/fold, tuple-element Vec).)
+**Deferred multi-session items:** Hash/Ord interface for user struct keys; richer closures (capture-by-ref, .collect(), non-i64 vec_map/fold, tuple-element Vec); vec_zip (depends on tuple-element Vec).)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 

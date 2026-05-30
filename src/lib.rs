@@ -15687,6 +15687,54 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_method_sugar_var_receiver() {
+        // Closure #375: `s.method(...)` desugars to
+        // `str_<method>(s, ...)` for Str / OwnedStr receivers.
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "Hello, World!";
+              let a: bool = s.contains("World");
+              let b: bool = s.starts_with("Hello");
+              let c: bool = s.ends_with("!");
+              let u: OwnedStr = s.to_upper();
+              let l: OwnedStr = s.to_lower();
+              let sub: OwnedStr = s.substring(0, 5);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str method sugar must type-check");
+        compile_to_llvm(source).expect("str method sugar must compile to LLVM");
+    }
+
+    #[test]
+    fn str_method_sugar_literal_receiver() {
+        // String-literal receivers should work too — `"ab".repeat(3)`.
+        let source = r#"
+            fn main() -> i64 {
+              let a: OwnedStr = "ab".repeat(3);
+              let b: bool = "hello".contains("ell");
+              let c: OwnedStr = "ABC".to_lower();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str-literal method sugar must type-check");
+        compile_to_llvm(source).expect("str-literal method sugar must compile to LLVM");
+    }
+
+    #[test]
+    fn str_method_sugar_index_of_returns_option() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "hello, world";
+              let p: Option<i64> = s.index_of("world");
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("s.index_of must type-check");
+        compile_to_llvm(source).expect("s.index_of must compile to LLVM");
+    }
+
+    #[test]
     fn anon_fn_shorthand_single_param() {
         // Closure #374: `|x| x * 2` desugars to AnonFn with
         // x: i64 -> i64 body `return x * 2;`.
