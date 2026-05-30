@@ -739,7 +739,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-30, after closure #358 — **`i64_to_str(x: i64) -> OwnedStr`**. Closes the parse / stringify round-trip alongside the existing `parse_int` / `parse_float`. C uses `snprintf(buf, 21, "%lld", x)`; LLVM mirrors via a new `declare i32 @snprintf(i8*, i64, i8*, ...)` extern + the existing `@.fmt.lld` format global. Both backends byte-identical, including the `"label: " + i64_to_str(n)` concat pattern. 2 new lib tests. 1294 lib + 54 parity green. Closure #357 (Option<i64> ergonomics) shipped immediately before.)
+## ⏳ Resume here (paused 2026-05-30, after closure #359 — **`f64_to_str(x: f64) -> OwnedStr`**. Extends the parse/stringify round-trip to f64 alongside the matching `i64_to_str` from #358 — now both numeric kinds have parse + stringify symmetry against `parse_int` / `parse_float`. C uses `snprintf(buf, 32, "%g", x)` with overrun-clamp + manual NUL termination; LLVM mirrors via a new `define i8* @intent_f64_to_str(double %x)` using the existing `@.fmt.g` format global + `@snprintf` extern. Both backends byte-identical: `3.14 / 0 / -2.5 / 1e+06`, plus `"pi=" + f64_to_str(3.14)` concat works the same way. 3 new lib tests pin typecheck + both-backend helper emission + f64-literal coercion path. 1297 lib + 54 parity green. Closure #358 (i64_to_str) shipped immediately before.)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 

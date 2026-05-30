@@ -4741,6 +4741,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #359: f64_to_str.
+            if name == "f64_to_str" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i8* @intent_f64_to_str(double {})\n",
+                    dest, x
+                ));
+                return dest;
+            }
             // Closure #357: Option<i64> ergonomics.
             if name == "option_unwrap_or" {
                 let o = emit_expr(&args[0], ctx, out);
@@ -8252,10 +8262,9 @@ pub(crate) fn emit_intent_siphash_definitions(out: &mut String) {
     out.push_str("}\n\n");
 }
 
-/// Closure #358: emit `@intent_i64_to_str(x: i64) -> i8*`.
-/// Uses the existing `@.fmt.lld` global format string and a
-/// declared `@snprintf` extern. The output is a freshly-
-/// malloc'd OwnedStr with the decimal representation of x.
+/// Closure #358 + #359: emit numeric-to-string helpers in
+/// LLVM IR. Both use snprintf with the existing format
+/// globals (`@.fmt.lld` and `@.fmt.g`).
 pub(crate) fn emit_intent_i64_to_str_definition(out: &mut String) {
     out.push_str("define i8* @intent_i64_to_str(i64 %x) {\n");
     out.push_str("  %its_buf = alloca [21 x i8]\n");
@@ -8267,6 +8276,24 @@ pub(crate) fn emit_intent_i64_to_str_definition(out: &mut String) {
     out.push_str("  %its_out = call i8* @malloc(i64 %its_total)\n");
     out.push_str("  %_its_c = call i8* @memcpy(i8* %its_out, i8* %its_buf_p, i64 %its_total)\n");
     out.push_str("  ret i8* %its_out\n");
+    out.push_str("}\n\n");
+
+    // Closure #359: f64_to_str via snprintf "%g".
+    out.push_str("define i8* @intent_f64_to_str(double %x) {\n");
+    out.push_str("  %fts_buf = alloca [32 x i8]\n");
+    out.push_str("  %fts_buf_p = getelementptr [32 x i8], [32 x i8]* %fts_buf, i64 0, i64 0\n");
+    out.push_str("  %fts_fmt = getelementptr [3 x i8], [3 x i8]* @.fmt.g, i64 0, i64 0\n");
+    out.push_str("  %fts_n = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %fts_buf_p, i64 32, i8* %fts_fmt, double %x)\n");
+    out.push_str("  %fts_n64 = sext i32 %fts_n to i64\n");
+    out.push_str("  ; Clamp to buffer size - 1 to be safe.\n");
+    out.push_str("  %fts_overrun = icmp uge i64 %fts_n64, 31\n");
+    out.push_str("  %fts_n_safe = select i1 %fts_overrun, i64 31, i64 %fts_n64\n");
+    out.push_str("  %fts_total = add i64 %fts_n_safe, 1\n");
+    out.push_str("  %fts_out = call i8* @malloc(i64 %fts_total)\n");
+    out.push_str("  %_fts_c = call i8* @memcpy(i8* %fts_out, i8* %fts_buf_p, i64 %fts_n_safe)\n");
+    out.push_str("  %fts_nul_p = getelementptr i8, i8* %fts_out, i64 %fts_n_safe\n");
+    out.push_str("  store i8 0, i8* %fts_nul_p\n");
+    out.push_str("  ret i8* %fts_out\n");
     out.push_str("}\n\n");
 }
 

@@ -4485,6 +4485,12 @@ pub(crate) fn emit_intent_str_concat_c(out: &mut String) {
 /// representation of x as a freshly-malloc'd char*. Uses
 /// `snprintf` for the format work; max representable length
 /// (incl sign + NUL) is 21 bytes.
+///
+/// Closure #359: `f64_to_str(x: f64) -> OwnedStr` mirrors
+/// the i64 form but with `%g` (compact representation that
+/// avoids trailing zeros / picks between fixed and scientific
+/// notation). 32-byte scratch buffer is enough for all
+/// double-precision outputs in practice.
 pub(crate) fn emit_intent_i64_to_str_c(out: &mut String) {
     out.push_str(
         "static char* intent_i64_to_str(int64_t x) INTENT_UNUSED;\n\
@@ -4495,6 +4501,18 @@ pub(crate) fn emit_intent_i64_to_str_c(out: &mut String) {
          \x20 char* out = (char*)malloc((size_t)n + 1);\n\
          \x20 if (!out) abort();\n\
          \x20 memcpy(out, buf, (size_t)n + 1);\n\
+         \x20 return out;\n\
+         }\n\
+         static char* intent_f64_to_str(double x) INTENT_UNUSED;\n\
+         static char* intent_f64_to_str(double x) {\n\
+         \x20 char buf[32];\n\
+         \x20 int n = snprintf(buf, sizeof(buf), \"%g\", x);\n\
+         \x20 if (n < 0) abort();\n\
+         \x20 if ((size_t)n >= sizeof(buf)) n = (int)(sizeof(buf) - 1);\n\
+         \x20 char* out = (char*)malloc((size_t)n + 1);\n\
+         \x20 if (!out) abort();\n\
+         \x20 memcpy(out, buf, (size_t)n);\n\
+         \x20 out[n] = 0;\n\
          \x20 return out;\n\
          }\n\n",
     );
@@ -8711,6 +8729,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         }
         "i64_to_str" => format!(
             "intent_i64_to_str(({}))",
+            emit_expr(&args[0])
+        ),
+        "f64_to_str" => format!(
+            "intent_f64_to_str(({}))",
             emit_expr(&args[0])
         ),
         "option_unwrap_or" => format!(
