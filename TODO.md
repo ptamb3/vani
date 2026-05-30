@@ -739,7 +739,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-30, after closure #363 — **`log / log2 / log10 / exp / atan2` libm helpers**. Rounds out the math intrinsic surface alongside the existing `pow / sqrt / sin / cos / tan / floor / ceil / abs` builtins. All f64-only, all libm-backed. Single-arg helpers reuse the existing `sqrt | sin | ...` dispatch pattern; `atan2(y, x)` gets its own 2-arg arm parallel to `pow`. Checker math route + `want_args` extended. LLVM preamble grew 5 new `declare double @...` externs. SSA reject list extended so SSA-LLVM bails out through the tree backend. Both backends byte-identical. 3 new lib tests. 1311 lib + 54 parity green. Closure #362 (clamp + f64 min/max LLVM fix) shipped immediately before.)
+## ⏳ Resume here (paused 2026-05-30, after closure #364 — **`f64_is_nan` / `f64_is_inf` / `f64_is_finite` float classification**. Three bool-returning float predicates. C uses `<math.h>` macros wrapped in `(... != 0)`. LLVM inlines via fcmp + fabs — `is_nan` is `fcmp uno x, x`; `is_inf` / `is_finite` are `fabs(x) {oeq|olt} 0x7FF0000000000000` (the +Inf bit pattern). check_math_builtin now produces `Type::Bool` for these three; same f64-coerce path as the rest of the math family. Both backends byte-identical on finite/+inf/-inf/nan/zero/positive. 3 new lib tests. 1314 lib + 54 parity green. Closure #363 (log/exp/atan2 family) shipped immediately before.)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 

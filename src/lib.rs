@@ -15687,6 +15687,65 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_classification_typecheck_and_compile() {
+        // Closure #364: f64_is_nan / f64_is_inf / f64_is_finite —
+        // float classification builtins. All bool-returning.
+        let source = r#"
+            fn main() -> i64 {
+              let x: f64 = 3.14;
+              let a: bool = f64_is_nan(x);
+              let b: bool = f64_is_inf(x);
+              let c: bool = f64_is_finite(x);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("classification must type-check");
+        compile_to_llvm(source).expect("classification must compile to LLVM");
+    }
+
+    #[test]
+    fn f64_classification_emits_inline_check() {
+        let source = r#"
+            fn main() -> i64 {
+              let x: f64 = 1.0;
+              let a: bool = f64_is_nan(x);
+              let b: bool = f64_is_inf(x);
+              let c: bool = f64_is_finite(x);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("classify C");
+        assert!(
+            c.contains("isnan(") && c.contains("isinf(") && c.contains("isfinite("),
+            "C output must use math.h isnan / isinf / isfinite macros"
+        );
+        let ll = compile_to_llvm(source).expect("classify LLVM");
+        // is_nan path: fcmp uno; is_inf / is_finite: fabs + fcmp
+        // against the +Inf bit pattern.
+        assert!(
+            ll.contains("fcmp uno double")
+                && ll.contains("0x7FF0000000000000")
+                && ll.contains("call double @fabs(double"),
+            "LLVM output must inline fcmp + fabs for classification"
+        );
+    }
+
+    #[test]
+    fn f64_classification_rejects_non_f64() {
+        let source = r#"
+            fn main() -> i64 {
+              let x: i64 = 5;
+              let a: bool = f64_is_nan(x);
+              return 0;
+            }
+        "#;
+        // The math route coerces i64 to f64 silently (same as
+        // sqrt/sin/cos). This is consistent with the rest of the
+        // math surface — passing an integer just promotes.
+        compile_to_c(source).expect("i64 must coerce to f64 for classification");
+    }
+
+    #[test]
     fn log_exp_atan2_typecheck_and_compile() {
         // Closure #363: log family + exp + atan2 round out the
         // libm surface alongside the existing

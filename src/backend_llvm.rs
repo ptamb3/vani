@@ -6195,6 +6195,38 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #364: float classification via inline fcmp.
+            // No libm extern needed — IEEE-754 bit-level checks are
+            // expressible directly in IR.
+            //   is_nan(x):    fcmp uno  x, x      (NaN != NaN)
+            //   is_inf(x):    fabs(x) == 0x7FF0000000000000
+            //   is_finite(x): fabs(x)  < 0x7FF0000000000000
+            // The +Inf bit pattern (0x7FF0000000000000) is the
+            // IEEE-754 double for positive infinity; comparing
+            // `fabs(x)` against it covers both signs.
+            if name == "f64_is_nan" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fcmp uno double {}, {}\n",
+                    dest, x, x
+                ));
+                return dest;
+            }
+            if name == "f64_is_inf" || name == "f64_is_finite" {
+                let x = emit_expr(&args[0], ctx, out);
+                let fa = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @fabs(double {})\n", fa, x
+                ));
+                let dest = ctx.fresh_tmp();
+                let pred = if name == "f64_is_inf" { "oeq" } else { "olt" };
+                out.push_str(&format!(
+                    "  {} = fcmp {} double {}, 0x7FF0000000000000\n",
+                    dest, pred, fa
+                ));
+                return dest;
+            }
             if name == "pow" {
                 let a = emit_expr(&args[0], ctx, out);
                 let b = emit_expr(&args[1], ctx, out);

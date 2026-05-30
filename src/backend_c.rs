@@ -9664,6 +9664,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[1])
             )
         }
+        // Closure #364: float classification via <math.h>
+        // macros. Cast bool-ish int result through `!= 0` so the
+        // expression has explicit bool type (isfinite returns
+        // non-zero on finite, zero otherwise — C semantics).
+        "f64_is_nan" => format!("(isnan(({})) != 0)", emit_expr(&args[0])),
+        "f64_is_inf" => format!("(isinf(({})) != 0)", emit_expr(&args[0])),
+        "f64_is_finite" => format!("(isfinite(({})) != 0)", emit_expr(&args[0])),
         "abs" => {
             // Overload: i64 → llabs / (x<0?-x:x); f64 → fabs.
             // Other signed ints get cast to i64.

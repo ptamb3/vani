@@ -322,6 +322,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "floor" || name == "ceil" || name == "abs"
                 || name == "log" || name == "log2" || name == "log10"
                 || name == "exp" || name == "atan2"
+                || name == "f64_is_nan" || name == "f64_is_inf"
+                || name == "f64_is_finite"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_f64"
