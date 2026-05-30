@@ -4762,6 +4762,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #361: bool_to_str.
+            if name == "bool_to_str" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i8* @intent_bool_to_str(i1 {})\n",
+                    dest, x
+                ));
+                return dest;
+            }
             // Closure #357: Option<i64> ergonomics.
             if name == "option_unwrap_or" {
                 let o = emit_expr(&args[0], ctx, out);
@@ -8308,6 +8318,20 @@ pub(crate) fn emit_intent_i64_to_str_definition(out: &mut String) {
     out.push_str("  %its_out = call i8* @malloc(i64 %its_total)\n");
     out.push_str("  %_its_c = call i8* @memcpy(i8* %its_out, i8* %its_buf_p, i64 %its_total)\n");
     out.push_str("  ret i8* %its_out\n");
+    out.push_str("}\n\n");
+
+    // Closure #361: bool_to_str(b: i1) -> i8*. Allocates a
+    // malloc'd copy of "true" / "false" via memcpy from the
+    // existing global format strings. OwnedStr return for
+    // symmetry with i64_to_str / f64_to_str.
+    out.push_str("define i8* @intent_bool_to_str(i1 %b) {\n");
+    out.push_str("  %bts_size = select i1 %b, i64 5, i64 6\n");
+    out.push_str("  %bts_out = call i8* @malloc(i64 %bts_size)\n");
+    out.push_str("  %bts_true_p = getelementptr [5 x i8], [5 x i8]* @.fmt.true, i64 0, i64 0\n");
+    out.push_str("  %bts_false_p = getelementptr [6 x i8], [6 x i8]* @.fmt.false, i64 0, i64 0\n");
+    out.push_str("  %bts_src = select i1 %b, i8* %bts_true_p, i8* %bts_false_p\n");
+    out.push_str("  %_bts_c = call i8* @memcpy(i8* %bts_out, i8* %bts_src, i64 %bts_size)\n");
+    out.push_str("  ret i8* %bts_out\n");
     out.push_str("}\n\n");
 
     // Closure #359: f64_to_str via snprintf "%g".

@@ -15687,6 +15687,57 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn bool_to_str_typecheck_and_compile() {
+        // Closure #361: bool_to_str(b: bool) -> OwnedStr — rounds
+        // out the to_str family alongside i64_to_str / f64_to_str.
+        let source = r#"
+            fn main() -> i64 {
+              let t: OwnedStr = bool_to_str(true);
+              let f: OwnedStr = bool_to_str(false);
+              let v: Vec<i64> = vec(1, 2, 3);
+              let has_two: OwnedStr = "ok=" + bool_to_str(v.contains(2));
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("bool_to_str must type-check");
+        compile_to_llvm(source).expect("bool_to_str must compile to LLVM");
+    }
+
+    #[test]
+    fn bool_to_str_emits_helper_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: OwnedStr = bool_to_str(true);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("bool_to_str C");
+        assert!(
+            c.contains("intent_bool_to_str") && c.contains("\"true\"") && c.contains("\"false\""),
+            "C output must include intent_bool_to_str helper + literal true/false"
+        );
+        let ll = compile_to_llvm(source).expect("bool_to_str LLVM");
+        assert!(
+            ll.contains("define i8* @intent_bool_to_str(i1 ")
+                && ll.contains("@.fmt.true")
+                && ll.contains("@.fmt.false"),
+            "LLVM output must include the bool_to_str define + format globals"
+        );
+    }
+
+    #[test]
+    fn bool_to_str_rejects_non_bool_argument() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: OwnedStr = bool_to_str(42);
+              return 0;
+            }
+        "#;
+        let err = compile_to_c(source);
+        assert!(err.is_err(), "bool_to_str must reject i64 argument");
+    }
+
+    #[test]
     fn option_f64_unwrap_or_rejects_option_i64() {
         // Cross-type sanity: passing an Option<i64> to the f64
         // variant must be a type error (no silent coercion).

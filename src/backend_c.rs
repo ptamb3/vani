@@ -4503,6 +4503,12 @@ pub(crate) fn emit_intent_str_concat_c(out: &mut String) {
 /// avoids trailing zeros / picks between fixed and scientific
 /// notation). 32-byte scratch buffer is enough for all
 /// double-precision outputs in practice.
+///
+/// Closure #361: `bool_to_str(b: bool) -> OwnedStr` returns
+/// a malloc'd copy of "true" / "false". Heap-allocated for
+/// consistency with the other to_str helpers — the OwnedStr
+/// return path lets the result be `+`-concatenated with other
+/// OwnedStr / Str.
 pub(crate) fn emit_intent_i64_to_str_c(out: &mut String) {
     out.push_str(
         "static char* intent_i64_to_str(int64_t x) INTENT_UNUSED;\n\
@@ -4525,6 +4531,15 @@ pub(crate) fn emit_intent_i64_to_str_c(out: &mut String) {
          \x20 if (!out) abort();\n\
          \x20 memcpy(out, buf, (size_t)n);\n\
          \x20 out[n] = 0;\n\
+         \x20 return out;\n\
+         }\n\
+         static char* intent_bool_to_str(bool b) INTENT_UNUSED;\n\
+         static char* intent_bool_to_str(bool b) {\n\
+         \x20 const char* src = b ? \"true\" : \"false\";\n\
+         \x20 size_t n = b ? 4 : 5;\n\
+         \x20 char* out = (char*)malloc(n + 1);\n\
+         \x20 if (!out) abort();\n\
+         \x20 memcpy(out, src, n + 1);\n\
          \x20 return out;\n\
          }\n\n",
     );
@@ -8765,6 +8780,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         ),
         "f64_to_str" => format!(
             "intent_f64_to_str(({}))",
+            emit_expr(&args[0])
+        ),
+        "bool_to_str" => format!(
+            "intent_bool_to_str(({}))",
             emit_expr(&args[0])
         ),
         "option_unwrap_or" => format!(

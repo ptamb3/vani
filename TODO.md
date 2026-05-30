@@ -739,7 +739,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-30, after closure #360 — **Option<f64> ergonomics**: `option_unwrap_or_f64`, `option_is_some_f64`, `option_is_none_f64`. Parallels the #357 i64 triad on the existing `Enum_Option__f64` struct (already plumbed for `parse_float`'s return type since #298). Eliminates the per-example `match Option.Some(v) then v, Option.None then default` boilerplate users were hand-writing around `parse_float` results. C helpers emitted only when `Option__f64` is in the payload registry. LLVM mirrors via `@intent_option_f64_unwrap_or` using `extractvalue` + `select`. Auto-monomorphization walker extended so a bare `option_unwrap_or_f64(...)` call forces the `Option__f64` decl even without explicit `parse_float`. 3 new lib tests pin typecheck + helper-name emission + cross-type rejection. 1300 lib + 54 parity green. Closure #359 (f64_to_str) shipped immediately before.)
+## ⏳ Resume here (paused 2026-05-30, after closure #361 — **`bool_to_str(b: bool) -> OwnedStr`**. Rounds out the to_str family alongside `i64_to_str` (#358) and `f64_to_str` (#359). Returns a malloc'd copy of `"true"` / `"false"` for symmetry with the other to_str helpers. C helper lives in the existing `emit_intent_i64_to_str_c` emitter (`INTENT_UNUSED`-gated). LLVM mirrors via `define i8* @intent_bool_to_str(i1 %b)` using `select` between `@.fmt.true` / `@.fmt.false` + `memcpy` into a `malloc`'d buffer. Both backends byte-identical: `true / false / has_two=true`. 3 new lib tests pin typecheck + helper-name emission + non-bool rejection. 1303 lib + 54 parity green. Closure #360 (Option<f64> ergonomics) shipped immediately before.)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 
