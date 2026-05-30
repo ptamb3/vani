@@ -1,7 +1,7 @@
 # vāṇī (वाणी) — VANI
 
 <p align="center">
-  <img src="vani_logo.png" alt="vāṇī logo" width="240">
+  <img src="vani_logo1.png" alt="vāṇī logo1" width="480">
 </p>
 
 **Verbose Alternative Natural Interface — code like you speak.**
