@@ -15552,6 +15552,83 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn level4_container_clear_suite_typecheck_and_compile() {
+        // Closure #354: Deque/BinaryHeap/BloomFilter/Bst/Trie/
+        // SkipList each gain `_clear(mut ref c) -> i64`. The
+        // Trie/SkipList variants keep buffer capacity and reset
+        // to single-root/single-head state; the rest free
+        // everything.
+        let source = r#"
+            fn main() -> i64 {
+              let dq: Deque<i64> = deque_new();
+              let bh: BinaryHeap<i64> = binary_heap_new();
+              let bf: BloomFilter = bloom_filter_new(64, 2);
+              let bst: Bst<i64> = bst_new();
+              let t: Trie = trie_new();
+              let sl: SkipList = skiplist_new();
+              let _: i64 = deque_clear(mut ref dq);
+              let _: i64 = binary_heap_clear(mut ref bh);
+              let _: i64 = bloom_filter_clear(mut ref bf);
+              let _: i64 = bst_clear(mut ref bst);
+              let _: i64 = trie_clear(mut ref t);
+              let _: i64 = skiplist_clear(mut ref sl);
+              let _: i64 = dq.clear();
+              let _: i64 = bh.clear();
+              let _: i64 = bf.clear();
+              let _: i64 = bst.clear();
+              let _: i64 = t.clear();
+              let _: i64 = sl.clear();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("Level 4 clear suite must type-check");
+        compile_to_llvm(source).expect("Level 4 clear suite must compile to LLVM");
+    }
+
+    #[test]
+    fn level4_clear_emits_helpers_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let dq: Deque<i64> = deque_new();
+              let bh: BinaryHeap<i64> = binary_heap_new();
+              let bf: BloomFilter = bloom_filter_new(64, 2);
+              let bst: Bst<i64> = bst_new();
+              let t: Trie = trie_new();
+              let sl: SkipList = skiplist_new();
+              let _: i64 = dq.clear();
+              let _: i64 = bh.clear();
+              let _: i64 = bf.clear();
+              let _: i64 = bst.clear();
+              let _: i64 = t.clear();
+              let _: i64 = sl.clear();
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("Level 4 clear C compile");
+        for sym in [
+            "intent_deque_i64_clear",
+            "intent_binary_heap_i64_clear",
+            "intent_bloom_filter_clear",
+            "intent_bst_i64_clear",
+            "intent_trie_clear",
+            "intent_skiplist_i64_clear",
+        ] {
+            assert!(c.contains(sym), "C output must include {}", sym);
+        }
+        let ll = compile_to_llvm(source).expect("Level 4 clear LLVM compile");
+        for sym in [
+            "@intent_deque_i64_clear",
+            "@intent_binary_heap_i64_clear",
+            "@intent_bloom_filter_clear",
+            "@intent_bst_i64_clear",
+            "@intent_trie_clear",
+            "@intent_skiplist_i64_clear",
+        ] {
+            assert!(ll.contains(sym), "LLVM output must include {}", sym);
+        }
+    }
+
+    #[test]
     fn container_clear_suite_typecheck_and_compile() {
         // Closure #353: HashSet/HashMap/BTreeSet/BTreeMap each
         // gain a `_clear(mut ref c) -> i64` returning prior len.

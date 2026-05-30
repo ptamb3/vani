@@ -739,7 +739,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #353 — **Container `clear()` suite for HashSet / HashMap / BTreeSet / BTreeMap**. Each gains `_clear(mut ref c) -> i64` returning prior len; frees backing buffers, zeros all struct fields (including tombstones for hash-family), leaves the container reusable. Method sugar `.clear()` across all four. Both backends byte-identical. 3 new lib tests. 1283 lib + 54 parity green. Closure #352 (btree min/max) shipped immediately before. Lumped as the first of two container-clear closures — #354 next adds clear to BinaryHeap / Bst / SkipList / Trie / Deque / BloomFilter.)
+## ⏳ Resume here (paused 2026-05-29, after closure #354 — **Level 4 container `clear()` suite for Deque / BinaryHeap / BloomFilter / Bst / Trie / SkipList**. Completes the 2-closure container-clear lump started in #353. Three reset flavors: free-and-zero (Deque / BinaryHeap / Bst), `memset`-and-keep-config (BloomFilter), and keep-buffer-reset-to-sentinel-state (Trie / SkipList). LLVM declares an extern `@memset(i8*, i32, i64)` for the BloomFilter helper. Method sugar `.clear()` across all six. Both backends byte-identical. 2 new lib tests pin typecheck + helper-name emission. 1285 lib + 54 parity green. Closure #353 (HashSet/HashMap/BTreeSet/BTreeMap clear) shipped immediately before. **Every container in the language now has a `.clear()` method**, ready for buffer-reuse patterns.)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 

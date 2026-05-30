@@ -789,6 +789,17 @@ fn emit_intent_deque_helpers_c_body(out: &mut String, has_option_i64: bool) {
          \x20 d->len++;\n\
          \x20 return (int64_t)d->len;\n\
          }\n\
+         /* Closure #354: clear() — free the ring buffer, reset to\n\
+          * empty. Returns prior len. */\n\
+         static INTENT_UNUSED int64_t intent_deque_i64_clear(intent_deque_i64* d) {\n\
+         \x20 int64_t prior = (int64_t)d->len;\n\
+         \x20 if (d->data) free(d->data);\n\
+         \x20 d->data = (int64_t*)0;\n\
+         \x20 d->front = 0;\n\
+         \x20 d->len = 0;\n\
+         \x20 d->capacity = 0;\n\
+         \x20 return prior;\n\
+         }\n\
          static INTENT_UNUSED int64_t intent_deque_i64_len(const intent_deque_i64* d) {\n\
          \x20 return (int64_t)d->len;\n\
          }\n",
@@ -1777,6 +1788,16 @@ fn emit_intent_binary_heap_helpers_c_body(out: &mut String, has_option_i64: bool
          \x20 }\n\
          \x20 return (int64_t)h->len;\n\
          }\n\
+         /* Closure #354: clear() — free the heap buffer, reset to\n\
+          * empty. Returns prior len. */\n\
+         static INTENT_UNUSED int64_t intent_binary_heap_i64_clear(intent_binary_heap_i64* h) {\n\
+         \x20 int64_t prior = (int64_t)h->len;\n\
+         \x20 if (h->data) free(h->data);\n\
+         \x20 h->data = (int64_t*)0;\n\
+         \x20 h->len = 0;\n\
+         \x20 h->capacity = 0;\n\
+         \x20 return prior;\n\
+         }\n\
          static INTENT_UNUSED int64_t intent_binary_heap_i64_len(const intent_binary_heap_i64* h) {\n\
          \x20 return (int64_t)h->len;\n\
          }\n",
@@ -1917,6 +1938,19 @@ fn emit_intent_bloom_filter_helpers_c_body(out: &mut String) {
          \x20   if (!(bf->bits[pos >> 3] & (uint8_t)(1u << (pos & 7)))) return false;\n\
          \x20 }\n\
          \x20 return true;\n\
+         }\n\
+         /* Closure #354: clear() — zero the bit array via memset,\n\
+          * reset insert_count. Keeps num_bits/num_hashes config\n\
+          * (set at construction time) so the filter stays usable.\n\
+          * Returns prior insert_count. */\n\
+         static INTENT_UNUSED int64_t intent_bloom_filter_clear(intent_bloom_filter* bf) {\n\
+         \x20 int64_t prior = bf->insert_count;\n\
+         \x20 if (bf->bits && bf->num_bits > 0) {\n\
+         \x20   size_t bytes = (size_t)((bf->num_bits + 7) / 8);\n\
+         \x20   memset(bf->bits, 0, bytes);\n\
+         \x20 }\n\
+         \x20 bf->insert_count = 0;\n\
+         \x20 return prior;\n\
          }\n\
          static INTENT_UNUSED int64_t intent_bloom_filter_len(const intent_bloom_filter* bf) {\n\
          \x20 return bf->num_bits;\n\
@@ -2197,6 +2231,24 @@ fn emit_intent_bst_i64_helpers_c_body(out: &mut String, has_option_i64: bool) {
          \x20   }\n\
          \x20 }\n\
          \x20 return true;\n\
+         }\n\
+         /* Closure #354: clear() — free all four parallel arrays\n\
+          * (keys / left / right / heights), reset root=-1 and\n\
+          * len=0. Returns prior len. */\n\
+         static INTENT_UNUSED int64_t intent_bst_i64_clear(intent_bst_i64* b) {\n\
+         \x20 int64_t prior = b->len;\n\
+         \x20 if (b->keys) free(b->keys);\n\
+         \x20 if (b->left) free(b->left);\n\
+         \x20 if (b->right) free(b->right);\n\
+         \x20 if (b->heights) free(b->heights);\n\
+         \x20 b->keys = (int64_t*)0;\n\
+         \x20 b->left = (int32_t*)0;\n\
+         \x20 b->right = (int32_t*)0;\n\
+         \x20 b->heights = (uint8_t*)0;\n\
+         \x20 b->root = -1;\n\
+         \x20 b->len = 0;\n\
+         \x20 b->capacity = 0;\n\
+         \x20 return prior;\n\
          }\n\
          static INTENT_UNUSED int64_t intent_bst_i64_len(const intent_bst_i64* b) {\n\
          \x20 return b->len;\n\
@@ -3111,6 +3163,25 @@ fn emit_intent_trie_helpers_c_body(out: &mut String) {
          \x20 free(path_node); free(path_ch);\n\
          \x20 return true;\n\
          }\n\
+         /* Closure #354: clear() — reset the arena to the\n\
+          * single-root state without freeing the backing buffer.\n\
+          * Zeros the root node's is_end + children, resets\n\
+          * num_words / num_nodes / free_head / free_count.\n\
+          * Returns prior num_words. */\n\
+         static INTENT_UNUSED int64_t intent_trie_clear(intent_trie* t) {\n\
+         \x20 int64_t prior = t->num_words;\n\
+         \x20 if (t->capacity > 0 && t->children && t->is_end) {\n\
+         \x20   t->is_end[0] = 0;\n\
+         \x20   for (int c = 0; c < 256; c++) t->children[0 * 256 + c] = -1;\n\
+         \x20   t->num_nodes = 1;\n\
+         \x20 } else {\n\
+         \x20   t->num_nodes = 0;\n\
+         \x20 }\n\
+         \x20 t->num_words = 0;\n\
+         \x20 t->free_head = -1;\n\
+         \x20 t->free_count = 0;\n\
+         \x20 return prior;\n\
+         }\n\
          static INTENT_UNUSED int64_t intent_trie_len(const intent_trie* t) {\n\
          \x20 return t->num_words;\n\
          }\n\
@@ -3305,6 +3376,26 @@ fn emit_intent_skiplist_helpers_c_body(out: &mut String, has_option_i64: bool) {
          \x20 }\n\
          \x20 sl->num_keys--;\n\
          \x20 return true;\n\
+         }\n\
+         /* Closure #354: clear() — reset to the single-head-sentinel\n\
+          * state without freeing the backing buffers. Zeros the\n\
+          * head's forward pointers and tail_node, resets num_keys\n\
+          * to 0 and num_nodes to 1 (just the head). Returns prior\n\
+          * num_keys. */\n\
+         static INTENT_UNUSED int64_t intent_skiplist_i64_clear(intent_skiplist_i64* sl) {\n\
+         \x20 int64_t prior = sl->num_keys;\n\
+         \x20 if (sl->capacity > 0 && sl->forward && sl->node_levels) {\n\
+         \x20   for (int k = 0; k < INTENT_SKIPLIST_MAX_LEVEL; k++) {\n\
+         \x20     sl->forward[k] = -1;\n\
+         \x20   }\n\
+         \x20   sl->node_levels[0] = INTENT_SKIPLIST_MAX_LEVEL;\n\
+         \x20   sl->num_nodes = 1;\n\
+         \x20 } else {\n\
+         \x20   sl->num_nodes = 0;\n\
+         \x20 }\n\
+         \x20 sl->num_keys = 0;\n\
+         \x20 sl->tail_node = -1;\n\
+         \x20 return prior;\n\
          }\n\
          static INTENT_UNUSED int64_t intent_skiplist_i64_len(const intent_skiplist_i64* sl) {\n\
          \x20 return sl->num_keys;\n\
@@ -8889,6 +8980,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_binary_heap_i64_len({})",
             emit_expr(&args[0])
         ),
+        "binary_heap_clear" => format!(
+            "intent_binary_heap_i64_clear({})",
+            emit_expr(&args[0])
+        ),
         // Closure #327: BloomFilter dispatch.
         "bloom_filter_new" => format!(
             "intent_bloom_filter_new(({}), ({}))",
@@ -8913,6 +9008,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_bloom_filter_count({})",
             emit_expr(&args[0])
         ),
+        "bloom_filter_clear" => format!(
+            "intent_bloom_filter_clear({})",
+            emit_expr(&args[0])
+        ),
         // Closure #328: Bst dispatch.
         "bst_new" => "intent_bst_i64_new()".to_string(),
         "bst_insert" => format!(
@@ -8932,6 +9031,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         ),
         "bst_len" => format!(
             "intent_bst_i64_len({})",
+            emit_expr(&args[0])
+        ),
+        "bst_clear" => format!(
+            "intent_bst_i64_clear({})",
             emit_expr(&args[0])
         ),
         "bst_min" => format!(
@@ -9024,6 +9127,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        "trie_clear" => format!(
+            "intent_trie_clear({})",
+            emit_expr(&args[0])
+        ),
         "trie_len" => format!(
             "intent_trie_len({})",
             emit_expr(&args[0])
@@ -9051,6 +9158,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         ),
         "skiplist_len" => format!(
             "intent_skiplist_i64_len({})",
+            emit_expr(&args[0])
+        ),
+        "skiplist_clear" => format!(
+            "intent_skiplist_i64_clear({})",
             emit_expr(&args[0])
         ),
         "skiplist_min" => format!(
@@ -9144,6 +9255,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         ),
         "deque_len" => format!(
             "intent_deque_i64_len({})",
+            emit_expr(&args[0])
+        ),
+        "deque_clear" => format!(
+            "intent_deque_i64_clear({})",
             emit_expr(&args[0])
         ),
         "heap_push" | "heap_pop" | "heap_peek" | "heapify" => {

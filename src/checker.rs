@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "str_trim", "str_replace", "str_split", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_f64", "hash_str", "hash_combine", "siphash_i64", "siphash_str", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "hashset_new", "hashset_insert", "hashset_contains", "hashset_remove", "hashset_len", "hashset_clear", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_remove", "hashmap_len", "hashmap_clear", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreeset_range", "btreeset_min", "btreeset_max", "btreeset_clear", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "btreemap_range_keys", "btreemap_range_values", "btreemap_min_key", "btreemap_max_key", "btreemap_clear", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "graph_has_cycle", "graph_mst_kruskal", "graph_mst_prim", "graph_astar", "graph_topo_sort", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_delete", "trie_len", "trie_node_count", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_remove", "skiplist_len", "skiplist_min", "skiplist_max", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "str_trim", "str_replace", "str_split", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_f64", "hash_str", "hash_combine", "siphash_i64", "siphash_str", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "deque_clear", "hashset_new", "hashset_insert", "hashset_contains", "hashset_remove", "hashset_len", "hashset_clear", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_remove", "hashmap_len", "hashmap_clear", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreeset_range", "btreeset_min", "btreeset_max", "btreeset_clear", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "btreemap_range_keys", "btreemap_range_values", "btreemap_min_key", "btreemap_max_key", "btreemap_clear", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "binary_heap_clear", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bloom_filter_clear", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "bst_clear", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "graph_has_cycle", "graph_mst_kruskal", "graph_mst_prim", "graph_astar", "graph_topo_sort", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_delete", "trie_len", "trie_node_count", "trie_clear", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_remove", "skiplist_len", "skiplist_min", "skiplist_max", "skiplist_clear", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -10784,6 +10784,7 @@ fn check_expr(
                         "peek_back" => ("deque_peek_back", false),
                         "peek_front" => ("deque_peek_front", false),
                         "len" => ("deque_len", false),
+                        "clear" => ("deque_clear", true),
                         _ => ("", false),
                     },
                     Some(Type::UnionFind) => match method.as_str() {
@@ -10798,6 +10799,7 @@ fn check_expr(
                         "pop" => ("binary_heap_pop", true),
                         "peek" => ("binary_heap_peek", false),
                         "len" => ("binary_heap_len", false),
+                        "clear" => ("binary_heap_clear", true),
                         _ => ("", false),
                     },
                     Some(Type::BloomFilter) => match method.as_str() {
@@ -10805,6 +10807,7 @@ fn check_expr(
                         "contains" => ("bloom_filter_contains", false),
                         "len" => ("bloom_filter_len", false),
                         "count" => ("bloom_filter_count", false),
+                        "clear" => ("bloom_filter_clear", true),
                         _ => ("", false),
                     },
                     Some(Type::Bst(_)) => match method.as_str() {
@@ -10814,6 +10817,7 @@ fn check_expr(
                         "len" => ("bst_len", false),
                         "min" => ("bst_min", false),
                         "max" => ("bst_max", false),
+                        "clear" => ("bst_clear", true),
                         _ => ("", false),
                     },
                     Some(Type::Graph) => match method.as_str() {
@@ -10837,6 +10841,7 @@ fn check_expr(
                         "delete" => ("trie_delete", true),
                         "len" => ("trie_len", false),
                         "node_count" => ("trie_node_count", false),
+                        "clear" => ("trie_clear", true),
                         _ => ("", false),
                     },
                     Some(Type::SkipList) => match method.as_str() {
@@ -10846,6 +10851,7 @@ fn check_expr(
                         "len" => ("skiplist_len", false),
                         "min" => ("skiplist_min", false),
                         "max" => ("skiplist_max", false),
+                        "clear" => ("skiplist_clear", true),
                         _ => ("", false),
                     },
                     _ => ("", false),
@@ -13881,20 +13887,20 @@ fn check_call(
             );
         }
         "binary_heap_new" | "binary_heap_push" | "binary_heap_pop"
-        | "binary_heap_peek" | "binary_heap_len" => {
+        | "binary_heap_peek" | "binary_heap_len" | "binary_heap_clear" => {
             return check_binary_heap_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
         }
         "bloom_filter_new" | "bloom_filter_insert"
         | "bloom_filter_contains" | "bloom_filter_len"
-        | "bloom_filter_count" => {
+        | "bloom_filter_count" | "bloom_filter_clear" => {
             return check_bloom_filter_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
         }
         "bst_new" | "bst_insert" | "bst_contains" | "bst_remove"
-        | "bst_len" | "bst_min" | "bst_max" => {
+        | "bst_len" | "bst_min" | "bst_max" | "bst_clear" => {
             return check_bst_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
@@ -13910,14 +13916,14 @@ fn check_call(
         }
         "trie_new" | "trie_insert" | "trie_contains"
         | "trie_starts_with" | "trie_delete" | "trie_len"
-        | "trie_node_count" => {
+        | "trie_node_count" | "trie_clear" => {
             return check_trie_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
         }
         "skiplist_new" | "skiplist_insert" | "skiplist_contains"
         | "skiplist_remove" | "skiplist_len" | "skiplist_min"
-        | "skiplist_max" => {
+        | "skiplist_max" | "skiplist_clear" => {
             return check_skiplist_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
@@ -13977,7 +13983,8 @@ fn check_call(
         | "deque_pop_front"
         | "deque_peek_back"
         | "deque_peek_front"
-        | "deque_len" => {
+        | "deque_len"
+        | "deque_clear" => {
             return check_deque_builtin(
                 name, args, env, signatures, span, diagnostics,
             );
@@ -16717,7 +16724,7 @@ fn check_binary_heap_builtin(
 ) -> CheckedExpr {
     let want_args = match name {
         "binary_heap_new" => 0,
-        "binary_heap_len" | "binary_heap_pop" | "binary_heap_peek" => 1,
+        "binary_heap_len" | "binary_heap_pop" | "binary_heap_peek" | "binary_heap_clear" => 1,
         "binary_heap_push" => 2,
         _ => unreachable!(),
     };
@@ -16756,7 +16763,7 @@ fn check_binary_heap_builtin(
         );
     }
     let h = check_expr(&args[0], env, signatures, diagnostics);
-    let is_mut_op = matches!(name, "binary_heap_push" | "binary_heap_pop");
+    let is_mut_op = matches!(name, "binary_heap_push" | "binary_heap_pop" | "binary_heap_clear");
     let element_type = match h.ty() {
         Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
             Type::BinaryHeap(element) => (**element).clone(),
@@ -16853,7 +16860,7 @@ fn check_bloom_filter_builtin(
 ) -> CheckedExpr {
     let want_args = match name {
         "bloom_filter_new" => 2,
-        "bloom_filter_len" | "bloom_filter_count" => 1,
+        "bloom_filter_len" | "bloom_filter_count" | "bloom_filter_clear" => 1,
         "bloom_filter_insert" | "bloom_filter_contains" => 2,
         _ => unreachable!(),
     };
@@ -16900,7 +16907,7 @@ fn check_bloom_filter_builtin(
         );
     }
     let bf = check_expr(&args[0], env, signatures, diagnostics);
-    let is_mut_op = matches!(name, "bloom_filter_insert");
+    let is_mut_op = matches!(name, "bloom_filter_insert" | "bloom_filter_clear");
     match bf.ty() {
         Type::Ref(inner) | Type::RefMut(inner) => {
             if !matches!(**inner, Type::BloomFilter) {
@@ -16981,7 +16988,7 @@ fn check_bst_builtin(
 ) -> CheckedExpr {
     let want_args = match name {
         "bst_new" => 0,
-        "bst_len" | "bst_min" | "bst_max" => 1,
+        "bst_len" | "bst_min" | "bst_max" | "bst_clear" => 1,
         "bst_insert" | "bst_contains" | "bst_remove" => 2,
         _ => unreachable!(),
     };
@@ -17021,7 +17028,7 @@ fn check_bst_builtin(
         );
     }
     let bst = check_expr(&args[0], env, signatures, diagnostics);
-    let is_mut_op = matches!(name, "bst_insert" | "bst_remove");
+    let is_mut_op = matches!(name, "bst_insert" | "bst_remove" | "bst_clear");
     let element_type = match bst.ty() {
         Type::Ref(inner) | Type::RefMut(inner) => match &**inner {
             Type::Bst(element) => (**element).clone(),
@@ -17310,7 +17317,7 @@ fn check_trie_builtin(
 ) -> CheckedExpr {
     let want_args = match name {
         "trie_new" => 0,
-        "trie_len" | "trie_node_count" => 1,
+        "trie_len" | "trie_node_count" | "trie_clear" => 1,
         "trie_insert" | "trie_contains" | "trie_starts_with"
         | "trie_delete" => 2,
         _ => unreachable!(),
@@ -17349,7 +17356,7 @@ fn check_trie_builtin(
         );
     }
     let t = check_expr(&args[0], env, signatures, diagnostics);
-    let is_mut_op = matches!(name, "trie_insert" | "trie_delete");
+    let is_mut_op = matches!(name, "trie_insert" | "trie_delete" | "trie_clear");
     match t.ty() {
         Type::Ref(inner) | Type::RefMut(inner) => {
             if !matches!(**inner, Type::Trie) {
@@ -17428,7 +17435,7 @@ fn check_skiplist_builtin(
 ) -> CheckedExpr {
     let want_args = match name {
         "skiplist_new" => 0,
-        "skiplist_len" | "skiplist_min" | "skiplist_max" => 1,
+        "skiplist_len" | "skiplist_min" | "skiplist_max" | "skiplist_clear" => 1,
         "skiplist_insert" | "skiplist_contains"
         | "skiplist_remove" => 2,
         _ => unreachable!(),
@@ -17470,7 +17477,7 @@ fn check_skiplist_builtin(
         );
     }
     let sl = check_expr(&args[0], env, signatures, diagnostics);
-    let is_mut_op = matches!(name, "skiplist_insert" | "skiplist_remove");
+    let is_mut_op = matches!(name, "skiplist_insert" | "skiplist_remove" | "skiplist_clear");
     match sl.ty() {
         Type::Ref(inner) | Type::RefMut(inner) => {
             if !matches!(**inner, Type::SkipList) {
@@ -18247,7 +18254,7 @@ fn check_deque_builtin(
     let d = check_expr(&args[0], env, signatures, diagnostics);
     let is_mut_op = matches!(
         name,
-        "deque_push_back" | "deque_push_front" | "deque_pop_back" | "deque_pop_front"
+        "deque_push_back" | "deque_push_front" | "deque_pop_back" | "deque_pop_front" | "deque_clear"
     );
     let element_type = match d.ty() {
         Type::Ref(inner) | Type::RefMut(inner) => match &**inner {

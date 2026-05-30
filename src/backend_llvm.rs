@@ -476,6 +476,7 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare i8* @realloc(i8*, i64)\n");
     out.push_str("declare i8* @memcpy(i8*, i8*, i64)\n");
     out.push_str("declare i8* @memmove(i8*, i8*, i64)\n");
+    out.push_str("declare i8* @memset(i8*, i32, i64)\n");
     out.push_str("declare i32 @strcmp(i8*, i8*)\n");
     out.push_str("declare i32 @strncmp(i8*, i8*, i64)\n");
     out.push_str("declare i64 @strlen(i8*)\n");
@@ -5452,6 +5453,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            if name == "binary_heap_clear" {
+                let h = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_binary_heap_i64_clear(%intent_binary_heap_i64* {})\n",
+                    dest, h
+                ));
+                return dest;
+            }
             // BloomFilter builtins (closure #327, Level 4 #6).
             if name == "bloom_filter_new" {
                 let nb = emit_expr(&args[0], ctx, out);
@@ -5501,6 +5511,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            if name == "bloom_filter_clear" {
+                let bf = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_bloom_filter_clear(%intent_bloom_filter* {})\n",
+                    dest, bf
+                ));
+                return dest;
+            }
             // Bst<i64> builtins (closure #328, Level 4 #3).
             if name == "bst_new" {
                 let dest = ctx.fresh_tmp();
@@ -5545,6 +5564,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 let dest = ctx.fresh_tmp();
                 out.push_str(&format!(
                     "  {} = call i64 @intent_bst_i64_len(%intent_bst_i64* {})\n",
+                    dest, b
+                ));
+                return dest;
+            }
+            if name == "bst_clear" {
+                let b = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_bst_i64_clear(%intent_bst_i64* {})\n",
                     dest, b
                 ));
                 return dest;
@@ -5681,7 +5709,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
-            if name == "trie_len" || name == "trie_node_count" {
+            if name == "trie_len" || name == "trie_node_count" || name == "trie_clear" {
                 let t = emit_expr(&args[0], ctx, out);
                 let dest = ctx.fresh_tmp();
                 let suffix = name.strip_prefix("trie_").unwrap();
@@ -5716,6 +5744,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 let dest = ctx.fresh_tmp();
                 out.push_str(&format!(
                     "  {} = call i64 @intent_skiplist_i64_len(%intent_skiplist_i64* {})\n",
+                    dest, sl
+                ));
+                return dest;
+            }
+            if name == "skiplist_clear" {
+                let sl = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_skiplist_i64_clear(%intent_skiplist_i64* {})\n",
                     dest, sl
                 ));
                 return dest;
@@ -5797,6 +5834,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 let dest = ctx.fresh_tmp();
                 out.push_str(&format!(
                     "  {} = call i64 @intent_deque_i64_len(%intent_deque_i64* {})\n",
+                    dest, d
+                ));
+                return dest;
+            }
+            if name == "deque_clear" {
+                let d = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_deque_i64_clear(%intent_deque_i64* {})\n",
                     dest, d
                 ));
                 return dest;
@@ -10397,6 +10443,25 @@ fn emit_intent_binary_heap_i64_helpers_llvm(out: &mut String, has_option_i64: bo
              }\n\n",
         );
     }
+    // Closure #354: clear() — free the heap buffer, reset to empty.
+    out.push_str("define i64 @intent_binary_heap_i64_clear(%intent_binary_heap_i64* %h) {\n");
+    out.push_str("  %bhc_lp = getelementptr %intent_binary_heap_i64, %intent_binary_heap_i64* %h, i32 0, i32 1\n");
+    out.push_str("  %bhc_prior = load i64, i64* %bhc_lp\n");
+    out.push_str("  %bhc_dp = getelementptr %intent_binary_heap_i64, %intent_binary_heap_i64* %h, i32 0, i32 0\n");
+    out.push_str("  %bhc_data = load i64*, i64** %bhc_dp\n");
+    out.push_str("  %bhc_null = icmp eq i64* %bhc_data, null\n");
+    out.push_str("  br i1 %bhc_null, label %bhc_done, label %bhc_free\n");
+    out.push_str("bhc_free:\n");
+    out.push_str("  %bhc_d_i8 = bitcast i64* %bhc_data to i8*\n");
+    out.push_str("  call void @free(i8* %bhc_d_i8)\n");
+    out.push_str("  br label %bhc_done\n");
+    out.push_str("bhc_done:\n");
+    out.push_str("  store i64* null, i64** %bhc_dp\n");
+    out.push_str("  %bhc_cp = getelementptr %intent_binary_heap_i64, %intent_binary_heap_i64* %h, i32 0, i32 2\n");
+    out.push_str("  store i64 0, i64* %bhc_lp\n");
+    out.push_str("  store i64 0, i64* %bhc_cp\n");
+    out.push_str("  ret i64 %bhc_prior\n");
+    out.push_str("}\n\n");
 }
 
 /// Data-structures roadmap Level 4 #6 — BloomFilter runtime
@@ -10553,6 +10618,32 @@ fn emit_intent_bloom_filter_helpers_llvm(out: &mut String) {
          \x20 %icp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 3\n\
          \x20 %ic = load i64, i64* %icp\n\
          \x20 ret i64 %ic\n\
+         }\n\
+         ; Closure #354: clear() — zero the bit array via\n\
+         ; memset(0), reset insert_count. Keeps num_bits and\n\
+         ; num_hashes config so the filter stays usable. Returns\n\
+         ; prior insert_count. memset declared in the preamble.\n\
+         define i64 @intent_bloom_filter_clear(%intent_bloom_filter* %bf) {\n\
+         \x20 %bfc_icp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 3\n\
+         \x20 %bfc_prior = load i64, i64* %bfc_icp\n\
+         \x20 %bfc_bp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 0\n\
+         \x20 %bfc_nbp = getelementptr %intent_bloom_filter, %intent_bloom_filter* %bf, i32 0, i32 1\n\
+         \x20 %bfc_bits = load i8*, i8** %bfc_bp\n\
+         \x20 %bfc_nb = load i64, i64* %bfc_nbp\n\
+         \x20 %bfc_bits_null = icmp eq i8* %bfc_bits, null\n\
+         \x20 br i1 %bfc_bits_null, label %bfc_done, label %bfc_check_nb\n\
+         bfc_check_nb:\n\
+         \x20 %bfc_nb_pos = icmp sgt i64 %bfc_nb, 0\n\
+         \x20 br i1 %bfc_nb_pos, label %bfc_do_clear, label %bfc_done\n\
+         bfc_do_clear:\n\
+         \x20 ; bytes = (num_bits + 7) / 8\n\
+         \x20 %bfc_nb7 = add i64 %bfc_nb, 7\n\
+         \x20 %bfc_bytes = lshr i64 %bfc_nb7, 3\n\
+         \x20 %_bfc_m = call i8* @memset(i8* %bfc_bits, i32 0, i64 %bfc_bytes)\n\
+         \x20 br label %bfc_done\n\
+         bfc_done:\n\
+         \x20 store i64 0, i64* %bfc_icp\n\
+         \x20 ret i64 %bfc_prior\n\
          }\n\n",
     );
 }
@@ -11323,6 +11414,58 @@ fn emit_intent_bst_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
              }\n\n",
         );
     }
+    // Closure #354: clear() — free all 4 parallel arrays, reset
+    // root=-1, len=0, capacity=0.
+    out.push_str("define i64 @intent_bst_i64_clear(%intent_bst_i64* %b) {\n");
+    out.push_str("  %bstc_lp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 4\n");
+    out.push_str("  %bstc_prior = load i64, i64* %bstc_lp\n");
+    out.push_str("  %bstc_kpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 0\n");
+    out.push_str("  %bstc_lpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 1\n");
+    out.push_str("  %bstc_rpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 2\n");
+    out.push_str("  %bstc_hpp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 6\n");
+    out.push_str("  %bstc_keys = load i64*, i64** %bstc_kpp\n");
+    out.push_str("  %bstc_left = load i32*, i32** %bstc_lpp\n");
+    out.push_str("  %bstc_right = load i32*, i32** %bstc_rpp\n");
+    out.push_str("  %bstc_heights = load i8*, i8** %bstc_hpp\n");
+    // Free each, with null check
+    out.push_str("  %bstc_k_null = icmp eq i64* %bstc_keys, null\n");
+    out.push_str("  br i1 %bstc_k_null, label %bstc_l, label %bstc_fk\n");
+    out.push_str("bstc_fk:\n");
+    out.push_str("  %bstc_k_i8 = bitcast i64* %bstc_keys to i8*\n");
+    out.push_str("  call void @free(i8* %bstc_k_i8)\n");
+    out.push_str("  br label %bstc_l\n");
+    out.push_str("bstc_l:\n");
+    out.push_str("  %bstc_l_null = icmp eq i32* %bstc_left, null\n");
+    out.push_str("  br i1 %bstc_l_null, label %bstc_r, label %bstc_fl\n");
+    out.push_str("bstc_fl:\n");
+    out.push_str("  %bstc_l_i8 = bitcast i32* %bstc_left to i8*\n");
+    out.push_str("  call void @free(i8* %bstc_l_i8)\n");
+    out.push_str("  br label %bstc_r\n");
+    out.push_str("bstc_r:\n");
+    out.push_str("  %bstc_r_null = icmp eq i32* %bstc_right, null\n");
+    out.push_str("  br i1 %bstc_r_null, label %bstc_h, label %bstc_fr\n");
+    out.push_str("bstc_fr:\n");
+    out.push_str("  %bstc_r_i8 = bitcast i32* %bstc_right to i8*\n");
+    out.push_str("  call void @free(i8* %bstc_r_i8)\n");
+    out.push_str("  br label %bstc_h\n");
+    out.push_str("bstc_h:\n");
+    out.push_str("  %bstc_h_null = icmp eq i8* %bstc_heights, null\n");
+    out.push_str("  br i1 %bstc_h_null, label %bstc_done, label %bstc_fh\n");
+    out.push_str("bstc_fh:\n");
+    out.push_str("  call void @free(i8* %bstc_heights)\n");
+    out.push_str("  br label %bstc_done\n");
+    out.push_str("bstc_done:\n");
+    out.push_str("  store i64* null, i64** %bstc_kpp\n");
+    out.push_str("  store i32* null, i32** %bstc_lpp\n");
+    out.push_str("  store i32* null, i32** %bstc_rpp\n");
+    out.push_str("  store i8* null, i8** %bstc_hpp\n");
+    out.push_str("  %bstc_root_p = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 3\n");
+    out.push_str("  %bstc_cp = getelementptr %intent_bst_i64, %intent_bst_i64* %b, i32 0, i32 5\n");
+    out.push_str("  store i64 -1, i64* %bstc_root_p\n");
+    out.push_str("  store i64 0, i64* %bstc_lp\n");
+    out.push_str("  store i64 0, i64* %bstc_cp\n");
+    out.push_str("  ret i64 %bstc_prior\n");
+    out.push_str("}\n\n");
 }
 
 /// Data-structures roadmap Level 4 #5 — Graph runtime helpers
@@ -13647,6 +13790,56 @@ fn emit_intent_trie_helpers_llvm(out: &mut String) {
          \x20 %fc_nc = load i64, i64* %fcp_nc\n\
          \x20 %live = sub i64 %nn_nc, %fc_nc\n\
          \x20 ret i64 %live\n\
+         }\n\
+         ; Closure #354: clear() — keep buffers, reset to single-\n\
+         ; root state. Zero root's is_end + 256 children, reset\n\
+         ; num_words/num_nodes/free_head/free_count. Returns\n\
+         ; prior num_words.\n\
+         define i64 @intent_trie_clear(%intent_trie* %t) {\n\
+         \x20 %trc_nwp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 4\n\
+         \x20 %trc_prior = load i64, i64* %trc_nwp\n\
+         \x20 %trc_capp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 3\n\
+         \x20 %trc_cap = load i64, i64* %trc_capp\n\
+         \x20 %trc_cap_zero = icmp eq i64 %trc_cap, 0\n\
+         \x20 br i1 %trc_cap_zero, label %trc_finalize, label %trc_reset_root\n\
+         trc_reset_root:\n\
+         \x20 %trc_cpp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 0\n\
+         \x20 %trc_epp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 1\n\
+         \x20 %trc_c_arr = load i32*, i32** %trc_cpp\n\
+         \x20 %trc_e_arr = load i8*, i8** %trc_epp\n\
+         \x20 %trc_e_slot = getelementptr i8, i8* %trc_e_arr, i64 0\n\
+         \x20 store i8 0, i8* %trc_e_slot\n\
+         \x20 %trc_k_p = alloca i64\n\
+         \x20 store i64 0, i64* %trc_k_p\n\
+         \x20 br label %trc_init_loop\n\
+         trc_init_loop:\n\
+         \x20 %trc_k = load i64, i64* %trc_k_p\n\
+         \x20 %trc_k_done = icmp sge i64 %trc_k, 256\n\
+         \x20 br i1 %trc_k_done, label %trc_finalize_nn1, label %trc_init_body\n\
+         trc_init_body:\n\
+         \x20 %trc_slot = getelementptr i32, i32* %trc_c_arr, i64 %trc_k\n\
+         \x20 store i32 -1, i32* %trc_slot\n\
+         \x20 %trc_k_inc = add i64 %trc_k, 1\n\
+         \x20 store i64 %trc_k_inc, i64* %trc_k_p\n\
+         \x20 br label %trc_init_loop\n\
+         trc_finalize_nn1:\n\
+         \x20 %trc_nnp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 2\n\
+         \x20 store i64 1, i64* %trc_nnp\n\
+         \x20 br label %trc_finalize\n\
+         trc_finalize:\n\
+         \x20 %trc_nnp2 = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 2\n\
+         \x20 %trc_was_zero = icmp eq i64 %trc_cap, 0\n\
+         \x20 br i1 %trc_was_zero, label %trc_zero_nodes, label %trc_skip_zero\n\
+         trc_zero_nodes:\n\
+         \x20 store i64 0, i64* %trc_nnp2\n\
+         \x20 br label %trc_skip_zero\n\
+         trc_skip_zero:\n\
+         \x20 store i64 0, i64* %trc_nwp\n\
+         \x20 %trc_fhp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 5\n\
+         \x20 %trc_fcp = getelementptr %intent_trie, %intent_trie* %t, i32 0, i32 6\n\
+         \x20 store i64 -1, i64* %trc_fhp\n\
+         \x20 store i64 0, i64* %trc_fcp\n\
+         \x20 ret i64 %trc_prior\n\
          }\n\n",
     );
 }
@@ -14188,6 +14381,53 @@ fn emit_intent_skiplist_i64_helpers_llvm(out: &mut String, has_option_i64: bool)
              }\n\n",
         );
     }
+    // Closure #354: clear() — keep buffers, reset to single-head-
+    // sentinel state. Zero head's forward[0..8], reset
+    // num_keys=0, tail_node=-1, num_nodes=1. Returns prior
+    // num_keys.
+    out.push_str("define i64 @intent_skiplist_i64_clear(%intent_skiplist_i64* %sl) {\n");
+    out.push_str("  %slc_nkp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 6\n");
+    out.push_str("  %slc_prior = load i64, i64* %slc_nkp\n");
+    out.push_str("  %slc_capp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 5\n");
+    out.push_str("  %slc_cap = load i64, i64* %slc_capp\n");
+    out.push_str("  %slc_cap_zero = icmp eq i64 %slc_cap, 0\n");
+    out.push_str("  br i1 %slc_cap_zero, label %slc_finalize, label %slc_reset_head\n");
+    out.push_str("slc_reset_head:\n");
+    out.push_str("  %slc_fp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 1\n");
+    out.push_str("  %slc_nlp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 2\n");
+    out.push_str("  %slc_fwd = load i32*, i32** %slc_fp\n");
+    out.push_str("  %slc_nl = load i32*, i32** %slc_nlp\n");
+    out.push_str("  %slc_k_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %slc_k_p\n");
+    out.push_str("  br label %slc_fwd_loop\n");
+    out.push_str("slc_fwd_loop:\n");
+    out.push_str("  %slc_k = load i64, i64* %slc_k_p\n");
+    out.push_str("  %slc_k_done = icmp sge i64 %slc_k, 8\n");
+    out.push_str("  br i1 %slc_k_done, label %slc_nl_set, label %slc_fwd_body\n");
+    out.push_str("slc_fwd_body:\n");
+    out.push_str("  %slc_slot = getelementptr i32, i32* %slc_fwd, i64 %slc_k\n");
+    out.push_str("  store i32 -1, i32* %slc_slot\n");
+    out.push_str("  %slc_k_inc = add i64 %slc_k, 1\n");
+    out.push_str("  store i64 %slc_k_inc, i64* %slc_k_p\n");
+    out.push_str("  br label %slc_fwd_loop\n");
+    out.push_str("slc_nl_set:\n");
+    out.push_str("  store i32 8, i32* %slc_nl\n");
+    out.push_str("  %slc_nnp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 4\n");
+    out.push_str("  store i64 1, i64* %slc_nnp\n");
+    out.push_str("  br label %slc_finalize\n");
+    out.push_str("slc_finalize:\n");
+    out.push_str("  %slc_was_zero = icmp eq i64 %slc_cap, 0\n");
+    out.push_str("  br i1 %slc_was_zero, label %slc_zero_nodes, label %slc_skip_zero\n");
+    out.push_str("slc_zero_nodes:\n");
+    out.push_str("  %slc_nnp2 = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 4\n");
+    out.push_str("  store i64 0, i64* %slc_nnp2\n");
+    out.push_str("  br label %slc_skip_zero\n");
+    out.push_str("slc_skip_zero:\n");
+    out.push_str("  store i64 0, i64* %slc_nkp\n");
+    out.push_str("  %slc_tp = getelementptr %intent_skiplist_i64, %intent_skiplist_i64* %sl, i32 0, i32 7\n");
+    out.push_str("  store i64 -1, i64* %slc_tp\n");
+    out.push_str("  ret i64 %slc_prior\n");
+    out.push_str("}\n\n");
 }
 
 /// Data-structures roadmap Level 2 — HashSet<i64> runtime
@@ -14814,6 +15054,28 @@ fn emit_intent_deque_i64_helpers_llvm(out: &mut String, has_option_i64: bool) {
              }\n\n",
         );
     }
+    // Closure #354: clear() — free the ring buffer, zero front,
+    // len, capacity. Returns prior len.
+    out.push_str("define i64 @intent_deque_i64_clear(%intent_deque_i64* %d) {\n");
+    out.push_str("  %dqc_lp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 2\n");
+    out.push_str("  %dqc_prior = load i64, i64* %dqc_lp\n");
+    out.push_str("  %dqc_dp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 0\n");
+    out.push_str("  %dqc_data = load i64*, i64** %dqc_dp\n");
+    out.push_str("  %dqc_null = icmp eq i64* %dqc_data, null\n");
+    out.push_str("  br i1 %dqc_null, label %dqc_done, label %dqc_free\n");
+    out.push_str("dqc_free:\n");
+    out.push_str("  %dqc_d_i8 = bitcast i64* %dqc_data to i8*\n");
+    out.push_str("  call void @free(i8* %dqc_d_i8)\n");
+    out.push_str("  br label %dqc_done\n");
+    out.push_str("dqc_done:\n");
+    out.push_str("  store i64* null, i64** %dqc_dp\n");
+    out.push_str("  %dqc_fp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 1\n");
+    out.push_str("  %dqc_cp = getelementptr %intent_deque_i64, %intent_deque_i64* %d, i32 0, i32 3\n");
+    out.push_str("  store i64 0, i64* %dqc_fp\n");
+    out.push_str("  store i64 0, i64* %dqc_lp\n");
+    out.push_str("  store i64 0, i64* %dqc_cp\n");
+    out.push_str("  ret i64 %dqc_prior\n");
+    out.push_str("}\n\n");
 }
 
 /// Data-structures roadmap: shared array sort/search helpers
