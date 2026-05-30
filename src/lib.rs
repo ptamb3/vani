@@ -15552,6 +15552,43 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_to_str_typecheck_and_compile() {
+        // Closure #358: i64_to_str(x: i64) -> OwnedStr — uses
+        // snprintf with the existing %lld format global.
+        let source = r#"
+            fn main() -> i64 {
+              let s: OwnedStr = i64_to_str(42);
+              let s2: OwnedStr = i64_to_str(0 - 7);
+              let combined: OwnedStr = "v=" + i64_to_str(99);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("i64_to_str must type-check");
+        compile_to_llvm(source).expect("i64_to_str must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_to_str_emits_helper_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: OwnedStr = i64_to_str(0);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("i64_to_str C");
+        assert!(
+            c.contains("intent_i64_to_str") && c.contains("snprintf"),
+            "C output must include the intent_i64_to_str helper"
+        );
+        let ll = compile_to_llvm(source).expect("i64_to_str LLVM");
+        assert!(
+            ll.contains("define i8* @intent_i64_to_str(")
+                && ll.contains("declare i32 @snprintf("),
+            "LLVM output must include the i64_to_str define + snprintf decl"
+        );
+    }
+
+    #[test]
     fn option_i64_ergonomics_typecheck_and_compile() {
         // Closure #357: option_unwrap_or / option_is_some /
         // option_is_none — eliminate the per-example match

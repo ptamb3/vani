@@ -670,6 +670,7 @@ pub fn emit_c(program: &TypedProgram) -> String {
     emit_intent_str_concat_c(&mut out);
     emit_intent_str_trim_c(&mut out);
     emit_intent_str_replace_c(&mut out);
+    emit_intent_i64_to_str_c(&mut out);
     emit_concurrency_runtime_helpers(&mut out, &body, &channel_specs);
     emit_intent_rng_helpers_c(&mut out, &body);
     emit_intent_hash_helpers_c(&mut out, &body);
@@ -4479,6 +4480,26 @@ pub(crate) fn emit_intent_str_concat_c(out: &mut String) {
 /// present, which the existing Vec-element walker auto-emits
 /// when the program uses `Vec<OwnedStr>` anywhere — including
 /// at this function's return type.
+/// Closure #358: numeric-to-string conversion.
+/// `i64_to_str(x: i64) -> OwnedStr` produces the decimal
+/// representation of x as a freshly-malloc'd char*. Uses
+/// `snprintf` for the format work; max representable length
+/// (incl sign + NUL) is 21 bytes.
+pub(crate) fn emit_intent_i64_to_str_c(out: &mut String) {
+    out.push_str(
+        "static char* intent_i64_to_str(int64_t x) INTENT_UNUSED;\n\
+         static char* intent_i64_to_str(int64_t x) {\n\
+         \x20 char buf[21];\n\
+         \x20 int n = snprintf(buf, sizeof(buf), \"%lld\", (long long)x);\n\
+         \x20 if (n < 0) abort();\n\
+         \x20 char* out = (char*)malloc((size_t)n + 1);\n\
+         \x20 if (!out) abort();\n\
+         \x20 memcpy(out, buf, (size_t)n + 1);\n\
+         \x20 return out;\n\
+         }\n\n",
+    );
+}
+
 /// Closure #357: Option<i64> ergonomic helpers — eliminate
 /// the per-example `unwrap_or` boilerplate users were
 /// hand-writing.
@@ -8688,6 +8709,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 _ => unreachable!("sort_by() arg 0 must be (mut ref) Vec<_> or [T; N]"),
             }
         }
+        "i64_to_str" => format!(
+            "intent_i64_to_str(({}))",
+            emit_expr(&args[0])
+        ),
         "option_unwrap_or" => format!(
             "intent_option_i64_unwrap_or(({}), ({}))",
             emit_expr(&args[0]),

@@ -739,7 +739,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-30, after closure #357 — **`Option<i64>` ergonomics: `option_unwrap_or` / `option_is_some` / `option_is_none`**. Eliminates the per-example `unwrap_or` boilerplate users were hand-writing. `option_unwrap_or(o, def)` returns the payload when `Some(_)`, else `def`. `option_is_some`/`option_is_none` return bool. All operate directly on the `Enum_Option__i64` tag + payload fields. Gated on Option__i64 being in the enum payload registry; auto-mono walker extended so calling these registers Option<i64>. 2 new lib tests. 1292 lib + 54 parity green. Closure #356 (Vec utility lump) shipped immediately before.)
+## ⏳ Resume here (paused 2026-05-30, after closure #358 — **`i64_to_str(x: i64) -> OwnedStr`**. Closes the parse / stringify round-trip alongside the existing `parse_int` / `parse_float`. C uses `snprintf(buf, 21, "%lld", x)`; LLVM mirrors via a new `declare i32 @snprintf(i8*, i64, i8*, ...)` extern + the existing `@.fmt.lld` format global. Both backends byte-identical, including the `"label: " + i64_to_str(n)` concat pattern. 2 new lib tests. 1294 lib + 54 parity green. Closure #357 (Option<i64> ergonomics) shipped immediately before.)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 

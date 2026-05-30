@@ -467,6 +467,7 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
 
 
     out.push_str("declare i32 @printf(i8*, ...)\n");
+    out.push_str("declare i32 @snprintf(i8*, i64, i8*, ...)\n");
     out.push_str("declare i32 @dprintf(i32, i8*, ...)\n");
     out.push_str("declare i32 @putchar(i32)\n");
     out.push_str("declare void @abort() noreturn\n");
@@ -691,6 +692,7 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     emit_intent_str_concat_definition(&mut out);
     emit_intent_str_trim_definition(&mut out);
     emit_intent_str_replace_definition(&mut out);
+    emit_intent_i64_to_str_definition(&mut out);
     // Note: emit_intent_str_split_definition (closure #350) is
     // emitted later, after the Vec<OwnedStr> typedef has been
     // declared, since the helper's signature references
@@ -4729,6 +4731,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
                 return "0".to_string();
             }
+            // Closure #358: i64_to_str.
+            if name == "i64_to_str" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i8* @intent_i64_to_str(i64 {})\n",
+                    dest, x
+                ));
+                return dest;
+            }
             // Closure #357: Option<i64> ergonomics.
             if name == "option_unwrap_or" {
                 let o = emit_expr(&args[0], ctx, out);
@@ -8237,6 +8249,24 @@ pub(crate) fn emit_intent_siphash_definitions(out: &mut String) {
     out.push_str("  %n = call i64 @strlen(i8* %s)\n");
     out.push_str("  %r = call i64 @intent_siphash24_bytes(i64 %k0, i64 %k1, i8* %s, i64 %n)\n");
     out.push_str("  ret i64 %r\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #358: emit `@intent_i64_to_str(x: i64) -> i8*`.
+/// Uses the existing `@.fmt.lld` global format string and a
+/// declared `@snprintf` extern. The output is a freshly-
+/// malloc'd OwnedStr with the decimal representation of x.
+pub(crate) fn emit_intent_i64_to_str_definition(out: &mut String) {
+    out.push_str("define i8* @intent_i64_to_str(i64 %x) {\n");
+    out.push_str("  %its_buf = alloca [21 x i8]\n");
+    out.push_str("  %its_buf_p = getelementptr [21 x i8], [21 x i8]* %its_buf, i64 0, i64 0\n");
+    out.push_str("  %its_fmt = getelementptr [5 x i8], [5 x i8]* @.fmt.lld, i64 0, i64 0\n");
+    out.push_str("  %its_n = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %its_buf_p, i64 21, i8* %its_fmt, i64 %x)\n");
+    out.push_str("  %its_n64 = sext i32 %its_n to i64\n");
+    out.push_str("  %its_total = add i64 %its_n64, 1\n");
+    out.push_str("  %its_out = call i8* @malloc(i64 %its_total)\n");
+    out.push_str("  %_its_c = call i8* @memcpy(i8* %its_out, i8* %its_buf_p, i64 %its_total)\n");
+    out.push_str("  ret i8* %its_out\n");
     out.push_str("}\n\n");
 }
 
