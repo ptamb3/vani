@@ -886,6 +886,10 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         emit_intent_str_split_definition(&mut out);
         emit_intent_str_join_definition(&mut out);
     }
+    // Closure #380: integer-math helpers (i64_gcd / i64_lcm /
+    // i64_pow). Always-on; unused defines get dropped by the
+    // LLVM optimizer.
+    emit_intent_i64_math_definitions(&mut out);
 
     // Closure #356: emit Vec<i64> utility helpers (vec_range /
     // vec_repeat / vec_extend / vec_concat) after Vec typedefs
@@ -6305,6 +6309,25 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #380: integer math helpers — call the
+            // shared @intent_i64_<op> defs emitted in the
+            // preamble (gated below).
+            if matches!(name.as_str(), "i64_gcd" | "i64_lcm" | "i64_pow") {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                let helper = match name.as_str() {
+                    "i64_gcd" => "intent_i64_gcd",
+                    "i64_lcm" => "intent_i64_lcm",
+                    "i64_pow" => "intent_i64_pow",
+                    _ => unreachable!(),
+                };
+                out.push_str(&format!(
+                    "  {} = call i64 @{}(i64 {}, i64 {})\n",
+                    dest, helper, a, b
+                ));
+                return dest;
+            }
             if name == "f64_trunc_to_i64" {
                 // LLVM's `fptosi` instruction performs a
                 // truncating conversion toward zero, matching
@@ -9166,6 +9189,101 @@ pub(crate) fn emit_intent_vec_int64_utility_definitions(out: &mut String) {
     out.push_str("  %vu_r1 = insertvalue %intent_vec_i64 %vu_r0, i64 %vu_out_len, 1\n");
     out.push_str("  %vu_r2 = insertvalue %intent_vec_i64 %vu_r1, i64 %vu_len, 2\n");
     out.push_str("  ret %intent_vec_i64 %vu_r2\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #380: emit i64-math helpers — gcd / lcm / pow. All
+/// three are pure i64-only with no external dependency, so we
+/// can emit them unconditionally and let LLVM DCE drop unused
+/// ones.
+pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
+    // i64 abs via select.
+    // gcd(a, b): Euclidean iteration after absolutizing both.
+    out.push_str("define i64 @intent_i64_gcd(i64 %a, i64 %b) {\n");
+    out.push_str("  %g_a_neg = icmp slt i64 %a, 0\n");
+    out.push_str("  %g_a_n = sub i64 0, %a\n");
+    out.push_str("  %g_a = select i1 %g_a_neg, i64 %g_a_n, i64 %a\n");
+    out.push_str("  %g_b_neg = icmp slt i64 %b, 0\n");
+    out.push_str("  %g_b_n = sub i64 0, %b\n");
+    out.push_str("  %g_b = select i1 %g_b_neg, i64 %g_b_n, i64 %b\n");
+    out.push_str("  %g_a_p = alloca i64\n");
+    out.push_str("  %g_b_p = alloca i64\n");
+    out.push_str("  store i64 %g_a, i64* %g_a_p\n");
+    out.push_str("  store i64 %g_b, i64* %g_b_p\n");
+    out.push_str("  br label %g_head\n");
+    out.push_str("g_head:\n");
+    out.push_str("  %g_b_cur = load i64, i64* %g_b_p\n");
+    out.push_str("  %g_done = icmp eq i64 %g_b_cur, 0\n");
+    out.push_str("  br i1 %g_done, label %g_fin, label %g_step\n");
+    out.push_str("g_step:\n");
+    out.push_str("  %g_a_cur = load i64, i64* %g_a_p\n");
+    out.push_str("  %g_t = srem i64 %g_a_cur, %g_b_cur\n");
+    out.push_str("  store i64 %g_b_cur, i64* %g_a_p\n");
+    out.push_str("  store i64 %g_t, i64* %g_b_p\n");
+    out.push_str("  br label %g_head\n");
+    out.push_str("g_fin:\n");
+    out.push_str("  %g_r = load i64, i64* %g_a_p\n");
+    out.push_str("  ret i64 %g_r\n");
+    out.push_str("}\n\n");
+
+    // lcm(a, b) = (|a| / gcd(|a|, |b|)) * |b|. 0 if either is 0.
+    out.push_str("define i64 @intent_i64_lcm(i64 %a, i64 %b) {\n");
+    out.push_str("  %l_a_z = icmp eq i64 %a, 0\n");
+    out.push_str("  %l_b_z = icmp eq i64 %b, 0\n");
+    out.push_str("  %l_zero = or i1 %l_a_z, %l_b_z\n");
+    out.push_str("  br i1 %l_zero, label %l_zero_ret, label %l_calc\n");
+    out.push_str("l_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("l_calc:\n");
+    out.push_str("  %l_a_neg = icmp slt i64 %a, 0\n");
+    out.push_str("  %l_a_n = sub i64 0, %a\n");
+    out.push_str("  %l_aa = select i1 %l_a_neg, i64 %l_a_n, i64 %a\n");
+    out.push_str("  %l_b_neg = icmp slt i64 %b, 0\n");
+    out.push_str("  %l_b_n = sub i64 0, %b\n");
+    out.push_str("  %l_bb = select i1 %l_b_neg, i64 %l_b_n, i64 %b\n");
+    out.push_str("  %l_g = call i64 @intent_i64_gcd(i64 %l_aa, i64 %l_bb)\n");
+    out.push_str("  %l_div = sdiv i64 %l_aa, %l_g\n");
+    out.push_str("  %l_r = mul i64 %l_div, %l_bb\n");
+    out.push_str("  ret i64 %l_r\n");
+    out.push_str("}\n\n");
+
+    // pow(base, exp): fast exponentiation. Negative exp → 0.
+    out.push_str("define i64 @intent_i64_pow(i64 %base, i64 %exp) {\n");
+    out.push_str("  %p_neg = icmp slt i64 %exp, 0\n");
+    out.push_str("  br i1 %p_neg, label %p_zero_ret, label %p_calc\n");
+    out.push_str("p_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("p_calc:\n");
+    out.push_str("  %p_b_p = alloca i64\n");
+    out.push_str("  %p_e_p = alloca i64\n");
+    out.push_str("  %p_r_p = alloca i64\n");
+    out.push_str("  store i64 %base, i64* %p_b_p\n");
+    out.push_str("  store i64 %exp, i64* %p_e_p\n");
+    out.push_str("  store i64 1, i64* %p_r_p\n");
+    out.push_str("  br label %p_head\n");
+    out.push_str("p_head:\n");
+    out.push_str("  %p_e_cur = load i64, i64* %p_e_p\n");
+    out.push_str("  %p_done = icmp sle i64 %p_e_cur, 0\n");
+    out.push_str("  br i1 %p_done, label %p_fin, label %p_body\n");
+    out.push_str("p_body:\n");
+    out.push_str("  %p_b_cur = load i64, i64* %p_b_p\n");
+    out.push_str("  %p_e_low = and i64 %p_e_cur, 1\n");
+    out.push_str("  %p_e_odd = icmp ne i64 %p_e_low, 0\n");
+    out.push_str("  br i1 %p_e_odd, label %p_mul, label %p_square\n");
+    out.push_str("p_mul:\n");
+    out.push_str("  %p_r_cur = load i64, i64* %p_r_p\n");
+    out.push_str("  %p_r_new = mul i64 %p_r_cur, %p_b_cur\n");
+    out.push_str("  store i64 %p_r_new, i64* %p_r_p\n");
+    out.push_str("  br label %p_square\n");
+    out.push_str("p_square:\n");
+    out.push_str("  %p_b_sq = mul i64 %p_b_cur, %p_b_cur\n");
+    out.push_str("  store i64 %p_b_sq, i64* %p_b_p\n");
+    out.push_str("  %p_e_next = ashr i64 %p_e_cur, 1\n");
+    out.push_str("  store i64 %p_e_next, i64* %p_e_p\n");
+    out.push_str("  br label %p_head\n");
+    out.push_str("p_fin:\n");
+    out.push_str("  %p_r = load i64, i64* %p_r_p\n");
+    out.push_str("  ret i64 %p_r\n");
     out.push_str("}\n\n");
 }
 

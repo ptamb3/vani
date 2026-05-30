@@ -15687,6 +15687,61 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_math_helpers_typecheck_and_compile() {
+        // Closure #380: i64_gcd / i64_lcm / i64_pow. All (i64, i64) -> i64.
+        let source = r#"
+            fn main() -> i64 {
+              let g: i64 = i64_gcd(48, 18);
+              let l: i64 = i64_lcm(4, 6);
+              let p: i64 = i64_pow(2, 10);
+              return g + l + p;
+            }
+        "#;
+        compile_to_c(source).expect("integer math must type-check");
+        compile_to_llvm(source).expect("integer math must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_pow_negative_exp_returns_zero() {
+        let source = r#"
+            fn main() -> i64 {
+              let p: i64 = i64_pow(7, 0 - 1);
+              return p;
+            }
+        "#;
+        compile_to_c(source).expect("i64_pow negative exp must type-check");
+        compile_to_llvm(source).expect("i64_pow negative exp must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_gcd_negative_args_absolutize() {
+        let source = r#"
+            fn main() -> i64 {
+              let g: i64 = i64_gcd(0 - 12, 8);
+              return g;
+            }
+        "#;
+        compile_to_c(source).expect("i64_gcd negative arg must type-check");
+        compile_to_llvm(source).expect("i64_gcd negative arg must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_math_emits_helpers_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              return i64_pow(2, 5);
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("i64_pow LLVM");
+        assert!(
+            ll.contains("define i64 @intent_i64_pow(i64")
+                && ll.contains("define i64 @intent_i64_gcd(i64")
+                && ll.contains("define i64 @intent_i64_lcm(i64"),
+            "LLVM preamble must include all three i64 math defines"
+        );
+    }
+
+    #[test]
     fn str_join_typecheck_and_compile() {
         // Closure #379: str_join(ref strs: Vec<OwnedStr>, sep) -> OwnedStr.
         let source = r#"

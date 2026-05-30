@@ -9980,6 +9980,37 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         // part toward zero.
         "f64_round" => format!("((int64_t)llround(({})))", emit_expr(&args[0])),
         "f64_trunc_to_i64" => format!("((int64_t)({}))", emit_expr(&args[0])),
+        // Closure #380: integer math. Inline implementations to
+        // avoid linking against libm (which only provides
+        // double-typed helpers). GCD uses Euclidean iteration;
+        // LCM = abs(a*b)/gcd handles overflow loosely (we trust
+        // i64 to hold the result for any reasonable input). POW
+        // uses fast-exponentiation by squaring; negative exp
+        // returns 0 by convention.
+        "i64_gcd" => {
+            format!(
+                "({{ int64_t __ga = ({}); int64_t __gb = ({}); if (__ga < 0) __ga = -__ga; if (__gb < 0) __gb = -__gb; while (__gb != 0) {{ int64_t __t = __ga % __gb; __ga = __gb; __gb = __t; }} __ga; }})",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
+        "i64_lcm" => {
+            // Use a result var to keep the GNU statement-expression's
+            // tail an expression. The if/else above writes __lr;
+            // the trailing `__lr;` is the statement-expr's value.
+            format!(
+                "({{ int64_t __la = ({}); int64_t __lb = ({}); int64_t __lr; if (__la == 0 || __lb == 0) {{ __lr = 0; }} else {{ int64_t __aa = __la < 0 ? -__la : __la; int64_t __bb = __lb < 0 ? -__lb : __lb; int64_t __g = __aa; int64_t __h = __bb; while (__h != 0) {{ int64_t __t2 = __g % __h; __g = __h; __h = __t2; }} __lr = (__aa / __g) * __bb; }} __lr; }})",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
+        "i64_pow" => {
+            format!(
+                "({{ int64_t __pb = ({}); int64_t __pe = ({}); int64_t __pr = 1; if (__pe < 0) {{ __pr = 0; }} else {{ while (__pe > 0) {{ if (__pe & 1) __pr = __pr * __pb; __pb = __pb * __pb; __pe = __pe >> 1; }} }} __pr; }})",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
         "abs" => {
             // Overload: i64 → llabs / (x<0?-x:x); f64 → fabs.
             // Other signed ints get cast to i64.
