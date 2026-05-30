@@ -2451,6 +2451,8 @@ pub(crate) fn program_uses_graph_vec_builtin(program: &TypedProgram) -> bool {
                     || name == "vec_repeat"
                     || name == "vec_extend"
                     || name == "vec_concat"
+                    || name == "vec_reverse_copy"
+                    || name == "vec_unique"
                 {
                     return true;
                 }
@@ -4657,6 +4659,41 @@ pub(crate) fn emit_intent_vec_int64_utility_helpers_c(out: &mut String) {
          \x20 if (ys->len > 0) memcpy(v.data + xs->len, ys->data, (size_t)ys->len * sizeof(int64_t));\n\
          \x20 v.len = total;\n\
          \x20 v.capacity = total;\n\
+         \x20 return v;\n\
+         }\n\
+         /* Closure #371: vec_reverse_copy / vec_unique. Both take a\n\
+          * const-pointer to the source Vec<i64> and produce a fresh\n\
+          * heap-allocated Vec<i64>. vec_reverse_copy is a straight\n\
+          * memcpy in reverse order; vec_unique walks once tracking\n\
+          * whether each element appeared earlier (O(n^2) — fine for\n\
+          * the v1 i64-only audience). */\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_reverse_copy(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_reverse_copy(const intent_vec_int64_t* xs) {\n\
+         \x20 intent_vec_int64_t v; v.data = (int64_t*)0; v.len = 0; v.capacity = 0;\n\
+         \x20 if (!xs || xs->len == 0) return v;\n\
+         \x20 v.capacity = xs->len;\n\
+         \x20 v.data = (int64_t*)malloc(v.capacity * sizeof(int64_t));\n\
+         \x20 if (!v.data) abort();\n\
+         \x20 for (size_t i = 0; i < xs->len; ++i) {\n\
+         \x20   v.data[xs->len - 1 - i] = xs->data[i];\n\
+         \x20 }\n\
+         \x20 v.len = xs->len;\n\
+         \x20 return v;\n\
+         }\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_unique(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_unique(const intent_vec_int64_t* xs) {\n\
+         \x20 intent_vec_int64_t v; v.data = (int64_t*)0; v.len = 0; v.capacity = 0;\n\
+         \x20 if (!xs || xs->len == 0) return v;\n\
+         \x20 v.capacity = xs->len;\n\
+         \x20 v.data = (int64_t*)malloc(v.capacity * sizeof(int64_t));\n\
+         \x20 if (!v.data) abort();\n\
+         \x20 for (size_t i = 0; i < xs->len; ++i) {\n\
+         \x20   int seen = 0;\n\
+         \x20   for (size_t j = 0; j < v.len; ++j) {\n\
+         \x20     if (v.data[j] == xs->data[i]) { seen = 1; break; }\n\
+         \x20   }\n\
+         \x20   if (!seen) { v.data[v.len++] = xs->data[i]; }\n\
+         \x20 }\n\
          \x20 return v;\n\
          }\n\n",
     );
@@ -8962,6 +8999,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_vec_int64_t_concat({}, {})",
             emit_expr(&args[0]),
             emit_expr(&args[1])
+        ),
+        // Closure #371: fresh-allocating reverse / dedup.
+        "vec_reverse_copy" => format!(
+            "intent_vec_int64_t_reverse_copy({})",
+            emit_expr(&args[0])
+        ),
+        "vec_unique" => format!(
+            "intent_vec_int64_t_unique({})",
+            emit_expr(&args[0])
         ),
         "vec_map" => {
             // vec_map(ref xs: Vec<i64>, f) -> Vec<i64>. Eager;

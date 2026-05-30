@@ -363,6 +363,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "vec_map" || name == "vec_fold" || name == "vec_filter"
                 || name == "vec_range" || name == "vec_repeat"
                 || name == "vec_extend" || name == "vec_concat"
+                || name == "vec_reverse_copy" || name == "vec_unique"
                 || name == "option_unwrap_or"
                 || name == "option_is_some" || name == "option_is_none"
                 || name == "option_unwrap_or_f64"

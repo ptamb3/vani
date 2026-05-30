@@ -15687,6 +15687,58 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_reverse_copy_typecheck_and_compile() {
+        // Closure #371: vec_reverse_copy(ref xs) -> Vec<i64>
+        // — fresh-allocating reverse leaving the source intact.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let r: Vec<i64> = vec_reverse_copy(ref xs);
+              return r[0] + xs[0];
+            }
+        "#;
+        compile_to_c(source).expect("vec_reverse_copy must type-check");
+        compile_to_llvm(source).expect("vec_reverse_copy must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_unique_typecheck_and_compile() {
+        // Closure #371: vec_unique(ref xs) -> Vec<i64> — fresh
+        // deduped Vec preserving first-occurrence order.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 2, 3, 1);
+              let u: Vec<i64> = vec_unique(ref xs);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("vec_unique must type-check");
+        compile_to_llvm(source).expect("vec_unique must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_reverse_copy_emits_helper_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              let r: Vec<i64> = vec_reverse_copy(ref xs);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("vec_reverse_copy C");
+        assert!(
+            c.contains("intent_vec_int64_t_reverse_copy("),
+            "C output must call intent_vec_int64_t_reverse_copy"
+        );
+        let ll = compile_to_llvm(source).expect("vec_reverse_copy LLVM");
+        assert!(
+            ll.contains("define %intent_vec_i64 @intent_vec_int64_t_reverse_copy(")
+                && ll.contains("call %intent_vec_i64 @intent_vec_int64_t_reverse_copy("),
+            "LLVM output must define + call @intent_vec_int64_t_reverse_copy"
+        );
+    }
+
+    #[test]
     fn vec_sort_desc_typecheck_and_compile() {
         // Closure #370: in-place descending sort. Composes
         // sort + reverse at the call site.
