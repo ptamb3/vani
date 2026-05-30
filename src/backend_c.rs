@@ -683,6 +683,7 @@ pub fn emit_c(program: &TypedProgram) -> String {
     emit_intent_str_trim_c(&mut out);
     emit_intent_str_replace_c(&mut out);
     emit_intent_substring_c(&mut out);
+    emit_intent_str_repeat_c(&mut out);
     emit_intent_i64_to_str_c(&mut out);
     emit_concurrency_runtime_helpers(&mut out, &body, &channel_specs);
     emit_intent_rng_helpers_c(&mut out, &body);
@@ -4785,6 +4786,36 @@ pub(crate) fn emit_intent_substring_c(out: &mut String) {
          \x20 if (!out) abort();\n\
          \x20 if (take > 0 && s) memcpy(out, s + lo, (size_t)take);\n\
          \x20 out[take] = 0;\n\
+         \x20 return out;\n\
+         }\n\n",
+    );
+}
+
+/// Closure #368: `str_repeat(s, n) -> OwnedStr`. Concatenates
+/// `s` with itself `n` times. Negative `n` produces empty;
+/// NULL `s` treated as empty. Length check guards against
+/// overflow (`n * strlen(s)` must fit in size_t).
+pub(crate) fn emit_intent_str_repeat_c(out: &mut String) {
+    out.push_str(
+        "static char* intent_str_repeat(const char* s, int64_t n) INTENT_UNUSED;\n\
+         static char* intent_str_repeat(const char* s, int64_t n) {\n\
+         \x20 size_t sl = s ? strlen(s) : 0;\n\
+         \x20 if (n <= 0 || sl == 0) {\n\
+         \x20   char* e = (char*)malloc(1);\n\
+         \x20   if (!e) abort();\n\
+         \x20   e[0] = 0;\n\
+         \x20   return e;\n\
+         \x20 }\n\
+         \x20 if ((uint64_t)n > (SIZE_MAX - 1) / sl) abort();\n\
+         \x20 size_t total = sl * (size_t)n;\n\
+         \x20 char* out = (char*)malloc(total + 1);\n\
+         \x20 if (!out) abort();\n\
+         \x20 char* p = out;\n\
+         \x20 for (int64_t i = 0; i < n; ++i) {\n\
+         \x20   memcpy(p, s, sl);\n\
+         \x20   p += sl;\n\
+         \x20 }\n\
+         \x20 out[total] = 0;\n\
          \x20 return out;\n\
          }\n\n",
     );
@@ -9152,6 +9183,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[0]),
                 emit_expr(&args[1]),
                 emit_expr(&args[2]),
+            )
+        }
+        // Closure #368: str_repeat(s, n) -> OwnedStr.
+        "str_repeat" => {
+            format!(
+                "intent_str_repeat(({}), ({}))",
+                emit_expr(&args[0]),
+                emit_expr(&args[1]),
             )
         }
         "str_starts_with" => {

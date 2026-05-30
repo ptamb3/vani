@@ -700,6 +700,7 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     emit_intent_str_trim_definition(&mut out);
     emit_intent_str_replace_definition(&mut out);
     emit_intent_substring_definition(&mut out);
+    emit_intent_str_repeat_definition(&mut out);
     emit_intent_i64_to_str_definition(&mut out);
     // Note: emit_intent_str_split_definition (closure #350) is
     // emitted later, after the Vec<OwnedStr> typedef has been
@@ -6338,6 +6339,17 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #368: str_repeat(s, n) -> OwnedStr.
+            if name == "str_repeat" {
+                let s = emit_expr(&args[0], ctx, out);
+                let n = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i8* @intent_str_repeat(i8* {}, i64 {})\n",
+                    dest, s, n
+                ));
+                return dest;
+            }
             // Closure #365: str_index_of(haystack, needle) ->
             // Option<i64>. strstr returns NULL if needle not
             // found; otherwise it points into haystack and the
@@ -9047,6 +9059,46 @@ pub(crate) fn emit_intent_substring_definition(out: &mut String) {
     out.push_str("  %sub_nul_p = getelementptr i8, i8* %sub_out, i64 %sub_take\n");
     out.push_str("  store i8 0, i8* %sub_nul_p\n");
     out.push_str("  ret i8* %sub_out\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #368: `str_repeat(s, n) -> OwnedStr` LLVM half.
+/// Loops `n` times appending `strlen(s)` bytes per iteration
+/// into a freshly-malloc'd buffer of size `n * strlen(s) + 1`.
+/// Negative n or NULL s produce a fresh empty string.
+pub(crate) fn emit_intent_str_repeat_definition(out: &mut String) {
+    out.push_str("define i8* @intent_str_repeat(i8* %s, i64 %n) {\n");
+    out.push_str("  %sr_null = icmp eq i8* %s, null\n");
+    out.push_str("  br i1 %sr_null, label %sr_empty, label %sr_strlen\n");
+    out.push_str("sr_strlen:\n");
+    out.push_str("  %sr_sl = call i64 @strlen(i8* %s)\n");
+    out.push_str("  %sr_zero_sl = icmp eq i64 %sr_sl, 0\n");
+    out.push_str("  %sr_zero_n = icmp sle i64 %n, 0\n");
+    out.push_str("  %sr_skip = or i1 %sr_zero_sl, %sr_zero_n\n");
+    out.push_str("  br i1 %sr_skip, label %sr_empty, label %sr_alloc\n");
+    out.push_str("sr_alloc:\n");
+    out.push_str("  %sr_total = mul i64 %sr_sl, %n\n");
+    out.push_str("  %sr_alloc_n = add i64 %sr_total, 1\n");
+    out.push_str("  %sr_out = call i8* @malloc(i64 %sr_alloc_n)\n");
+    out.push_str("  br label %sr_loop_head\n");
+    out.push_str("sr_loop_head:\n");
+    out.push_str("  %sr_i = phi i64 [ 0, %sr_alloc ], [ %sr_i_next, %sr_loop_body ]\n");
+    out.push_str("  %sr_done = icmp sge i64 %sr_i, %n\n");
+    out.push_str("  br i1 %sr_done, label %sr_finish, label %sr_loop_body\n");
+    out.push_str("sr_loop_body:\n");
+    out.push_str("  %sr_off = mul i64 %sr_i, %sr_sl\n");
+    out.push_str("  %sr_dst = getelementptr i8, i8* %sr_out, i64 %sr_off\n");
+    out.push_str("  %_sr_c = call i8* @memcpy(i8* %sr_dst, i8* %s, i64 %sr_sl)\n");
+    out.push_str("  %sr_i_next = add i64 %sr_i, 1\n");
+    out.push_str("  br label %sr_loop_head\n");
+    out.push_str("sr_finish:\n");
+    out.push_str("  %sr_nul_p = getelementptr i8, i8* %sr_out, i64 %sr_total\n");
+    out.push_str("  store i8 0, i8* %sr_nul_p\n");
+    out.push_str("  ret i8* %sr_out\n");
+    out.push_str("sr_empty:\n");
+    out.push_str("  %sr_e = call i8* @malloc(i64 1)\n");
+    out.push_str("  store i8 0, i8* %sr_e\n");
+    out.push_str("  ret i8* %sr_e\n");
     out.push_str("}\n\n");
 }
 

@@ -15687,6 +15687,55 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_repeat_typecheck_and_compile() {
+        // Closure #368: str_repeat(s, n) -> OwnedStr.
+        let source = r#"
+            fn main() -> i64 {
+              let a: OwnedStr = str_repeat("ab", 3);
+              let b: OwnedStr = str_repeat("x", 0);
+              let c: OwnedStr = str_repeat("y", 0 - 5);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str_repeat must type-check");
+        compile_to_llvm(source).expect("str_repeat must compile to LLVM");
+    }
+
+    #[test]
+    fn str_repeat_emits_helper_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: OwnedStr = str_repeat("a", 2);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("str_repeat C");
+        assert!(
+            c.contains("intent_str_repeat(")
+                && c.contains("static char* intent_str_repeat"),
+            "C output must declare + call intent_str_repeat"
+        );
+        let ll = compile_to_llvm(source).expect("str_repeat LLVM");
+        assert!(
+            ll.contains("define i8* @intent_str_repeat(i8*")
+                && ll.contains("call i8* @intent_str_repeat("),
+            "LLVM output must define + call @intent_str_repeat"
+        );
+    }
+
+    #[test]
+    fn str_repeat_arity_2_required() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: OwnedStr = str_repeat("x");
+              return 0;
+            }
+        "#;
+        assert!(compile_to_c(source).is_err(),
+            "str_repeat must require 2 args");
+    }
+
+    #[test]
     fn f64_math_constants_typecheck_and_compile() {
         // Closure #367: zero-arg math constants — pi, e, inf, nan.
         let source = r#"
