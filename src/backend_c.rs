@@ -9302,6 +9302,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         "str_to_lower" => {
             format!("intent_str_to_lower(({}))", emit_expr(&args[0]))
         }
+        // Closure #373: parse_bool(s) -> Option<bool>. Inline
+        // statement-expression — recognizes "true" / "false"
+        // exactly (case-sensitive); anything else is None.
+        "parse_bool" => {
+            format!(
+                "({{ const char* __pb_s = ({s}); Enum_Option__bool __pb_r; if (strcmp(__pb_s, \"true\") == 0) {{ __pb_r.tag = 0; __pb_r.payload = true; }} else if (strcmp(__pb_s, \"false\") == 0) {{ __pb_r.tag = 0; __pb_r.payload = false; }} else {{ __pb_r.tag = 1; }} __pb_r; }})",
+                s = emit_expr(&args[0]),
+            )
+        }
         "str_starts_with" => {
             // strncmp(s, p, strlen(p)) == 0. Cache the prefix
             // length so it isn't computed twice.

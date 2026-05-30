@@ -6545,6 +6545,99 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #373: parse_bool(s) -> Option<bool>.
+            // strcmp the input against the literal "true" /
+            // "false" globals; pack the tagged result.
+            if name == "parse_bool" {
+                let s = emit_expr(&args[0], ctx, out);
+                // Reuse the existing @.fmt.true / @.fmt.false
+                // format-string globals as cstring literals.
+                let true_p = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr [5 x i8], [5 x i8]* @.fmt.true, i64 0, i64 0\n",
+                    true_p
+                ));
+                let false_p = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr [6 x i8], [6 x i8]* @.fmt.false, i64 0, i64 0\n",
+                    false_p
+                ));
+                let cmp_t = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i32 @strcmp(i8* {}, i8* {})\n",
+                    cmp_t, s, true_p
+                ));
+                let is_t = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp eq i32 {}, 0\n", is_t, cmp_t
+                ));
+                let cmp_f = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i32 @strcmp(i8* {}, i8* {})\n",
+                    cmp_f, s, false_p
+                ));
+                let is_f = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp eq i32 {}, 0\n", is_f, cmp_f
+                ));
+                let some_t_lbl = ctx.fresh_label("pb_some_t");
+                let after_t_lbl = ctx.fresh_label("pb_after_t");
+                let some_f_lbl = ctx.fresh_label("pb_some_f");
+                let none_lbl = ctx.fresh_label("pb_none");
+                let done = ctx.fresh_label("pb_done");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    is_t, some_t_lbl, after_t_lbl
+                ));
+                out.push_str(&format!("{}:\n", some_t_lbl));
+                let r_t0 = ctx.fresh_tmp();
+                let r_t1 = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__bool undef, i32 0, 0\n",
+                    r_t0
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__bool {}, i1 true, 1\n",
+                    r_t1, r_t0
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", after_t_lbl));
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    is_f, some_f_lbl, none_lbl
+                ));
+                out.push_str(&format!("{}:\n", some_f_lbl));
+                let r_f0 = ctx.fresh_tmp();
+                let r_f1 = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__bool undef, i32 0, 0\n",
+                    r_f0
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__bool {}, i1 false, 1\n",
+                    r_f1, r_f0
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", none_lbl));
+                let r_n0 = ctx.fresh_tmp();
+                let r_n1 = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__bool undef, i32 1, 0\n",
+                    r_n0
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__bool {}, i1 false, 1\n",
+                    r_n1, r_n0
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", done));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = phi %Enum_Option__bool [ {}, %{} ], [ {}, %{} ], [ {}, %{} ]\n",
+                    dest, r_t1, some_t_lbl, r_f1, some_f_lbl, r_n1, none_lbl
+                ));
+                return dest;
+            }
             if name == "parse_int" {
                 let s = emit_expr(&args[0], ctx, out);
                 let end_p = ctx.fresh_tmp();

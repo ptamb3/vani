@@ -15687,6 +15687,48 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn parse_bool_typecheck_and_compile() {
+        // Closure #373: parse_bool(s) -> Option<bool>. Recognizes
+        // "true" / "false" exactly (case-sensitive).
+        let source = r#"
+            fn main() -> i64 {
+              let t: Option<bool> = parse_bool("true");
+              let f: Option<bool> = parse_bool("false");
+              let n: Option<bool> = parse_bool("maybe");
+              let v: bool = match t {
+                  Option.Some(b) then b,
+                  Option.None then false,
+              };
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("parse_bool must type-check");
+        compile_to_llvm(source).expect("parse_bool must compile to LLVM");
+    }
+
+    #[test]
+    fn parse_bool_emits_option_bool_enum() {
+        let source = r#"
+            fn main() -> i64 {
+              let r: Option<bool> = parse_bool("true");
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("parse_bool C");
+        assert!(
+            c.contains("Enum_Option__bool") && c.contains("strcmp("),
+            "C output must emit Enum_Option__bool + call strcmp"
+        );
+        let ll = compile_to_llvm(source).expect("parse_bool LLVM");
+        assert!(
+            ll.contains("%Enum_Option__bool")
+                && ll.contains("call i32 @strcmp(")
+                && ll.contains("@.fmt.true"),
+            "LLVM output must reference Enum_Option__bool + strcmp + @.fmt.true"
+        );
+    }
+
+    #[test]
     fn f64_round_typecheck_and_compile() {
         // Closure #372: f64_round / f64_trunc_to_i64 — float-to-int
         // rounding helpers returning i64.
