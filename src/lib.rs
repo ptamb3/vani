@@ -15687,6 +15687,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn option_method_sugar_i64() {
+        // Closure #376: o.unwrap_or(def) / o.is_some() /
+        // o.is_none() for Option<i64>.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20, 30);
+              let p: Option<i64> = xs.find(20);
+              let v: i64 = p.unwrap_or(0 - 1);
+              let s: bool = p.is_some();
+              let n: bool = p.is_none();
+              return v;
+            }
+        "#;
+        compile_to_c(source).expect("Option<i64> method sugar must type-check");
+        compile_to_llvm(source).expect("Option<i64> method sugar must compile to LLVM");
+    }
+
+    #[test]
+    fn option_method_sugar_f64() {
+        let source = r#"
+            fn main() -> i64 {
+              let f: Option<f64> = parse_float("3.14");
+              let v: f64 = f.unwrap_or(0.0);
+              let s: bool = f.is_some();
+              let n: bool = f.is_none();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("Option<f64> method sugar must type-check");
+        compile_to_llvm(source).expect("Option<f64> method sugar must compile to LLVM");
+    }
+
+    #[test]
     fn str_method_sugar_var_receiver() {
         // Closure #375: `s.method(...)` desugars to
         // `str_<method>(s, ...)` for Str / OwnedStr receivers.

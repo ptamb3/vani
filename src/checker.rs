@@ -10722,6 +10722,53 @@ fn check_expr(
                     }
                 }
             }
+            // Closure #376 — method-call sugar for `Option<i64>` /
+            // `Option<f64>` receivers. `o.unwrap_or(def)` /
+            // `o.is_some()` / `o.is_none()` desugar to the
+            // matching `option_*` builtin (with the `_f64` suffix
+            // when the inner type is f64). Only `Var` receivers
+            // for now — non-trivial Option-producing expressions
+            // (like `parse_int("x").is_some()`) need an explicit
+            // intermediate, same rule as Vec method sugar.
+            if let ExprKind::Var(recv_name) = &receiver.kind {
+                let recv_ty_opt = env.lookup(recv_name).map(|i| i.ty.clone());
+                let opt_inner: Option<&'static str> = recv_ty_opt
+                    .as_ref()
+                    .and_then(|t| match t {
+                        Type::Enum(n) if n == "Option__i64" => Some("i64"),
+                        Type::Enum(n) if n == "Option__f64" => Some("f64"),
+                        _ => None,
+                    });
+                if let Some(inner_tag) = opt_inner {
+                    let builtin: Option<String> = match (method.as_str(), inner_tag) {
+                        ("unwrap_or", "i64") => Some("option_unwrap_or".to_string()),
+                        ("is_some",   "i64") => Some("option_is_some".to_string()),
+                        ("is_none",   "i64") => Some("option_is_none".to_string()),
+                        ("unwrap_or", "f64") => Some("option_unwrap_or_f64".to_string()),
+                        ("is_some",   "f64") => Some("option_is_some_f64".to_string()),
+                        ("is_none",   "f64") => Some("option_is_none_f64".to_string()),
+                        _ => None,
+                    };
+                    if let Some(builtin_name) = builtin {
+                        let recv_clone = (**receiver).clone();
+                        let mut new_args: Vec<Expr> = Vec::with_capacity(args.len() + 1);
+                        new_args.push(recv_clone);
+                        for a in args {
+                            new_args.push(a.clone());
+                        }
+                        return check_call(
+                            &builtin_name,
+                            *method_span,
+                            &new_args,
+                            env,
+                            signatures,
+                            expr.span,
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+
             // Closure #321 — method-call sugar for `[T; N]`
             // Arrays. Mirrors the Vec sugar arm above but
             // dispatches to the array-prefixed builtins
