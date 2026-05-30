@@ -739,7 +739,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #356 — **`Vec<i64>` utility lump: `vec_range` / `vec_repeat` / `vec_extend` / `vec_concat`**. Four ergonomic constructors + combinators on the existing `intent_vec_int64_t` struct. `vec_range(lo, hi)` returns `[lo..hi)`; `vec_repeat(v, n)` returns n copies; `vec_extend(mut ref xs, ref ys)` appends in-place (returns new len); `vec_concat(ref xs, ref ys)` returns a fresh `xs ++ ys` with both inputs valid. Both backends byte-identical. 3 new lib tests. 1290 lib + 54 parity green. Closure #355 (clear suite completion) shipped immediately before.)
+## ⏳ Resume here (paused 2026-05-30, after closure #357 — **`Option<i64>` ergonomics: `option_unwrap_or` / `option_is_some` / `option_is_none`**. Eliminates the per-example `unwrap_or` boilerplate users were hand-writing. `option_unwrap_or(o, def)` returns the payload when `Some(_)`, else `def`. `option_is_some`/`option_is_none` return bool. All operate directly on the `Enum_Option__i64` tag + payload fields. Gated on Option__i64 being in the enum payload registry; auto-mono walker extended so calling these registers Option<i64>. 2 new lib tests. 1292 lib + 54 parity green. Closure #356 (Vec utility lump) shipped immediately before.)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 

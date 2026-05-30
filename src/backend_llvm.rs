@@ -881,6 +881,20 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         emit_intent_vec_int64_utility_definitions(&mut out);
     }
 
+    // Closure #357: Option<i64> ergonomic helpers
+    // (option_unwrap_or / option_is_some / option_is_none).
+    // Emitted when Enum_Option__i64 is in the LLVM enum
+    // payload registry (i.e. when other Option-returning
+    // builtins are in scope).
+    {
+        let has_option_i64 = LLVM_ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        if has_option_i64 {
+            emit_intent_option_i64_definitions(&mut out);
+        }
+    }
+
     // Data-structures roadmap: emit shared array helpers for
     // `[i64; N]`. Single set of helpers (pointer + length) covers
     // every N. Gated on the program actually using `[i64; N]`
@@ -4715,6 +4729,27 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
                 return "0".to_string();
             }
+            // Closure #357: Option<i64> ergonomics.
+            if name == "option_unwrap_or" {
+                let o = emit_expr(&args[0], ctx, out);
+                let def = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_option_i64_unwrap_or(%Enum_Option__i64 {}, i64 {})\n",
+                    dest, o, def
+                ));
+                return dest;
+            }
+            if name == "option_is_some" || name == "option_is_none" {
+                let o = emit_expr(&args[0], ctx, out);
+                let op = name.strip_prefix("option_").unwrap();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i1 @intent_option_i64_{}(%Enum_Option__i64 {})\n",
+                    dest, op, o
+                ));
+                return dest;
+            }
             // Closure #356: Vec<i64> utility helpers
             // (vec_range / vec_repeat / vec_extend / vec_concat).
             // All are hardcoded to i64 element type and route
@@ -8202,6 +8237,34 @@ pub(crate) fn emit_intent_siphash_definitions(out: &mut String) {
     out.push_str("  %n = call i64 @strlen(i8* %s)\n");
     out.push_str("  %r = call i64 @intent_siphash24_bytes(i64 %k0, i64 %k1, i8* %s, i64 %n)\n");
     out.push_str("  ret i64 %r\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #357: emit Option<i64> ergonomic helpers in LLVM
+/// IR. All three operate on the `%Enum_Option__i64` struct
+/// (i32 tag, i64 payload).
+pub(crate) fn emit_intent_option_i64_definitions(out: &mut String) {
+    // unwrap_or(o, def) -> i64
+    out.push_str("define i64 @intent_option_i64_unwrap_or(%Enum_Option__i64 %o, i64 %def) {\n");
+    out.push_str("  %ou_tag = extractvalue %Enum_Option__i64 %o, 0\n");
+    out.push_str("  %ou_is_some = icmp eq i32 %ou_tag, 0\n");
+    out.push_str("  %ou_payload = extractvalue %Enum_Option__i64 %o, 1\n");
+    out.push_str("  %ou_r = select i1 %ou_is_some, i64 %ou_payload, i64 %def\n");
+    out.push_str("  ret i64 %ou_r\n");
+    out.push_str("}\n\n");
+
+    // is_some(o) -> bool
+    out.push_str("define i1 @intent_option_i64_is_some(%Enum_Option__i64 %o) {\n");
+    out.push_str("  %os_tag = extractvalue %Enum_Option__i64 %o, 0\n");
+    out.push_str("  %os_r = icmp eq i32 %os_tag, 0\n");
+    out.push_str("  ret i1 %os_r\n");
+    out.push_str("}\n\n");
+
+    // is_none(o) -> bool
+    out.push_str("define i1 @intent_option_i64_is_none(%Enum_Option__i64 %o) {\n");
+    out.push_str("  %on_tag = extractvalue %Enum_Option__i64 %o, 0\n");
+    out.push_str("  %on_r = icmp ne i32 %on_tag, 0\n");
+    out.push_str("  ret i1 %on_r\n");
     out.push_str("}\n\n");
 }
 

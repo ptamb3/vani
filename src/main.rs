@@ -350,6 +350,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "vec_map" || name == "vec_fold" || name == "vec_filter"
                 || name == "vec_range" || name == "vec_repeat"
                 || name == "vec_extend" || name == "vec_concat"
+                || name == "option_unwrap_or"
+                || name == "option_is_some" || name == "option_is_none"
                 || name == "vec_take" || name == "vec_drop" || name == "vec_map_fold"
                 || name == "vec_filter_fold" || name == "vec_map_filter"
                 || name == "vec_map_filter_fold"

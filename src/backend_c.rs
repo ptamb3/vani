@@ -507,6 +507,19 @@ pub fn emit_c(program: &TypedProgram) -> String {
         emit_intent_vec_int64_utility_helpers_c(&mut body);
     }
 
+    // Closure #357: Option<i64> ergonomics — unwrap_or /
+    // is_some / is_none. Emit when Option__i64 is in the
+    // payload registry (i.e. when any other Option<i64>-
+    // returning builtin or user code has put it there).
+    {
+        let has_option_i64 = ENUM_PAYLOAD_REGISTRY.with(|r| {
+            r.borrow().contains_key("Option__i64")
+        });
+        if has_option_i64 {
+            emit_intent_option_i64_helpers_c(&mut body);
+        }
+    }
+
     for intent in &program.intents {
         body.push_str("/* intent: ");
         body.push_str(&escape_comment(intent));
@@ -4466,6 +4479,34 @@ pub(crate) fn emit_intent_str_concat_c(out: &mut String) {
 /// present, which the existing Vec-element walker auto-emits
 /// when the program uses `Vec<OwnedStr>` anywhere — including
 /// at this function's return type.
+/// Closure #357: Option<i64> ergonomic helpers — eliminate
+/// the per-example `unwrap_or` boilerplate users were
+/// hand-writing.
+///
+///   option_unwrap_or(o, def) -> i64    payload if Some(_), else def
+///   option_is_some(o)        -> bool   tag == 0
+///   option_is_none(o)        -> bool   tag != 0
+///
+/// All operate on the `Enum_Option__i64` struct (tag: i32,
+/// payload: i64). Caller passes by-value; the tag and payload
+/// are read directly from the struct fields.
+pub(crate) fn emit_intent_option_i64_helpers_c(out: &mut String) {
+    out.push_str(
+        "static INTENT_UNUSED int64_t intent_option_i64_unwrap_or(Enum_Option__i64 o, int64_t def) INTENT_UNUSED;\n\
+         static INTENT_UNUSED int64_t intent_option_i64_unwrap_or(Enum_Option__i64 o, int64_t def) {\n\
+         \x20 return (o.tag == 0) ? (int64_t)o.payload : def;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_option_i64_is_some(Enum_Option__i64 o) INTENT_UNUSED;\n\
+         static INTENT_UNUSED bool intent_option_i64_is_some(Enum_Option__i64 o) {\n\
+         \x20 return o.tag == 0;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_option_i64_is_none(Enum_Option__i64 o) INTENT_UNUSED;\n\
+         static INTENT_UNUSED bool intent_option_i64_is_none(Enum_Option__i64 o) {\n\
+         \x20 return o.tag != 0;\n\
+         }\n\n",
+    );
+}
+
 /// Closure #356: Vec<i64> utility helpers — small constructors
 /// and combinators that operate on the existing
 /// `intent_vec_int64_t` struct.
@@ -8647,6 +8688,19 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 _ => unreachable!("sort_by() arg 0 must be (mut ref) Vec<_> or [T; N]"),
             }
         }
+        "option_unwrap_or" => format!(
+            "intent_option_i64_unwrap_or(({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "option_is_some" => format!(
+            "intent_option_i64_is_some(({}))",
+            emit_expr(&args[0])
+        ),
+        "option_is_none" => format!(
+            "intent_option_i64_is_none(({}))",
+            emit_expr(&args[0])
+        ),
         "vec_range" => format!(
             "intent_vec_int64_t_range(({}), ({}))",
             emit_expr(&args[0]),

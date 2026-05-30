@@ -15552,6 +15552,54 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn option_i64_ergonomics_typecheck_and_compile() {
+        // Closure #357: option_unwrap_or / option_is_some /
+        // option_is_none — eliminate the per-example match
+        // boilerplate users were hand-writing.
+        let source = r#"
+            fn main() -> i64 {
+              let some_v: Option<i64> = Option.Some(42);
+              let none_v: Option<i64> = Option.None;
+              let v: i64 = option_unwrap_or(some_v, 0 - 1);
+              let s: bool = option_is_some(some_v);
+              let n: bool = option_is_none(none_v);
+              if s { if n { return v; } else { return 1; } } else { return 2; }
+            }
+        "#;
+        compile_to_c(source).expect("option ergonomics must type-check");
+        compile_to_llvm(source).expect("option ergonomics must compile to LLVM");
+    }
+
+    #[test]
+    fn option_i64_helpers_emitted_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let o: Option<i64> = Option.Some(7);
+              let _: i64 = option_unwrap_or(o, 0);
+              let _: bool = option_is_some(o);
+              let _: bool = option_is_none(o);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("option ergonomics C");
+        for sym in [
+            "intent_option_i64_unwrap_or",
+            "intent_option_i64_is_some",
+            "intent_option_i64_is_none",
+        ] {
+            assert!(c.contains(sym), "C output must include {}", sym);
+        }
+        let ll = compile_to_llvm(source).expect("option ergonomics LLVM");
+        for sym in [
+            "@intent_option_i64_unwrap_or",
+            "@intent_option_i64_is_some",
+            "@intent_option_i64_is_none",
+        ] {
+            assert!(ll.contains(sym), "LLVM output must include {}", sym);
+        }
+    }
+
+    #[test]
     fn vec_utility_lump_typecheck_and_compile() {
         // Closure #356: vec_range / vec_repeat / vec_extend /
         // vec_concat — four Vec<i64> constructor + combinator
