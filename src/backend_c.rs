@@ -997,6 +997,20 @@ fn emit_intent_hashset_helpers_c_body(out: &mut String) {
          }\n\
          static INTENT_UNUSED int64_t intent_hashset_i64_len(const intent_hashset_i64* s) {\n\
          \x20 return (int64_t)s->len;\n\
+         }\n\
+         /* Closure #353: clear() — drop the backing buffers and\n\
+          * reset to empty state (capacity=0 too, so the next\n\
+          * insert reallocates fresh). Returns prior len. */\n\
+         static INTENT_UNUSED int64_t intent_hashset_i64_clear(intent_hashset_i64* s) {\n\
+         \x20 int64_t prior = (int64_t)s->len;\n\
+         \x20 if (s->keys) free(s->keys);\n\
+         \x20 if (s->occ) free(s->occ);\n\
+         \x20 s->keys = (int64_t*)0;\n\
+         \x20 s->occ = (uint8_t*)0;\n\
+         \x20 s->len = 0;\n\
+         \x20 s->capacity = 0;\n\
+         \x20 s->tombstones = 0;\n\
+         \x20 return prior;\n\
          }\n\n",
     );
 }
@@ -1134,6 +1148,21 @@ fn emit_intent_hashmap_helpers_c_body(out: &mut String, has_option_i64: bool) {
          }\n\
          static INTENT_UNUSED int64_t intent_hashmap_i64_i64_len(const intent_hashmap_i64_i64* m) {\n\
          \x20 return (int64_t)m->len;\n\
+         }\n\
+         /* Closure #353: clear() — drop the three parallel buffers\n\
+          * and reset to empty state. Returns prior len. */\n\
+         static INTENT_UNUSED int64_t intent_hashmap_i64_i64_clear(intent_hashmap_i64_i64* m) {\n\
+         \x20 int64_t prior = (int64_t)m->len;\n\
+         \x20 if (m->keys) free(m->keys);\n\
+         \x20 if (m->values) free(m->values);\n\
+         \x20 if (m->occ) free(m->occ);\n\
+         \x20 m->keys = (int64_t*)0;\n\
+         \x20 m->values = (int64_t*)0;\n\
+         \x20 m->occ = (uint8_t*)0;\n\
+         \x20 m->len = 0;\n\
+         \x20 m->capacity = 0;\n\
+         \x20 m->tombstones = 0;\n\
+         \x20 return prior;\n\
          }\n",
     );
     if has_option_i64 {
@@ -1276,6 +1305,16 @@ fn emit_intent_btreeset_helpers_c_body(out: &mut String, has_option_i64: bool, e
          }\n\
          static INTENT_UNUSED int64_t intent_btreeset_i64_len(const intent_btreeset_i64* s) {\n\
          \x20 return (int64_t)s->len;\n\
+         }\n\
+         /* Closure #353: clear() — free the sorted key buffer\n\
+          * and reset to empty. Returns prior len. */\n\
+         static INTENT_UNUSED int64_t intent_btreeset_i64_clear(intent_btreeset_i64* s) {\n\
+         \x20 int64_t prior = (int64_t)s->len;\n\
+         \x20 if (s->keys) free(s->keys);\n\
+         \x20 s->keys = (int64_t*)0;\n\
+         \x20 s->len = 0;\n\
+         \x20 s->capacity = 0;\n\
+         \x20 return prior;\n\
          }\n\
          static INTENT_UNUSED bool intent_btreeset_i64_insert(intent_btreeset_i64* s, int64_t k) {\n\
          \x20 uint64_t i = intent_btreeset_i64__lower_bound(s, k);\n\
@@ -1428,6 +1467,18 @@ fn emit_intent_btreemap_helpers_c_body(out: &mut String, has_option_i64: bool, e
          }\n\
          static INTENT_UNUSED int64_t intent_btreemap_i64_i64_len(const intent_btreemap_i64_i64* m) {\n\
          \x20 return (int64_t)m->len;\n\
+         }\n\
+         /* Closure #353: clear() — free both parallel key/value\n\
+          * buffers and reset to empty. Returns prior len. */\n\
+         static INTENT_UNUSED int64_t intent_btreemap_i64_i64_clear(intent_btreemap_i64_i64* m) {\n\
+         \x20 int64_t prior = (int64_t)m->len;\n\
+         \x20 if (m->keys) free(m->keys);\n\
+         \x20 if (m->values) free(m->values);\n\
+         \x20 m->keys = (int64_t*)0;\n\
+         \x20 m->values = (int64_t*)0;\n\
+         \x20 m->len = 0;\n\
+         \x20 m->capacity = 0;\n\
+         \x20 return prior;\n\
          }\n",
     );
     if has_option_i64 {
@@ -8737,6 +8788,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_btreeset_i64_max({})",
             emit_expr(&args[0])
         ),
+        "btreeset_clear" => format!(
+            "intent_btreeset_i64_clear({})",
+            emit_expr(&args[0])
+        ),
         "btreemap_new" => "intent_btreemap_i64_i64_new()".to_string(),
         "btreemap_insert" => format!(
             "intent_btreemap_i64_i64_insert({}, ({}), ({}))",
@@ -8783,6 +8838,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         ),
         "btreemap_max_key" => format!(
             "intent_btreemap_i64_i64_max_key({})",
+            emit_expr(&args[0])
+        ),
+        "btreemap_clear" => format!(
+            "intent_btreemap_i64_i64_clear({})",
             emit_expr(&args[0])
         ),
         // Closure #325: Union-Find dispatch.
@@ -9028,6 +9087,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_hashmap_i64_i64_len({})",
             emit_expr(&args[0])
         ),
+        "hashmap_clear" => format!(
+            "intent_hashmap_i64_i64_clear({})",
+            emit_expr(&args[0])
+        ),
         "hashset_remove" => format!(
             "intent_hashset_i64_remove({}, ({}))",
             emit_expr(&args[0]),
@@ -9046,6 +9109,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         ),
         "hashset_len" => format!(
             "intent_hashset_i64_len({})",
+            emit_expr(&args[0])
+        ),
+        "hashset_clear" => format!(
+            "intent_hashset_i64_clear({})",
             emit_expr(&args[0])
         ),
         "deque_new" => "intent_deque_i64_new()".to_string(),

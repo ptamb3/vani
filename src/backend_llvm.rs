@@ -5187,6 +5187,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            if name == "btreeset_clear" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_btreeset_i64_clear(%intent_btreeset_i64* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
             // HashMap<i64, i64> builtins (closure #305).
             if name == "hashmap_new" {
                 let dest = ctx.fresh_tmp();
@@ -5242,6 +5251,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 let dest = ctx.fresh_tmp();
                 out.push_str(&format!(
                     "  {} = call i64 @intent_hashmap_i64_i64_len(%intent_hashmap_i64_i64* {})\n",
+                    dest, m
+                ));
+                return dest;
+            }
+            if name == "hashmap_clear" {
+                let m = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hashmap_i64_i64_clear(%intent_hashmap_i64_i64* {})\n",
                     dest, m
                 ));
                 return dest;
@@ -5325,6 +5343,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!(
                     "  {} = call %Enum_Option__i64 @intent_btreemap_i64_i64_{}(%intent_btreemap_i64_i64* {})\n",
                     dest, op, m
+                ));
+                return dest;
+            }
+            if name == "btreemap_clear" {
+                let m = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_btreemap_i64_i64_clear(%intent_btreemap_i64_i64* {})\n",
+                    dest, m
                 ));
                 return dest;
             }
@@ -5729,6 +5756,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 let dest = ctx.fresh_tmp();
                 out.push_str(&format!(
                     "  {} = call i64 @intent_hashset_i64_len(%intent_hashset_i64* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
+            if name == "hashset_clear" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hashset_i64_clear(%intent_hashset_i64* {})\n",
                     dest, s
                 ));
                 return dest;
@@ -9016,6 +9052,26 @@ fn emit_intent_btreeset_i64_helpers_llvm(out: &mut String, has_option_i64: bool,
         out.push_str("  ret %Enum_Option__i64 %n_max_1\n");
         out.push_str("}\n\n");
     }
+    // Closure #353: clear() — free the sorted key buffer, zero
+    // all three fields, return prior len.
+    out.push_str("define i64 @intent_btreeset_i64_clear(%intent_btreeset_i64* %s) {\n");
+    out.push_str("  %bsc_lp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 1\n");
+    out.push_str("  %bsc_prior = load i64, i64* %bsc_lp\n");
+    out.push_str("  %bsc_kpp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 0\n");
+    out.push_str("  %bsc_keys = load i64*, i64** %bsc_kpp\n");
+    out.push_str("  %bsc_null = icmp eq i64* %bsc_keys, null\n");
+    out.push_str("  br i1 %bsc_null, label %bsc_done, label %bsc_free\n");
+    out.push_str("bsc_free:\n");
+    out.push_str("  %bsc_k_i8 = bitcast i64* %bsc_keys to i8*\n");
+    out.push_str("  call void @free(i8* %bsc_k_i8)\n");
+    out.push_str("  br label %bsc_done\n");
+    out.push_str("bsc_done:\n");
+    out.push_str("  store i64* null, i64** %bsc_kpp\n");
+    out.push_str("  %bsc_cp = getelementptr %intent_btreeset_i64, %intent_btreeset_i64* %s, i32 0, i32 2\n");
+    out.push_str("  store i64 0, i64* %bsc_lp\n");
+    out.push_str("  store i64 0, i64* %bsc_cp\n");
+    out.push_str("  ret i64 %bsc_prior\n");
+    out.push_str("}\n\n");
 }
 
 /// Data-structures roadmap Level 2 — HashMap<i64, i64>
@@ -9472,6 +9528,48 @@ fn emit_intent_hashmap_i64_i64_helpers_llvm(out: &mut String, has_option_i64: bo
              }\n\n",
         );
     }
+    // Closure #353: clear() — free keys/values/occ, zero all
+    // six fields, return prior len. Always emitted (not
+    // gated on Option<i64> — clear() is a non-Option op).
+    out.push_str("define i64 @intent_hashmap_i64_i64_clear(%intent_hashmap_i64_i64* %m) {\n");
+    out.push_str("  %hmc_lp = getelementptr %intent_hashmap_i64_i64, %intent_hashmap_i64_i64* %m, i32 0, i32 3\n");
+    out.push_str("  %hmc_prior = load i64, i64* %hmc_lp\n");
+    out.push_str("  %hmc_kpp = getelementptr %intent_hashmap_i64_i64, %intent_hashmap_i64_i64* %m, i32 0, i32 0\n");
+    out.push_str("  %hmc_vpp = getelementptr %intent_hashmap_i64_i64, %intent_hashmap_i64_i64* %m, i32 0, i32 1\n");
+    out.push_str("  %hmc_opp = getelementptr %intent_hashmap_i64_i64, %intent_hashmap_i64_i64* %m, i32 0, i32 2\n");
+    out.push_str("  %hmc_keys = load i64*, i64** %hmc_kpp\n");
+    out.push_str("  %hmc_vals = load i64*, i64** %hmc_vpp\n");
+    out.push_str("  %hmc_occ = load i8*, i8** %hmc_opp\n");
+    out.push_str("  %hmc_k_null = icmp eq i64* %hmc_keys, null\n");
+    out.push_str("  br i1 %hmc_k_null, label %hmc_v, label %hmc_fk\n");
+    out.push_str("hmc_fk:\n");
+    out.push_str("  %hmc_k_i8 = bitcast i64* %hmc_keys to i8*\n");
+    out.push_str("  call void @free(i8* %hmc_k_i8)\n");
+    out.push_str("  br label %hmc_v\n");
+    out.push_str("hmc_v:\n");
+    out.push_str("  %hmc_v_null = icmp eq i64* %hmc_vals, null\n");
+    out.push_str("  br i1 %hmc_v_null, label %hmc_o, label %hmc_fv\n");
+    out.push_str("hmc_fv:\n");
+    out.push_str("  %hmc_v_i8 = bitcast i64* %hmc_vals to i8*\n");
+    out.push_str("  call void @free(i8* %hmc_v_i8)\n");
+    out.push_str("  br label %hmc_o\n");
+    out.push_str("hmc_o:\n");
+    out.push_str("  %hmc_o_null = icmp eq i8* %hmc_occ, null\n");
+    out.push_str("  br i1 %hmc_o_null, label %hmc_done, label %hmc_fo\n");
+    out.push_str("hmc_fo:\n");
+    out.push_str("  call void @free(i8* %hmc_occ)\n");
+    out.push_str("  br label %hmc_done\n");
+    out.push_str("hmc_done:\n");
+    out.push_str("  store i64* null, i64** %hmc_kpp\n");
+    out.push_str("  store i64* null, i64** %hmc_vpp\n");
+    out.push_str("  store i8* null, i8** %hmc_opp\n");
+    out.push_str("  %hmc_cp = getelementptr %intent_hashmap_i64_i64, %intent_hashmap_i64_i64* %m, i32 0, i32 4\n");
+    out.push_str("  %hmc_tp = getelementptr %intent_hashmap_i64_i64, %intent_hashmap_i64_i64* %m, i32 0, i32 5\n");
+    out.push_str("  store i64 0, i64* %hmc_lp\n");
+    out.push_str("  store i64 0, i64* %hmc_cp\n");
+    out.push_str("  store i64 0, i64* %hmc_tp\n");
+    out.push_str("  ret i64 %hmc_prior\n");
+    out.push_str("}\n\n");
 }
 
 /// Data-structures roadmap Level 2 — BTreeMap<i64, i64>
@@ -9906,6 +10004,36 @@ fn emit_intent_btreemap_i64_i64_helpers_llvm(out: &mut String, has_option_i64: b
         out.push_str("  ret %Enum_Option__i64 %n_mx_1\n");
         out.push_str("}\n\n");
     }
+    // Closure #353: clear() — free both parallel buffers, zero
+    // all four fields, return prior len.
+    out.push_str("define i64 @intent_btreemap_i64_i64_clear(%intent_btreemap_i64_i64* %m) {\n");
+    out.push_str("  %bmc_lp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 2\n");
+    out.push_str("  %bmc_prior = load i64, i64* %bmc_lp\n");
+    out.push_str("  %bmc_kpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 0\n");
+    out.push_str("  %bmc_vpp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 1\n");
+    out.push_str("  %bmc_keys = load i64*, i64** %bmc_kpp\n");
+    out.push_str("  %bmc_vals = load i64*, i64** %bmc_vpp\n");
+    out.push_str("  %bmc_k_null = icmp eq i64* %bmc_keys, null\n");
+    out.push_str("  br i1 %bmc_k_null, label %bmc_v, label %bmc_fk\n");
+    out.push_str("bmc_fk:\n");
+    out.push_str("  %bmc_k_i8 = bitcast i64* %bmc_keys to i8*\n");
+    out.push_str("  call void @free(i8* %bmc_k_i8)\n");
+    out.push_str("  br label %bmc_v\n");
+    out.push_str("bmc_v:\n");
+    out.push_str("  %bmc_v_null = icmp eq i64* %bmc_vals, null\n");
+    out.push_str("  br i1 %bmc_v_null, label %bmc_done, label %bmc_fv\n");
+    out.push_str("bmc_fv:\n");
+    out.push_str("  %bmc_v_i8 = bitcast i64* %bmc_vals to i8*\n");
+    out.push_str("  call void @free(i8* %bmc_v_i8)\n");
+    out.push_str("  br label %bmc_done\n");
+    out.push_str("bmc_done:\n");
+    out.push_str("  store i64* null, i64** %bmc_kpp\n");
+    out.push_str("  store i64* null, i64** %bmc_vpp\n");
+    out.push_str("  %bmc_cp = getelementptr %intent_btreemap_i64_i64, %intent_btreemap_i64_i64* %m, i32 0, i32 3\n");
+    out.push_str("  store i64 0, i64* %bmc_lp\n");
+    out.push_str("  store i64 0, i64* %bmc_cp\n");
+    out.push_str("  ret i64 %bmc_prior\n");
+    out.push_str("}\n\n");
 }
 
 /// Data-structures roadmap Level 4 #1 — UnionFind runtime
@@ -14415,6 +14543,37 @@ fn emit_intent_hashset_i64_helpers_llvm(out: &mut String) {
          \x20 %lp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 2\n\
          \x20 %len = load i64, i64* %lp\n\
          \x20 ret i64 %len\n\
+         }\n\
+         ; Closure #353: clear() — free both buffers, zero all five\n\
+         ; fields, return prior len.\n\
+         define i64 @intent_hashset_i64_clear(%intent_hashset_i64* %s) {\n\
+         \x20 %hsc_lp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 2\n\
+         \x20 %hsc_prior = load i64, i64* %hsc_lp\n\
+         \x20 %hsc_kpp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 0\n\
+         \x20 %hsc_opp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 1\n\
+         \x20 %hsc_keys = load i64*, i64** %hsc_kpp\n\
+         \x20 %hsc_occ = load i8*, i8** %hsc_opp\n\
+         \x20 %hsc_k_null = icmp eq i64* %hsc_keys, null\n\
+         \x20 br i1 %hsc_k_null, label %hsc_o, label %hsc_fk\n\
+         hsc_fk:\n\
+         \x20 %hsc_k_i8 = bitcast i64* %hsc_keys to i8*\n\
+         \x20 call void @free(i8* %hsc_k_i8)\n\
+         \x20 br label %hsc_o\n\
+         hsc_o:\n\
+         \x20 %hsc_o_null = icmp eq i8* %hsc_occ, null\n\
+         \x20 br i1 %hsc_o_null, label %hsc_done, label %hsc_fo\n\
+         hsc_fo:\n\
+         \x20 call void @free(i8* %hsc_occ)\n\
+         \x20 br label %hsc_done\n\
+         hsc_done:\n\
+         \x20 store i64* null, i64** %hsc_kpp\n\
+         \x20 store i8* null, i8** %hsc_opp\n\
+         \x20 %hsc_cp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 3\n\
+         \x20 %hsc_tp = getelementptr %intent_hashset_i64, %intent_hashset_i64* %s, i32 0, i32 4\n\
+         \x20 store i64 0, i64* %hsc_lp\n\
+         \x20 store i64 0, i64* %hsc_cp\n\
+         \x20 store i64 0, i64* %hsc_tp\n\
+         \x20 ret i64 %hsc_prior\n\
          }\n\n",
     );
 }

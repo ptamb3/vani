@@ -739,7 +739,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #352 — **`btreeset_min` / `btreeset_max` + `btreemap_min_key` / `btreemap_max_key`**. O(1) ends-access on the sorted-Vec backings, parallel to `skiplist_min` / `skiplist_max` (#341). All four return `Option<i64>` (None on empty). Method sugar: `s.min()` / `s.max()` on BTreeSet, `m.min_key()` / `m.max_key()` on BTreeMap. Extended both BTree examples and added 4 new lib tests. Both backends byte-identical. 1280 lib + 54 parity green. Closure #351 (SipHash-2-4) shipped immediately before. **Note**: this took the slot originally queued for Hash/Ord interface — that work is genuinely multi-session and got pushed to #353+ in favor of completing the quick O(1) BTree API.)
+## ⏳ Resume here (paused 2026-05-29, after closure #353 — **Container `clear()` suite for HashSet / HashMap / BTreeSet / BTreeMap**. Each gains `_clear(mut ref c) -> i64` returning prior len; frees backing buffers, zeros all struct fields (including tombstones for hash-family), leaves the container reusable. Method sugar `.clear()` across all four. Both backends byte-identical. 3 new lib tests. 1283 lib + 54 parity green. Closure #352 (btree min/max) shipped immediately before. Lumped as the first of two container-clear closures — #354 next adds clear to BinaryHeap / Bst / SkipList / Trie / Deque / BloomFilter.)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 

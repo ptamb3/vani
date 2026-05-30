@@ -15552,6 +15552,83 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn container_clear_suite_typecheck_and_compile() {
+        // Closure #353: HashSet/HashMap/BTreeSet/BTreeMap each
+        // gain a `_clear(mut ref c) -> i64` returning prior len.
+        // Method sugar `.clear()` is added across all four.
+        let source = r#"
+            fn main() -> i64 {
+              let hs: HashSet<i64> = hashset_new();
+              let hm: HashMap<i64, i64> = hashmap_new();
+              let bs: BTreeSet<i64> = btreeset_new();
+              let bm: BTreeMap<i64, i64> = btreemap_new();
+              let _: i64 = hashset_clear(mut ref hs);
+              let _: i64 = hashmap_clear(mut ref hm);
+              let _: i64 = btreeset_clear(mut ref bs);
+              let _: i64 = btreemap_clear(mut ref bm);
+              let _: i64 = hs.clear();
+              let _: i64 = hm.clear();
+              let _: i64 = bs.clear();
+              let _: i64 = bm.clear();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("container clear suite must type-check");
+        compile_to_llvm(source).expect("container clear suite must compile to LLVM");
+    }
+
+    #[test]
+    fn container_clear_rejects_by_ref() {
+        // `_clear` mutates the container so must be mut ref.
+        let source = r#"
+            fn main() -> i64 {
+              let hs: HashSet<i64> = hashset_new();
+              let _: i64 = hashset_clear(ref hs);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err("by-ref clear must fail");
+        assert!(
+            errors.iter().any(|e| e.message.contains("mut ref HashSet")),
+            "expected mut-ref-HashSet diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn container_clear_emits_helpers_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let hs: HashSet<i64> = hashset_new();
+              let hm: HashMap<i64, i64> = hashmap_new();
+              let bs: BTreeSet<i64> = btreeset_new();
+              let bm: BTreeMap<i64, i64> = btreemap_new();
+              let _: i64 = hashset_clear(mut ref hs);
+              let _: i64 = hashmap_clear(mut ref hm);
+              let _: i64 = btreeset_clear(mut ref bs);
+              let _: i64 = btreemap_clear(mut ref bm);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("clear suite C compile");
+        assert!(
+            c.contains("intent_hashset_i64_clear")
+                && c.contains("intent_hashmap_i64_i64_clear")
+                && c.contains("intent_btreeset_i64_clear")
+                && c.contains("intent_btreemap_i64_i64_clear"),
+            "C output must include all four clear helpers"
+        );
+        let ll = compile_to_llvm(source).expect("clear suite LLVM compile");
+        assert!(
+            ll.contains("@intent_hashset_i64_clear")
+                && ll.contains("@intent_hashmap_i64_i64_clear")
+                && ll.contains("@intent_btreeset_i64_clear")
+                && ll.contains("@intent_btreemap_i64_i64_clear"),
+            "LLVM output must include all four clear defines"
+        );
+    }
+
+    #[test]
     fn btreeset_min_max_typecheck_and_compile() {
         // Closure #352: btreeset_min / btreeset_max return Option<i64>
         // — None on empty, Some(keys[0]) / Some(keys[len-1]) otherwise.
