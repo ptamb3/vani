@@ -10730,6 +10730,58 @@ fn check_expr(
                     }
                 }
             }
+            // Closure #383 — method-call sugar for primitive
+            // `.to_str()` on bool / i64 / f64. Routes through
+            // the existing bool_to_str / i64_to_str / f64_to_str
+            // builtins. Accepts both Var receivers (`b.to_str()`)
+            // and bare-literal receivers (`true.to_str()` /
+            // `42.to_str()` / `3.14.to_str()`).
+            if method == "to_str" && args.is_empty() {
+                let recv_is_literal_bool = matches!(
+                    &receiver.kind, ExprKind::Bool(_)
+                );
+                let recv_is_literal_int = matches!(
+                    &receiver.kind, ExprKind::Int(_)
+                );
+                let recv_is_literal_float = matches!(
+                    &receiver.kind, ExprKind::Float(_)
+                );
+                let recv_ty_opt = match &receiver.kind {
+                    ExprKind::Var(recv_name) => env.lookup(recv_name).map(|i| i.ty.clone()),
+                    _ => None,
+                };
+                let builtin: Option<&str> = if recv_is_literal_bool
+                    || matches!(&recv_ty_opt, Some(Type::Bool))
+                {
+                    Some("bool_to_str")
+                } else if recv_is_literal_float
+                    || matches!(&recv_ty_opt, Some(Type::F64) | Some(Type::F32))
+                {
+                    Some("f64_to_str")
+                } else if recv_is_literal_int
+                    || matches!(
+                        &recv_ty_opt,
+                        Some(Type::I64) | Some(Type::I32) | Some(Type::I16) | Some(Type::I8)
+                    )
+                {
+                    Some("i64_to_str")
+                } else {
+                    None
+                };
+                if let Some(builtin_name) = builtin {
+                    let recv_clone = (**receiver).clone();
+                    let new_args: Vec<Expr> = vec![recv_clone];
+                    return check_call(
+                        builtin_name,
+                        *method_span,
+                        &new_args,
+                        env,
+                        signatures,
+                        expr.span,
+                        diagnostics,
+                    );
+                }
+            }
             // Closure #376 — method-call sugar for `Option<i64>` /
             // `Option<f64>` receivers. `o.unwrap_or(def)` /
             // `o.is_some()` / `o.is_none()` desugar to the

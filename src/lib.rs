@@ -15687,6 +15687,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn primitive_to_str_method_sugar() {
+        // Closure #383: x.to_str() for bool / i64 / f64.
+        let source = r#"
+            fn main() -> i64 {
+              let b: bool = true;
+              let n: i64 = 42;
+              let x: f64 = 3.14;
+              let a: OwnedStr = b.to_str();
+              let c: OwnedStr = n.to_str();
+              let d: OwnedStr = x.to_str();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect(".to_str() method must type-check");
+        compile_to_llvm(source).expect(".to_str() method must compile to LLVM");
+    }
+
+    #[test]
+    fn primitive_to_str_literal_receivers() {
+        // Bare-literal receivers also work.
+        let source = r#"
+            fn main() -> i64 {
+              let a: OwnedStr = true.to_str();
+              let b: OwnedStr = 42.to_str();
+              let c: OwnedStr = 3.14.to_str();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("literal-receiver .to_str() must type-check");
+        compile_to_llvm(source).expect("literal-receiver .to_str() must compile to LLVM");
+    }
+
+    #[test]
     fn vec_iota_typecheck_and_compile() {
         // Closure #382: vec_iota(n) -> Vec<i64> = [0..n).
         let source = r#"
