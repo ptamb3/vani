@@ -320,6 +320,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "pow" || name == "sqrt"
                 || name == "sin" || name == "cos" || name == "tan"
                 || name == "floor" || name == "ceil" || name == "abs"
+                || name == "log" || name == "log2" || name == "log10"
+                || name == "exp" || name == "atan2"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_f64"

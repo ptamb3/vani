@@ -15687,6 +15687,62 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn log_exp_atan2_typecheck_and_compile() {
+        // Closure #363: log family + exp + atan2 round out the
+        // libm surface alongside the existing
+        // pow/sqrt/sin/cos/tan/floor/ceil/abs builtins.
+        let source = r#"
+            fn main() -> i64 {
+              let e: f64 = exp(1.0);
+              let ln_e: f64 = log(e);
+              let l2: f64 = log2(8.0);
+              let l10: f64 = log10(1000.0);
+              let a: f64 = atan2(1.0, 1.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("math helpers must type-check");
+        compile_to_llvm(source).expect("math helpers must compile to LLVM");
+    }
+
+    #[test]
+    fn log_exp_atan2_emit_libm_calls() {
+        let source = r#"
+            fn main() -> i64 {
+              let _x: f64 = log(2.0) + exp(0.0) + atan2(1.0, 1.0);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("math helpers C");
+        assert!(c.contains("log(") && c.contains("exp(") && c.contains("atan2("),
+            "C output must invoke libm log / exp / atan2");
+        let ll = compile_to_llvm(source).expect("math helpers LLVM");
+        assert!(
+            ll.contains("declare double @log(double)")
+                && ll.contains("declare double @exp(double)")
+                && ll.contains("declare double @atan2(double, double)"),
+            "LLVM output must declare libm log / exp / atan2"
+        );
+        assert!(
+            ll.contains("call double @log(double")
+                && ll.contains("call double @exp(double")
+                && ll.contains("call double @atan2(double"),
+            "LLVM output must call libm log / exp / atan2"
+        );
+    }
+
+    #[test]
+    fn atan2_arity_2_required() {
+        let source = r#"
+            fn main() -> i64 {
+              let _a: f64 = atan2(1.0);
+              return 0;
+            }
+        "#;
+        assert!(compile_to_c(source).is_err(), "atan2 must require 2 args");
+    }
+
+    #[test]
     fn clamp_i64_typecheck_and_compile() {
         // Closure #362: clamp(x, lo, hi) — polymorphic intrinsic
         // returning x clipped to [lo, hi]. Pure ternary lowering

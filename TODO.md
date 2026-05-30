@@ -739,7 +739,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-30, after closure #362 — **`clamp(x, lo, hi)` + f64 min/max LLVM fix**. New polymorphic intrinsic `clamp(x, lo, hi)` returns `x` clipped to `[lo, hi]`. Two-step numeric promotion mirrors `min`/`max` so mixed-type calls like `clamp(5, 0.0, 10)` lift to f64. C inlines a nested ternary; LLVM emits icmp/fcmp + select pairs. Wired across all four backends (tree-C, SSA-C, tree-LLVM, SSA-LLVM). Bonus: fixed a latent bug where `min`/`max` on f64 emitted invalid IR (`icmp slt` on doubles, undefined `@fn_min`/`@fn_max` references). SSA-LLVM previously had no dispatch arm at all for primitive min/max — added one parallel to the existing SSA-C ternary form. User-shadow escape hatch preserved: a non-3-arg `fn clamp(...)` routes through the regular user-fn dispatch. 5 new lib tests. 1308 lib + 54 parity green. Closure #361 (bool_to_str) shipped immediately before.)
+## ⏳ Resume here (paused 2026-05-30, after closure #363 — **`log / log2 / log10 / exp / atan2` libm helpers**. Rounds out the math intrinsic surface alongside the existing `pow / sqrt / sin / cos / tan / floor / ceil / abs` builtins. All f64-only, all libm-backed. Single-arg helpers reuse the existing `sqrt | sin | ...` dispatch pattern; `atan2(y, x)` gets its own 2-arg arm parallel to `pow`. Checker math route + `want_args` extended. LLVM preamble grew 5 new `declare double @...` externs. SSA reject list extended so SSA-LLVM bails out through the tree backend. Both backends byte-identical. 3 new lib tests. 1311 lib + 54 parity green. Closure #362 (clamp + f64 min/max LLVM fix) shipped immediately before.)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 

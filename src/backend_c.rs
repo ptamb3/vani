@@ -9653,8 +9653,16 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[1])
             )
         }
-        "sqrt" | "sin" | "cos" | "tan" | "floor" | "ceil" => {
+        "sqrt" | "sin" | "cos" | "tan" | "floor" | "ceil"
+        | "log" | "log2" | "log10" | "exp" => {
             format!("{}(({}))", name, emit_expr(&args[0]))
+        }
+        "atan2" => {
+            format!(
+                "atan2(({}), ({}))",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
         }
         "abs" => {
             // Overload: i64 → llabs / (x<0?-x:x); f64 → fabs.

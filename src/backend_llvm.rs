@@ -495,6 +495,13 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare double @ceil(double)\n");
     out.push_str("declare double @fabs(double)\n");
     out.push_str("declare i64 @llabs(i64)\n");
+    // Closure #363: log family + exp + atan2 round out the libm
+    // surface. Same `-lm` link covers them.
+    out.push_str("declare double @log(double)\n");
+    out.push_str("declare double @log2(double)\n");
+    out.push_str("declare double @log10(double)\n");
+    out.push_str("declare double @exp(double)\n");
+    out.push_str("declare double @atan2(double, double)\n");
     // Threading primitives: POSIX on Linux/macOS, Win32 on
     // Windows. `intentc` picks the host's flavor at codegen
     // time via `host_uses_win32_threading()`. Cross-
@@ -6167,12 +6174,24 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             if matches!(
                 name.as_str(),
                 "sqrt" | "sin" | "cos" | "tan" | "floor" | "ceil"
+                | "log" | "log2" | "log10" | "exp"
             ) {
                 let x = emit_expr(&args[0], ctx, out);
                 let dest = ctx.fresh_tmp();
                 out.push_str(&format!(
                     "  {} = call double @{}(double {})\n",
                     dest, name, x
+                ));
+                return dest;
+            }
+            // Closure #363: atan2 — same shape as pow (2-arg libm).
+            if name == "atan2" {
+                let y = emit_expr(&args[0], ctx, out);
+                let x = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @atan2(double {}, double {})\n",
+                    dest, y, x
                 ));
                 return dest;
             }
