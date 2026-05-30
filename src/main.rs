@@ -312,6 +312,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "str_contains" || name == "str_starts_with"
                 || name == "str_ends_with" || name == "str_trim"
                 || name == "str_replace" || name == "str_split"
+                || name == "str_index_of"
                 || name == "i64_to_str"
                 || name == "f64_to_str"
                 || name == "bool_to_str"

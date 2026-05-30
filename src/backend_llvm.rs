@@ -6305,6 +6305,74 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #365: str_index_of(haystack, needle) ->
+            // Option<i64>. strstr returns NULL if needle not
+            // found; otherwise it points into haystack and the
+            // byte-offset is `match_p - s_p`.
+            if name == "str_index_of" {
+                let s = emit_expr(&args[0], ctx, out);
+                let n = emit_expr(&args[1], ctx, out);
+                let hit = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i8* @strstr(i8* {}, i8* {})\n",
+                    hit, s, n
+                ));
+                let is_null = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp eq i8* {}, null\n",
+                    is_null, hit
+                ));
+                let some_lbl = ctx.fresh_label("sio_some");
+                let none_lbl = ctx.fresh_label("sio_none");
+                let done = ctx.fresh_label("sio_done");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    is_null, none_lbl, some_lbl
+                ));
+                out.push_str(&format!("{}:\n", some_lbl));
+                let hit_i = ctx.fresh_tmp();
+                let s_i = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = ptrtoint i8* {} to i64\n", hit_i, hit
+                ));
+                out.push_str(&format!(
+                    "  {} = ptrtoint i8* {} to i64\n", s_i, s
+                ));
+                let off = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = sub i64 {}, {}\n", off, hit_i, s_i
+                ));
+                let r1s = ctx.fresh_tmp();
+                let r2s = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 undef, i32 0, 0\n",
+                    r1s
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 {}, i64 {}, 1\n",
+                    r2s, r1s, off
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", none_lbl));
+                let r1n = ctx.fresh_tmp();
+                let r2n = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 undef, i32 1, 0\n",
+                    r1n
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 {}, i64 0, 1\n",
+                    r2n, r1n
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", done));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = phi %Enum_Option__i64 [ {}, %{} ], [ {}, %{} ]\n",
+                    dest, r2s, some_lbl, r2n, none_lbl
+                ));
+                return dest;
+            }
             if name == "str_starts_with" {
                 let s = emit_expr(&args[0], ctx, out);
                 let p = emit_expr(&args[1], ctx, out);

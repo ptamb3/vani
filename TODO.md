@@ -739,7 +739,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-30, after closure #364 — **`f64_is_nan` / `f64_is_inf` / `f64_is_finite` float classification**. Three bool-returning float predicates. C uses `<math.h>` macros wrapped in `(... != 0)`. LLVM inlines via fcmp + fabs — `is_nan` is `fcmp uno x, x`; `is_inf` / `is_finite` are `fabs(x) {oeq|olt} 0x7FF0000000000000` (the +Inf bit pattern). check_math_builtin now produces `Type::Bool` for these three; same f64-coerce path as the rest of the math family. Both backends byte-identical on finite/+inf/-inf/nan/zero/positive. 3 new lib tests. 1314 lib + 54 parity green. Closure #363 (log/exp/atan2 family) shipped immediately before.)
+## ⏳ Resume here (paused 2026-05-30, after closure #365 — **`str_index_of(haystack, needle) -> Option<i64>`**. Pairs with `str_contains` (bool) to give the byte offset of `needle` in `haystack`, or `Option.None`. C inlines a statement-expression around `strstr` + null-check + `Enum_Option__i64` construction. LLVM uses an explicit branch — `strstr` + `icmp null` + branch + `ptrtoint`/`sub i64` for the offset + `insertvalue` for the Option packing + `phi`. Auto-mono walker extended so a bare `str_index_of(...)` forces the `Option__i64` decl. Both backends byte-identical on present/absent/at-start. 3 new lib tests. 1317 lib + 54 parity green. Closure #364 (f64 classification) shipped immediately before.)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 

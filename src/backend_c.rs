@@ -9109,6 +9109,16 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 n = emit_expr(&args[1]),
             )
         }
+        // Closure #365: str_index_of(haystack, needle) -> Option<i64>.
+        // Inline statement-expression: strstr the needle, then
+        // pack the byte-offset (or None) into an Enum_Option__i64.
+        "str_index_of" => {
+            format!(
+                "({{ const char* __sio_s = ({s}); const char* __sio_m = strstr(__sio_s, ({n})); Enum_Option__i64 __sio_r; if (__sio_m == NULL) {{ __sio_r.tag = 1; }} else {{ __sio_r.tag = 0; __sio_r.payload = (int64_t)(__sio_m - __sio_s); }} __sio_r; }})",
+                s = emit_expr(&args[0]),
+                n = emit_expr(&args[1]),
+            )
+        }
         "str_starts_with" => {
             // strncmp(s, p, strlen(p)) == 0. Cache the prefix
             // length so it isn't computed twice.

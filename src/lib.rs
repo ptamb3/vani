@@ -15687,6 +15687,64 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_index_of_typecheck_and_compile() {
+        // Closure #365: str_index_of(haystack, needle) ->
+        // Option<i64>. First byte offset, or None.
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "hello, world";
+              let p: Option<i64> = str_index_of(s, "world");
+              let v: i64 = option_unwrap_or(p, 0 - 1);
+              let miss: Option<i64> = str_index_of(s, "xyz");
+              let none_ok: bool = option_is_none(miss);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str_index_of must type-check");
+        compile_to_llvm(source).expect("str_index_of must compile to LLVM");
+    }
+
+    #[test]
+    fn str_index_of_emits_strstr_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "abc";
+              let p: Option<i64> = str_index_of(s, "b");
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("str_index_of C");
+        assert!(
+            c.contains("strstr(") && c.contains("Enum_Option__i64"),
+            "C output must use strstr + emit Enum_Option__i64"
+        );
+        let ll = compile_to_llvm(source).expect("str_index_of LLVM");
+        assert!(
+            ll.contains("call i8* @strstr(")
+                && ll.contains("%Enum_Option__i64")
+                && ll.contains("ptrtoint"),
+            "LLVM output must call strstr + build Enum_Option__i64 via ptrtoint"
+        );
+    }
+
+    #[test]
+    fn str_index_of_returns_none_when_needle_absent() {
+        // Round-trip: strstr returns NULL for not-found, our path
+        // packs that as Option.None. End-to-end checks via
+        // option_is_none.
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "abc";
+              let p: Option<i64> = str_index_of(s, "xyz");
+              let is_none: bool = option_is_none(p);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("absent-needle case must compile to C");
+        compile_to_llvm(source).expect("absent-needle case must compile to LLVM");
+    }
+
+    #[test]
     fn f64_classification_typecheck_and_compile() {
         // Closure #364: f64_is_nan / f64_is_inf / f64_is_finite —
         // float classification builtins. All bool-returning.
