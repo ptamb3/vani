@@ -495,6 +495,7 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare double @ceil(double)\n");
     out.push_str("declare double @fabs(double)\n");
     out.push_str("declare i64 @llabs(i64)\n");
+    out.push_str("declare i64 @llround(double)\n");
     // Closure #363: log family + exp + atan2 round out the libm
     // surface. Same `-lm` link covers them.
     out.push_str("declare double @log(double)\n");
@@ -6238,6 +6239,28 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             //   e   = 0x4005BF0A8B145769
             //   inf = 0x7FF0000000000000
             //   nan = 0x7FF8000000000000 (quiet NaN)
+            // Closure #372: float-to-int rounding.
+            if name == "f64_round" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @llround(double {})\n",
+                    dest, x
+                ));
+                return dest;
+            }
+            if name == "f64_trunc_to_i64" {
+                // LLVM's `fptosi` instruction performs a
+                // truncating conversion toward zero, matching
+                // C's `(int64_t)x` cast.
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fptosi double {} to i64\n",
+                    dest, x
+                ));
+                return dest;
+            }
             if matches!(name.as_str(), "f64_pi" | "f64_e" | "f64_inf" | "f64_nan") {
                 let lit = match name.as_str() {
                     "f64_pi"  => "0x400921FB54442D18",

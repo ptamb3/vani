@@ -9872,6 +9872,12 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         "f64_e" => "(2.71828182845904523536)".to_string(),
         "f64_inf" => "((double)INFINITY)".to_string(),
         "f64_nan" => "((double)NAN)".to_string(),
+        // Closure #372: float-to-int rounding.
+        // f64_round: round half away from zero (libc `llround`).
+        // f64_trunc_to_i64: C truncating cast — chops the fractional
+        // part toward zero.
+        "f64_round" => format!("((int64_t)llround(({})))", emit_expr(&args[0])),
+        "f64_trunc_to_i64" => format!("((int64_t)({}))", emit_expr(&args[0])),
         "abs" => {
             // Overload: i64 → llabs / (x<0?-x:x); f64 → fabs.
             // Other signed ints get cast to i64.

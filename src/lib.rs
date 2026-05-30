@@ -15687,6 +15687,43 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_round_typecheck_and_compile() {
+        // Closure #372: f64_round / f64_trunc_to_i64 — float-to-int
+        // rounding helpers returning i64.
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = f64_round(3.4);
+              let b: i64 = f64_round(3.6);
+              let c: i64 = f64_trunc_to_i64(3.9);
+              return a + b + c;
+            }
+        "#;
+        compile_to_c(source).expect("f64 rounding must type-check");
+        compile_to_llvm(source).expect("f64 rounding must compile to LLVM");
+    }
+
+    #[test]
+    fn f64_round_emits_libm_and_fptosi() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = f64_round(1.5);
+              let b: i64 = f64_trunc_to_i64(1.7);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("f64 rounding C");
+        assert!(c.contains("llround(") && c.contains("(int64_t)"),
+            "C output must call llround + truncating cast");
+        let ll = compile_to_llvm(source).expect("f64 rounding LLVM");
+        assert!(
+            ll.contains("declare i64 @llround(double)")
+                && ll.contains("call i64 @llround(double")
+                && ll.contains("fptosi double"),
+            "LLVM output must declare+call @llround and use fptosi for trunc"
+        );
+    }
+
+    #[test]
     fn vec_reverse_copy_typecheck_and_compile() {
         // Closure #371: vec_reverse_copy(ref xs) -> Vec<i64>
         // — fresh-allocating reverse leaving the source intact.
