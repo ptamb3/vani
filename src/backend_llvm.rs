@@ -4863,6 +4863,61 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #377: option_map(o, f). Branch on tag —
+            // some-path calls f on payload + insertvalue tag=0
+            // + payload; none-path passes the original through.
+            // phi at the merge.
+            if name == "option_map" {
+                let o = emit_expr(&args[0], ctx, out);
+                let f = emit_expr(&args[1], ctx, out);
+                let tag = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = extractvalue %Enum_Option__i64 {}, 0\n",
+                    tag, o
+                ));
+                let is_some = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp eq i32 {}, 0\n", is_some, tag
+                ));
+                let some_lbl = ctx.fresh_label("om_some");
+                let none_lbl = ctx.fresh_label("om_none");
+                let done = ctx.fresh_label("om_done");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    is_some, some_lbl, none_lbl
+                ));
+                out.push_str(&format!("{}:\n", some_lbl));
+                let payload = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = extractvalue %Enum_Option__i64 {}, 1\n",
+                    payload, o
+                ));
+                let mapped = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 {}(i64 {})\n",
+                    mapped, f, payload
+                ));
+                let r1s = ctx.fresh_tmp();
+                let r2s = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 undef, i32 0, 0\n",
+                    r1s
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 {}, i64 {}, 1\n",
+                    r2s, r1s, mapped
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", none_lbl));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", done));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = phi %Enum_Option__i64 [ {}, %{} ], [ {}, %{} ]\n",
+                    dest, r2s, some_lbl, o, none_lbl
+                ));
+                return dest;
+            }
             // Closure #360: Option<f64> ergonomics.
             if name == "option_unwrap_or_f64" {
                 let o = emit_expr(&args[0], ctx, out);

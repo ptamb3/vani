@@ -8959,6 +8959,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        // Closure #377: option_map(o, f) — inline statement-
+        // expression that branches on the tag, calls f on the
+        // payload, and re-packs Option::Some. None passes
+        // through unchanged.
+        "option_map" => format!(
+            "({{ Enum_Option__i64 __om_o = ({o}); Enum_Option__i64 __om_r; if (__om_o.tag == 0) {{ __om_r.tag = 0; __om_r.payload = ({f})(__om_o.payload); }} else {{ __om_r.tag = 1; }} __om_r; }})",
+            o = emit_expr(&args[0]),
+            f = emit_expr(&args[1]),
+        ),
         "option_is_some" => format!(
             "intent_option_i64_is_some(({}))",
             emit_expr(&args[0])

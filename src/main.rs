@@ -368,6 +368,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "vec_reverse_copy" || name == "vec_unique"
                 || name == "option_unwrap_or"
                 || name == "option_is_some" || name == "option_is_none"
+                || name == "option_map"
                 || name == "option_unwrap_or_f64"
                 || name == "option_is_some_f64" || name == "option_is_none_f64"
                 || name == "vec_take" || name == "vec_drop" || name == "vec_map_fold"

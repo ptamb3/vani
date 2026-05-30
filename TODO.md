@@ -739,9 +739,9 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-30, after closure #375 — **Str/OwnedStr method-call sugar**. `s.contains/starts_with/ends_with/trim/replace/split/index_of/repeat/to_upper/to_lower/substring(...)` all desugar to the corresponding `str_*` builtin. Accepts both `Var` receivers and string-literal receivers (`"abc".repeat(3)`). No backend changes — rewrite happens in the checker's method-call dispatch. 3 new lib tests. 1345 lib + 54 parity green. Closure #374 (anonymous-fn shorthand `|x| ...`) shipped immediately before.
+## ⏳ Resume here (paused 2026-05-30, after closure #377 — **`option_map(o, f) -> Option<i64>` + method sugar `o.map(f)`**. Functor-style map: applies `f: fn(i64) -> i64` to the Some payload or passes None through. C: inline statement-expression. LLVM: explicit some/none branch with extractvalue + indirect call + insertvalue + phi. Method sugar added to the Option-method dispatch from #376. Composes with closure shorthand from #374: `o.map(|x| x * 2)`. 3 new lib tests. 1350 lib + 54 parity green. Closure #376 (Option<T> method sugar) shipped immediately before.
 
-**Autonomous-loop arc shipped closures #367–#375 (9 closures in this run):**
+**Autonomous-loop arc shipped closures #367–#377 (11 closures in this run):**
 - #367 f64 math constants (pi/e/inf/nan)
 - #368 str_repeat
 - #369 str_to_upper / str_to_lower
@@ -751,6 +751,8 @@ canonical path (compiler-lowered state machines on an arena).
 - #373 parse_bool + Option<bool> machinery
 - #374 anonymous-fn shorthand `|x| x + 1`
 - #375 Str/OwnedStr method-call sugar
+- #376 Option<T> method-call sugar (.unwrap_or / .is_some / .is_none)
+- #377 option_map + .map() method sugar
 
 **Remaining granular queue:** Trie sparse children (multi-session — replace 256-wide alphabet with `Vec<(u8, u32)>` + binary search per node).
 

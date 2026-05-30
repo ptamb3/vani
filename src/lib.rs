@@ -15687,6 +15687,51 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn option_map_typecheck_and_compile() {
+        // Closure #377: option_map(o, f) and o.map(f) for
+        // Option<i64>. f must be fn(i64) -> i64.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20, 30);
+              let p: Option<i64> = xs.find(20);
+              let doubled: Option<i64> = option_map(p, |x| x * 2);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("option_map must type-check");
+        compile_to_llvm(source).expect("option_map must compile to LLVM");
+    }
+
+    #[test]
+    fn option_map_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20, 30);
+              let p: Option<i64> = xs.find(20);
+              let r: Option<i64> = p.map(|x| x + 100);
+              let v: i64 = r.unwrap_or(0);
+              return v;
+            }
+        "#;
+        compile_to_c(source).expect("o.map(...) must type-check");
+        compile_to_llvm(source).expect("o.map(...) must compile to LLVM");
+    }
+
+    #[test]
+    fn option_map_arity_2_required() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1);
+              let p: Option<i64> = xs.find(1);
+              let r: Option<i64> = option_map(p);
+              return 0;
+            }
+        "#;
+        assert!(compile_to_c(source).is_err(),
+            "option_map must require 2 args");
+    }
+
+    #[test]
     fn option_method_sugar_i64() {
         // Closure #376: o.unwrap_or(def) / o.is_some() /
         // o.is_none() for Option<i64>.
