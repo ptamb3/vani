@@ -739,7 +739,7 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-29, after closure #355 — **`graph_clear` + `union_find_clear`**. Completes the 3-closure container-clear lump (#353 → #354 → #355). Graph resets edges + CSR caches while keeping `num_nodes`; UnionFind resets to all-singletons (`parent[i]=i`, `rank[i]=0` via memset, `sets=n`) while keeping `n`. Method sugar `g.clear()` and `uf.clear()`. 2 new lib tests. 1287 lib + 54 parity green. **All 12 containers in the language now have a `.clear()` method**: HashSet, HashMap, BTreeSet, BTreeMap, Deque, BinaryHeap, BloomFilter, Bst, Trie, SkipList, Graph, UnionFind. Ready for buffer-reuse patterns across container types.)
+## ⏳ Resume here (paused 2026-05-29, after closure #356 — **`Vec<i64>` utility lump: `vec_range` / `vec_repeat` / `vec_extend` / `vec_concat`**. Four ergonomic constructors + combinators on the existing `intent_vec_int64_t` struct. `vec_range(lo, hi)` returns `[lo..hi)`; `vec_repeat(v, n)` returns n copies; `vec_extend(mut ref xs, ref ys)` appends in-place (returns new len); `vec_concat(ref xs, ref ys)` returns a fresh `xs ++ ys` with both inputs valid. Both backends byte-identical. 3 new lib tests. 1290 lib + 54 parity green. Closure #355 (clear suite completion) shipped immediately before.)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 

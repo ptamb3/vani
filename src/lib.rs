@@ -15552,6 +15552,78 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_utility_lump_typecheck_and_compile() {
+        // Closure #356: vec_range / vec_repeat / vec_extend /
+        // vec_concat — four Vec<i64> constructor + combinator
+        // helpers. Range and Repeat return fresh Vec; extend
+        // appends in-place; concat returns a fresh Vec leaving
+        // both inputs valid.
+        let source = r#"
+            fn main() -> i64 {
+              let r: Vec<i64> = vec_range(0, 5);
+              let p: Vec<i64> = vec_repeat(7, 3);
+              let n: i64 = vec_extend(mut ref r, ref p);
+              let c: Vec<i64> = vec_concat(ref r, ref p);
+              return n;
+            }
+        "#;
+        compile_to_c(source).expect("vec utility lump must type-check");
+        compile_to_llvm(source).expect("vec utility lump must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_extend_rejects_by_ref_first_arg() {
+        // First arg must be mut ref Vec<i64>.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec_range(0, 3);
+              let ys: Vec<i64> = vec_range(0, 3);
+              let _: i64 = vec_extend(ref xs, ref ys);
+              return 0;
+            }
+        "#;
+        let errors = compile(source).expect_err(
+            "vec_extend with ref first arg must fail"
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("mut ref Vec<i64>")),
+            "expected mut-ref-Vec<i64> diagnostic, got: {:?}",
+            errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn vec_utility_emits_helpers_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let r: Vec<i64> = vec_range(0, 3);
+              let p: Vec<i64> = vec_repeat(1, 2);
+              let _: i64 = vec_extend(mut ref r, ref p);
+              let _: Vec<i64> = vec_concat(ref r, ref p);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("vec utility C compile");
+        for sym in [
+            "intent_vec_int64_t_range",
+            "intent_vec_int64_t_repeat",
+            "intent_vec_int64_t_extend",
+            "intent_vec_int64_t_concat",
+        ] {
+            assert!(c.contains(sym), "C output must include {}", sym);
+        }
+        let ll = compile_to_llvm(source).expect("vec utility LLVM compile");
+        for sym in [
+            "@intent_vec_int64_t_range",
+            "@intent_vec_int64_t_repeat",
+            "@intent_vec_int64_t_extend",
+            "@intent_vec_int64_t_concat",
+        ] {
+            assert!(ll.contains(sym), "LLVM output must include {}", sym);
+        }
+    }
+
+    #[test]
     fn graph_union_find_clear_typecheck_and_compile() {
         // Closure #355: graph_clear keeps num_nodes, drops all
         // edges + CSR caches. union_find_clear resets to all-

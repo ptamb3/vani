@@ -873,6 +873,14 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
         emit_intent_str_split_definition(&mut out);
     }
 
+    // Closure #356: emit Vec<i64> utility helpers (vec_range /
+    // vec_repeat / vec_extend / vec_concat) after Vec typedefs
+    // are in scope. Same gate as other Vec<i64>-dependent
+    // builtins.
+    if crate::backend_c::program_uses_graph_vec_builtin(program) {
+        emit_intent_vec_int64_utility_definitions(&mut out);
+    }
+
     // Data-structures roadmap: emit shared array helpers for
     // `[i64; N]`. Single set of helpers (pointer + length) covers
     // every N. Gated on the program actually using `[i64; N]`
@@ -4707,6 +4715,42 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 }
                 return "0".to_string();
             }
+            // Closure #356: Vec<i64> utility helpers
+            // (vec_range / vec_repeat / vec_extend / vec_concat).
+            // All are hardcoded to i64 element type and route
+            // through `@intent_vec_int64_t_*` defines emitted
+            // post-Vec-typedef-bundle.
+            if name == "vec_range" || name == "vec_repeat" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                let op = name.strip_prefix("vec_").unwrap();
+                out.push_str(&format!(
+                    "  {} = call %intent_vec_i64 @intent_vec_int64_t_{}(i64 {}, i64 {})\n",
+                    dest, op, a, b
+                ));
+                return dest;
+            }
+            if name == "vec_extend" {
+                let xs = emit_expr(&args[0], ctx, out);
+                let ys = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_vec_int64_t_extend(%intent_vec_i64* {}, %intent_vec_i64* {})\n",
+                    dest, xs, ys
+                ));
+                return dest;
+            }
+            if name == "vec_concat" {
+                let xs = emit_expr(&args[0], ctx, out);
+                let ys = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_vec_i64 @intent_vec_int64_t_concat(%intent_vec_i64* {}, %intent_vec_i64* {})\n",
+                    dest, xs, ys
+                ));
+                return dest;
+            }
             // `vec(...)` as a sub-expression (e.g. nested
             // `vec(vec(1,2), vec(3))`) — emit the same
             // malloc-then-store-then-insertvalue shape as
@@ -8158,6 +8202,182 @@ pub(crate) fn emit_intent_siphash_definitions(out: &mut String) {
     out.push_str("  %n = call i64 @strlen(i8* %s)\n");
     out.push_str("  %r = call i64 @intent_siphash24_bytes(i64 %k0, i64 %k1, i8* %s, i64 %n)\n");
     out.push_str("  ret i64 %r\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #356: emit Vec<i64> utility helpers in LLVM IR.
+/// All four ops on `%intent_vec_i64 = type { i64*, i64, i64 }`.
+pub(crate) fn emit_intent_vec_int64_utility_definitions(out: &mut String) {
+    // ---- vec_range(lo, hi) -> Vec<i64>
+    out.push_str("define %intent_vec_i64 @intent_vec_int64_t_range(i64 %lo, i64 %hi) {\n");
+    out.push_str("  %vr_diff = sub i64 %hi, %lo\n");
+    out.push_str("  %vr_neg = icmp sle i64 %hi, %lo\n");
+    out.push_str("  br i1 %vr_neg, label %vr_empty, label %vr_alloc\n");
+    out.push_str("vr_empty:\n");
+    out.push_str("  %vr_e0 = insertvalue %intent_vec_i64 undef, i64* null, 0\n");
+    out.push_str("  %vr_e1 = insertvalue %intent_vec_i64 %vr_e0, i64 0, 1\n");
+    out.push_str("  %vr_e2 = insertvalue %intent_vec_i64 %vr_e1, i64 0, 2\n");
+    out.push_str("  ret %intent_vec_i64 %vr_e2\n");
+    out.push_str("vr_alloc:\n");
+    out.push_str("  %vr_bytes = mul i64 %vr_diff, 8\n");
+    out.push_str("  %vr_buf_i8 = call i8* @malloc(i64 %vr_bytes)\n");
+    out.push_str("  %vr_buf = bitcast i8* %vr_buf_i8 to i64*\n");
+    out.push_str("  %vr_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %vr_i_p\n");
+    out.push_str("  br label %vr_loop\n");
+    out.push_str("vr_loop:\n");
+    out.push_str("  %vr_i = load i64, i64* %vr_i_p\n");
+    out.push_str("  %vr_done = icmp uge i64 %vr_i, %vr_diff\n");
+    out.push_str("  br i1 %vr_done, label %vr_fill, label %vr_body\n");
+    out.push_str("vr_body:\n");
+    out.push_str("  %vr_val = add i64 %lo, %vr_i\n");
+    out.push_str("  %vr_slot = getelementptr i64, i64* %vr_buf, i64 %vr_i\n");
+    out.push_str("  store i64 %vr_val, i64* %vr_slot\n");
+    out.push_str("  %vr_i_inc = add i64 %vr_i, 1\n");
+    out.push_str("  store i64 %vr_i_inc, i64* %vr_i_p\n");
+    out.push_str("  br label %vr_loop\n");
+    out.push_str("vr_fill:\n");
+    out.push_str("  %vr_r0 = insertvalue %intent_vec_i64 undef, i64* %vr_buf, 0\n");
+    out.push_str("  %vr_r1 = insertvalue %intent_vec_i64 %vr_r0, i64 %vr_diff, 1\n");
+    out.push_str("  %vr_r2 = insertvalue %intent_vec_i64 %vr_r1, i64 %vr_diff, 2\n");
+    out.push_str("  ret %intent_vec_i64 %vr_r2\n");
+    out.push_str("}\n\n");
+
+    // ---- vec_repeat(val, n) -> Vec<i64>
+    out.push_str("define %intent_vec_i64 @intent_vec_int64_t_repeat(i64 %val, i64 %n) {\n");
+    out.push_str("  %vp_zero_or_neg = icmp sle i64 %n, 0\n");
+    out.push_str("  br i1 %vp_zero_or_neg, label %vp_empty, label %vp_alloc\n");
+    out.push_str("vp_empty:\n");
+    out.push_str("  %vp_e0 = insertvalue %intent_vec_i64 undef, i64* null, 0\n");
+    out.push_str("  %vp_e1 = insertvalue %intent_vec_i64 %vp_e0, i64 0, 1\n");
+    out.push_str("  %vp_e2 = insertvalue %intent_vec_i64 %vp_e1, i64 0, 2\n");
+    out.push_str("  ret %intent_vec_i64 %vp_e2\n");
+    out.push_str("vp_alloc:\n");
+    out.push_str("  %vp_bytes = mul i64 %n, 8\n");
+    out.push_str("  %vp_buf_i8 = call i8* @malloc(i64 %vp_bytes)\n");
+    out.push_str("  %vp_buf = bitcast i8* %vp_buf_i8 to i64*\n");
+    out.push_str("  %vp_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %vp_i_p\n");
+    out.push_str("  br label %vp_loop\n");
+    out.push_str("vp_loop:\n");
+    out.push_str("  %vp_i = load i64, i64* %vp_i_p\n");
+    out.push_str("  %vp_done = icmp uge i64 %vp_i, %n\n");
+    out.push_str("  br i1 %vp_done, label %vp_fill, label %vp_body\n");
+    out.push_str("vp_body:\n");
+    out.push_str("  %vp_slot = getelementptr i64, i64* %vp_buf, i64 %vp_i\n");
+    out.push_str("  store i64 %val, i64* %vp_slot\n");
+    out.push_str("  %vp_i_inc = add i64 %vp_i, 1\n");
+    out.push_str("  store i64 %vp_i_inc, i64* %vp_i_p\n");
+    out.push_str("  br label %vp_loop\n");
+    out.push_str("vp_fill:\n");
+    out.push_str("  %vp_r0 = insertvalue %intent_vec_i64 undef, i64* %vp_buf, 0\n");
+    out.push_str("  %vp_r1 = insertvalue %intent_vec_i64 %vp_r0, i64 %n, 1\n");
+    out.push_str("  %vp_r2 = insertvalue %intent_vec_i64 %vp_r1, i64 %n, 2\n");
+    out.push_str("  ret %intent_vec_i64 %vp_r2\n");
+    out.push_str("}\n\n");
+
+    // ---- vec_extend(mut ref xs, ref ys) -> i64  (returns new len)
+    out.push_str("define i64 @intent_vec_int64_t_extend(%intent_vec_i64* %xs, %intent_vec_i64* %ys) {\n");
+    // Field GEPs.
+    out.push_str("  %ve_xdp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 0\n");
+    out.push_str("  %ve_xlp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 1\n");
+    out.push_str("  %ve_xcp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 2\n");
+    out.push_str("  %ve_ydp = getelementptr %intent_vec_i64, %intent_vec_i64* %ys, i32 0, i32 0\n");
+    out.push_str("  %ve_ylp = getelementptr %intent_vec_i64, %intent_vec_i64* %ys, i32 0, i32 1\n");
+    out.push_str("  %ve_xlen = load i64, i64* %ve_xlp\n");
+    out.push_str("  %ve_ylen = load i64, i64* %ve_ylp\n");
+    out.push_str("  %ve_ys_empty = icmp eq i64 %ve_ylen, 0\n");
+    out.push_str("  br i1 %ve_ys_empty, label %ve_done, label %ve_grow_chk\n");
+    out.push_str("ve_grow_chk:\n");
+    out.push_str("  %ve_need = add i64 %ve_xlen, %ve_ylen\n");
+    out.push_str("  %ve_xcap = load i64, i64* %ve_xcp\n");
+    out.push_str("  %ve_enough = icmp uge i64 %ve_xcap, %ve_need\n");
+    out.push_str("  br i1 %ve_enough, label %ve_copy, label %ve_grow\n");
+    out.push_str("ve_grow:\n");
+    out.push_str("  %ve_ncap_p = alloca i64\n");
+    out.push_str("  %ve_cap_zero = icmp eq i64 %ve_xcap, 0\n");
+    out.push_str("  %ve_cap_init = select i1 %ve_cap_zero, i64 4, i64 %ve_xcap\n");
+    out.push_str("  store i64 %ve_cap_init, i64* %ve_ncap_p\n");
+    out.push_str("  br label %ve_dbl\n");
+    out.push_str("ve_dbl:\n");
+    out.push_str("  %ve_nc = load i64, i64* %ve_ncap_p\n");
+    out.push_str("  %ve_big = icmp uge i64 %ve_nc, %ve_need\n");
+    out.push_str("  br i1 %ve_big, label %ve_realloc, label %ve_dbl_step\n");
+    out.push_str("ve_dbl_step:\n");
+    out.push_str("  %ve_nc2 = mul i64 %ve_nc, 2\n");
+    out.push_str("  store i64 %ve_nc2, i64* %ve_ncap_p\n");
+    out.push_str("  br label %ve_dbl\n");
+    out.push_str("ve_realloc:\n");
+    out.push_str("  %ve_nc_f = load i64, i64* %ve_ncap_p\n");
+    out.push_str("  %ve_nc_bytes = mul i64 %ve_nc_f, 8\n");
+    out.push_str("  %ve_xdat_old = load i64*, i64** %ve_xdp\n");
+    out.push_str("  %ve_xdat_oi8 = bitcast i64* %ve_xdat_old to i8*\n");
+    out.push_str("  %ve_xdat_ni8 = call i8* @realloc(i8* %ve_xdat_oi8, i64 %ve_nc_bytes)\n");
+    out.push_str("  %ve_xdat_n = bitcast i8* %ve_xdat_ni8 to i64*\n");
+    out.push_str("  store i64* %ve_xdat_n, i64** %ve_xdp\n");
+    out.push_str("  store i64 %ve_nc_f, i64* %ve_xcp\n");
+    out.push_str("  br label %ve_copy\n");
+    out.push_str("ve_copy:\n");
+    out.push_str("  %ve_xdat = load i64*, i64** %ve_xdp\n");
+    out.push_str("  %ve_dst = getelementptr i64, i64* %ve_xdat, i64 %ve_xlen\n");
+    out.push_str("  %ve_ydat = load i64*, i64** %ve_ydp\n");
+    out.push_str("  %ve_y_bytes = mul i64 %ve_ylen, 8\n");
+    out.push_str("  %ve_dst_i8 = bitcast i64* %ve_dst to i8*\n");
+    out.push_str("  %ve_src_i8 = bitcast i64* %ve_ydat to i8*\n");
+    out.push_str("  %_ve_cp = call i8* @memcpy(i8* %ve_dst_i8, i8* %ve_src_i8, i64 %ve_y_bytes)\n");
+    out.push_str("  %ve_new_len = add i64 %ve_xlen, %ve_ylen\n");
+    out.push_str("  store i64 %ve_new_len, i64* %ve_xlp\n");
+    out.push_str("  br label %ve_done\n");
+    out.push_str("ve_done:\n");
+    out.push_str("  %ve_final = load i64, i64* %ve_xlp\n");
+    out.push_str("  ret i64 %ve_final\n");
+    out.push_str("}\n\n");
+
+    // ---- vec_concat(ref xs, ref ys) -> Vec<i64>
+    out.push_str("define %intent_vec_i64 @intent_vec_int64_t_concat(%intent_vec_i64* %xs, %intent_vec_i64* %ys) {\n");
+    out.push_str("  %vc_xlp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 1\n");
+    out.push_str("  %vc_ylp = getelementptr %intent_vec_i64, %intent_vec_i64* %ys, i32 0, i32 1\n");
+    out.push_str("  %vc_xlen = load i64, i64* %vc_xlp\n");
+    out.push_str("  %vc_ylen = load i64, i64* %vc_ylp\n");
+    out.push_str("  %vc_total = add i64 %vc_xlen, %vc_ylen\n");
+    out.push_str("  %vc_empty = icmp eq i64 %vc_total, 0\n");
+    out.push_str("  br i1 %vc_empty, label %vc_ret_empty, label %vc_alloc\n");
+    out.push_str("vc_ret_empty:\n");
+    out.push_str("  %vc_e0 = insertvalue %intent_vec_i64 undef, i64* null, 0\n");
+    out.push_str("  %vc_e1 = insertvalue %intent_vec_i64 %vc_e0, i64 0, 1\n");
+    out.push_str("  %vc_e2 = insertvalue %intent_vec_i64 %vc_e1, i64 0, 2\n");
+    out.push_str("  ret %intent_vec_i64 %vc_e2\n");
+    out.push_str("vc_alloc:\n");
+    out.push_str("  %vc_bytes = mul i64 %vc_total, 8\n");
+    out.push_str("  %vc_buf_i8 = call i8* @malloc(i64 %vc_bytes)\n");
+    out.push_str("  %vc_buf = bitcast i8* %vc_buf_i8 to i64*\n");
+    out.push_str("  %vc_xdp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 0\n");
+    out.push_str("  %vc_ydp = getelementptr %intent_vec_i64, %intent_vec_i64* %ys, i32 0, i32 0\n");
+    out.push_str("  %vc_x_pos = icmp ugt i64 %vc_xlen, 0\n");
+    out.push_str("  br i1 %vc_x_pos, label %vc_copy_x, label %vc_after_x\n");
+    out.push_str("vc_copy_x:\n");
+    out.push_str("  %vc_xdat = load i64*, i64** %vc_xdp\n");
+    out.push_str("  %vc_x_bytes = mul i64 %vc_xlen, 8\n");
+    out.push_str("  %vc_buf_i8a = bitcast i64* %vc_buf to i8*\n");
+    out.push_str("  %vc_xdat_i8 = bitcast i64* %vc_xdat to i8*\n");
+    out.push_str("  %_vc_cx = call i8* @memcpy(i8* %vc_buf_i8a, i8* %vc_xdat_i8, i64 %vc_x_bytes)\n");
+    out.push_str("  br label %vc_after_x\n");
+    out.push_str("vc_after_x:\n");
+    out.push_str("  %vc_y_pos = icmp ugt i64 %vc_ylen, 0\n");
+    out.push_str("  br i1 %vc_y_pos, label %vc_copy_y, label %vc_fin\n");
+    out.push_str("vc_copy_y:\n");
+    out.push_str("  %vc_ydat = load i64*, i64** %vc_ydp\n");
+    out.push_str("  %vc_y_bytes = mul i64 %vc_ylen, 8\n");
+    out.push_str("  %vc_dst = getelementptr i64, i64* %vc_buf, i64 %vc_xlen\n");
+    out.push_str("  %vc_dst_i8 = bitcast i64* %vc_dst to i8*\n");
+    out.push_str("  %vc_ydat_i8 = bitcast i64* %vc_ydat to i8*\n");
+    out.push_str("  %_vc_cy = call i8* @memcpy(i8* %vc_dst_i8, i8* %vc_ydat_i8, i64 %vc_y_bytes)\n");
+    out.push_str("  br label %vc_fin\n");
+    out.push_str("vc_fin:\n");
+    out.push_str("  %vc_r0 = insertvalue %intent_vec_i64 undef, i64* %vc_buf, 0\n");
+    out.push_str("  %vc_r1 = insertvalue %intent_vec_i64 %vc_r0, i64 %vc_total, 1\n");
+    out.push_str("  %vc_r2 = insertvalue %intent_vec_i64 %vc_r1, i64 %vc_total, 2\n");
+    out.push_str("  ret %intent_vec_i64 %vc_r2\n");
     out.push_str("}\n\n");
 }
 

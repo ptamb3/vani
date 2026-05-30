@@ -499,6 +499,14 @@ pub fn emit_c(program: &TypedProgram) -> String {
         emit_intent_str_split_c(&mut body);
     }
 
+    // Closure #356: Vec<i64> utility helpers (vec_range /
+    // vec_repeat / vec_extend / vec_concat). All reference
+    // `intent_vec_int64_t`, so emit after the Vec bundle pass.
+    // Same body-substring gate as other Vec<i64> deps.
+    if program_uses_graph_vec_builtin(program) {
+        emit_intent_vec_int64_utility_helpers_c(&mut body);
+    }
+
     for intent in &program.intents {
         body.push_str("/* intent: ");
         body.push_str(&escape_comment(intent));
@@ -2410,6 +2418,10 @@ pub(crate) fn program_uses_graph_vec_builtin(program: &TypedProgram) -> bool {
                     || name == "btreeset_range"
                     || name == "btreemap_range_keys"
                     || name == "btreemap_range_values"
+                    || name == "vec_range"
+                    || name == "vec_repeat"
+                    || name == "vec_extend"
+                    || name == "vec_concat"
                 {
                     return true;
                 }
@@ -4454,6 +4466,72 @@ pub(crate) fn emit_intent_str_concat_c(out: &mut String) {
 /// present, which the existing Vec-element walker auto-emits
 /// when the program uses `Vec<OwnedStr>` anywhere — including
 /// at this function's return type.
+/// Closure #356: Vec<i64> utility helpers — small constructors
+/// and combinators that operate on the existing
+/// `intent_vec_int64_t` struct.
+///
+///   vec_range(lo, hi) -> Vec<i64>     [lo, lo+1, ..., hi-1]
+///   vec_repeat(v, n)  -> Vec<i64>     n copies of v
+///   vec_extend(mut ref xs, ref ys) -> i64    appends ys to xs;
+///                                            returns new len
+///   vec_concat(ref xs, ref ys)     -> Vec<i64>   fresh xs ++ ys
+pub(crate) fn emit_intent_vec_int64_utility_helpers_c(out: &mut String) {
+    out.push_str(
+        "static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_range(int64_t lo, int64_t hi) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_range(int64_t lo, int64_t hi) {\n\
+         \x20 intent_vec_int64_t v; v.data = (int64_t*)0; v.len = 0; v.capacity = 0;\n\
+         \x20 if (hi <= lo) return v;\n\
+         \x20 uint64_t n = (uint64_t)(hi - lo);\n\
+         \x20 v.data = (int64_t*)malloc((size_t)n * sizeof(int64_t));\n\
+         \x20 if (!v.data) abort();\n\
+         \x20 for (uint64_t i = 0; i < n; i++) v.data[i] = lo + (int64_t)i;\n\
+         \x20 v.len = n;\n\
+         \x20 v.capacity = n;\n\
+         \x20 return v;\n\
+         }\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_repeat(int64_t val, int64_t n) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_repeat(int64_t val, int64_t n) {\n\
+         \x20 intent_vec_int64_t v; v.data = (int64_t*)0; v.len = 0; v.capacity = 0;\n\
+         \x20 if (n <= 0) return v;\n\
+         \x20 uint64_t un = (uint64_t)n;\n\
+         \x20 v.data = (int64_t*)malloc((size_t)un * sizeof(int64_t));\n\
+         \x20 if (!v.data) abort();\n\
+         \x20 for (uint64_t i = 0; i < un; i++) v.data[i] = val;\n\
+         \x20 v.len = un;\n\
+         \x20 v.capacity = un;\n\
+         \x20 return v;\n\
+         }\n\
+         static INTENT_UNUSED int64_t intent_vec_int64_t_extend(intent_vec_int64_t* xs, const intent_vec_int64_t* ys) INTENT_UNUSED;\n\
+         static INTENT_UNUSED int64_t intent_vec_int64_t_extend(intent_vec_int64_t* xs, const intent_vec_int64_t* ys) {\n\
+         \x20 if (ys->len == 0) return (int64_t)xs->len;\n\
+         \x20 uint64_t need = xs->len + ys->len;\n\
+         \x20 if (need > xs->capacity) {\n\
+         \x20   uint64_t new_cap = xs->capacity ? xs->capacity : 4;\n\
+         \x20   while (new_cap < need) new_cap *= 2;\n\
+         \x20   xs->data = (int64_t*)realloc(xs->data, (size_t)new_cap * sizeof(int64_t));\n\
+         \x20   if (!xs->data) abort();\n\
+         \x20   xs->capacity = new_cap;\n\
+         \x20 }\n\
+         \x20 memcpy(xs->data + xs->len, ys->data, (size_t)ys->len * sizeof(int64_t));\n\
+         \x20 xs->len = need;\n\
+         \x20 return (int64_t)xs->len;\n\
+         }\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_concat(const intent_vec_int64_t* xs, const intent_vec_int64_t* ys) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_concat(const intent_vec_int64_t* xs, const intent_vec_int64_t* ys) {\n\
+         \x20 intent_vec_int64_t v; v.data = (int64_t*)0; v.len = 0; v.capacity = 0;\n\
+         \x20 uint64_t total = xs->len + ys->len;\n\
+         \x20 if (total == 0) return v;\n\
+         \x20 v.data = (int64_t*)malloc((size_t)total * sizeof(int64_t));\n\
+         \x20 if (!v.data) abort();\n\
+         \x20 if (xs->len > 0) memcpy(v.data, xs->data, (size_t)xs->len * sizeof(int64_t));\n\
+         \x20 if (ys->len > 0) memcpy(v.data + xs->len, ys->data, (size_t)ys->len * sizeof(int64_t));\n\
+         \x20 v.len = total;\n\
+         \x20 v.capacity = total;\n\
+         \x20 return v;\n\
+         }\n\n",
+    );
+}
+
 pub(crate) fn emit_intent_str_split_c(out: &mut String) {
     out.push_str(
         "static intent_vec_owned_str intent_str_split(const char* s, const char* delim) INTENT_UNUSED;\n\
@@ -8569,6 +8647,26 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 _ => unreachable!("sort_by() arg 0 must be (mut ref) Vec<_> or [T; N]"),
             }
         }
+        "vec_range" => format!(
+            "intent_vec_int64_t_range(({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "vec_repeat" => format!(
+            "intent_vec_int64_t_repeat(({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "vec_extend" => format!(
+            "intent_vec_int64_t_extend({}, {})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "vec_concat" => format!(
+            "intent_vec_int64_t_concat({}, {})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         "vec_map" => {
             // vec_map(ref xs: Vec<i64>, f) -> Vec<i64>. Eager;
             // helper materializes a new Vec. Closure #309.

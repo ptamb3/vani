@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "str_trim", "str_replace", "str_split", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_f64", "hash_str", "hash_combine", "siphash_i64", "siphash_str", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "deque_clear", "hashset_new", "hashset_insert", "hashset_contains", "hashset_remove", "hashset_len", "hashset_clear", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_remove", "hashmap_len", "hashmap_clear", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreeset_range", "btreeset_min", "btreeset_max", "btreeset_clear", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "btreemap_range_keys", "btreemap_range_values", "btreemap_min_key", "btreemap_max_key", "btreemap_clear", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "union_find_clear", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "binary_heap_clear", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bloom_filter_clear", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "bst_clear", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "graph_has_cycle", "graph_mst_kruskal", "graph_mst_prim", "graph_astar", "graph_topo_sort", "graph_clear", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_delete", "trie_len", "trie_node_count", "trie_clear", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_remove", "skiplist_len", "skiplist_min", "skiplist_max", "skiplist_clear", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "str_trim", "str_replace", "str_split", "parse_int", "parse_float", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_f64", "hash_str", "hash_combine", "siphash_i64", "siphash_str", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "deque_clear", "hashset_new", "hashset_insert", "hashset_contains", "hashset_remove", "hashset_len", "hashset_clear", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_remove", "hashmap_len", "hashmap_clear", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreeset_range", "btreeset_min", "btreeset_max", "btreeset_clear", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "btreemap_range_keys", "btreemap_range_values", "btreemap_min_key", "btreemap_max_key", "btreemap_clear", "vec_map", "vec_fold", "vec_filter", "vec_take", "vec_drop", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "vec_range", "vec_repeat", "vec_extend", "vec_concat", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "union_find_clear", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "binary_heap_clear", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bloom_filter_clear", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "bst_clear", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "graph_has_cycle", "graph_mst_kruskal", "graph_mst_prim", "graph_astar", "graph_topo_sort", "graph_clear", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_delete", "trie_len", "trie_node_count", "trie_clear", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_remove", "skiplist_len", "skiplist_min", "skiplist_max", "skiplist_clear", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -13856,6 +13856,11 @@ fn check_call(
                 name, args, env, signatures, span, diagnostics,
             );
         }
+        "vec_range" | "vec_repeat" | "vec_extend" | "vec_concat" => {
+            return check_vec_utility_builtin(
+                name, args, env, signatures, span, diagnostics,
+            );
+        }
         "vec_take" | "vec_drop" => {
             return check_vec_take_drop_builtin(
                 name, args, env, signatures, span, diagnostics,
@@ -16005,11 +16010,125 @@ fn check_vec_map_fold_builtin(
 /// on Vec<i64> (closure #313). Both borrow the input read-only
 /// and materialize a fresh Vec the caller owns + drops.
 ///
-///   vec_take(ref xs: Vec<i64>, n: i64) -> Vec<i64>
-///       first min(n, len) elements. Negative n clamps to 0.
-///   vec_drop(ref xs: Vec<i64>, n: i64) -> Vec<i64>
-///       all elements after the first min(n, len). Negative n
-///       clamps to 0 (returns the whole Vec).
+/// Closure #356: Vec<i64> utility builtins.
+///
+///   vec_range(lo: i64, hi: i64) -> Vec<i64>
+///       [lo, lo+1, ..., hi-1]; empty if hi <= lo.
+///   vec_repeat(v: i64, n: i64) -> Vec<i64>
+///       n copies of v; empty if n <= 0.
+///   vec_extend(mut ref xs: Vec<i64>, ref ys: Vec<i64>) -> i64
+///       appends ys to xs; returns new len of xs.
+///   vec_concat(ref xs: Vec<i64>, ref ys: Vec<i64>) -> Vec<i64>
+///       fresh xs ++ ys; both inputs remain valid.
+fn check_vec_utility_builtin(
+    name: &str,
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    if args.len() != 2 {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!("{}() expects 2 arguments, got {}", name, args.len()),
+        ));
+        let ret_ty = match name {
+            "vec_extend" => Type::I64,
+            _ => Type::Vec(Box::new(Type::I64)),
+        };
+        return CheckedExpr::fallback(ret_ty, span);
+    }
+    let a0_raw = check_expr(&args[0], env, signatures, diagnostics);
+    let a1_raw = check_expr(&args[1], env, signatures, diagnostics);
+    let typed_args = match name {
+        "vec_range" | "vec_repeat" => {
+            let a0 = coerce_checked(
+                a0_raw, &Type::I64, args[0].span,
+                &format!("{} arg 0", name), diagnostics,
+            );
+            let a1 = coerce_checked(
+                a1_raw, &Type::I64, args[1].span,
+                &format!("{} arg 1", name), diagnostics,
+            );
+            vec![a0.expr, a1.expr]
+        }
+        "vec_extend" => {
+            // arg 0: mut ref Vec<i64>; arg 1: ref Vec<i64>.
+            let a0_ok = matches!(
+                a0_raw.ty(),
+                Type::RefMut(ref inner) if matches!(&**inner, Type::Vec(el) if matches!(**el, Type::I64))
+            );
+            let a1_ok = matches!(
+                a1_raw.ty(),
+                Type::Ref(ref inner) | Type::RefMut(ref inner) if matches!(&**inner, Type::Vec(el) if matches!(**el, Type::I64))
+            );
+            if !a0_ok {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "vec_extend() arg 0 must be `mut ref Vec<i64>`, got {}",
+                        a0_raw.ty()
+                    ),
+                ));
+            }
+            if !a1_ok {
+                diagnostics.push(Diagnostic::new(
+                    args[1].span,
+                    format!(
+                        "vec_extend() arg 1 must be `ref Vec<i64>` or `mut ref Vec<i64>`, got {}",
+                        a1_raw.ty()
+                    ),
+                ));
+            }
+            vec![a0_raw.expr, a1_raw.expr]
+        }
+        "vec_concat" => {
+            // Both ref Vec<i64> (or mut ref — both readable).
+            let ok = |t: &Type| -> bool {
+                matches!(
+                    t,
+                    Type::Ref(inner) | Type::RefMut(inner) if matches!(&**inner, Type::Vec(el) if matches!(**el, Type::I64))
+                )
+            };
+            if !ok(&a0_raw.ty()) {
+                diagnostics.push(Diagnostic::new(
+                    args[0].span,
+                    format!(
+                        "vec_concat() arg 0 must be `ref Vec<i64>`, got {}",
+                        a0_raw.ty()
+                    ),
+                ));
+            }
+            if !ok(&a1_raw.ty()) {
+                diagnostics.push(Diagnostic::new(
+                    args[1].span,
+                    format!(
+                        "vec_concat() arg 1 must be `ref Vec<i64>`, got {}",
+                        a1_raw.ty()
+                    ),
+                ));
+            }
+            vec![a0_raw.expr, a1_raw.expr]
+        }
+        _ => unreachable!(),
+    };
+    let ret_ty = match name {
+        "vec_extend" => Type::I64,
+        _ => Type::Vec(Box::new(Type::I64)),
+    };
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: name.to_string(),
+            name_span: span,
+            args: typed_args,
+        },
+        ret_ty,
+        None,
+        span,
+    )
+}
+
 fn check_vec_take_drop_builtin(
     name: &str,
     args: &[Expr],
