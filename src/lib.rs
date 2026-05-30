@@ -15687,6 +15687,55 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_case_conversion_typecheck_and_compile() {
+        // Closure #369: str_to_upper / str_to_lower -> OwnedStr.
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "Hello, World! 123";
+              let u: OwnedStr = str_to_upper(s);
+              let l: OwnedStr = str_to_lower(s);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str case must type-check");
+        compile_to_llvm(source).expect("str case must compile to LLVM");
+    }
+
+    #[test]
+    fn str_case_emits_helpers_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let u: OwnedStr = str_to_upper("a");
+              let l: OwnedStr = str_to_lower("A");
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("str case C");
+        assert!(
+            c.contains("intent_str_to_upper(") && c.contains("intent_str_to_lower("),
+            "C output must call both case helpers"
+        );
+        let ll = compile_to_llvm(source).expect("str case LLVM");
+        assert!(
+            ll.contains("define i8* @intent_str_to_upper(i8*")
+                && ll.contains("define i8* @intent_str_to_lower(i8*"),
+            "LLVM output must define both case helpers"
+        );
+    }
+
+    #[test]
+    fn str_case_arity_1_required() {
+        let source = r#"
+            fn main() -> i64 {
+              let u: OwnedStr = str_to_upper("a", "b");
+              return 0;
+            }
+        "#;
+        assert!(compile_to_c(source).is_err(),
+            "str_to_upper must require 1 arg");
+    }
+
+    #[test]
     fn str_repeat_typecheck_and_compile() {
         // Closure #368: str_repeat(s, n) -> OwnedStr.
         let source = r#"

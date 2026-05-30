@@ -701,6 +701,7 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     emit_intent_str_replace_definition(&mut out);
     emit_intent_substring_definition(&mut out);
     emit_intent_str_repeat_definition(&mut out);
+    emit_intent_str_case_definition(&mut out);
     emit_intent_i64_to_str_definition(&mut out);
     // Note: emit_intent_str_split_definition (closure #350) is
     // emitted later, after the Vec<OwnedStr> typedef has been
@@ -6350,6 +6351,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #369: ASCII case conversion.
+            if name == "str_to_upper" || name == "str_to_lower" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i8* @intent_{}(i8* {})\n",
+                    dest, name, s
+                ));
+                return dest;
+            }
             // Closure #365: str_index_of(haystack, needle) ->
             // Option<i64>. strstr returns NULL if needle not
             // found; otherwise it points into haystack and the
@@ -9059,6 +9070,82 @@ pub(crate) fn emit_intent_substring_definition(out: &mut String) {
     out.push_str("  %sub_nul_p = getelementptr i8, i8* %sub_out, i64 %sub_take\n");
     out.push_str("  store i8 0, i8* %sub_nul_p\n");
     out.push_str("  ret i8* %sub_out\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #369: ASCII case conversion (str_to_upper /
+/// str_to_lower) -> OwnedStr. Walks the source byte-by-byte
+/// applying a +/-32 delta when the byte is in the ASCII alpha
+/// range. NULL input produces a fresh empty heap string.
+pub(crate) fn emit_intent_str_case_definition(out: &mut String) {
+    // str_to_upper: lowercase ('a'..'z' = 97..122) -> add -32.
+    out.push_str("define i8* @intent_str_to_upper(i8* %s) {\n");
+    out.push_str("  %su_null = icmp eq i8* %s, null\n");
+    out.push_str("  br i1 %su_null, label %su_empty, label %su_strlen\n");
+    out.push_str("su_strlen:\n");
+    out.push_str("  %su_sl = call i64 @strlen(i8* %s)\n");
+    out.push_str("  %su_alloc_n = add i64 %su_sl, 1\n");
+    out.push_str("  %su_out = call i8* @malloc(i64 %su_alloc_n)\n");
+    out.push_str("  br label %su_loop_head\n");
+    out.push_str("su_loop_head:\n");
+    out.push_str("  %su_i = phi i64 [ 0, %su_strlen ], [ %su_i_next, %su_loop_body ]\n");
+    out.push_str("  %su_done = icmp uge i64 %su_i, %su_sl\n");
+    out.push_str("  br i1 %su_done, label %su_finish, label %su_loop_body\n");
+    out.push_str("su_loop_body:\n");
+    out.push_str("  %su_src_p = getelementptr i8, i8* %s, i64 %su_i\n");
+    out.push_str("  %su_c = load i8, i8* %su_src_p\n");
+    out.push_str("  %su_is_lo_a = icmp uge i8 %su_c, 97\n");
+    out.push_str("  %su_is_lo_z = icmp ule i8 %su_c, 122\n");
+    out.push_str("  %su_is_lo = and i1 %su_is_lo_a, %su_is_lo_z\n");
+    out.push_str("  %su_shifted = sub i8 %su_c, 32\n");
+    out.push_str("  %su_new = select i1 %su_is_lo, i8 %su_shifted, i8 %su_c\n");
+    out.push_str("  %su_dst_p = getelementptr i8, i8* %su_out, i64 %su_i\n");
+    out.push_str("  store i8 %su_new, i8* %su_dst_p\n");
+    out.push_str("  %su_i_next = add i64 %su_i, 1\n");
+    out.push_str("  br label %su_loop_head\n");
+    out.push_str("su_finish:\n");
+    out.push_str("  %su_nul_p = getelementptr i8, i8* %su_out, i64 %su_sl\n");
+    out.push_str("  store i8 0, i8* %su_nul_p\n");
+    out.push_str("  ret i8* %su_out\n");
+    out.push_str("su_empty:\n");
+    out.push_str("  %su_e = call i8* @malloc(i64 1)\n");
+    out.push_str("  store i8 0, i8* %su_e\n");
+    out.push_str("  ret i8* %su_e\n");
+    out.push_str("}\n\n");
+
+    // str_to_lower: uppercase ('A'..'Z' = 65..90) -> add 32.
+    out.push_str("define i8* @intent_str_to_lower(i8* %s) {\n");
+    out.push_str("  %sl_null = icmp eq i8* %s, null\n");
+    out.push_str("  br i1 %sl_null, label %sl_empty, label %sl_strlen\n");
+    out.push_str("sl_strlen:\n");
+    out.push_str("  %sl_sl = call i64 @strlen(i8* %s)\n");
+    out.push_str("  %sl_alloc_n = add i64 %sl_sl, 1\n");
+    out.push_str("  %sl_out = call i8* @malloc(i64 %sl_alloc_n)\n");
+    out.push_str("  br label %sl_loop_head\n");
+    out.push_str("sl_loop_head:\n");
+    out.push_str("  %sl_i = phi i64 [ 0, %sl_strlen ], [ %sl_i_next, %sl_loop_body ]\n");
+    out.push_str("  %sl_done = icmp uge i64 %sl_i, %sl_sl\n");
+    out.push_str("  br i1 %sl_done, label %sl_finish, label %sl_loop_body\n");
+    out.push_str("sl_loop_body:\n");
+    out.push_str("  %sl_src_p = getelementptr i8, i8* %s, i64 %sl_i\n");
+    out.push_str("  %sl_c = load i8, i8* %sl_src_p\n");
+    out.push_str("  %sl_is_up_a = icmp uge i8 %sl_c, 65\n");
+    out.push_str("  %sl_is_up_z = icmp ule i8 %sl_c, 90\n");
+    out.push_str("  %sl_is_up = and i1 %sl_is_up_a, %sl_is_up_z\n");
+    out.push_str("  %sl_shifted = add i8 %sl_c, 32\n");
+    out.push_str("  %sl_new = select i1 %sl_is_up, i8 %sl_shifted, i8 %sl_c\n");
+    out.push_str("  %sl_dst_p = getelementptr i8, i8* %sl_out, i64 %sl_i\n");
+    out.push_str("  store i8 %sl_new, i8* %sl_dst_p\n");
+    out.push_str("  %sl_i_next = add i64 %sl_i, 1\n");
+    out.push_str("  br label %sl_loop_head\n");
+    out.push_str("sl_finish:\n");
+    out.push_str("  %sl_nul_p = getelementptr i8, i8* %sl_out, i64 %sl_sl\n");
+    out.push_str("  store i8 0, i8* %sl_nul_p\n");
+    out.push_str("  ret i8* %sl_out\n");
+    out.push_str("sl_empty:\n");
+    out.push_str("  %sl_e = call i8* @malloc(i64 1)\n");
+    out.push_str("  store i8 0, i8* %sl_e\n");
+    out.push_str("  ret i8* %sl_e\n");
     out.push_str("}\n\n");
 }
 

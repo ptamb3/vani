@@ -684,6 +684,7 @@ pub fn emit_c(program: &TypedProgram) -> String {
     emit_intent_str_replace_c(&mut out);
     emit_intent_substring_c(&mut out);
     emit_intent_str_repeat_c(&mut out);
+    emit_intent_str_case_c(&mut out);
     emit_intent_i64_to_str_c(&mut out);
     emit_concurrency_runtime_helpers(&mut out, &body, &channel_specs);
     emit_intent_rng_helpers_c(&mut out, &body);
@@ -4786,6 +4787,40 @@ pub(crate) fn emit_intent_substring_c(out: &mut String) {
          \x20 if (!out) abort();\n\
          \x20 if (take > 0 && s) memcpy(out, s + lo, (size_t)take);\n\
          \x20 out[take] = 0;\n\
+         \x20 return out;\n\
+         }\n\n",
+    );
+}
+
+/// Closure #369: `str_to_upper(s) / str_to_lower(s) -> OwnedStr`.
+/// ASCII case conversion (non-ASCII bytes passed through
+/// unchanged). NULL input produces a fresh empty string. Both
+/// helpers share `intent_str_case_c` for code-reuse — the only
+/// difference is the per-byte delta sign.
+pub(crate) fn emit_intent_str_case_c(out: &mut String) {
+    out.push_str(
+        "static char* intent_str_to_upper(const char* s) INTENT_UNUSED;\n\
+         static char* intent_str_to_upper(const char* s) {\n\
+         \x20 size_t sl = s ? strlen(s) : 0;\n\
+         \x20 char* out = (char*)malloc(sl + 1);\n\
+         \x20 if (!out) abort();\n\
+         \x20 for (size_t i = 0; i < sl; ++i) {\n\
+         \x20   char c = s[i];\n\
+         \x20   out[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;\n\
+         \x20 }\n\
+         \x20 out[sl] = 0;\n\
+         \x20 return out;\n\
+         }\n\
+         static char* intent_str_to_lower(const char* s) INTENT_UNUSED;\n\
+         static char* intent_str_to_lower(const char* s) {\n\
+         \x20 size_t sl = s ? strlen(s) : 0;\n\
+         \x20 char* out = (char*)malloc(sl + 1);\n\
+         \x20 if (!out) abort();\n\
+         \x20 for (size_t i = 0; i < sl; ++i) {\n\
+         \x20   char c = s[i];\n\
+         \x20   out[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;\n\
+         \x20 }\n\
+         \x20 out[sl] = 0;\n\
          \x20 return out;\n\
          }\n\n",
     );
@@ -9192,6 +9227,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[0]),
                 emit_expr(&args[1]),
             )
+        }
+        // Closure #369: ASCII case conversion -> OwnedStr.
+        "str_to_upper" => {
+            format!("intent_str_to_upper(({}))", emit_expr(&args[0]))
+        }
+        "str_to_lower" => {
+            format!("intent_str_to_lower(({}))", emit_expr(&args[0]))
         }
         "str_starts_with" => {
             // strncmp(s, p, strlen(p)) == 0. Cache the prefix

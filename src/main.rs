@@ -315,6 +315,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "str_index_of"
                 || name == "substring"
                 || name == "str_repeat"
+                || name == "str_to_upper" || name == "str_to_lower"
                 || name == "i64_to_str"
                 || name == "f64_to_str"
                 || name == "bool_to_str"
