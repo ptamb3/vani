@@ -885,11 +885,14 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     if crate::backend_c::program_uses_str_split(program) {
         emit_intent_str_split_definition(&mut out);
         emit_intent_str_join_definition(&mut out);
+        emit_intent_str_lines_definition(&mut out);
     }
     // Closure #380: integer-math helpers (i64_gcd / i64_lcm /
     // i64_pow). Always-on; unused defines get dropped by the
     // LLVM optimizer.
     emit_intent_i64_math_definitions(&mut out);
+    // Closure #381: str padding helpers. Always-on.
+    emit_intent_str_pad_definitions(&mut out);
 
     // Closure #356: emit Vec<i64> utility helpers (vec_range /
     // vec_repeat / vec_extend / vec_concat) after Vec typedefs
@@ -6441,6 +6444,28 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #381: str_lines(s) -> Vec<OwnedStr>.
+            if name == "str_lines" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_vec_i8p @intent_str_lines(i8* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
+            // Closure #381: str_pad_left / str_pad_right.
+            if name == "str_pad_left" || name == "str_pad_right" {
+                let s = emit_expr(&args[0], ctx, out);
+                let n = emit_expr(&args[1], ctx, out);
+                let ch = emit_expr(&args[2], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i8* @intent_{}(i8* {}, i64 {}, i8* {})\n",
+                    dest, name, s, n, ch
+                ));
+                return dest;
+            }
             if name == "str_contains" {
                 let s = emit_expr(&args[0], ctx, out);
                 let n = emit_expr(&args[1], ctx, out);
@@ -9190,6 +9215,201 @@ pub(crate) fn emit_intent_vec_int64_utility_definitions(out: &mut String) {
     out.push_str("  %vu_r2 = insertvalue %intent_vec_i64 %vu_r1, i64 %vu_len, 2\n");
     out.push_str("  ret %intent_vec_i64 %vu_r2\n");
     out.push_str("}\n\n");
+}
+
+/// Closure #381: emit str_lines / str_pad_left / str_pad_right
+/// LLVM helpers. `str_lines` is a wrapper around
+/// `@intent_str_split(s, "\n")` that walks the returned
+/// `%intent_vec_i8p` and trims trailing '\r' bytes in place.
+pub(crate) fn emit_intent_str_lines_definition(out: &mut String) {
+    // Pre-declare a private constant for the "\n" delimiter.
+    out.push_str(
+        "@.intent_str_lines_lf = private constant [2 x i8] c\"\\0A\\00\"\n",
+    );
+    out.push_str("define %intent_vec_i8p @intent_str_lines(i8* %s) {\n");
+    out.push_str("  %lf_p = getelementptr [2 x i8], [2 x i8]* @.intent_str_lines_lf, i64 0, i64 0\n");
+    out.push_str("  %v = call %intent_vec_i8p @intent_str_split(i8* %s, i8* %lf_p)\n");
+    // Spill v so we can walk it.
+    out.push_str("  %v_p = alloca %intent_vec_i8p\n");
+    out.push_str("  store %intent_vec_i8p %v, %intent_vec_i8p* %v_p\n");
+    out.push_str("  %v_lp = getelementptr %intent_vec_i8p, %intent_vec_i8p* %v_p, i32 0, i32 1\n");
+    out.push_str("  %v_dp = getelementptr %intent_vec_i8p, %intent_vec_i8p* %v_p, i32 0, i32 0\n");
+    out.push_str("  %v_len = load i64, i64* %v_lp\n");
+    out.push_str("  %v_src = load i8**, i8*** %v_dp\n");
+    out.push_str("  %sl_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sl_i_p\n");
+    out.push_str("  br label %sl_head\n");
+    out.push_str("sl_head:\n");
+    out.push_str("  %sl_i = load i64, i64* %sl_i_p\n");
+    out.push_str("  %sl_done = icmp uge i64 %sl_i, %v_len\n");
+    out.push_str("  br i1 %sl_done, label %sl_fin, label %sl_body\n");
+    out.push_str("sl_body:\n");
+    out.push_str("  %sl_slot = getelementptr i8*, i8** %v_src, i64 %sl_i\n");
+    out.push_str("  %sl_line = load i8*, i8** %sl_slot\n");
+    out.push_str("  %sl_line_null = icmp eq i8* %sl_line, null\n");
+    out.push_str("  br i1 %sl_line_null, label %sl_advance, label %sl_check_cr\n");
+    out.push_str("sl_check_cr:\n");
+    out.push_str("  %sl_ll = call i64 @strlen(i8* %sl_line)\n");
+    out.push_str("  %sl_has_chars = icmp ugt i64 %sl_ll, 0\n");
+    out.push_str("  br i1 %sl_has_chars, label %sl_check_cr_body, label %sl_advance\n");
+    out.push_str("sl_check_cr_body:\n");
+    out.push_str("  %sl_last_idx = sub i64 %sl_ll, 1\n");
+    out.push_str("  %sl_last_p = getelementptr i8, i8* %sl_line, i64 %sl_last_idx\n");
+    out.push_str("  %sl_last = load i8, i8* %sl_last_p\n");
+    out.push_str("  %sl_is_cr = icmp eq i8 %sl_last, 13\n");
+    out.push_str("  br i1 %sl_is_cr, label %sl_trim, label %sl_advance\n");
+    out.push_str("sl_trim:\n");
+    out.push_str("  store i8 0, i8* %sl_last_p\n");
+    out.push_str("  br label %sl_advance\n");
+    out.push_str("sl_advance:\n");
+    out.push_str("  %sl_i_next = add i64 %sl_i, 1\n");
+    out.push_str("  store i64 %sl_i_next, i64* %sl_i_p\n");
+    out.push_str("  br label %sl_head\n");
+    out.push_str("sl_fin:\n");
+    out.push_str("  %v_final = load %intent_vec_i8p, %intent_vec_i8p* %v_p\n");
+    out.push_str("  ret %intent_vec_i8p %v_final\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #381: emit `intent_str_pad_left` /
+/// `intent_str_pad_right` LLVM helpers. Both signatures:
+/// `i8* (i8* %s, i64 %n, i8* %ch)`. Only the first byte of
+/// `ch` is used; empty `ch` falls back to ' ' (0x20).
+pub(crate) fn emit_intent_str_pad_definitions(out: &mut String) {
+    for (fn_name, label_prefix, pad_left) in &[
+        ("intent_str_pad_left", "pl", true),
+        ("intent_str_pad_right", "pr", false),
+    ] {
+        let p = label_prefix;
+        out.push_str(&format!(
+            "define i8* @{fn_name}(i8* %s, i64 %n, i8* %ch) {{\n",
+            fn_name = fn_name
+        ));
+        out.push_str(&format!(
+            "  %{p}_sl = call i64 @strlen(i8* %s)\n", p = p
+        ));
+        // fill = ch[0] != 0 ? ch[0] : ' '
+        out.push_str(&format!(
+            "  %{p}_ch0 = load i8, i8* %ch\n", p = p
+        ));
+        out.push_str(&format!(
+            "  %{p}_ch_zero = icmp eq i8 %{p}_ch0, 0\n", p = p
+        ));
+        out.push_str(&format!(
+            "  %{p}_fill = select i1 %{p}_ch_zero, i8 32, i8 %{p}_ch0\n", p = p
+        ));
+        // target = max(n, sl) (treat negative n as 0)
+        out.push_str(&format!(
+            "  %{p}_n_neg = icmp slt i64 %n, 0\n", p = p
+        ));
+        out.push_str(&format!(
+            "  %{p}_n_clamp = select i1 %{p}_n_neg, i64 0, i64 %n\n", p = p
+        ));
+        out.push_str(&format!(
+            "  %{p}_need_pad = icmp ugt i64 %{p}_n_clamp, %{p}_sl\n", p = p
+        ));
+        out.push_str(&format!(
+            "  %{p}_target = select i1 %{p}_need_pad, i64 %{p}_n_clamp, i64 %{p}_sl\n", p = p
+        ));
+        // pad_count = target - sl
+        out.push_str(&format!(
+            "  %{p}_pad_count = sub i64 %{p}_target, %{p}_sl\n", p = p
+        ));
+        // out = malloc(target + 1)
+        out.push_str(&format!(
+            "  %{p}_alloc_n = add i64 %{p}_target, 1\n", p = p
+        ));
+        out.push_str(&format!(
+            "  %{p}_out = call i8* @malloc(i64 %{p}_alloc_n)\n", p = p
+        ));
+        if *pad_left {
+            // Fill pad area first, then copy s starting at pad_count.
+            out.push_str(&format!(
+                "  %{p}_pad_iter_p = alloca i64\n", p = p
+            ));
+            out.push_str(&format!(
+                "  store i64 0, i64* %{p}_pad_iter_p\n", p = p
+            ));
+            out.push_str(&format!("  br label %{p}_pad_head\n", p = p));
+            out.push_str(&format!("{p}_pad_head:\n", p = p));
+            out.push_str(&format!(
+                "  %{p}_pad_i = load i64, i64* %{p}_pad_iter_p\n", p = p
+            ));
+            out.push_str(&format!(
+                "  %{p}_pad_done = icmp uge i64 %{p}_pad_i, %{p}_pad_count\n", p = p
+            ));
+            out.push_str(&format!(
+                "  br i1 %{p}_pad_done, label %{p}_copy_s, label %{p}_pad_body\n", p = p
+            ));
+            out.push_str(&format!("{p}_pad_body:\n", p = p));
+            out.push_str(&format!(
+                "  %{p}_pad_slot = getelementptr i8, i8* %{p}_out, i64 %{p}_pad_i\n", p = p
+            ));
+            out.push_str(&format!(
+                "  store i8 %{p}_fill, i8* %{p}_pad_slot\n", p = p
+            ));
+            out.push_str(&format!(
+                "  %{p}_pad_i_next = add i64 %{p}_pad_i, 1\n", p = p
+            ));
+            out.push_str(&format!(
+                "  store i64 %{p}_pad_i_next, i64* %{p}_pad_iter_p\n", p = p
+            ));
+            out.push_str(&format!("  br label %{p}_pad_head\n", p = p));
+            out.push_str(&format!("{p}_copy_s:\n", p = p));
+            out.push_str(&format!(
+                "  %{p}_dst = getelementptr i8, i8* %{p}_out, i64 %{p}_pad_count\n", p = p
+            ));
+            out.push_str(&format!(
+                "  %_{p}_c = call i8* @memcpy(i8* %{p}_dst, i8* %s, i64 %{p}_sl)\n", p = p
+            ));
+            out.push_str(&format!("  br label %{p}_done\n", p = p));
+        } else {
+            // Copy s first, then fill the rest.
+            out.push_str(&format!(
+                "  %_{p}_c = call i8* @memcpy(i8* %{p}_out, i8* %s, i64 %{p}_sl)\n", p = p
+            ));
+            out.push_str(&format!(
+                "  %{p}_pad_iter_p = alloca i64\n", p = p
+            ));
+            out.push_str(&format!(
+                "  store i64 %{p}_sl, i64* %{p}_pad_iter_p\n", p = p
+            ));
+            out.push_str(&format!("  br label %{p}_pad_head\n", p = p));
+            out.push_str(&format!("{p}_pad_head:\n", p = p));
+            out.push_str(&format!(
+                "  %{p}_pad_i = load i64, i64* %{p}_pad_iter_p\n", p = p
+            ));
+            out.push_str(&format!(
+                "  %{p}_pad_done = icmp uge i64 %{p}_pad_i, %{p}_target\n", p = p
+            ));
+            out.push_str(&format!(
+                "  br i1 %{p}_pad_done, label %{p}_done, label %{p}_pad_body\n", p = p
+            ));
+            out.push_str(&format!("{p}_pad_body:\n", p = p));
+            out.push_str(&format!(
+                "  %{p}_pad_slot = getelementptr i8, i8* %{p}_out, i64 %{p}_pad_i\n", p = p
+            ));
+            out.push_str(&format!(
+                "  store i8 %{p}_fill, i8* %{p}_pad_slot\n", p = p
+            ));
+            out.push_str(&format!(
+                "  %{p}_pad_i_next = add i64 %{p}_pad_i, 1\n", p = p
+            ));
+            out.push_str(&format!(
+                "  store i64 %{p}_pad_i_next, i64* %{p}_pad_iter_p\n", p = p
+            ));
+            out.push_str(&format!("  br label %{p}_pad_head\n", p = p));
+        }
+        out.push_str(&format!("{p}_done:\n", p = p));
+        out.push_str(&format!(
+            "  %{p}_nul_p = getelementptr i8, i8* %{p}_out, i64 %{p}_target\n", p = p
+        ));
+        out.push_str(&format!(
+            "  store i8 0, i8* %{p}_nul_p\n", p = p
+        ));
+        out.push_str(&format!("  ret i8* %{p}_out\n", p = p));
+        out.push_str("}\n\n");
+    }
 }
 
 /// Closure #380: emit i64-math helpers — gcd / lcm / pow. All

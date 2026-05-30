@@ -498,7 +498,11 @@ pub fn emit_c(program: &TypedProgram) -> String {
     if program_uses_str_split(program) {
         emit_intent_str_split_c(&mut body);
         emit_intent_str_join_c(&mut body);
+        emit_intent_str_lines_c(&mut body);
     }
+    // Closure #381: str_pad_left / str_pad_right helpers.
+    // Always-on (small inline-able functions; tagged INTENT_UNUSED).
+    emit_intent_str_pad_c(&mut body);
 
     // Closure #356: Vec<i64> utility helpers (vec_range /
     // vec_repeat / vec_extend / vec_concat). All reference
@@ -2367,9 +2371,10 @@ pub(crate) fn program_uses_str_split(program: &TypedProgram) -> bool {
         match &expr.kind {
             E::Call { name, args, .. } => {
                 // Closure #379: str_join shares the
-                // `intent_vec_owned_str` dependency with str_split,
-                // so it piggybacks on the same usage gate.
-                if name == "str_split" || name == "str_join" {
+                // `intent_vec_owned_str` dependency with str_split.
+                // Closure #381: str_lines also returns a
+                // Vec<OwnedStr>, same dependency.
+                if name == "str_split" || name == "str_join" || name == "str_lines" {
                     return true;
                 }
                 args.iter().any(expr_uses)
@@ -4739,6 +4744,63 @@ pub(crate) fn emit_intent_str_join_c(out: &mut String) {
          \x20   }\n\
          \x20 }\n\
          \x20 out[total] = 0;\n\
+         \x20 return out;\n\
+         }\n\n",
+    );
+}
+
+/// Closure #381: `str_lines(s) -> Vec<OwnedStr>`. Splits `s`
+/// on '\n', stripping any trailing '\r' for CRLF compatibility.
+/// Implemented as a wrapper around `intent_str_split(s, "\n")`
+/// that walks the resulting Vec<OwnedStr> and drops trailing
+/// CR bytes in place. Pure copy semantics — caller drops the
+/// returned Vec.
+pub(crate) fn emit_intent_str_lines_c(out: &mut String) {
+    out.push_str(
+        "static intent_vec_owned_str intent_str_lines(const char* s) INTENT_UNUSED;\n\
+         static intent_vec_owned_str intent_str_lines(const char* s) {\n\
+         \x20 intent_vec_owned_str v = intent_str_split(s, \"\\n\");\n\
+         \x20 for (uint64_t i = 0; i < v.len; i++) {\n\
+         \x20   char* line = v.data[i];\n\
+         \x20   if (!line) continue;\n\
+         \x20   size_t ll = strlen(line);\n\
+         \x20   if (ll > 0 && line[ll - 1] == '\\r') line[ll - 1] = 0;\n\
+         \x20 }\n\
+         \x20 return v;\n\
+         }\n\n",
+    );
+}
+
+/// Closure #381: str_pad_left / str_pad_right(s, n, ch). Pad
+/// `s` with the first byte of `ch` until total length is at
+/// least `n`. If `s` is already at least `n` bytes, returns a
+/// fresh malloc'd copy unchanged. `ch` is a Str — only its
+/// first byte is used (empty `ch` defaults to ' ').
+pub(crate) fn emit_intent_str_pad_c(out: &mut String) {
+    out.push_str(
+        "static char* intent_str_pad_left(const char* s, int64_t n, const char* ch) INTENT_UNUSED;\n\
+         static char* intent_str_pad_left(const char* s, int64_t n, const char* ch) {\n\
+         \x20 size_t sl = s ? strlen(s) : 0;\n\
+         \x20 char fill = (ch && ch[0]) ? ch[0] : ' ';\n\
+         \x20 size_t target = (n < 0 || (uint64_t)n < sl) ? sl : (size_t)n;\n\
+         \x20 char* out = (char*)malloc(target + 1);\n\
+         \x20 if (!out) abort();\n\
+         \x20 size_t pad_count = target - sl;\n\
+         \x20 for (size_t i = 0; i < pad_count; i++) out[i] = fill;\n\
+         \x20 if (sl > 0 && s) memcpy(out + pad_count, s, sl);\n\
+         \x20 out[target] = 0;\n\
+         \x20 return out;\n\
+         }\n\
+         static char* intent_str_pad_right(const char* s, int64_t n, const char* ch) INTENT_UNUSED;\n\
+         static char* intent_str_pad_right(const char* s, int64_t n, const char* ch) {\n\
+         \x20 size_t sl = s ? strlen(s) : 0;\n\
+         \x20 char fill = (ch && ch[0]) ? ch[0] : ' ';\n\
+         \x20 size_t target = (n < 0 || (uint64_t)n < sl) ? sl : (size_t)n;\n\
+         \x20 char* out = (char*)malloc(target + 1);\n\
+         \x20 if (!out) abort();\n\
+         \x20 if (sl > 0 && s) memcpy(out, s, sl);\n\
+         \x20 for (size_t i = sl; i < target; i++) out[i] = fill;\n\
+         \x20 out[target] = 0;\n\
          \x20 return out;\n\
          }\n\n",
     );
@@ -9387,6 +9449,23 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "intent_str_join(({}), ({}))",
             emit_expr(&args[0]),
             emit_expr(&args[1]),
+        ),
+        // Closure #381: str padding / line splitting.
+        "str_pad_left" => format!(
+            "intent_str_pad_left(({}), ({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2]),
+        ),
+        "str_pad_right" => format!(
+            "intent_str_pad_right(({}), ({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2]),
+        ),
+        "str_lines" => format!(
+            "intent_str_lines(({}))",
+            emit_expr(&args[0]),
         ),
         // Closure #369: ASCII case conversion -> OwnedStr.
         "str_to_upper" => {

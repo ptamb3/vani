@@ -15687,6 +15687,53 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_pad_typecheck_and_compile() {
+        // Closure #381: str_pad_left / str_pad_right.
+        let source = r#"
+            fn main() -> i64 {
+              let a: OwnedStr = str_pad_left("42", 5, "0");
+              let b: OwnedStr = str_pad_right("hi", 7, "*");
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str_pad must type-check");
+        compile_to_llvm(source).expect("str_pad must compile to LLVM");
+    }
+
+    #[test]
+    fn str_lines_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let lines: Vec<OwnedStr> = str_lines("a\nb\nc");
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str_lines must type-check");
+        compile_to_llvm(source).expect("str_lines must compile to LLVM");
+    }
+
+    #[test]
+    fn str_pad_emits_helpers_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: OwnedStr = str_pad_left("x", 3, " ");
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("str_pad C");
+        assert!(
+            c.contains("intent_str_pad_left(") && c.contains("static char* intent_str_pad_left"),
+            "C must declare + call intent_str_pad_left"
+        );
+        let ll = compile_to_llvm(source).expect("str_pad LLVM");
+        assert!(
+            ll.contains("define i8* @intent_str_pad_left(i8*")
+                && ll.contains("call i8* @intent_str_pad_left(i8*"),
+            "LLVM must define + call @intent_str_pad_left"
+        );
+    }
+
+    #[test]
     fn i64_math_helpers_typecheck_and_compile() {
         // Closure #380: i64_gcd / i64_lcm / i64_pow. All (i64, i64) -> i64.
         let source = r#"
