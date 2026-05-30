@@ -15687,6 +15687,51 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_math_constants_typecheck_and_compile() {
+        // Closure #367: zero-arg math constants — pi, e, inf, nan.
+        let source = r#"
+            fn main() -> i64 {
+              let p: f64 = f64_pi();
+              let e: f64 = f64_e();
+              let i: f64 = f64_inf();
+              let n: f64 = f64_nan();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("math constants must type-check");
+        compile_to_llvm(source).expect("math constants must compile to LLVM");
+    }
+
+    #[test]
+    fn f64_math_constants_round_trip_through_classifiers() {
+        // f64_inf() should be is_inf-positive; f64_nan() should
+        // be is_nan-positive. Combining #364 + #367.
+        let source = r#"
+            fn main() -> i64 {
+              let i: f64 = f64_inf();
+              let n: f64 = f64_nan();
+              let inf_ok: bool = f64_is_inf(i);
+              let nan_ok: bool = f64_is_nan(n);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("constants + classifiers must compose on C");
+        compile_to_llvm(source).expect("constants + classifiers must compose on LLVM");
+    }
+
+    #[test]
+    fn f64_math_constants_zero_arg_rejected_with_args() {
+        let source = r#"
+            fn main() -> i64 {
+              let p: f64 = f64_pi(1.0);
+              return 0;
+            }
+        "#;
+        assert!(compile_to_c(source).is_err(),
+            "f64_pi must reject non-zero args");
+    }
+
+    #[test]
     fn substring_typecheck_and_compile() {
         // Closure #366: substring(s, start, len) -> OwnedStr —
         // freshly-malloc'd copy of [start, start+len) with

@@ -9716,6 +9716,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         "f64_is_nan" => format!("(isnan(({})) != 0)", emit_expr(&args[0])),
         "f64_is_inf" => format!("(isinf(({})) != 0)", emit_expr(&args[0])),
         "f64_is_finite" => format!("(isfinite(({})) != 0)", emit_expr(&args[0])),
+        // Closure #367: f64 math constants (zero-arg, return f64).
+        // Use math.h's named constants when available; fall back
+        // to hex-float literals for portability. NaN / INFINITY
+        // are C99 macros (always available with <math.h>).
+        "f64_pi" => "(3.14159265358979323846)".to_string(),
+        "f64_e" => "(2.71828182845904523536)".to_string(),
+        "f64_inf" => "((double)INFINITY)".to_string(),
+        "f64_nan" => "((double)NAN)".to_string(),
         "abs" => {
             // Overload: i64 → llabs / (x<0?-x:x); f64 → fabs.
             // Other signed ints get cast to i64.

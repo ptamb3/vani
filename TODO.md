@@ -739,16 +739,20 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-30, after closure #366 — **`substring(s: Str, start: i64, len: i64) -> OwnedStr`**. Freshly-malloc'd copy of `[start, start+len)`, with three-way out-of-bounds clamping (negative start/len → 0; start > sl → sl; start+len > sl → trim len). C has a dedicated `intent_substring` helper; LLVM has a dedicated `define i8* @intent_substring(i8*, i64, i64)` with phi-based NULL handling, select-based clamping, and getelementptr + memcpy for the byte copy. Both backends byte-identical across in-bounds / over-shoot / past-end / zero-len / negative-start. 3 new lib tests. 1320 lib + 54 parity green. Closure #365 (str_index_of) shipped immediately before.
+## ⏳ Resume here (paused 2026-05-30, after closure #367 — **f64 math constants `f64_pi() / f64_e() / f64_inf() / f64_nan()`**. Four zero-arg builtins returning `f64`. C uses decimal-literal constants + `<math.h>` `INFINITY`/`NAN` macros; LLVM uses exact IEEE-754 hex-float double literals. The dispatch arm short-circuits the per-arg coerce loop. Cross-trip with #364's classifiers verified. 3 new lib tests. 1323 lib + 54 parity green. Closure #366 (substring) shipped immediately before.
 
-This autonomous-loop arc (closures #359–#366, eight closures across two sessions) ground through:
-- `f64_to_str` (#359), Option<f64> ergonomics (#360), `bool_to_str` (#361)
-- `clamp` + f64 min/max LLVM fix (#362)
-- log/log2/log10/exp/atan2 math helpers (#363)
-- f64 classification: is_nan / is_inf / is_finite (#364)
-- str_index_of (#365), substring (#366)
+**Autonomous-loop arc in progress (closures #359 onward).** Next-tier granular queue:
 
-The deferred multi-session items (Trie sparse children / anon-fn shorthand / Hash-Ord interface / richer closures) remain on the queue.)
+1. **#368 — `str_repeat(s: Str, n: i64) -> OwnedStr`**. Concat `s` with itself `n` times. Negative `n` produces empty. C: dedicated `intent_str_repeat` helper; LLVM: parallel define.
+2. **#369 — `str_to_upper(s) / str_to_lower(s) -> OwnedStr`**. ASCII case conversion (non-ASCII bytes passed through unchanged). C uses `toupper`/`tolower` from `<ctype.h>`; LLVM inlines a byte-loop with conditional add 32.
+3. **#370 — `vec_sort_desc(mut ref xs)`**. In-place descending sort. Reuse existing sort_by with a fixed `>` comparator (no new closures needed in vāṇी source).
+4. **#371 — `vec_reverse_copy(ref xs) / vec_unique(ref xs) -> Vec<i64>`**. Fresh-allocating variants of in-place reverse/dedup.
+5. **#372 — `f64_round(x) -> i64 / f64_trunc_to_i64(x) -> i64`**. Float→int rounding (round half to even) and truncate.
+6. **#373 — `parse_bool(s: Str) -> Option<bool>`**. Recognizes `"true"`/`"false"`. Needs `Option<bool>` enum monomorph machinery.
+7. **#374 — Anon-fn shorthand `|x| x + 1`**. Parser sugar that desugars to AnonFn AST with context-inferred types.
+8. **#375 — Trie sparse children**. Replace 256-wide fixed alphabet with `Vec<(u8, u32)>` + binary search per node.
+
+Deferred multi-session items: Hash/Ord interface for user struct keys; richer closures (capture-by-ref, .collect(), non-i64 vec_map/fold, tuple-element Vec).)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 

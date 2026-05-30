@@ -6214,6 +6214,26 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #367: f64 math constants. LLVM uses hex-
+            // float double literals — the exact IEEE-754
+            // bit patterns avoid imprecise decimal round-trips.
+            //   pi  = 0x400921FB54442D18
+            //   e   = 0x4005BF0A8B145769
+            //   inf = 0x7FF0000000000000
+            //   nan = 0x7FF8000000000000 (quiet NaN)
+            if matches!(name.as_str(), "f64_pi" | "f64_e" | "f64_inf" | "f64_nan") {
+                let lit = match name.as_str() {
+                    "f64_pi"  => "0x400921FB54442D18",
+                    "f64_e"   => "0x4005BF0A8B145769",
+                    "f64_inf" => "0x7FF0000000000000",
+                    "f64_nan" => "0x7FF8000000000000",
+                    _ => unreachable!(),
+                };
+                // No SSA value to bind — return the literal in
+                // place. The caller uses this string in the next
+                // instruction's operand position.
+                return lit.to_string();
+            }
             if name == "f64_is_inf" || name == "f64_is_finite" {
                 let x = emit_expr(&args[0], ctx, out);
                 let fa = ctx.fresh_tmp();
