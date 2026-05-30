@@ -15687,6 +15687,61 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn substring_typecheck_and_compile() {
+        // Closure #366: substring(s, start, len) -> OwnedStr —
+        // freshly-malloc'd copy of [start, start+len) with
+        // out-of-bounds clamping.
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "hello, world";
+              let a: OwnedStr = substring(s, 0, 5);
+              let b: OwnedStr = substring(s, 7, 5);
+              let c: OwnedStr = substring(s, 0, 100);
+              let d: OwnedStr = substring(s, 0 - 5, 3);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("substring must type-check");
+        compile_to_llvm(source).expect("substring must compile to LLVM");
+    }
+
+    #[test]
+    fn substring_emits_helper_in_both_backends() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "abc";
+              let h: OwnedStr = substring(s, 0, 1);
+              return 0;
+            }
+        "#;
+        let c = compile_to_c(source).expect("substring C");
+        assert!(
+            c.contains("intent_substring(")
+                && c.contains("static char* intent_substring"),
+            "C output must declare + call intent_substring"
+        );
+        let ll = compile_to_llvm(source).expect("substring LLVM");
+        assert!(
+            ll.contains("define i8* @intent_substring(i8*")
+                && ll.contains("call i8* @intent_substring("),
+            "LLVM output must define + call @intent_substring"
+        );
+    }
+
+    #[test]
+    fn substring_arity_3_required() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "abc";
+              let h: OwnedStr = substring(s, 0);
+              return 0;
+            }
+        "#;
+        assert!(compile_to_c(source).is_err(),
+            "substring must require 3 args");
+    }
+
+    #[test]
     fn str_index_of_typecheck_and_compile() {
         // Closure #365: str_index_of(haystack, needle) ->
         // Option<i64>. First byte offset, or None.

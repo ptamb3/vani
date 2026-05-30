@@ -313,6 +313,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "str_ends_with" || name == "str_trim"
                 || name == "str_replace" || name == "str_split"
                 || name == "str_index_of"
+                || name == "substring"
                 || name == "i64_to_str"
                 || name == "f64_to_str"
                 || name == "bool_to_str"

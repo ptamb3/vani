@@ -682,6 +682,7 @@ pub fn emit_c(program: &TypedProgram) -> String {
     emit_intent_str_concat_c(&mut out);
     emit_intent_str_trim_c(&mut out);
     emit_intent_str_replace_c(&mut out);
+    emit_intent_substring_c(&mut out);
     emit_intent_i64_to_str_c(&mut out);
     emit_concurrency_runtime_helpers(&mut out, &body, &channel_specs);
     emit_intent_rng_helpers_c(&mut out, &body);
@@ -4760,6 +4761,31 @@ pub(crate) fn emit_intent_str_replace_c(out: &mut String) {
          \x20 if (tail > 0) memcpy(dst, src, tail);\n\
          \x20 dst[tail] = 0;\n\
          \x20 return out_buf;\n\
+         }\n\n",
+    );
+}
+
+/// Closure #366: `substring(s: Str, start: i64, len: i64) ->
+/// OwnedStr`. Returns a freshly-malloc'd copy of the bytes at
+/// `[start, start+len)` in `s`. Negative `start` / `len` are
+/// treated as zero; the window is clamped against `strlen(s)`
+/// so out-of-bounds reads can't escape the input buffer. NULL
+/// `s` is treated as the empty string.
+pub(crate) fn emit_intent_substring_c(out: &mut String) {
+    out.push_str(
+        "static char* intent_substring(const char* s, int64_t start, int64_t len) INTENT_UNUSED;\n\
+         static char* intent_substring(const char* s, int64_t start, int64_t len) {\n\
+         \x20 size_t sl = s ? strlen(s) : 0;\n\
+         \x20 int64_t lo = start < 0 ? 0 : start;\n\
+         \x20 int64_t want = len < 0 ? 0 : len;\n\
+         \x20 if ((uint64_t)lo > (uint64_t)sl) lo = (int64_t)sl;\n\
+         \x20 int64_t remaining = (int64_t)sl - lo;\n\
+         \x20 int64_t take = want < remaining ? want : remaining;\n\
+         \x20 char* out = (char*)malloc((size_t)take + 1);\n\
+         \x20 if (!out) abort();\n\
+         \x20 if (take > 0 && s) memcpy(out, s + lo, (size_t)take);\n\
+         \x20 out[take] = 0;\n\
+         \x20 return out;\n\
          }\n\n",
     );
 }
@@ -9117,6 +9143,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 "({{ const char* __sio_s = ({s}); const char* __sio_m = strstr(__sio_s, ({n})); Enum_Option__i64 __sio_r; if (__sio_m == NULL) {{ __sio_r.tag = 1; }} else {{ __sio_r.tag = 0; __sio_r.payload = (int64_t)(__sio_m - __sio_s); }} __sio_r; }})",
                 s = emit_expr(&args[0]),
                 n = emit_expr(&args[1]),
+            )
+        }
+        // Closure #366: substring(s, start, len) -> OwnedStr.
+        "substring" => {
+            format!(
+                "intent_substring(({}), ({}), ({}))",
+                emit_expr(&args[0]),
+                emit_expr(&args[1]),
+                emit_expr(&args[2]),
             )
         }
         "str_starts_with" => {

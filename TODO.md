@@ -739,7 +739,16 @@ canonical path (compiler-lowered state machines on an arena).
 
 
 
-## ⏳ Resume here (paused 2026-05-30, after closure #365 — **`str_index_of(haystack, needle) -> Option<i64>`**. Pairs with `str_contains` (bool) to give the byte offset of `needle` in `haystack`, or `Option.None`. C inlines a statement-expression around `strstr` + null-check + `Enum_Option__i64` construction. LLVM uses an explicit branch — `strstr` + `icmp null` + branch + `ptrtoint`/`sub i64` for the offset + `insertvalue` for the Option packing + `phi`. Auto-mono walker extended so a bare `str_index_of(...)` forces the `Option__i64` decl. Both backends byte-identical on present/absent/at-start. 3 new lib tests. 1317 lib + 54 parity green. Closure #364 (f64 classification) shipped immediately before.)
+## ⏳ Resume here (paused 2026-05-30, after closure #366 — **`substring(s: Str, start: i64, len: i64) -> OwnedStr`**. Freshly-malloc'd copy of `[start, start+len)`, with three-way out-of-bounds clamping (negative start/len → 0; start > sl → sl; start+len > sl → trim len). C has a dedicated `intent_substring` helper; LLVM has a dedicated `define i8* @intent_substring(i8*, i64, i64)` with phi-based NULL handling, select-based clamping, and getelementptr + memcpy for the byte copy. Both backends byte-identical across in-bounds / over-shoot / past-end / zero-len / negative-start. 3 new lib tests. 1320 lib + 54 parity green. Closure #365 (str_index_of) shipped immediately before.
+
+This autonomous-loop arc (closures #359–#366, eight closures across two sessions) ground through:
+- `f64_to_str` (#359), Option<f64> ergonomics (#360), `bool_to_str` (#361)
+- `clamp` + f64 min/max LLVM fix (#362)
+- log/log2/log10/exp/atan2 math helpers (#363)
+- f64 classification: is_nan / is_inf / is_finite (#364)
+- str_index_of (#365), substring (#366)
+
+The deferred multi-session items (Trie sparse children / anon-fn shorthand / Hash-Ord interface / richer closures) remain on the queue.)
 
 ### Granular queue (refreshed 2026-05-29, after #352)
 

@@ -699,6 +699,7 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     emit_intent_str_concat_definition(&mut out);
     emit_intent_str_trim_definition(&mut out);
     emit_intent_str_replace_definition(&mut out);
+    emit_intent_substring_definition(&mut out);
     emit_intent_i64_to_str_definition(&mut out);
     // Note: emit_intent_str_split_definition (closure #350) is
     // emitted later, after the Vec<OwnedStr> typedef has been
@@ -6305,6 +6306,18 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #366: substring(s, start, len) -> OwnedStr.
+            if name == "substring" {
+                let s = emit_expr(&args[0], ctx, out);
+                let start = emit_expr(&args[1], ctx, out);
+                let len = emit_expr(&args[2], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i8* @intent_substring(i8* {}, i64 {}, i64 {})\n",
+                    dest, s, start, len
+                ));
+                return dest;
+            }
             // Closure #365: str_index_of(haystack, needle) ->
             // Option<i64>. strstr returns NULL if needle not
             // found; otherwise it points into haystack and the
@@ -8967,6 +8980,53 @@ pub(crate) fn emit_intent_str_replace_definition(out: &mut String) {
     out.push_str("  %nul_p = getelementptr i8, i8* %dst_final, i64 %tail_len\n");
     out.push_str("  store i8 0, i8* %nul_p\n");
     out.push_str("  ret i8* %buf\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #366: `substring(s, start, len) -> OwnedStr` LLVM
+/// half. Returns a freshly-malloc'd copy of `[start, start+len)`
+/// from `s`, clamping out-of-bounds reads. NULL `s` produces a
+/// fresh empty heap string. Negative start/len are clamped to 0.
+pub(crate) fn emit_intent_substring_definition(out: &mut String) {
+    out.push_str("define i8* @intent_substring(i8* %s, i64 %start, i64 %len) {\n");
+    // Compute string length (0 if NULL).
+    out.push_str("  %sub_null = icmp eq i8* %s, null\n");
+    out.push_str("  br i1 %sub_null, label %sub_zero_len, label %sub_strlen\n");
+    out.push_str("sub_strlen:\n");
+    out.push_str("  %sub_sl_pre = call i64 @strlen(i8* %s)\n");
+    out.push_str("  br label %sub_clamp\n");
+    out.push_str("sub_zero_len:\n");
+    out.push_str("  br label %sub_clamp\n");
+    out.push_str("sub_clamp:\n");
+    out.push_str("  %sub_sl = phi i64 [ %sub_sl_pre, %sub_strlen ], [ 0, %sub_zero_len ]\n");
+    // Clamp start to [0, sl].
+    out.push_str("  %sub_start_neg = icmp slt i64 %start, 0\n");
+    out.push_str("  %sub_start0 = select i1 %sub_start_neg, i64 0, i64 %start\n");
+    out.push_str("  %sub_start_over = icmp ugt i64 %sub_start0, %sub_sl\n");
+    out.push_str("  %sub_lo = select i1 %sub_start_over, i64 %sub_sl, i64 %sub_start0\n");
+    // Clamp len to >= 0.
+    out.push_str("  %sub_len_neg = icmp slt i64 %len, 0\n");
+    out.push_str("  %sub_want = select i1 %sub_len_neg, i64 0, i64 %len\n");
+    // remaining = sl - lo (both unsigned-comparable after clamp).
+    out.push_str("  %sub_remaining = sub i64 %sub_sl, %sub_lo\n");
+    out.push_str("  %sub_pick_want = icmp ult i64 %sub_want, %sub_remaining\n");
+    out.push_str("  %sub_take = select i1 %sub_pick_want, i64 %sub_want, i64 %sub_remaining\n");
+    // malloc take+1 bytes.
+    out.push_str("  %sub_total = add i64 %sub_take, 1\n");
+    out.push_str("  %sub_out = call i8* @malloc(i64 %sub_total)\n");
+    // Copy if take > 0 AND s != null.
+    out.push_str("  %sub_take_pos = icmp ugt i64 %sub_take, 0\n");
+    out.push_str("  %sub_not_null = icmp ne i8* %s, null\n");
+    out.push_str("  %sub_should_copy = and i1 %sub_take_pos, %sub_not_null\n");
+    out.push_str("  br i1 %sub_should_copy, label %sub_copy, label %sub_nul\n");
+    out.push_str("sub_copy:\n");
+    out.push_str("  %sub_src = getelementptr i8, i8* %s, i64 %sub_lo\n");
+    out.push_str("  %_sub_c = call i8* @memcpy(i8* %sub_out, i8* %sub_src, i64 %sub_take)\n");
+    out.push_str("  br label %sub_nul\n");
+    out.push_str("sub_nul:\n");
+    out.push_str("  %sub_nul_p = getelementptr i8, i8* %sub_out, i64 %sub_take\n");
+    out.push_str("  store i8 0, i8* %sub_nul_p\n");
+    out.push_str("  ret i8* %sub_out\n");
     out.push_str("}\n\n");
 }
 
