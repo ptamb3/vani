@@ -15770,6 +15770,33 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_reverse_typecheck_and_compile() {
+        // Closure #390: str_reverse(s) -> OwnedStr.
+        let source = r#"
+            fn main() -> i64 {
+              let r: OwnedStr = str_reverse("hello");
+              let r2: OwnedStr = "abc".reverse();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str_reverse must type-check");
+        compile_to_llvm(source).expect("str_reverse must compile to LLVM");
+    }
+
+    #[test]
+    fn str_chars_typecheck_and_compile() {
+        let source = r#"
+            fn main() -> i64 {
+              let cs: Vec<i64> = str_chars("ABC");
+              let cs2: Vec<i64> = "xyz".chars();
+              return cs[0] + cs2[0];
+            }
+        "#;
+        compile_to_c(source).expect("str_chars must type-check");
+        compile_to_llvm(source).expect("str_chars must compile to LLVM");
+    }
+
+    #[test]
     fn str_pad_typecheck_and_compile() {
         // Closure #381: str_pad_left / str_pad_right.
         let source = r#"

@@ -893,6 +893,13 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     emit_intent_i64_math_definitions(&mut out);
     // Closure #381: str padding helpers. Always-on.
     emit_intent_str_pad_definitions(&mut out);
+    // Closure #390: str_reverse / str_chars. str_reverse is
+    // always-on; str_chars references %intent_vec_i64 so it's
+    // gated on the same usage signal as Vec<i64> bundles.
+    emit_intent_str_reverse_definition(&mut out);
+    if crate::backend_c::program_uses_graph_vec_builtin(program) {
+        emit_intent_str_chars_definition(&mut out);
+    }
 
     // Closure #356: emit Vec<i64> utility helpers (vec_range /
     // vec_repeat / vec_extend / vec_concat) after Vec typedefs
@@ -6683,6 +6690,25 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #390: str_chars / str_reverse.
+            if name == "str_reverse" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i8* @intent_str_reverse(i8* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
+            if name == "str_chars" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_vec_i64 @intent_str_chars(i8* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
             // Closure #381: str_lines(s) -> Vec<OwnedStr>.
             if name == "str_lines" {
                 let s = emit_expr(&args[0], ctx, out);
@@ -9624,6 +9650,79 @@ pub(crate) fn emit_intent_str_lines_definition(out: &mut String) {
     out.push_str("sl_fin:\n");
     out.push_str("  %v_final = load %intent_vec_i8p, %intent_vec_i8p* %v_p\n");
     out.push_str("  ret %intent_vec_i8p %v_final\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #390: emit `str_reverse` / `str_chars` LLVM helpers.
+/// `str_reverse` walks the source backwards into a fresh malloc'd
+/// buffer. `str_chars` allocates a Vec<i64>-sized buffer and
+/// fills each slot with the corresponding byte of `s` (zero-
+/// extended to i64).
+pub(crate) fn emit_intent_str_reverse_definition(out: &mut String) {
+    out.push_str("define i8* @intent_str_reverse(i8* %s) {\n");
+    out.push_str("  %sr_sl = call i64 @strlen(i8* %s)\n");
+    out.push_str("  %sr_alloc_n = add i64 %sr_sl, 1\n");
+    out.push_str("  %sr_out = call i8* @malloc(i64 %sr_alloc_n)\n");
+    out.push_str("  %sr_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sr_i_p\n");
+    out.push_str("  br label %srv_head\n");
+    out.push_str("srv_head:\n");
+    out.push_str("  %sr_i = load i64, i64* %sr_i_p\n");
+    out.push_str("  %sr_done = icmp uge i64 %sr_i, %sr_sl\n");
+    out.push_str("  br i1 %sr_done, label %srv_fin, label %srv_body\n");
+    out.push_str("srv_body:\n");
+    // src_idx = sl - 1 - i
+    out.push_str("  %sr_minus1 = sub i64 %sr_sl, 1\n");
+    out.push_str("  %sr_src_idx = sub i64 %sr_minus1, %sr_i\n");
+    out.push_str("  %sr_src_p = getelementptr i8, i8* %s, i64 %sr_src_idx\n");
+    out.push_str("  %sr_byte = load i8, i8* %sr_src_p\n");
+    out.push_str("  %sr_dst_p = getelementptr i8, i8* %sr_out, i64 %sr_i\n");
+    out.push_str("  store i8 %sr_byte, i8* %sr_dst_p\n");
+    out.push_str("  %sr_i_next = add i64 %sr_i, 1\n");
+    out.push_str("  store i64 %sr_i_next, i64* %sr_i_p\n");
+    out.push_str("  br label %srv_head\n");
+    out.push_str("srv_fin:\n");
+    out.push_str("  %sr_nul_p = getelementptr i8, i8* %sr_out, i64 %sr_sl\n");
+    out.push_str("  store i8 0, i8* %sr_nul_p\n");
+    out.push_str("  ret i8* %sr_out\n");
+    out.push_str("}\n\n");
+}
+
+pub(crate) fn emit_intent_str_chars_definition(out: &mut String) {
+    out.push_str("define %intent_vec_i64 @intent_str_chars(i8* %s) {\n");
+    out.push_str("  %sc_sl = call i64 @strlen(i8* %s)\n");
+    out.push_str("  %sc_empty = icmp eq i64 %sc_sl, 0\n");
+    out.push_str("  br i1 %sc_empty, label %sc_ret_empty, label %sc_alloc\n");
+    out.push_str("sc_ret_empty:\n");
+    out.push_str("  %sc_e0 = insertvalue %intent_vec_i64 undef, i64* null, 0\n");
+    out.push_str("  %sc_e1 = insertvalue %intent_vec_i64 %sc_e0, i64 0, 1\n");
+    out.push_str("  %sc_e2 = insertvalue %intent_vec_i64 %sc_e1, i64 0, 2\n");
+    out.push_str("  ret %intent_vec_i64 %sc_e2\n");
+    out.push_str("sc_alloc:\n");
+    out.push_str("  %sc_bytes = mul i64 %sc_sl, 8\n");
+    out.push_str("  %sc_buf_i8 = call i8* @malloc(i64 %sc_bytes)\n");
+    out.push_str("  %sc_buf = bitcast i8* %sc_buf_i8 to i64*\n");
+    out.push_str("  %sc_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sc_i_p\n");
+    out.push_str("  br label %sc_head\n");
+    out.push_str("sc_head:\n");
+    out.push_str("  %sc_i = load i64, i64* %sc_i_p\n");
+    out.push_str("  %sc_done = icmp uge i64 %sc_i, %sc_sl\n");
+    out.push_str("  br i1 %sc_done, label %sc_fin, label %sc_body\n");
+    out.push_str("sc_body:\n");
+    out.push_str("  %sc_src_p = getelementptr i8, i8* %s, i64 %sc_i\n");
+    out.push_str("  %sc_byte = load i8, i8* %sc_src_p\n");
+    out.push_str("  %sc_val = zext i8 %sc_byte to i64\n");
+    out.push_str("  %sc_dst_p = getelementptr i64, i64* %sc_buf, i64 %sc_i\n");
+    out.push_str("  store i64 %sc_val, i64* %sc_dst_p\n");
+    out.push_str("  %sc_i_next = add i64 %sc_i, 1\n");
+    out.push_str("  store i64 %sc_i_next, i64* %sc_i_p\n");
+    out.push_str("  br label %sc_head\n");
+    out.push_str("sc_fin:\n");
+    out.push_str("  %sc_r0 = insertvalue %intent_vec_i64 undef, i64* %sc_buf, 0\n");
+    out.push_str("  %sc_r1 = insertvalue %intent_vec_i64 %sc_r0, i64 %sc_sl, 1\n");
+    out.push_str("  %sc_r2 = insertvalue %intent_vec_i64 %sc_r1, i64 %sc_sl, 2\n");
+    out.push_str("  ret %intent_vec_i64 %sc_r2\n");
     out.push_str("}\n\n");
 }
 

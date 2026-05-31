@@ -503,6 +503,17 @@ pub fn emit_c(program: &TypedProgram) -> String {
     // Closure #381: str_pad_left / str_pad_right helpers.
     // Always-on (small inline-able functions; tagged INTENT_UNUSED).
     emit_intent_str_pad_c(&mut body);
+    // Closure #390: str_reverse helper. Always-on (no Vec
+    // dependency).
+    emit_intent_str_reverse_c(&mut body);
+    // Closure #390: str_chars helper returns Vec<i64>, so gate
+    // on the graph_vec_builtin walker that's already tracking
+    // Vec<i64> demand — that walker fires emission of
+    // `intent_vec_int64_t` typedef + helpers, so str_chars's
+    // body can reference them safely.
+    if program_uses_graph_vec_builtin(program) {
+        emit_intent_str_chars_c(&mut body);
+    }
 
     // Closure #356: Vec<i64> utility helpers (vec_range /
     // vec_repeat / vec_extend / vec_concat). All reference
@@ -2465,6 +2476,7 @@ pub(crate) fn program_uses_graph_vec_builtin(program: &TypedProgram) -> bool {
                     || name == "vec_iota"
                     || name == "vec_first"
                     || name == "vec_last"
+                    || name == "str_chars"
                 {
                     return true;
                 }
@@ -4811,6 +4823,42 @@ pub(crate) fn emit_intent_str_lines_c(out: &mut String) {
          \x20   if (ll > 0 && line[ll - 1] == '\\r') line[ll - 1] = 0;\n\
          \x20 }\n\
          \x20 return v;\n\
+         }\n\n",
+    );
+}
+
+/// Closure #390: `str_reverse(s) -> OwnedStr`. Byte-reverse
+/// a Str (not codepoint-reverse — UTF-8 sequences are
+/// byte-wise reversed).
+pub(crate) fn emit_intent_str_reverse_c(out: &mut String) {
+    out.push_str(
+        "static char* intent_str_reverse(const char* s) INTENT_UNUSED;\n\
+         static char* intent_str_reverse(const char* s) {\n\
+         \x20 size_t sl = s ? strlen(s) : 0;\n\
+         \x20 char* out = (char*)malloc(sl + 1);\n\
+         \x20 if (!out) abort();\n\
+         \x20 for (size_t i = 0; i < sl; i++) out[i] = s[sl - 1 - i];\n\
+         \x20 out[sl] = 0;\n\
+         \x20 return out;\n\
+         }\n\n",
+    );
+}
+
+/// Closure #390: `str_chars(s) -> Vec<i64>`. Returns a fresh
+/// Vec<i64> where each element is the byte value [0..255] of
+/// `s`. Note: byte-level, not codepoint-level.
+pub(crate) fn emit_intent_str_chars_c(out: &mut String) {
+    out.push_str(
+        "static intent_vec_int64_t intent_str_chars(const char* s) INTENT_UNUSED;\n\
+         static intent_vec_int64_t intent_str_chars(const char* s) {\n\
+         \x20 intent_vec_int64_t out;\n\
+         \x20 size_t sl = s ? strlen(s) : 0;\n\
+         \x20 out.len = sl; out.capacity = sl;\n\
+         \x20 if (sl == 0) { out.data = (int64_t*)0; return out; }\n\
+         \x20 out.data = (int64_t*)malloc(sl * sizeof(int64_t));\n\
+         \x20 if (!out.data) abort();\n\
+         \x20 for (size_t i = 0; i < sl; i++) out.data[i] = (int64_t)(uint8_t)s[i];\n\
+         \x20 return out;\n\
          }\n\n",
     );
 }
@@ -9624,6 +9672,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         ),
         "str_lines" => format!(
             "intent_str_lines(({}))",
+            emit_expr(&args[0]),
+        ),
+        // Closure #390: str_chars / str_reverse.
+        "str_chars" => format!(
+            "intent_str_chars(({}))",
+            emit_expr(&args[0]),
+        ),
+        "str_reverse" => format!(
+            "intent_str_reverse(({}))",
             emit_expr(&args[0]),
         ),
         // Closure #369: ASCII case conversion -> OwnedStr.
