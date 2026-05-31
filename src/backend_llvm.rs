@@ -6612,6 +6612,92 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #393: i64_abs_diff(a, b) — inline via
+            // select on the comparison to avoid overflow on the
+            // signed subtraction edge case.
+            if name == "i64_abs_diff" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let cmp = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp slt i64 {}, {}\n", cmp, a, b
+                ));
+                let diff_a = ctx.fresh_tmp();
+                let diff_b = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = sub i64 {}, {}\n", diff_a, b, a
+                ));
+                out.push_str(&format!(
+                    "  {} = sub i64 {}, {}\n", diff_b, a, b
+                ));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 {}, i64 {}\n",
+                    dest, cmp, diff_a, diff_b
+                ));
+                return dest;
+            }
+            // Closure #393: i64_signum(x). Inline as
+            // `(x > 0) - (x < 0)` via two icmps + zext + sub.
+            if name == "i64_signum" {
+                let x = emit_expr(&args[0], ctx, out);
+                let gt = ctx.fresh_tmp();
+                let lt = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp sgt i64 {}, 0\n", gt, x
+                ));
+                out.push_str(&format!(
+                    "  {} = icmp slt i64 {}, 0\n", lt, x
+                ));
+                let g64 = ctx.fresh_tmp();
+                let l64 = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = zext i1 {} to i64\n", g64, gt
+                ));
+                out.push_str(&format!(
+                    "  {} = zext i1 {} to i64\n", l64, lt
+                ));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = sub i64 {}, {}\n", dest, g64, l64
+                ));
+                return dest;
+            }
+            // Closure #393: f64_signum(x). NaN stays NaN; else
+            // returns -1.0 / 0.0 / +1.0.
+            if name == "f64_signum" {
+                let x = emit_expr(&args[0], ctx, out);
+                let is_nan = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fcmp uno double {}, {}\n", is_nan, x, x
+                ));
+                let gt = ctx.fresh_tmp();
+                let lt = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fcmp ogt double {}, 0.0\n", gt, x
+                ));
+                out.push_str(&format!(
+                    "  {} = fcmp olt double {}, 0.0\n", lt, x
+                ));
+                let g64 = ctx.fresh_tmp();
+                let l64 = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = uitofp i1 {} to double\n", g64, gt
+                ));
+                out.push_str(&format!(
+                    "  {} = uitofp i1 {} to double\n", l64, lt
+                ));
+                let normal = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fsub double {}, {}\n", normal, g64, l64
+                ));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double {}, double {}\n",
+                    dest, is_nan, x, normal
+                ));
+                return dest;
+            }
             // Closure #380: integer math helpers — call the
             // shared @intent_i64_<op> defs emitted in the
             // preamble (gated below).

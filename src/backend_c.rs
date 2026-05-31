@@ -10366,6 +10366,30 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[1])
             )
         }
+        // Closure #393: i64_abs_diff(a, b) — |a - b| in signed
+        // arithmetic. Done via select on a < b to avoid overflow
+        // on borderline values like INT64_MIN / INT64_MAX.
+        "i64_abs_diff" => {
+            format!(
+                "({{ int64_t __ad_a = ({}); int64_t __ad_b = ({}); (__ad_a < __ad_b) ? (__ad_b - __ad_a) : (__ad_a - __ad_b); }})",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
+        // i64_signum(x) — returns -1 / 0 / +1.
+        "i64_signum" => {
+            format!(
+                "({{ int64_t __sn = ({}); (int64_t)((__sn > 0) - (__sn < 0)); }})",
+                emit_expr(&args[0])
+            )
+        }
+        // f64_signum(x) — returns -1.0 / 0.0 / +1.0. NaN stays NaN.
+        "f64_signum" => {
+            format!(
+                "({{ double __fs = ({}); isnan(__fs) ? __fs : ((__fs > 0.0) - (__fs < 0.0)); }})",
+                emit_expr(&args[0])
+            )
+        }
         "abs" => {
             // Overload: i64 → llabs / (x<0?-x:x); f64 → fabs.
             // Other signed ints get cast to i64.

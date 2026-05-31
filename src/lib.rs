@@ -15844,6 +15844,21 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn sign_helpers_typecheck_and_compile() {
+        // Closure #393: i64_abs_diff / i64_signum / f64_signum.
+        let source = r#"
+            fn main() -> i64 {
+              let d: i64 = i64_abs_diff(10, 3);
+              let s: i64 = i64_signum(0 - 7);
+              let fs: f64 = f64_signum(3.14);
+              return d + s;
+            }
+        "#;
+        compile_to_c(source).expect("sign helpers must type-check");
+        compile_to_llvm(source).expect("sign helpers must compile to LLVM");
+    }
+
+    #[test]
     fn i64_math_helpers_typecheck_and_compile() {
         // Closure #380: i64_gcd / i64_lcm / i64_pow. All (i64, i64) -> i64.
         let source = r#"
