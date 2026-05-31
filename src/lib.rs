@@ -16056,6 +16056,35 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_avg_typecheck_and_compile() {
+        // Closure #444: i64_avg (overflow-safe floor average).
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_avg(4, 6);
+              let b: i64 = i64_avg(i64_max_value(), i64_max_value());
+              return a + b;
+            }
+        "#;
+        compile_to_c(source).expect("avg must type-check");
+        compile_to_llvm(source).expect("avg must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_avg_emits_bit_tricks() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_avg(4, 6);
+              return a;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("and i64") && ll.contains("xor i64") && ll.contains("ashr i64"),
+            "i64_avg must emit and/xor/ashr (the overflow-safe bit trick)"
+        );
+    }
+
+    #[test]
     fn i64_binomial_typecheck_and_compile() {
         // Closure #431: i64_binomial.
         let source = r#"

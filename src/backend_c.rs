@@ -10864,6 +10864,16 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        // Closure #444: overflow-safe average using bit-twiddling.
+        // (a & b) + ((a ^ b) >> 1) never overflows even when
+        // a + b would (e.g., avg(INT64_MAX, INT64_MAX) = INT64_MAX).
+        // Uses arithmetic shift right so the result floors toward
+        // -infinity for mixed-sign inputs.
+        "i64_avg" => format!(
+            "({{ int64_t __ava = ({}); int64_t __avb = ({}); (__ava & __avb) + ((__ava ^ __avb) >> 1); }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #429: neural net activations.
         // sigmoid(x) = 1 / (1 + exp(-x))
         // softsign(x) = x / (1 + |x|)

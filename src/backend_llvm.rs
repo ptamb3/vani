@@ -7199,6 +7199,26 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #444: overflow-safe floor average via bit
+            // tricks. result = (a & b) + ((a ^ b) >> 1) where >>
+            // is arithmetic shift.
+            if name == "i64_avg" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let and_ab = ctx.fresh_tmp();
+                let xor_ab = ctx.fresh_tmp();
+                let shifted = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = and i64 {}, {}\n", and_ab, a, b));
+                out.push_str(&format!("  {} = xor i64 {}, {}\n", xor_ab, a, b));
+                out.push_str(&format!(
+                    "  {} = ashr i64 {}, 1\n", shifted, xor_ab
+                ));
+                out.push_str(&format!(
+                    "  {} = add i64 {}, {}\n", dest, and_ab, shifted
+                ));
+                return dest;
+            }
             // Closure #429: neural net activations.
             //   sigmoid(x) = 1 / (1 + exp(-x))
             if name == "f64_sigmoid" {
