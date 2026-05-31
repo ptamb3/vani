@@ -4937,6 +4937,60 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #391: option_and_then(o, f) — flatmap.
+            // Branch on tag, call f if Some (f itself returns
+            // Option<i64>), pass through if None.
+            if name == "option_and_then" {
+                let o = emit_expr(&args[0], ctx, out);
+                let f = emit_expr(&args[1], ctx, out);
+                let tag = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = extractvalue %Enum_Option__i64 {}, 0\n",
+                    tag, o
+                ));
+                let is_some = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp eq i32 {}, 0\n", is_some, tag
+                ));
+                let some_lbl = ctx.fresh_label("oat_some");
+                let none_lbl = ctx.fresh_label("oat_none");
+                let done = ctx.fresh_label("oat_done");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    is_some, some_lbl, none_lbl
+                ));
+                out.push_str(&format!("{}:\n", some_lbl));
+                let payload = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = extractvalue %Enum_Option__i64 {}, 1\n",
+                    payload, o
+                ));
+                let mapped = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %Enum_Option__i64 {}(i64 {})\n",
+                    mapped, f, payload
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", none_lbl));
+                let n0 = ctx.fresh_tmp();
+                let n1 = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 undef, i32 1, 0\n",
+                    n0
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 {}, i64 0, 1\n",
+                    n1, n0
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", done));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = phi %Enum_Option__i64 [ {}, %{} ], [ {}, %{} ]\n",
+                    dest, mapped, some_lbl, n1, none_lbl
+                ));
+                return dest;
+            }
             // Closure #384: option_or(a, b) — first Some wins.
             if name == "option_or" {
                 let a = emit_expr(&args[0], ctx, out);

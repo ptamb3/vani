@@ -9247,6 +9247,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             a = emit_expr(&args[0]),
             b = emit_expr(&args[1]),
         ),
+        // Closure #391: option_and_then(o, f) — flatmap. Branch
+        // on the tag, call f on the payload (which itself
+        // returns Option<i64>), and pass that through. None
+        // passes through unchanged.
+        "option_and_then" => format!(
+            "({{ Enum_Option__i64 __oat_o = ({o}); Enum_Option__i64 __oat_r; if (__oat_o.tag == 0) {{ __oat_r = ({f})(__oat_o.payload); }} else {{ __oat_r.tag = 1; }} __oat_r; }})",
+            o = emit_expr(&args[0]),
+            f = emit_expr(&args[1]),
+        ),
         "option_is_some" => format!(
             "intent_option_i64_is_some(({}))",
             emit_expr(&args[0])

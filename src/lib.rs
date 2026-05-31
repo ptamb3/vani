@@ -16106,6 +16106,41 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn option_and_then_typecheck_and_compile() {
+        // Closure #391: option_and_then(o, f) where f returns
+        // Option<i64>. Flatmap for Option<i64>.
+        let source = r#"
+            fn maybe_double(x: i64) -> Option<i64> {
+              if x > 0 { return Option.Some(x * 2); }
+              return Option.None;
+            }
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let p: Option<i64> = xs.find(2);
+              let r: Option<i64> = p.and_then(maybe_double);
+              return r.unwrap_or(0);
+            }
+        "#;
+        compile_to_c(source).expect("option_and_then must type-check");
+        compile_to_llvm(source).expect("option_and_then must compile to LLVM");
+    }
+
+    #[test]
+    fn option_and_then_rejects_wrong_return_type() {
+        // f must return Option<i64>, not bare i64.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1);
+              let p: Option<i64> = xs.find(1);
+              let r: Option<i64> = p.and_then(|x| x * 2);
+              return 0;
+            }
+        "#;
+        assert!(compile_to_c(source).is_err(),
+            "option_and_then must require f: fn(i64) -> Option<i64>");
+    }
+
+    #[test]
     fn option_filter_typecheck_and_compile() {
         // Closure #384: o.filter(pred) keeps Some(v) iff pred(v).
         let source = r#"

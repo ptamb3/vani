@@ -380,6 +380,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "option_is_some" || name == "option_is_none"
                 || name == "option_map"
                 || name == "option_filter" || name == "option_or"
+                || name == "option_and_then"
                 || name == "option_unwrap_or_f64"
                 || name == "option_is_some_f64" || name == "option_is_none_f64"
                 || name == "vec_take" || name == "vec_drop" || name == "vec_map_fold"
