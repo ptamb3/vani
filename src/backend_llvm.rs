@@ -7335,6 +7335,47 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #440: sinc(x) = sin(x)/x, sinc(0) = 1.
+            if name == "f64_sinc" {
+                let x = emit_expr(&args[0], ctx, out);
+                let is_zero = ctx.fresh_tmp();
+                let sx = ctx.fresh_tmp();
+                let q = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fcmp oeq double {}, 0.0\n", is_zero, x
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @sin(double {})\n", sx, x
+                ));
+                out.push_str(&format!(
+                    "  {} = fdiv double {}, {}\n", q, sx, x
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 1.0, double {}\n", dest, is_zero, q
+                ));
+                return dest;
+            }
+            //   safe_div(a, b, default) = b != 0 ? a/b : default
+            if name == "f64_safe_div" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let def = emit_expr(&args[2], ctx, out);
+                let b_zero = ctx.fresh_tmp();
+                let q = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fcmp oeq double {}, 0.0\n", b_zero, b
+                ));
+                out.push_str(&format!(
+                    "  {} = fdiv double {}, {}\n", q, a, b
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double {}, double {}\n",
+                    dest, b_zero, def, q
+                ));
+                return dest;
+            }
             // Closures #433 + #434 + #435: libm functions. Strip
             // the `f64_` prefix to derive the libm symbol name.
             if matches!(

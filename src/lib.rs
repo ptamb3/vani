@@ -15972,6 +15972,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_sinc_safe_div_typecheck_and_compile() {
+        // Closure #440: f64_sinc + f64_safe_div.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_sinc(0.0);
+              let b: f64 = f64_safe_div(10.0, 0.0, 0.0 - 1.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("sinc/safe_div must type-check");
+        compile_to_llvm(source).expect("sinc/safe_div must compile to LLVM");
+    }
+
+    #[test]
     fn f64_swish_logit_typecheck_and_compile() {
         // Closure #439: f64_swish / f64_logit.
         let source = r#"

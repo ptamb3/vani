@@ -10928,6 +10928,22 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ double __lx = ({}); log(__lx / (1.0 - __lx)); }})",
             emit_expr(&args[0])
         ),
+        // Closure #440: signal-processing + safe division.
+        // sinc(x) = sin(x)/x  with sinc(0) = 1 (removable
+        // singularity). Caller responsible for catastrophic
+        // cancellation near 0; for high-precision near-zero
+        // work, use Taylor approx 1 - x²/6 + x⁴/120 - ...
+        // safe_div(a, b, default) = a/b if b != 0, else default.
+        "f64_sinc" => format!(
+            "({{ double __sicx = ({}); __sicx == 0.0 ? 1.0 : sin(__sicx) / __sicx; }})",
+            emit_expr(&args[0])
+        ),
+        "f64_safe_div" => format!(
+            "({{ double __sda = ({}); double __sdb = ({}); double __sdd = ({}); __sdb == 0.0 ? __sdd : __sda / __sdb; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         // Closure #433: libm special functions.
         //   erf(x)    — Gauss error function
         //   erfc(x)   — complementary error function (= 1 - erf(x))
