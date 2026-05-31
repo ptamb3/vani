@@ -15972,6 +15972,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_swish_logit_typecheck_and_compile() {
+        // Closure #439: f64_swish / f64_logit.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_swish(1.0);
+              let b: f64 = f64_logit(0.5);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("swish/logit must type-check");
+        compile_to_llvm(source).expect("swish/logit must compile to LLVM");
+    }
+
+    #[test]
     fn f64_relu_leaky_relu_softplus_typecheck_and_compile() {
         // Closure #432: f64_relu / f64_leaky_relu / f64_softplus.
         let source = r#"

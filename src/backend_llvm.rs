@@ -7297,6 +7297,44 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #439: swish(x) = x * sigmoid(x) = x / (1 + exp(-x))
+            if name == "f64_swish" {
+                let x = emit_expr(&args[0], ctx, out);
+                let neg_x = ctx.fresh_tmp();
+                let e_neg = ctx.fresh_tmp();
+                let denom = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fsub double 0.0, {}\n", neg_x, x
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @exp(double {})\n", e_neg, neg_x
+                ));
+                out.push_str(&format!(
+                    "  {} = fadd double 1.0, {}\n", denom, e_neg
+                ));
+                out.push_str(&format!(
+                    "  {} = fdiv double {}, {}\n", dest, x, denom
+                ));
+                return dest;
+            }
+            //   logit(x) = log(x / (1 - x))
+            if name == "f64_logit" {
+                let x = emit_expr(&args[0], ctx, out);
+                let one_minus = ctx.fresh_tmp();
+                let ratio = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fsub double 1.0, {}\n", one_minus, x
+                ));
+                out.push_str(&format!(
+                    "  {} = fdiv double {}, {}\n", ratio, x, one_minus
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @log(double {})\n", dest, ratio
+                ));
+                return dest;
+            }
             // Closures #433 + #434 + #435: libm functions. Strip
             // the `f64_` prefix to derive the libm symbol name.
             if matches!(

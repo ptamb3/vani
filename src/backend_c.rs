@@ -10917,6 +10917,17 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "log(1.0 + exp(({})))",
             emit_expr(&args[0])
         ),
+        // Closure #439: additional ML primitives.
+        // swish(x) = x * sigmoid(x) = x / (1 + exp(-x))
+        // logit(x) = log(x / (1 - x))  — inverse of sigmoid
+        "f64_swish" => format!(
+            "({{ double __wx = ({}); __wx / (1.0 + exp(-__wx)); }})",
+            emit_expr(&args[0])
+        ),
+        "f64_logit" => format!(
+            "({{ double __lx = ({}); log(__lx / (1.0 - __lx)); }})",
+            emit_expr(&args[0])
+        ),
         // Closure #433: libm special functions.
         //   erf(x)    — Gauss error function
         //   erfc(x)   — complementary error function (= 1 - erf(x))
