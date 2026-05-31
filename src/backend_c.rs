@@ -10801,6 +10801,12 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __n = ({}); int64_t __c; if (__n == 0) {{ __c = 1; }} else {{ uint64_t __un = (__n < 0) ? ((uint64_t)(-(__n + 1)) + 1) : (uint64_t)__n; __c = 0; while (__un > 0) {{ __c += 1; __un /= 10; }} }} __c; }})",
             emit_expr(&args[0])
         ),
+        // Closure #422: floor(log10(n)). Returns 0 for n <= 0
+        // (defensive — log10 of non-positive is undefined).
+        "i64_log10_floor" => format!(
+            "({{ int64_t __n = ({}); int64_t __c; if (__n <= 0) {{ __c = 0; }} else {{ __c = 0; while (__n >= 10) {{ __n /= 10; __c += 1; }} }} __c; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.

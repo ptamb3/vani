@@ -15887,6 +15887,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_log10_floor_typecheck_and_compile() {
+        // Closure #422: i64_log10_floor.
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_log10_floor(100);
+              let b: i64 = i64_log10_floor(99);
+              return a + b;
+            }
+        "#;
+        compile_to_c(source).expect("log10_floor must type-check");
+        compile_to_llvm(source).expect("log10_floor must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_log10_floor_emits_helper_definition() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_log10_floor(100);
+              return a;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("define i64 @intent_i64_log10_floor(i64 %n)"),
+            "LLVM must define the @intent_i64_log10_floor helper"
+        );
+        assert!(
+            ll.contains("call i64 @intent_i64_log10_floor(i64"),
+            "LLVM must call the @intent_i64_log10_floor helper"
+        );
+    }
+
+    #[test]
     fn i64_count_digits_typecheck_and_compile() {
         // Closure #421: i64_count_digits.
         let source = r#"

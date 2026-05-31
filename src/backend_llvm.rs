@@ -7103,6 +7103,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #422: floor(log10(n)) via shared helper.
+            if name == "i64_log10_floor" {
+                let n = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_log10_floor(i64 {})\n",
+                    dest, n
+                ));
+                return dest;
+            }
             // Closure #413: trig / geometry helpers.
             if name == "f64_hypot" {
                 let a = emit_expr(&args[0], ctx, out);
@@ -11468,6 +11478,38 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("cd_fin:\n");
     out.push_str("  %cd_r = load i64, i64* %cd_c_p\n");
     out.push_str("  ret i64 %cd_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #422: floor(log10(n)). 0 for n <= 0.
+    //   if n <= 0:  return 0
+    //   c = 0
+    //   while n >= 10:  n /= 10; c += 1
+    //   return c
+    out.push_str("define i64 @intent_i64_log10_floor(i64 %n) {\n");
+    out.push_str("  %lg_nonpos = icmp sle i64 %n, 0\n");
+    out.push_str("  br i1 %lg_nonpos, label %lg_zero_ret, label %lg_init\n");
+    out.push_str("lg_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("lg_init:\n");
+    out.push_str("  %lg_p = alloca i64\n");
+    out.push_str("  %lg_c_p = alloca i64\n");
+    out.push_str("  store i64 %n, i64* %lg_p\n");
+    out.push_str("  store i64 0, i64* %lg_c_p\n");
+    out.push_str("  br label %lg_head\n");
+    out.push_str("lg_head:\n");
+    out.push_str("  %lg_cur = load i64, i64* %lg_p\n");
+    out.push_str("  %lg_done = icmp slt i64 %lg_cur, 10\n");
+    out.push_str("  br i1 %lg_done, label %lg_fin, label %lg_step\n");
+    out.push_str("lg_step:\n");
+    out.push_str("  %lg_c_cur = load i64, i64* %lg_c_p\n");
+    out.push_str("  %lg_c_new = add i64 %lg_c_cur, 1\n");
+    out.push_str("  store i64 %lg_c_new, i64* %lg_c_p\n");
+    out.push_str("  %lg_next = sdiv i64 %lg_cur, 10\n");
+    out.push_str("  store i64 %lg_next, i64* %lg_p\n");
+    out.push_str("  br label %lg_head\n");
+    out.push_str("lg_fin:\n");
+    out.push_str("  %lg_r = load i64, i64* %lg_c_p\n");
+    out.push_str("  ret i64 %lg_r\n");
     out.push_str("}\n\n");
 }
 
