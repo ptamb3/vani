@@ -10807,6 +10807,12 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __n = ({}); int64_t __c; if (__n <= 0) {{ __c = 0; }} else {{ __c = 0; while (__n >= 10) {{ __n /= 10; __c += 1; }} }} __c; }})",
             emit_expr(&args[0])
         ),
+        // Closure #423: ceil(log10(n)). Smallest k such that
+        // 10^k >= n. Returns 0 for n <= 1.
+        "i64_log10_ceil" => format!(
+            "({{ int64_t __n = ({}); int64_t __c; if (__n <= 1) {{ __c = 0; }} else {{ __c = 0; int64_t __m = 1; while (__m < __n) {{ __m *= 10; __c += 1; }} }} __c; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.

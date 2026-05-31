@@ -15887,6 +15887,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_log10_ceil_typecheck_and_compile() {
+        // Closure #423: i64_log10_ceil.
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_log10_ceil(101);
+              let b: i64 = i64_log10_ceil(100);
+              return a + b;
+            }
+        "#;
+        compile_to_c(source).expect("log10_ceil must type-check");
+        compile_to_llvm(source).expect("log10_ceil must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_log10_ceil_emits_helper_definition() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_log10_ceil(100);
+              return a;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("define i64 @intent_i64_log10_ceil(i64 %n)"),
+            "LLVM must define the @intent_i64_log10_ceil helper"
+        );
+        assert!(
+            ll.contains("call i64 @intent_i64_log10_ceil(i64"),
+            "LLVM must call the @intent_i64_log10_ceil helper"
+        );
+    }
+
+    #[test]
     fn i64_log10_floor_typecheck_and_compile() {
         // Closure #422: i64_log10_floor.
         let source = r#"
