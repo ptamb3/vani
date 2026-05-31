@@ -15873,6 +15873,37 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_bits_typecheck_and_compile() {
+        // Closure #403: f64_to_bits / f64_from_bits.
+        let source = r#"
+            fn main() -> i64 {
+              let b: i64 = f64_to_bits(1.0);
+              let x: f64 = f64_from_bits(b);
+              return b;
+            }
+        "#;
+        compile_to_c(source).expect("f64_to_bits / from_bits must type-check");
+        compile_to_llvm(source).expect("f64_to_bits / from_bits must compile to LLVM");
+    }
+
+    #[test]
+    fn f64_bits_emit_bitcast_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let b: i64 = f64_to_bits(1.5);
+              let x: f64 = f64_from_bits(b);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("bitcast double") && ll.contains("to i64")
+                && ll.contains("bitcast i64") && ll.contains("to double"),
+            "LLVM output must use bitcast in both directions"
+        );
+    }
+
+    #[test]
     fn bswap_and_rotate_typecheck_and_compile() {
         // Closure #402: i64_bswap / i64_rotate_left /
         // i64_rotate_right.

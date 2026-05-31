@@ -10568,6 +10568,22 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[1])
             )
         }
+        // Closure #403: IEEE-754 bit-level reinterpretation.
+        // memcpy is the strict-aliasing-safe spelling — gcc/clang
+        // both optimize it to a no-op move at -O1+. Avoids the
+        // union-pun and the *(uint64_t*)&x form.
+        "f64_to_bits" => {
+            format!(
+                "({{ double __fb_v = ({}); int64_t __fb_r; memcpy(&__fb_r, &__fb_v, sizeof(__fb_r)); __fb_r; }})",
+                emit_expr(&args[0])
+            )
+        }
+        "f64_from_bits" => {
+            format!(
+                "({{ int64_t __ff_b = ({}); double __ff_r; memcpy(&__ff_r, &__ff_b, sizeof(__ff_r)); __ff_r; }})",
+                emit_expr(&args[0])
+            )
+        }
         // Closure #393: i64_abs_diff(a, b) — |a - b| in signed
         // arithmetic. Done via select on a < b to avoid overflow
         // on borderline values like INT64_MIN / INT64_MAX.

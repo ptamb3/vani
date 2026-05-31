@@ -6945,6 +6945,27 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #403: IEEE-754 bit-level reinterpretation.
+            // LLVM `bitcast` between i64 and double is the
+            // canonical zero-cost spelling — no runtime work.
+            if name == "f64_to_bits" {
+                let v = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = bitcast double {} to i64\n",
+                    dest, v
+                ));
+                return dest;
+            }
+            if name == "f64_from_bits" {
+                let v = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = bitcast i64 {} to double\n",
+                    dest, v
+                ));
+                return dest;
+            }
             // Closure #402: bswap + rotate via LLVM intrinsics.
             if name == "i64_bswap" {
                 let x = emit_expr(&args[0], ctx, out);
