@@ -7135,6 +7135,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #425: primality test via helper.
+            if name == "i64_is_prime" {
+                let n = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i1 @intent_i64_is_prime(i64 {})\n",
+                    dest, n
+                ));
+                return dest;
+            }
             // Closure #413: trig / geometry helpers.
             if name == "f64_hypot" {
                 let a = emit_expr(&args[0], ctx, out);
@@ -11620,6 +11630,55 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("pm_fin:\n");
     out.push_str("  %pm_rfinal = load i64, i64* %pm_r_pp\n");
     out.push_str("  ret i64 %pm_rfinal\n");
+    out.push_str("}\n\n");
+
+    // Closure #425: primality test via trial division with
+    // 6k+/-1 optimization.
+    //   n < 2: false
+    //   n in {2, 3}: true
+    //   n % 2 == 0 or n % 3 == 0: false
+    //   else: iterate i = 5, 11, 17, ... while i*i <= n
+    //         check n % i and n % (i+2); if either divides, false
+    out.push_str("define i1 @intent_i64_is_prime(i64 %n) {\n");
+    out.push_str("  %ip_lt2 = icmp slt i64 %n, 2\n");
+    out.push_str("  br i1 %ip_lt2, label %ip_false, label %ip_check_small\n");
+    out.push_str("ip_false:\n");
+    out.push_str("  ret i1 0\n");
+    out.push_str("ip_check_small:\n");
+    out.push_str("  %ip_lt4 = icmp slt i64 %n, 4\n");
+    out.push_str("  br i1 %ip_lt4, label %ip_true, label %ip_check_2\n");
+    out.push_str("ip_true:\n");
+    out.push_str("  ret i1 1\n");
+    out.push_str("ip_check_2:\n");
+    out.push_str("  %ip_mod2 = srem i64 %n, 2\n");
+    out.push_str("  %ip_div2 = icmp eq i64 %ip_mod2, 0\n");
+    out.push_str("  br i1 %ip_div2, label %ip_false, label %ip_check_3\n");
+    out.push_str("ip_check_3:\n");
+    out.push_str("  %ip_mod3 = srem i64 %n, 3\n");
+    out.push_str("  %ip_div3 = icmp eq i64 %ip_mod3, 0\n");
+    out.push_str("  br i1 %ip_div3, label %ip_false, label %ip_init\n");
+    out.push_str("ip_init:\n");
+    out.push_str("  %ip_i_p = alloca i64\n");
+    out.push_str("  store i64 5, i64* %ip_i_p\n");
+    out.push_str("  br label %ip_head\n");
+    out.push_str("ip_head:\n");
+    out.push_str("  %ip_i = load i64, i64* %ip_i_p\n");
+    out.push_str("  %ip_sq = mul i64 %ip_i, %ip_i\n");
+    out.push_str("  %ip_past = icmp sgt i64 %ip_sq, %n\n");
+    out.push_str("  br i1 %ip_past, label %ip_true, label %ip_body\n");
+    out.push_str("ip_body:\n");
+    out.push_str("  %ip_mi = srem i64 %n, %ip_i\n");
+    out.push_str("  %ip_divi = icmp eq i64 %ip_mi, 0\n");
+    out.push_str("  br i1 %ip_divi, label %ip_false, label %ip_check_ip2\n");
+    out.push_str("ip_check_ip2:\n");
+    out.push_str("  %ip_ip2 = add i64 %ip_i, 2\n");
+    out.push_str("  %ip_mip2 = srem i64 %n, %ip_ip2\n");
+    out.push_str("  %ip_divip2 = icmp eq i64 %ip_mip2, 0\n");
+    out.push_str("  br i1 %ip_divip2, label %ip_false, label %ip_incr\n");
+    out.push_str("ip_incr:\n");
+    out.push_str("  %ip_inew = add i64 %ip_i, 6\n");
+    out.push_str("  store i64 %ip_inew, i64* %ip_i_p\n");
+    out.push_str("  br label %ip_head\n");
     out.push_str("}\n\n");
 }
 

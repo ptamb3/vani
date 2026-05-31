@@ -15887,6 +15887,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_is_prime_typecheck_and_compile() {
+        // Closure #425: i64_is_prime.
+        let source = r#"
+            fn main() -> i64 {
+              let a: bool = i64_is_prime(13);
+              let b: bool = i64_is_prime(100);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("is_prime must type-check");
+        compile_to_llvm(source).expect("is_prime must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_is_prime_emits_helper_definition() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: bool = i64_is_prime(13);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("define i1 @intent_i64_is_prime(i64 %n)"),
+            "LLVM must define the @intent_i64_is_prime helper"
+        );
+        assert!(
+            ll.contains("call i1 @intent_i64_is_prime(i64"),
+            "LLVM must call the @intent_i64_is_prime helper"
+        );
+    }
+
+    #[test]
     fn i64_pow_mod_typecheck_and_compile() {
         // Closure #424: i64_pow_mod (modular exponentiation).
         let source = r#"
