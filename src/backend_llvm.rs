@@ -6770,6 +6770,128 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #400: ASCII byte-class predicates. Inline
+            // range checks (no libc ctype dependency).
+            if matches!(
+                name.as_str(),
+                "is_ascii_digit" | "is_ascii_alpha"
+                | "is_ascii_alphanumeric" | "is_ascii_whitespace"
+            ) {
+                let v = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                match name.as_str() {
+                    "is_ascii_digit" => {
+                        let lo = ctx.fresh_tmp();
+                        let hi = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = icmp sge i64 {}, 48\n", lo, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = icmp sle i64 {}, 57\n", hi, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = and i1 {}, {}\n", dest, lo, hi
+                        ));
+                    }
+                    "is_ascii_alpha" => {
+                        let u_lo = ctx.fresh_tmp();
+                        let u_hi = ctx.fresh_tmp();
+                        let u = ctx.fresh_tmp();
+                        let l_lo = ctx.fresh_tmp();
+                        let l_hi = ctx.fresh_tmp();
+                        let l = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = icmp sge i64 {}, 65\n", u_lo, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = icmp sle i64 {}, 90\n", u_hi, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = and i1 {}, {}\n", u, u_lo, u_hi
+                        ));
+                        out.push_str(&format!(
+                            "  {} = icmp sge i64 {}, 97\n", l_lo, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = icmp sle i64 {}, 122\n", l_hi, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = and i1 {}, {}\n", l, l_lo, l_hi
+                        ));
+                        out.push_str(&format!(
+                            "  {} = or i1 {}, {}\n", dest, u, l
+                        ));
+                    }
+                    "is_ascii_alphanumeric" => {
+                        let d_lo = ctx.fresh_tmp();
+                        let d_hi = ctx.fresh_tmp();
+                        let d = ctx.fresh_tmp();
+                        let u_lo = ctx.fresh_tmp();
+                        let u_hi = ctx.fresh_tmp();
+                        let u = ctx.fresh_tmp();
+                        let l_lo = ctx.fresh_tmp();
+                        let l_hi = ctx.fresh_tmp();
+                        let l = ctx.fresh_tmp();
+                        let du = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = icmp sge i64 {}, 48\n", d_lo, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = icmp sle i64 {}, 57\n", d_hi, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = and i1 {}, {}\n", d, d_lo, d_hi
+                        ));
+                        out.push_str(&format!(
+                            "  {} = icmp sge i64 {}, 65\n", u_lo, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = icmp sle i64 {}, 90\n", u_hi, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = and i1 {}, {}\n", u, u_lo, u_hi
+                        ));
+                        out.push_str(&format!(
+                            "  {} = icmp sge i64 {}, 97\n", l_lo, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = icmp sle i64 {}, 122\n", l_hi, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = and i1 {}, {}\n", l, l_lo, l_hi
+                        ));
+                        out.push_str(&format!(
+                            "  {} = or i1 {}, {}\n", du, d, u
+                        ));
+                        out.push_str(&format!(
+                            "  {} = or i1 {}, {}\n", dest, du, l
+                        ));
+                    }
+                    "is_ascii_whitespace" => {
+                        let r_lo = ctx.fresh_tmp();
+                        let r_hi = ctx.fresh_tmp();
+                        let r = ctx.fresh_tmp();
+                        let sp = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = icmp sge i64 {}, 9\n", r_lo, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = icmp sle i64 {}, 13\n", r_hi, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = and i1 {}, {}\n", r, r_lo, r_hi
+                        ));
+                        out.push_str(&format!(
+                            "  {} = icmp eq i64 {}, 32\n", sp, v
+                        ));
+                        out.push_str(&format!(
+                            "  {} = or i1 {}, {}\n", dest, r, sp
+                        ));
+                    }
+                    _ => unreachable!(),
+                }
+                return dest;
+            }
             // Closure #393: f64_signum(x). NaN stays NaN; else
             // returns -1.0 / 0.0 / +1.0.
             if name == "f64_signum" {

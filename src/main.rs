@@ -343,6 +343,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "i64_gcd" || name == "i64_lcm" || name == "i64_pow"
                 || name == "i64_abs_diff" || name == "i64_signum"
                 || name == "f64_signum"
+                || name == "is_ascii_digit" || name == "is_ascii_alpha"
+                || name == "is_ascii_alphanumeric" || name == "is_ascii_whitespace"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_f64"

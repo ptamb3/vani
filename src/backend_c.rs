@@ -10544,6 +10544,36 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[0])
             )
         }
+        // Closure #400: ASCII byte-class predicates. Inline byte
+        // range checks — independent of locale (libc's ctype is
+        // locale-sensitive).
+        "is_ascii_digit" => {
+            format!(
+                "({{ int64_t __ad = ({}); (__ad >= 48 && __ad <= 57); }})",
+                emit_expr(&args[0])
+            )
+        }
+        "is_ascii_alpha" => {
+            format!(
+                "({{ int64_t __aa = ({}); ((__aa >= 65 && __aa <= 90) || (__aa >= 97 && __aa <= 122)); }})",
+                emit_expr(&args[0])
+            )
+        }
+        "is_ascii_alphanumeric" => {
+            format!(
+                "({{ int64_t __an = ({}); ((__an >= 48 && __an <= 57) || (__an >= 65 && __an <= 90) || (__an >= 97 && __an <= 122)); }})",
+                emit_expr(&args[0])
+            )
+        }
+        "is_ascii_whitespace" => {
+            // Matches ' ', '\t' (9), '\n' (10), '\v' (11), '\f' (12),
+            // '\r' (13). The contiguous 9..=13 range + ' ' (32) match
+            // the same set as C's isspace() under the C locale.
+            format!(
+                "({{ int64_t __aw = ({}); ((__aw >= 9 && __aw <= 13) || __aw == 32); }})",
+                emit_expr(&args[0])
+            )
+        }
         "abs" => {
             // Overload: i64 → llabs / (x<0?-x:x); f64 → fabs.
             // Other signed ints get cast to i64.

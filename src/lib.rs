@@ -15873,6 +15873,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn ascii_byte_classes_typecheck_and_compile() {
+        // Closure #400: is_ascii_digit / alpha / alphanumeric /
+        // whitespace. All take i64 byte values, return bool.
+        let source = r#"
+            fn main() -> i64 {
+              let d: bool = is_ascii_digit(53);
+              let a: bool = is_ascii_alpha(97);
+              let an: bool = is_ascii_alphanumeric(65);
+              let w: bool = is_ascii_whitespace(32);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("ascii predicates must type-check");
+        compile_to_llvm(source).expect("ascii predicates must compile to LLVM");
+    }
+
+    #[test]
+    fn ascii_predicates_compose_with_vec_count_if() {
+        // Verify the predicates compose with vec_count_if via a
+        // user-fn wrapper (builtins aren't first-class fn ptrs).
+        let source = r#"
+            fn dp(c: i64) -> bool { return is_ascii_digit(c); }
+            fn main() -> i64 {
+              let cs: Vec<i64> = str_chars("a1b2c3");
+              let n: i64 = vec_count_if(ref cs, dp);
+              return n;
+            }
+        "#;
+        compile_to_c(source).expect("composition must type-check");
+        compile_to_llvm(source).expect("composition must compile to LLVM");
+    }
+
+    #[test]
     fn sign_helpers_typecheck_and_compile() {
         // Closure #393: i64_abs_diff / i64_signum / f64_signum.
         let source = r#"
