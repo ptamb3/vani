@@ -15887,6 +15887,21 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_relu_leaky_relu_softplus_typecheck_and_compile() {
+        // Closure #432: f64_relu / f64_leaky_relu / f64_softplus.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_relu(1.5);
+              let b: f64 = f64_leaky_relu(0.0 - 1.5, 0.01);
+              let c: f64 = f64_softplus(0.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("ML activations must type-check");
+        compile_to_llvm(source).expect("ML activations must compile to LLVM");
+    }
+
+    #[test]
     fn f64_step_smoothstep_typecheck_and_compile() {
         // Closure #430: f64_step / f64_smoothstep.
         let source = r#"

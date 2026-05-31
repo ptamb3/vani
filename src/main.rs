@@ -383,6 +383,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "i64_fibonacci" || name == "i64_binomial"
                 || name == "f64_sigmoid" || name == "f64_softsign"
                 || name == "f64_step" || name == "f64_smoothstep"
+                || name == "f64_relu" || name == "f64_leaky_relu"
+                || name == "f64_softplus"
                 || name == "str_byte_at" || name == "str_len_bytes"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"

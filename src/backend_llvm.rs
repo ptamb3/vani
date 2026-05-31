@@ -7233,6 +7233,56 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #432: ML activations.
+            //   relu(x) = x > 0 ? x : 0
+            if name == "f64_relu" {
+                let x = emit_expr(&args[0], ctx, out);
+                let cmp = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fcmp ogt double {}, 0.0\n", cmp, x
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double {}, double 0.0\n", dest, cmp, x
+                ));
+                return dest;
+            }
+            //   leaky_relu(x, alpha) = x >= 0 ? x : alpha * x
+            if name == "f64_leaky_relu" {
+                let x = emit_expr(&args[0], ctx, out);
+                let alpha = emit_expr(&args[1], ctx, out);
+                let cmp = ctx.fresh_tmp();
+                let scaled = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fcmp oge double {}, 0.0\n", cmp, x
+                ));
+                out.push_str(&format!(
+                    "  {} = fmul double {}, {}\n", scaled, alpha, x
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double {}, double {}\n",
+                    dest, cmp, x, scaled
+                ));
+                return dest;
+            }
+            //   softplus(x) = log(1 + exp(x))
+            if name == "f64_softplus" {
+                let x = emit_expr(&args[0], ctx, out);
+                let e_x = ctx.fresh_tmp();
+                let sum = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @exp(double {})\n", e_x, x
+                ));
+                out.push_str(&format!(
+                    "  {} = fadd double 1.0, {}\n", sum, e_x
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @log(double {})\n", dest, sum
+                ));
+                return dest;
+            }
             //   smoothstep(edge0, edge1, x) = t*t*(3 - 2*t),
             //   t = clamp((x - edge0)/(edge1 - edge0), 0, 1)
             if name == "f64_smoothstep" {

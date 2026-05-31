@@ -10890,6 +10890,23 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2])
         ),
+        // Closure #432: ML activations.
+        // relu(x) = max(0, x)
+        // leaky_relu(x, alpha) = x if x >= 0 else alpha * x
+        // softplus(x) = log(1 + exp(x)) — smooth relu
+        "f64_relu" => format!(
+            "({{ double __rx = ({}); __rx > 0.0 ? __rx : 0.0; }})",
+            emit_expr(&args[0])
+        ),
+        "f64_leaky_relu" => format!(
+            "({{ double __lrx = ({}); double __lra = ({}); __lrx >= 0.0 ? __lrx : __lra * __lrx; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "f64_softplus" => format!(
+            "log(1.0 + exp(({})))",
+            emit_expr(&args[0])
+        ),
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).
