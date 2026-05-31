@@ -11006,6 +11006,16 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        // Closure #442: first index of byte b in s, as Option<i64>.
+        // strchr returns NULL if not found; otherwise pointer to
+        // the byte. Note: strchr(s, 0) returns pointer to the
+        // null terminator (i.e., index strlen(s)) — users
+        // searching for the terminator should handle this.
+        "str_index_of_byte" => format!(
+            "({{ const char* __sib_s = ({}); int64_t __sib_b = ({}); const char* __sib_m = strchr(__sib_s, (int)__sib_b); Enum_Option__i64 __sib_r; if (__sib_m == NULL) {{ __sib_r.tag = 1; __sib_r.payload = 0; }} else {{ __sib_r.tag = 0; __sib_r.payload = (int64_t)(__sib_m - __sib_s); }} __sib_r; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.

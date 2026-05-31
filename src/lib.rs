@@ -16155,6 +16155,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_index_of_byte_typecheck_and_compile() {
+        // Closure #442: str_index_of_byte returns Option<i64>.
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "hello";
+              let i: i64 = option_unwrap_or(str_index_of_byte(s, 108), 0 - 1);
+              return i;
+            }
+        "#;
+        compile_to_c(source).expect("index_of_byte must type-check");
+        compile_to_llvm(source).expect("index_of_byte must compile to LLVM");
+    }
+
+    #[test]
     fn str_byte_count_typecheck_and_compile() {
         // Closure #441: str_byte_count.
         let source = r#"

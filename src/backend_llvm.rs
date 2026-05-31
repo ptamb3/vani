@@ -481,6 +481,9 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare i32 @strcmp(i8*, i8*)\n");
     out.push_str("declare i32 @strncmp(i8*, i8*, i64)\n");
     out.push_str("declare i64 @strlen(i8*)\n");
+    // Closure #442: strchr returns pointer to first byte match
+    // (or NULL) — used by str_index_of_byte.
+    out.push_str("declare i8* @strchr(i8*, i32)\n");
     out.push_str("declare i8* @strstr(i8*, i8*)\n");
     out.push_str("declare i64 @strtoll(i8*, i8**, i32)\n");
     out.push_str("declare double @strtod(i8*, i8**)\n");
@@ -7578,6 +7581,71 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 out.push_str(&format!(
                     "  {} = and i1 {}, {}\n", dest, not_empty, matches
+                ));
+                return dest;
+            }
+            // Closure #442: first byte index. Mirrors str_index_of
+            // but uses strchr for single-byte lookup.
+            if name == "str_index_of_byte" {
+                let s = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let b32 = ctx.fresh_tmp();
+                let hit = ctx.fresh_tmp();
+                let is_null = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = trunc i64 {} to i32\n", b32, b
+                ));
+                out.push_str(&format!(
+                    "  {} = call i8* @strchr(i8* {}, i32 {})\n", hit, s, b32
+                ));
+                out.push_str(&format!(
+                    "  {} = icmp eq i8* {}, null\n", is_null, hit
+                ));
+                let some_lbl = ctx.fresh_label("sib_some");
+                let none_lbl = ctx.fresh_label("sib_none");
+                let done = ctx.fresh_label("sib_done");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    is_null, none_lbl, some_lbl
+                ));
+                out.push_str(&format!("{}:\n", some_lbl));
+                let hit_i = ctx.fresh_tmp();
+                let s_i = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = ptrtoint i8* {} to i64\n", hit_i, hit
+                ));
+                out.push_str(&format!(
+                    "  {} = ptrtoint i8* {} to i64\n", s_i, s
+                ));
+                let off = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = sub i64 {}, {}\n", off, hit_i, s_i
+                ));
+                let r1s = ctx.fresh_tmp();
+                let r2s = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 undef, i32 0, 0\n", r1s
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 {}, i64 {}, 1\n",
+                    r2s, r1s, off
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", none_lbl));
+                let r1n = ctx.fresh_tmp();
+                let r2n = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 undef, i32 1, 0\n", r1n
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 {}, i64 0, 1\n", r2n, r1n
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", done));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = phi %Enum_Option__i64 [ {}, %{} ], [ {}, %{} ]\n",
+                    dest, r2s, some_lbl, r2n, none_lbl
                 ));
                 return dest;
             }
