@@ -5864,6 +5864,19 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
                 sn = struct_name,
             ));
         }
+        // Closure #386: vec_count_if(ref xs, pred) -> i64.
+        // Plain i64 return — no Option<i64> dependency, always
+        // emitted.
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__count_if(const {sn}* xs, {sn}__pred_fn p) {{\
+\n    int64_t hits = 0;\
+\n    for (uint64_t i = 0; i < xs->len; i++) {{\
+\n        if (p(xs->data[i])) {{ hits++; }}\
+\n    }}\
+\n    return hits;\
+\n}}\n",
+            sn = struct_name,
+        ));
         // dedup: remove consecutive duplicates. Returns the
         // post-dedup length so the caller can verify the work
         // was done. Sort first if you want unique-set behavior.
@@ -9256,6 +9269,18 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                     emit_expr(&args[1])
                 ),
                 _ => unreachable!("vec_position() arg 0 must be ref Vec<i64>"),
+            }
+        }
+        // Closure #386: vec_count_if(ref xs, pred) -> i64.
+        "vec_count_if" => {
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, {})",
+                    vec_helper(element, "count_if"),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1])
+                ),
+                _ => unreachable!("vec_count_if() arg 0 must be ref Vec<i64>"),
             }
         }
         "vec_take" | "vec_drop" => {

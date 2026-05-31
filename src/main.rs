@@ -368,6 +368,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "btreemap_clear"
                 || name == "vec_map" || name == "vec_fold" || name == "vec_filter"
                 || name == "vec_position"
+                || name == "vec_count_if"
                 || name == "vec_range" || name == "vec_repeat"
                 || name == "vec_extend" || name == "vec_concat"
                 || name == "vec_reverse_copy" || name == "vec_unique"

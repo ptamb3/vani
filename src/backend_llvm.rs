@@ -7160,6 +7160,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "vec_fold"
                     | "vec_filter"
                     | "vec_position"
+                    | "vec_count_if"
                     | "vec_take"
                     | "vec_drop"
                     | "vec_map_fold"
@@ -7197,6 +7198,8 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     "filter"
                 } else if name == "vec_position" {
                     "position"
+                } else if name == "vec_count_if" {
+                    "count_if"
                 } else if name == "vec_take" {
                     "take"
                 } else if name == "vec_drop" {
@@ -18681,6 +18684,49 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
         out.push_str("  ret %Enum_Option__i64 %vpo_none1\n");
         out.push_str("}\n");
         } // end if has_option_i64
+
+        // Closure #386: vec_count_if(ref xs, pred) -> i64.
+        // Plain i64 return — no Option<i64> dependency.
+        let count_if_name = format!("@intent_vec_{}__count_if", tag);
+        out.push_str(&format!(
+            "define i64 {sn}({sty}* %xs_p, i1 (i64)* %p) {{\n",
+            sn = count_if_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %vci_data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %vci_len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %vci_src = load i64*, i64** %vci_data_p\n");
+        out.push_str("  %vci_n = load i64, i64* %vci_len_p\n");
+        out.push_str("  %vci_i_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %vci_i_p\n");
+        out.push_str("  %vci_hits_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %vci_hits_p\n");
+        out.push_str("  br label %vci_head\n");
+        out.push_str("vci_head:\n");
+        out.push_str("  %vci_i = load i64, i64* %vci_i_p\n");
+        out.push_str("  %vci_done = icmp uge i64 %vci_i, %vci_n\n");
+        out.push_str("  br i1 %vci_done, label %vci_fin, label %vci_body\n");
+        out.push_str("vci_body:\n");
+        out.push_str("  %vci_slot = getelementptr i64, i64* %vci_src, i64 %vci_i\n");
+        out.push_str("  %vci_val = load i64, i64* %vci_slot\n");
+        out.push_str("  %vci_hit = call i1 %p(i64 %vci_val)\n");
+        out.push_str("  %vci_inc = zext i1 %vci_hit to i64\n");
+        out.push_str("  %vci_hits_cur = load i64, i64* %vci_hits_p\n");
+        out.push_str("  %vci_hits_new = add i64 %vci_hits_cur, %vci_inc\n");
+        out.push_str("  store i64 %vci_hits_new, i64* %vci_hits_p\n");
+        out.push_str("  %vci_i_next = add i64 %vci_i, 1\n");
+        out.push_str("  store i64 %vci_i_next, i64* %vci_i_p\n");
+        out.push_str("  br label %vci_head\n");
+        out.push_str("vci_fin:\n");
+        out.push_str("  %vci_r = load i64, i64* %vci_hits_p\n");
+        out.push_str("  ret i64 %vci_r\n");
+        out.push_str("}\n");
 
         out.push_str(&format!(
             "define i64 {sn}({sty}* %xs_p, i64 %init, i64 (i64, i64)* %g) {{\n",

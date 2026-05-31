@@ -15951,6 +15951,33 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_count_if_typecheck_and_compile() {
+        // Closure #386: vec_count_if(ref xs, pred) -> i64.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4, 5);
+              let evens: i64 = vec_count_if(ref xs, |x| x % 2 == 0);
+              return evens;
+            }
+        "#;
+        compile_to_c(source).expect("vec_count_if must type-check");
+        compile_to_llvm(source).expect("vec_count_if must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_count_if_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let n: i64 = xs.count_if(|x| x > 1);
+              return n;
+            }
+        "#;
+        compile_to_c(source).expect("xs.count_if must type-check");
+        compile_to_llvm(source).expect("xs.count_if must compile to LLVM");
+    }
+
+    #[test]
     fn vec_first_last_typecheck_and_compile() {
         // Closure #385: vec_first / vec_last(ref xs) -> Option<i64>.
         let source = r#"
