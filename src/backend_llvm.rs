@@ -549,6 +549,10 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare double @erfc(double)\n");
     out.push_str("declare double @tgamma(double)\n");
     out.push_str("declare double @lgamma(double)\n");
+    // Closure #434: numerical-stability helpers — cbrt + expm1 + log1p.
+    out.push_str("declare double @cbrt(double)\n");
+    out.push_str("declare double @expm1(double)\n");
+    out.push_str("declare double @log1p(double)\n");
     // Threading primitives: POSIX on Linux/macOS, Win32 on
     // Windows. `intentc` picks the host's flavor at codegen
     // time via `host_uses_win32_threading()`. Cross-
@@ -7288,11 +7292,12 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
-            // Closure #433: libm special functions. Strip the
+            // Closures #433 + #434: libm functions. Strip the
             // `f64_` prefix to derive the libm symbol name.
             if matches!(
                 name.as_str(),
                 "f64_erf" | "f64_erfc" | "f64_tgamma" | "f64_lgamma"
+                | "f64_cbrt" | "f64_expm1" | "f64_log1p"
             ) {
                 let x = emit_expr(&args[0], ctx, out);
                 let dest = ctx.fresh_tmp();

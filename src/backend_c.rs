@@ -10916,6 +10916,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         "f64_erfc" => format!("erfc(({}))", emit_expr(&args[0])),
         "f64_tgamma" => format!("tgamma(({}))", emit_expr(&args[0])),
         "f64_lgamma" => format!("lgamma(({}))", emit_expr(&args[0])),
+        // Closure #434: numerical-stability helpers from libm.
+        //   cbrt(x)  — exact cube root, handles negative x
+        //   expm1(x) — exp(x) - 1, accurate near 0
+        //   log1p(x) — log(1 + x), accurate near 0
+        "f64_cbrt" => format!("cbrt(({}))", emit_expr(&args[0])),
+        "f64_expm1" => format!("expm1(({}))", emit_expr(&args[0])),
+        "f64_log1p" => format!("log1p(({}))", emit_expr(&args[0])),
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).

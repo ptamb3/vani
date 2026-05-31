@@ -15887,6 +15887,21 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_numstab_helpers_typecheck_and_compile() {
+        // Closure #434: f64_cbrt / f64_expm1 / f64_log1p.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_cbrt(8.0);
+              let b: f64 = f64_expm1(1.0);
+              let c: f64 = f64_log1p(1.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("numstab helpers must type-check");
+        compile_to_llvm(source).expect("numstab helpers must compile to LLVM");
+    }
+
+    #[test]
     fn f64_special_functions_typecheck_and_compile() {
         // Closure #433: f64_erf / f64_erfc / f64_tgamma / f64_lgamma.
         let source = r#"
