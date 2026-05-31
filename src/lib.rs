@@ -15887,6 +15887,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_pow_mod_typecheck_and_compile() {
+        // Closure #424: i64_pow_mod (modular exponentiation).
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_pow_mod(2, 10, 1000);
+              let b: i64 = i64_pow_mod(3, 7, 100);
+              return a + b;
+            }
+        "#;
+        compile_to_c(source).expect("pow_mod must type-check");
+        compile_to_llvm(source).expect("pow_mod must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_pow_mod_emits_helper_definition() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_pow_mod(2, 10, 1000);
+              return a;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("define i64 @intent_i64_pow_mod(i64 %a, i64 %b, i64 %m)"),
+            "LLVM must define the @intent_i64_pow_mod helper"
+        );
+        assert!(
+            ll.contains("call i64 @intent_i64_pow_mod(i64"),
+            "LLVM must call the @intent_i64_pow_mod helper"
+        );
+    }
+
+    #[test]
     fn i64_log10_ceil_typecheck_and_compile() {
         // Closure #423: i64_log10_ceil.
         let source = r#"

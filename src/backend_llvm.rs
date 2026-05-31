@@ -7123,6 +7123,18 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #424: modular exponentiation via helper.
+            if name == "i64_pow_mod" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let m = emit_expr(&args[2], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_pow_mod(i64 {}, i64 {}, i64 {})\n",
+                    dest, a, b, m
+                ));
+                return dest;
+            }
             // Closure #413: trig / geometry helpers.
             if name == "f64_hypot" {
                 let a = emit_expr(&args[0], ctx, out);
@@ -11552,6 +11564,62 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("lc_fin:\n");
     out.push_str("  %lc_r = load i64, i64* %lc_c_p\n");
     out.push_str("  ret i64 %lc_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #424: modular exponentiation (a^b mod m).
+    // Returns 0 for m <= 1 or b < 0 (defensive defaults).
+    // Otherwise square-and-multiply with modular reduction.
+    // Assumes m * m fits in i64.
+    //   if m <= 1 || b < 0: return 0
+    //   r = 1; a = ((a % m) + m) % m
+    //   while b > 0:
+    //     if (b & 1): r = (r * a) % m
+    //     a = (a * a) % m
+    //     b = b >> 1
+    //   return r
+    out.push_str("define i64 @intent_i64_pow_mod(i64 %a, i64 %b, i64 %m) {\n");
+    out.push_str("  %pm_m_le1 = icmp sle i64 %m, 1\n");
+    out.push_str("  %pm_b_neg = icmp slt i64 %b, 0\n");
+    out.push_str("  %pm_bad = or i1 %pm_m_le1, %pm_b_neg\n");
+    out.push_str("  br i1 %pm_bad, label %pm_zero_ret, label %pm_init\n");
+    out.push_str("pm_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("pm_init:\n");
+    out.push_str("  %pm_a_m = srem i64 %a, %m\n");
+    out.push_str("  %pm_a_p = add i64 %pm_a_m, %m\n");
+    out.push_str("  %pm_a0 = srem i64 %pm_a_p, %m\n");
+    out.push_str("  %pm_a_pp = alloca i64\n");
+    out.push_str("  %pm_b_pp = alloca i64\n");
+    out.push_str("  %pm_r_pp = alloca i64\n");
+    out.push_str("  store i64 %pm_a0, i64* %pm_a_pp\n");
+    out.push_str("  store i64 %b, i64* %pm_b_pp\n");
+    out.push_str("  store i64 1, i64* %pm_r_pp\n");
+    out.push_str("  br label %pm_head\n");
+    out.push_str("pm_head:\n");
+    out.push_str("  %pm_b_cur = load i64, i64* %pm_b_pp\n");
+    out.push_str("  %pm_done = icmp sle i64 %pm_b_cur, 0\n");
+    out.push_str("  br i1 %pm_done, label %pm_fin, label %pm_body\n");
+    out.push_str("pm_body:\n");
+    out.push_str("  %pm_a_cur = load i64, i64* %pm_a_pp\n");
+    out.push_str("  %pm_b_low = and i64 %pm_b_cur, 1\n");
+    out.push_str("  %pm_b_odd = icmp ne i64 %pm_b_low, 0\n");
+    out.push_str("  br i1 %pm_b_odd, label %pm_mul, label %pm_square\n");
+    out.push_str("pm_mul:\n");
+    out.push_str("  %pm_r_cur = load i64, i64* %pm_r_pp\n");
+    out.push_str("  %pm_r_mul = mul i64 %pm_r_cur, %pm_a_cur\n");
+    out.push_str("  %pm_r_new = srem i64 %pm_r_mul, %m\n");
+    out.push_str("  store i64 %pm_r_new, i64* %pm_r_pp\n");
+    out.push_str("  br label %pm_square\n");
+    out.push_str("pm_square:\n");
+    out.push_str("  %pm_a_sq = mul i64 %pm_a_cur, %pm_a_cur\n");
+    out.push_str("  %pm_a_new = srem i64 %pm_a_sq, %m\n");
+    out.push_str("  store i64 %pm_a_new, i64* %pm_a_pp\n");
+    out.push_str("  %pm_b_next = ashr i64 %pm_b_cur, 1\n");
+    out.push_str("  store i64 %pm_b_next, i64* %pm_b_pp\n");
+    out.push_str("  br label %pm_head\n");
+    out.push_str("pm_fin:\n");
+    out.push_str("  %pm_rfinal = load i64, i64* %pm_r_pp\n");
+    out.push_str("  ret i64 %pm_rfinal\n");
     out.push_str("}\n\n");
 }
 

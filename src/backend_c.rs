@@ -10813,6 +10813,18 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __n = ({}); int64_t __c; if (__n <= 1) {{ __c = 0; }} else {{ __c = 0; int64_t __m = 1; while (__m < __n) {{ __m *= 10; __c += 1; }} }} __c; }})",
             emit_expr(&args[0])
         ),
+        // Closure #424: modular exponentiation (a^b mod m) via
+        // square-and-multiply. Returns 0 for m <= 0, b < 0, or
+        // m == 1 (defensive defaults). Assumes m * m fits in
+        // i64 (i.e., m < 2^31.5 ≈ 3.04e9) — for larger m the
+        // r*a or a*a multiplications can overflow; caller must
+        // use a wider type / external lib in that case.
+        "i64_pow_mod" => format!(
+            "({{ int64_t __pma = ({}); int64_t __pmb = ({}); int64_t __pmm = ({}); int64_t __pmr; if (__pmm <= 1 || __pmb < 0) {{ __pmr = 0; }} else {{ __pmr = 1; __pma = ((__pma % __pmm) + __pmm) % __pmm; while (__pmb > 0) {{ if (__pmb & 1) __pmr = (__pmr * __pma) % __pmm; __pma = (__pma * __pma) % __pmm; __pmb = __pmb >> 1; }} }} __pmr; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.
