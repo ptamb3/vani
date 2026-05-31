@@ -10900,6 +10900,21 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2])
         ),
+        // Closure #445: inverse linear interpolation.
+        // inv_lerp(a, b, x) = (x - a) / (b - a). Returns
+        // t such that lerp(a, b, t) ≈ x.
+        "f64_inv_lerp" => format!(
+            "({{ double __ila = ({}); double __ilb = ({}); double __ilx = ({}); (__ilx - __ila) / (__ilb - __ila); }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
+        // Chebyshev (L^∞) distance: max(|x|, |y|).
+        "f64_chebyshev" => format!(
+            "({{ double __cba = fabs(({})); double __cbb = fabs(({})); __cba > __cbb ? __cba : __cbb; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #438: quintic smoothstep. Polynomial
         // 6t^5 - 15t^4 + 10t^3 has zero first AND second
         // derivatives at t=0 and t=1, giving smoother

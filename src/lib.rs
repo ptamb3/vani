@@ -16015,6 +16015,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_inv_lerp_chebyshev_typecheck_and_compile() {
+        // Closure #445: f64_inv_lerp + f64_chebyshev.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_inv_lerp(10.0, 20.0, 15.0);
+              let b: f64 = f64_chebyshev(3.0, 4.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("inv_lerp/chebyshev must type-check");
+        compile_to_llvm(source).expect("inv_lerp/chebyshev must compile to LLVM");
+    }
+
+    #[test]
     fn f64_smoothstep5_typecheck_and_compile() {
         // Closure #438: f64_smoothstep5 (quintic).
         let source = r#"

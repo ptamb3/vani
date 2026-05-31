@@ -7470,6 +7470,39 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #445: inverse lerp.
+            //   inv_lerp(a, b, x) = (x - a) / (b - a)
+            if name == "f64_inv_lerp" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let x = emit_expr(&args[2], ctx, out);
+                let num = ctx.fresh_tmp();
+                let den = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = fsub double {}, {}\n", num, x, a));
+                out.push_str(&format!("  {} = fsub double {}, {}\n", den, b, a));
+                out.push_str(&format!("  {} = fdiv double {}, {}\n", dest, num, den));
+                return dest;
+            }
+            //   chebyshev(x, y) = max(|x|, |y|)
+            if name == "f64_chebyshev" {
+                let x = emit_expr(&args[0], ctx, out);
+                let y = emit_expr(&args[1], ctx, out);
+                let abs_x = ctx.fresh_tmp();
+                let abs_y = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @fabs(double {})\n", abs_x, x
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @fabs(double {})\n", abs_y, y
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @llvm.maxnum.f64(double {}, double {})\n",
+                    dest, abs_x, abs_y
+                ));
+                return dest;
+            }
             //   smoothstep5: quintic. 6t^5 - 15t^4 + 10t^3.
             //   t^3 * (t * (t * 6 - 15) + 10).
             if name == "f64_smoothstep5" {
