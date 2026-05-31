@@ -5383,6 +5383,23 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #407: set ops on Vec<i64>.
+            if matches!(name.as_str(), "vec_intersect" | "vec_difference" | "vec_union") {
+                let xs = emit_expr(&args[0], ctx, out);
+                let ys = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                let helper = match name.as_str() {
+                    "vec_intersect" => "intent_vec_int64_t_intersect",
+                    "vec_difference" => "intent_vec_int64_t_difference",
+                    "vec_union" => "intent_vec_int64_t_union",
+                    _ => unreachable!(),
+                };
+                out.push_str(&format!(
+                    "  {} = call %intent_vec_i64 @{}(%intent_vec_i64* {}, %intent_vec_i64* {})\n",
+                    dest, helper, xs, ys
+                ));
+                return dest;
+            }
             // Closure #385: vec_first / vec_last -> Option<i64>.
             if name == "vec_first" || name == "vec_last" {
                 let xs = emit_expr(&args[0], ctx, out);
@@ -10036,6 +10053,166 @@ pub(crate) fn emit_intent_vec_int64_utility_definitions(out: &mut String) {
             ));
             out.push_str("}\n\n");
         }
+    }
+
+    // ---- Closure #407: vec_intersect / vec_difference /
+    // vec_union. All three follow the scan-and-collect pattern:
+    // for each candidate, dedup against the out Vec, and gate
+    // on membership in ys (intersect: must be in ys; difference:
+    // must NOT be in ys; union: union over both inputs, dedup).
+    // The internal helper @intent_vec_int64_t_member_scan does
+    // a linear scan of a Vec for a value, returning i1.
+    out.push_str("define i1 @intent_vec_int64_t_member_scan(%intent_vec_i64* %xs, i64 %v) {\n");
+    out.push_str("  %ms_lp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 1\n");
+    out.push_str("  %ms_dp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 0\n");
+    out.push_str("  %ms_len = load i64, i64* %ms_lp\n");
+    out.push_str("  %ms_src = load i64*, i64** %ms_dp\n");
+    out.push_str("  %ms_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %ms_i_p\n");
+    out.push_str("  br label %ms_head\n");
+    out.push_str("ms_head:\n");
+    out.push_str("  %ms_i = load i64, i64* %ms_i_p\n");
+    out.push_str("  %ms_done = icmp uge i64 %ms_i, %ms_len\n");
+    out.push_str("  br i1 %ms_done, label %ms_not_found, label %ms_body\n");
+    out.push_str("ms_body:\n");
+    out.push_str("  %ms_slot = getelementptr i64, i64* %ms_src, i64 %ms_i\n");
+    out.push_str("  %ms_cur = load i64, i64* %ms_slot\n");
+    out.push_str("  %ms_match = icmp eq i64 %ms_cur, %v\n");
+    out.push_str("  br i1 %ms_match, label %ms_found, label %ms_advance\n");
+    out.push_str("ms_advance:\n");
+    out.push_str("  %ms_i_next = add i64 %ms_i, 1\n");
+    out.push_str("  store i64 %ms_i_next, i64* %ms_i_p\n");
+    out.push_str("  br label %ms_head\n");
+    out.push_str("ms_found:\n");
+    out.push_str("  ret i1 true\n");
+    out.push_str("ms_not_found:\n");
+    out.push_str("  ret i1 false\n");
+    out.push_str("}\n\n");
+
+    // Helper that builds the output Vec for set ops. Loops once
+    // over the input source, conditionally appending each
+    // element. The "keep" flag is computed by the caller-provided
+    // logic embedded in the function body (we generate three
+    // separate define bodies — one per op — sharing this shape).
+    for (helper_op, intersect_with_ys, difference_against_ys, include_ys_second_pass) in &[
+        ("intersect", true, false, false),
+        ("difference", false, true, false),
+        ("union", false, false, true),
+    ] {
+        let helper_name = format!("@intent_vec_int64_t_{}", helper_op);
+        out.push_str(&format!(
+            "define %intent_vec_i64 {sn}(%intent_vec_i64* %xs, %intent_vec_i64* %ys) {{\n",
+            sn = helper_name,
+        ));
+        out.push_str("  %so_xlp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 1\n");
+        out.push_str("  %so_xdp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 0\n");
+        out.push_str("  %so_ylp = getelementptr %intent_vec_i64, %intent_vec_i64* %ys, i32 0, i32 1\n");
+        out.push_str("  %so_ydp = getelementptr %intent_vec_i64, %intent_vec_i64* %ys, i32 0, i32 0\n");
+        out.push_str("  %so_xlen = load i64, i64* %so_xlp\n");
+        out.push_str("  %so_ylen = load i64, i64* %so_ylp\n");
+        out.push_str("  %so_xsrc = load i64*, i64** %so_xdp\n");
+        out.push_str("  %so_ysrc = load i64*, i64** %so_ydp\n");
+        // capacity heuristic
+        let cap_expr = if *include_ys_second_pass {
+            "  %so_cap = add i64 %so_xlen, %so_ylen\n"
+        } else if *intersect_with_ys {
+            // min(xlen, ylen)
+            "  %so_x_lt = icmp ult i64 %so_xlen, %so_ylen\n  %so_cap = select i1 %so_x_lt, i64 %so_xlen, i64 %so_ylen\n"
+        } else {
+            "  %so_cap = add i64 %so_xlen, 0\n"
+        };
+        out.push_str(cap_expr);
+        out.push_str("  %so_cap_z = icmp eq i64 %so_cap, 0\n");
+        out.push_str("  br i1 %so_cap_z, label %so_empty, label %so_alloc\n");
+        out.push_str("so_empty:\n");
+        out.push_str("  %so_e0 = insertvalue %intent_vec_i64 undef, i64* null, 0\n");
+        out.push_str("  %so_e1 = insertvalue %intent_vec_i64 %so_e0, i64 0, 1\n");
+        out.push_str("  %so_e2 = insertvalue %intent_vec_i64 %so_e1, i64 0, 2\n");
+        out.push_str("  ret %intent_vec_i64 %so_e2\n");
+        out.push_str("so_alloc:\n");
+        out.push_str("  %so_bytes = mul i64 %so_cap, 8\n");
+        out.push_str("  %so_buf_i8 = call i8* @malloc(i64 %so_bytes)\n");
+        out.push_str("  %so_buf = bitcast i8* %so_buf_i8 to i64*\n");
+        // out struct alloca for the contains-self check
+        out.push_str("  %so_out_struct = alloca %intent_vec_i64\n");
+        out.push_str("  %so_out_lp = getelementptr %intent_vec_i64, %intent_vec_i64* %so_out_struct, i32 0, i32 1\n");
+        out.push_str("  %so_out_dp = getelementptr %intent_vec_i64, %intent_vec_i64* %so_out_struct, i32 0, i32 0\n");
+        out.push_str("  store i64 0, i64* %so_out_lp\n");
+        out.push_str("  store i64* %so_buf, i64** %so_out_dp\n");
+        // First pass: walk xs
+        out.push_str("  %so_i_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %so_i_p\n");
+        out.push_str("  br label %so_x_head\n");
+        out.push_str("so_x_head:\n");
+        out.push_str("  %so_i = load i64, i64* %so_i_p\n");
+        out.push_str("  %so_x_done = icmp uge i64 %so_i, %so_xlen\n");
+        let after_x_label = if *include_ys_second_pass { "so_y_init" } else { "so_finalize" };
+        out.push_str(&format!(
+            "  br i1 %so_x_done, label %{}, label %so_x_body\n",
+            after_x_label
+        ));
+        out.push_str("so_x_body:\n");
+        out.push_str("  %so_slot = getelementptr i64, i64* %so_xsrc, i64 %so_i\n");
+        out.push_str("  %so_v = load i64, i64* %so_slot\n");
+        // Gate: depends on op
+        if *intersect_with_ys {
+            out.push_str("  %so_in_ys = call i1 @intent_vec_int64_t_member_scan(%intent_vec_i64* %ys, i64 %so_v)\n");
+            out.push_str("  br i1 %so_in_ys, label %so_dedup, label %so_x_advance\n");
+        } else if *difference_against_ys {
+            out.push_str("  %so_in_ys = call i1 @intent_vec_int64_t_member_scan(%intent_vec_i64* %ys, i64 %so_v)\n");
+            out.push_str("  br i1 %so_in_ys, label %so_x_advance, label %so_dedup\n");
+        } else {
+            // union: always consider; dedup against out
+            out.push_str("  br label %so_dedup\n");
+        }
+        out.push_str("so_dedup:\n");
+        out.push_str("  %so_in_out = call i1 @intent_vec_int64_t_member_scan(%intent_vec_i64* %so_out_struct, i64 %so_v)\n");
+        out.push_str("  br i1 %so_in_out, label %so_x_advance, label %so_append\n");
+        out.push_str("so_append:\n");
+        out.push_str("  %so_out_len_cur = load i64, i64* %so_out_lp\n");
+        out.push_str("  %so_dst = getelementptr i64, i64* %so_buf, i64 %so_out_len_cur\n");
+        out.push_str("  store i64 %so_v, i64* %so_dst\n");
+        out.push_str("  %so_out_len_next = add i64 %so_out_len_cur, 1\n");
+        out.push_str("  store i64 %so_out_len_next, i64* %so_out_lp\n");
+        out.push_str("  br label %so_x_advance\n");
+        out.push_str("so_x_advance:\n");
+        out.push_str("  %so_i_next = add i64 %so_i, 1\n");
+        out.push_str("  store i64 %so_i_next, i64* %so_i_p\n");
+        out.push_str("  br label %so_x_head\n");
+        if *include_ys_second_pass {
+            // Walk ys for union
+            out.push_str("so_y_init:\n");
+            out.push_str("  %so_j_p = alloca i64\n");
+            out.push_str("  store i64 0, i64* %so_j_p\n");
+            out.push_str("  br label %so_y_head\n");
+            out.push_str("so_y_head:\n");
+            out.push_str("  %so_j = load i64, i64* %so_j_p\n");
+            out.push_str("  %so_y_done = icmp uge i64 %so_j, %so_ylen\n");
+            out.push_str("  br i1 %so_y_done, label %so_finalize, label %so_y_body\n");
+            out.push_str("so_y_body:\n");
+            out.push_str("  %so_y_slot = getelementptr i64, i64* %so_ysrc, i64 %so_j\n");
+            out.push_str("  %so_yv = load i64, i64* %so_y_slot\n");
+            out.push_str("  %so_y_in_out = call i1 @intent_vec_int64_t_member_scan(%intent_vec_i64* %so_out_struct, i64 %so_yv)\n");
+            out.push_str("  br i1 %so_y_in_out, label %so_y_advance, label %so_y_append\n");
+            out.push_str("so_y_append:\n");
+            out.push_str("  %so_yout_len_cur = load i64, i64* %so_out_lp\n");
+            out.push_str("  %so_y_dst = getelementptr i64, i64* %so_buf, i64 %so_yout_len_cur\n");
+            out.push_str("  store i64 %so_yv, i64* %so_y_dst\n");
+            out.push_str("  %so_yout_len_next = add i64 %so_yout_len_cur, 1\n");
+            out.push_str("  store i64 %so_yout_len_next, i64* %so_out_lp\n");
+            out.push_str("  br label %so_y_advance\n");
+            out.push_str("so_y_advance:\n");
+            out.push_str("  %so_j_next = add i64 %so_j, 1\n");
+            out.push_str("  store i64 %so_j_next, i64* %so_j_p\n");
+            out.push_str("  br label %so_y_head\n");
+        }
+        out.push_str("so_finalize:\n");
+        out.push_str("  %so_final_len = load i64, i64* %so_out_lp\n");
+        out.push_str("  %so_r0 = insertvalue %intent_vec_i64 undef, i64* %so_buf, 0\n");
+        out.push_str("  %so_r1 = insertvalue %intent_vec_i64 %so_r0, i64 %so_final_len, 1\n");
+        out.push_str("  %so_r2 = insertvalue %intent_vec_i64 %so_r1, i64 %so_cap, 2\n");
+        out.push_str("  ret %intent_vec_i64 %so_r2\n");
+        out.push_str("}\n\n");
     }
 
     // ---- Closure #399: vec_dot(ref xs, ref ys) -> i64.

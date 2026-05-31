@@ -16300,6 +16300,23 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_set_ops_typecheck_and_compile() {
+        // Closure #407: vec_intersect / vec_difference / vec_union.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              let ys: Vec<i64> = vec(3, 4, 5, 6);
+              let i: Vec<i64> = vec_intersect(ref xs, ref ys);
+              let d: Vec<i64> = vec_difference(ref xs, ref ys);
+              let u: Vec<i64> = xs.union(ref ys);
+              return i[0] + d[0] + u[0];
+            }
+        "#;
+        compile_to_c(source).expect("set ops must type-check");
+        compile_to_llvm(source).expect("set ops must compile to LLVM");
+    }
+
+    #[test]
     fn vec_dot_typecheck_and_compile() {
         // Closure #399: vec_dot(ref xs, ref ys) -> i64.
         let source = r#"

@@ -2482,6 +2482,9 @@ pub(crate) fn program_uses_graph_vec_builtin(program: &TypedProgram) -> bool {
                     || name == "vec_last"
                     || name == "vec_running_sum"
                     || name == "vec_dot"
+                    || name == "vec_intersect"
+                    || name == "vec_difference"
+                    || name == "vec_union"
                     || name == "str_chars"
                 {
                     return true;
@@ -4690,6 +4693,61 @@ pub(crate) fn emit_intent_vec_int64_utility_helpers_c(out: &mut String) {
          \x20 v.len = total;\n\
          \x20 v.capacity = total;\n\
          \x20 return v;\n\
+         }\n\
+         /* Closure #407: set ops on Vec<i64>. O(n*m) — fine for\n\
+          * the v1 audience. Each returns a fresh deduplicated\n\
+          * Vec<i64>. */\n\
+         static INTENT_UNUSED int intent_vec_int64_t_contains_value(const intent_vec_int64_t* xs, int64_t v) INTENT_UNUSED;\n\
+         static INTENT_UNUSED int intent_vec_int64_t_contains_value(const intent_vec_int64_t* xs, int64_t v) {\n\
+         \x20 for (uint64_t i = 0; i < xs->len; i++) if (xs->data[i] == v) return 1;\n\
+         \x20 return 0;\n\
+         }\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_intersect(const intent_vec_int64_t* xs, const intent_vec_int64_t* ys) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_intersect(const intent_vec_int64_t* xs, const intent_vec_int64_t* ys) {\n\
+         \x20 intent_vec_int64_t out;\n\
+         \x20 out.data = (int64_t*)0; out.len = 0; out.capacity = 0;\n\
+         \x20 if (xs->len == 0 || ys->len == 0) return out;\n\
+         \x20 out.capacity = xs->len < ys->len ? xs->len : ys->len;\n\
+         \x20 out.data = (int64_t*)malloc(out.capacity * sizeof(int64_t));\n\
+         \x20 if (!out.data) abort();\n\
+         \x20 for (uint64_t i = 0; i < xs->len; i++) {\n\
+         \x20   int64_t v = xs->data[i];\n\
+         \x20   if (intent_vec_int64_t_contains_value(ys, v) && !intent_vec_int64_t_contains_value(&out, v)) out.data[out.len++] = v;\n\
+         \x20 }\n\
+         \x20 return out;\n\
+         }\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_difference(const intent_vec_int64_t* xs, const intent_vec_int64_t* ys) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_difference(const intent_vec_int64_t* xs, const intent_vec_int64_t* ys) {\n\
+         \x20 intent_vec_int64_t out;\n\
+         \x20 out.data = (int64_t*)0; out.len = 0; out.capacity = 0;\n\
+         \x20 if (xs->len == 0) return out;\n\
+         \x20 out.capacity = xs->len;\n\
+         \x20 out.data = (int64_t*)malloc(out.capacity * sizeof(int64_t));\n\
+         \x20 if (!out.data) abort();\n\
+         \x20 for (uint64_t i = 0; i < xs->len; i++) {\n\
+         \x20   int64_t v = xs->data[i];\n\
+         \x20   if (!intent_vec_int64_t_contains_value(ys, v) && !intent_vec_int64_t_contains_value(&out, v)) out.data[out.len++] = v;\n\
+         \x20 }\n\
+         \x20 return out;\n\
+         }\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_union(const intent_vec_int64_t* xs, const intent_vec_int64_t* ys) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_union(const intent_vec_int64_t* xs, const intent_vec_int64_t* ys) {\n\
+         \x20 intent_vec_int64_t out;\n\
+         \x20 out.data = (int64_t*)0; out.len = 0; out.capacity = 0;\n\
+         \x20 uint64_t total = xs->len + ys->len;\n\
+         \x20 if (total == 0) return out;\n\
+         \x20 out.capacity = total;\n\
+         \x20 out.data = (int64_t*)malloc(out.capacity * sizeof(int64_t));\n\
+         \x20 if (!out.data) abort();\n\
+         \x20 for (uint64_t i = 0; i < xs->len; i++) {\n\
+         \x20   int64_t v = xs->data[i];\n\
+         \x20   if (!intent_vec_int64_t_contains_value(&out, v)) out.data[out.len++] = v;\n\
+         \x20 }\n\
+         \x20 for (uint64_t i = 0; i < ys->len; i++) {\n\
+         \x20   int64_t v = ys->data[i];\n\
+         \x20   if (!intent_vec_int64_t_contains_value(&out, v)) out.data[out.len++] = v;\n\
+         \x20 }\n\
+         \x20 return out;\n\
          }\n\
          /* Closure #399: vec_dot(ref xs, ref ys) -> i64.\n\
           * Dot product (sum of xs[i] * ys[i]); truncates to the\n\
@@ -9451,6 +9509,22 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         // Closure #399: vec_dot(ref xs, ref ys) -> i64.
         "vec_dot" => format!(
             "intent_vec_int64_t_dot({}, {})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        // Closure #407: set ops on Vec<i64>.
+        "vec_intersect" => format!(
+            "intent_vec_int64_t_intersect({}, {})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "vec_difference" => format!(
+            "intent_vec_int64_t_difference({}, {})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "vec_union" => format!(
+            "intent_vec_int64_t_union({}, {})",
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
