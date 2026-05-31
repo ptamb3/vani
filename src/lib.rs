@@ -15887,6 +15887,42 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_nextafter_typecheck_and_compile() {
+        // Closure #418: f64_next_up / f64_next_down.
+        let source = r#"
+            fn main() -> i64 {
+              let u: f64 = f64_next_up(1.0);
+              let d: f64 = f64_next_down(1.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("nextafter must type-check");
+        compile_to_llvm(source).expect("nextafter must compile to LLVM");
+    }
+
+    #[test]
+    fn f64_nextafter_emits_libm_declaration() {
+        let source = r#"
+            fn main() -> i64 {
+              let u: f64 = f64_next_up(1.0);
+              let d: f64 = f64_next_down(1.0);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("declare double @nextafter(double, double)"),
+            "LLVM preamble must declare @nextafter"
+        );
+        // next_up uses +Inf (0x7FF0...), next_down uses -Inf (0xFFF0...).
+        assert!(
+            ll.contains("0x7FF0000000000000")
+                && ll.contains("0xFFF0000000000000"),
+            "LLVM must emit both +Inf and -Inf bit patterns"
+        );
+    }
+
+    #[test]
     fn f64_classification_predicates_typecheck_and_compile() {
         // Closure #417: f64_is_normal / f64_is_subnormal / f64_sign_bit.
         let source = r#"

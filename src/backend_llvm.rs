@@ -537,6 +537,8 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare double @llvm.copysign.f64(double, double)\n");
     out.push_str("declare double @llvm.fma.f64(double, double, double)\n");
     out.push_str("declare double @remainder(double, double)\n");
+    // Closure #418: nextafter from libm.
+    out.push_str("declare double @nextafter(double, double)\n");
     // Threading primitives: POSIX on Linux/macOS, Win32 on
     // Windows. `intentc` picks the host's flavor at codegen
     // time via `host_uses_win32_threading()`. Cross-
@@ -7205,6 +7207,27 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!("  {} = bitcast double {} to i64\n", bits, x));
                 out.push_str(&format!("  {} = lshr i64 {}, 63\n", shifted, bits));
                 out.push_str(&format!("  {} = icmp ne i64 {}, 0\n", dest, shifted));
+                return dest;
+            }
+            // Closure #418: next representable double via libm
+            // nextafter. +Inf and -Inf written as exact-bit hex
+            // doubles (0x7FF0... and 0xFFF0...).
+            if name == "f64_next_up" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @nextafter(double {}, double 0x7FF0000000000000)\n",
+                    dest, x
+                ));
+                return dest;
+            }
+            if name == "f64_next_down" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @nextafter(double {}, double 0xFFF0000000000000)\n",
+                    dest, x
+                ));
                 return dest;
             }
             if name == "f64_trunc_to_i64" {
