@@ -397,6 +397,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "str_byte_at" || name == "str_len_bytes"
                 || name == "str_starts_with_byte"
                 || name == "str_ends_with_byte"
+                || name == "str_byte_count"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_f64"

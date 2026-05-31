@@ -7581,6 +7581,18 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #441: byte count via helper. Walks the
+            // string until the null terminator.
+            if name == "str_byte_count" {
+                let s = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_str_byte_count(i8* {}, i64 {})\n",
+                    dest, s, b
+                ));
+                return dest;
+            }
             //   ends_with_byte: strlen(s); if 0 → false;
             //   else s[len-1] == b.
             if name == "str_ends_with_byte" {
@@ -11595,6 +11607,36 @@ pub(crate) fn emit_intent_str_count_char_definition(out: &mut String) {
     out.push_str("scc_fin:\n");
     out.push_str("  %scc_r = load i64, i64* %scc_n_p\n");
     out.push_str("  ret i64 %scc_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #441: byte-count helper. Same shape as the char
+    // counter above, but takes an i64 byte directly (no string
+    // lookup needed) so it's slightly cheaper.
+    out.push_str("define i64 @intent_str_byte_count(i8* %s, i64 %b) {\n");
+    out.push_str("  %sbc_btrunc = trunc i64 %b to i8\n");
+    out.push_str("  %sbc_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sbc_i_p\n");
+    out.push_str("  %sbc_n_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sbc_n_p\n");
+    out.push_str("  br label %sbc_head\n");
+    out.push_str("sbc_head:\n");
+    out.push_str("  %sbc_i = load i64, i64* %sbc_i_p\n");
+    out.push_str("  %sbc_p = getelementptr i8, i8* %s, i64 %sbc_i\n");
+    out.push_str("  %sbc_byte = load i8, i8* %sbc_p\n");
+    out.push_str("  %sbc_end = icmp eq i8 %sbc_byte, 0\n");
+    out.push_str("  br i1 %sbc_end, label %sbc_fin, label %sbc_body\n");
+    out.push_str("sbc_body:\n");
+    out.push_str("  %sbc_hit = icmp eq i8 %sbc_byte, %sbc_btrunc\n");
+    out.push_str("  %sbc_inc = zext i1 %sbc_hit to i64\n");
+    out.push_str("  %sbc_n_cur = load i64, i64* %sbc_n_p\n");
+    out.push_str("  %sbc_n_new = add i64 %sbc_n_cur, %sbc_inc\n");
+    out.push_str("  store i64 %sbc_n_new, i64* %sbc_n_p\n");
+    out.push_str("  %sbc_i_next = add i64 %sbc_i, 1\n");
+    out.push_str("  store i64 %sbc_i_next, i64* %sbc_i_p\n");
+    out.push_str("  br label %sbc_head\n");
+    out.push_str("sbc_fin:\n");
+    out.push_str("  %sbc_r = load i64, i64* %sbc_n_p\n");
+    out.push_str("  ret i64 %sbc_r\n");
     out.push_str("}\n\n");
 }
 

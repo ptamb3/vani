@@ -10999,6 +10999,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        // Closure #441: count occurrences of byte b in s.
+        // Walks the string until the null terminator.
+        "str_byte_count" => format!(
+            "({{ const char* __bc_s = ({}); int64_t __bc_b = ({}); int64_t __bc_n = 0; for (const char* __bc_p = __bc_s; *__bc_p != 0; __bc_p++) {{ if ((int64_t)(unsigned char)*__bc_p == __bc_b) __bc_n += 1; }} __bc_n; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.

@@ -16155,6 +16155,40 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_byte_count_typecheck_and_compile() {
+        // Closure #441: str_byte_count.
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "hello";
+              let n: i64 = str_byte_count(s, 108);
+              return n;
+            }
+        "#;
+        compile_to_c(source).expect("byte_count must type-check");
+        compile_to_llvm(source).expect("byte_count must compile to LLVM");
+    }
+
+    #[test]
+    fn str_byte_count_emits_helper_definition() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "abc";
+              let n: i64 = str_byte_count(s, 97);
+              return n;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("define i64 @intent_str_byte_count(i8* %s, i64 %b)"),
+            "LLVM must define the @intent_str_byte_count helper"
+        );
+        assert!(
+            ll.contains("call i64 @intent_str_byte_count(i8*"),
+            "LLVM must call the @intent_str_byte_count helper"
+        );
+    }
+
+    #[test]
     fn str_starts_ends_with_byte_typecheck_and_compile() {
         // Closure #436: str_starts_with_byte + str_ends_with_byte.
         let source = r#"
