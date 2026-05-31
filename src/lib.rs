@@ -15887,6 +15887,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_exp2_exp10_typecheck_and_compile() {
+        // Closure #435: f64_exp2 / f64_exp10.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_exp2(10.0);
+              let b: f64 = f64_exp10(3.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("exp2/exp10 must type-check");
+        compile_to_llvm(source).expect("exp2/exp10 must compile to LLVM");
+    }
+
+    #[test]
     fn f64_numstab_helpers_typecheck_and_compile() {
         // Closure #434: f64_cbrt / f64_expm1 / f64_log1p.
         let source = r#"

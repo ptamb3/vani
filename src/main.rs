@@ -389,6 +389,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "f64_tgamma" || name == "f64_lgamma"
                 || name == "f64_cbrt" || name == "f64_expm1"
                 || name == "f64_log1p"
+                || name == "f64_exp2" || name == "f64_exp10"
                 || name == "str_byte_at" || name == "str_len_bytes"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"

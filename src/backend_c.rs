@@ -10923,6 +10923,11 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         "f64_cbrt" => format!("cbrt(({}))", emit_expr(&args[0])),
         "f64_expm1" => format!("expm1(({}))", emit_expr(&args[0])),
         "f64_log1p" => format!("log1p(({}))", emit_expr(&args[0])),
+        // Closure #435: base-2 and base-10 exp. exp2 is C99
+        // standard libm. exp10 is a GNU extension on some
+        // platforms; implement portably as pow(10, x).
+        "f64_exp2" => format!("exp2(({}))", emit_expr(&args[0])),
+        "f64_exp10" => format!("pow(10.0, ({}))", emit_expr(&args[0])),
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).
