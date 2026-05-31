@@ -10841,6 +10841,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __fn = ({}); int64_t __fr; if (__fn < 0) {{ __fr = 0; }} else if (__fn > 20) {{ __fr = (int64_t)9223372036854775807LL; }} else {{ __fr = 1; for (int64_t __fi = 2; __fi <= __fn; __fi += 1) {{ __fr *= __fi; }} }} __fr; }})",
             emit_expr(&args[0])
         ),
+        // Closure #428: saturating Fibonacci. F(0) = 0, F(1) = 1,
+        // F(n) = F(n-1) + F(n-2). F(92) = 7540113804746346429 is
+        // the largest Fibonacci that fits in i64; F(93) overflows.
+        // Returns 0 for negative n; saturates to INT64_MAX for n > 92.
+        "i64_fibonacci" => format!(
+            "({{ int64_t __fbn = ({}); int64_t __fbr; if (__fbn < 0) {{ __fbr = 0; }} else if (__fbn > 92) {{ __fbr = (int64_t)9223372036854775807LL; }} else if (__fbn < 2) {{ __fbr = __fbn; }} else {{ int64_t __fba = 0; int64_t __fbb = 1; for (int64_t __fbi = 2; __fbi <= __fbn; __fbi += 1) {{ int64_t __fbt = __fba + __fbb; __fba = __fbb; __fbb = __fbt; }} __fbr = __fbb; }} __fbr; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).

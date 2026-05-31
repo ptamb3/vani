@@ -7155,6 +7155,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #428: saturating Fibonacci via helper.
+            if name == "i64_fibonacci" {
+                let n = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_fibonacci(i64 {})\n",
+                    dest, n
+                ));
+                return dest;
+            }
             // Closure #426: byte access on Str (i8* in IR).
             if name == "str_byte_at" {
                 let s = emit_expr(&args[0], ctx, out);
@@ -11749,6 +11759,54 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("ft_fin:\n");
     out.push_str("  %ft_r = load i64, i64* %ft_r_p\n");
     out.push_str("  ret i64 %ft_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #428: saturating Fibonacci. F(0) = 0, F(1) = 1.
+    //   if n < 0:  return 0
+    //   if n > 92: return INT64_MAX
+    //   if n < 2:  return n
+    //   a = 0, b = 1, i = 2
+    //   while i <= n: t = a+b; a = b; b = t; i += 1
+    //   return b
+    out.push_str("define i64 @intent_i64_fibonacci(i64 %n) {\n");
+    out.push_str("  %fb_neg = icmp slt i64 %n, 0\n");
+    out.push_str("  br i1 %fb_neg, label %fb_zero_ret, label %fb_check_big\n");
+    out.push_str("fb_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("fb_check_big:\n");
+    out.push_str("  %fb_big = icmp sgt i64 %n, 92\n");
+    out.push_str("  br i1 %fb_big, label %fb_max_ret, label %fb_check_small\n");
+    out.push_str("fb_max_ret:\n");
+    out.push_str("  ret i64 9223372036854775807\n");
+    out.push_str("fb_check_small:\n");
+    out.push_str("  %fb_small = icmp slt i64 %n, 2\n");
+    out.push_str("  br i1 %fb_small, label %fb_n_ret, label %fb_init\n");
+    out.push_str("fb_n_ret:\n");
+    out.push_str("  ret i64 %n\n");
+    out.push_str("fb_init:\n");
+    out.push_str("  %fb_a_p = alloca i64\n");
+    out.push_str("  %fb_b_p = alloca i64\n");
+    out.push_str("  %fb_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %fb_a_p\n");
+    out.push_str("  store i64 1, i64* %fb_b_p\n");
+    out.push_str("  store i64 2, i64* %fb_i_p\n");
+    out.push_str("  br label %fb_head\n");
+    out.push_str("fb_head:\n");
+    out.push_str("  %fb_i = load i64, i64* %fb_i_p\n");
+    out.push_str("  %fb_done = icmp sgt i64 %fb_i, %n\n");
+    out.push_str("  br i1 %fb_done, label %fb_fin, label %fb_step\n");
+    out.push_str("fb_step:\n");
+    out.push_str("  %fb_a = load i64, i64* %fb_a_p\n");
+    out.push_str("  %fb_b = load i64, i64* %fb_b_p\n");
+    out.push_str("  %fb_t = add i64 %fb_a, %fb_b\n");
+    out.push_str("  store i64 %fb_b, i64* %fb_a_p\n");
+    out.push_str("  store i64 %fb_t, i64* %fb_b_p\n");
+    out.push_str("  %fb_i_new = add i64 %fb_i, 1\n");
+    out.push_str("  store i64 %fb_i_new, i64* %fb_i_p\n");
+    out.push_str("  br label %fb_head\n");
+    out.push_str("fb_fin:\n");
+    out.push_str("  %fb_r = load i64, i64* %fb_b_p\n");
+    out.push_str("  ret i64 %fb_r\n");
     out.push_str("}\n\n");
 }
 

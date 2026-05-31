@@ -15887,6 +15887,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_fibonacci_typecheck_and_compile() {
+        // Closure #428: i64_fibonacci (saturating).
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_fibonacci(10);
+              let b: i64 = i64_fibonacci(50);
+              return a + b;
+            }
+        "#;
+        compile_to_c(source).expect("fibonacci must type-check");
+        compile_to_llvm(source).expect("fibonacci must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_fibonacci_emits_helper_definition() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_fibonacci(20);
+              return a;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("define i64 @intent_i64_fibonacci(i64 %n)"),
+            "LLVM must define the @intent_i64_fibonacci helper"
+        );
+        assert!(
+            ll.contains("call i64 @intent_i64_fibonacci(i64"),
+            "LLVM must call the @intent_i64_fibonacci helper"
+        );
+    }
+
+    #[test]
     fn i64_factorial_typecheck_and_compile() {
         // Closure #427: i64_factorial (saturating).
         let source = r#"
