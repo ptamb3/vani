@@ -16050,6 +16050,35 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_max_min_by_typecheck_and_compile() {
+        // Closure #392: vec_max_by / vec_min_by(ref xs, key) ->
+        // Option<i64>. Returns the element with the extremum key.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(3, 0 - 7, 5);
+              let m: Option<i64> = vec_max_by(ref xs, |x| if x < 0 { 0 - x } else { x });
+              let n: Option<i64> = vec_min_by(ref xs, |x| if x < 0 { 0 - x } else { x });
+              return m.unwrap_or(0);
+            }
+        "#;
+        compile_to_c(source).expect("max_by/min_by must type-check");
+        compile_to_llvm(source).expect("max_by/min_by must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_max_min_by_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let m: Option<i64> = xs.max_by(|x| 0 - x);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("xs.max_by must type-check");
+        compile_to_llvm(source).expect("xs.max_by must compile to LLVM");
+    }
+
+    #[test]
     fn vec_count_if_typecheck_and_compile() {
         // Closure #386: vec_count_if(ref xs, pred) -> i64.
         let source = r#"

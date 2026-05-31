@@ -7376,6 +7376,8 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "vec_filter"
                     | "vec_position"
                     | "vec_count_if"
+                    | "vec_max_by"
+                    | "vec_min_by"
                     | "vec_take"
                     | "vec_drop"
                     | "vec_take_while"
@@ -7417,6 +7419,10 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     "position"
                 } else if name == "vec_count_if" {
                     "count_if"
+                } else if name == "vec_max_by" {
+                    "max_by"
+                } else if name == "vec_min_by" {
+                    "min_by"
                 } else if name == "vec_take" {
                     "take"
                 } else if name == "vec_drop" {
@@ -18977,6 +18983,73 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
         out.push_str("  %vpo_none1 = insertvalue %Enum_Option__i64 %vpo_none0, i64 0, 1\n");
         out.push_str("  ret %Enum_Option__i64 %vpo_none1\n");
         out.push_str("}\n");
+
+        // Closure #392: vec_max_by / vec_min_by — emit a pair of
+        // defines sharing the same scan-running-best shape. The
+        // only difference is the comparison predicate (`sgt` for
+        // max_by, `slt` for min_by).
+        for (helper_op, cmp_pred) in &[("max_by", "sgt"), ("min_by", "slt")] {
+            let helper_name = format!("@intent_vec_{}__{}", tag, helper_op);
+            out.push_str(&format!(
+                "define %Enum_Option__i64 {sn}({sty}* %xs_p, i64 (i64)* %k) {{\n",
+                sn = helper_name, sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  %vmb_data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+                sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  %vmb_len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+                sty = s_ty,
+            ));
+            out.push_str("  %vmb_src = load i64*, i64** %vmb_data_p\n");
+            out.push_str("  %vmb_n = load i64, i64* %vmb_len_p\n");
+            out.push_str("  %vmb_empty = icmp eq i64 %vmb_n, 0\n");
+            out.push_str("  br i1 %vmb_empty, label %vmb_none, label %vmb_init\n");
+            out.push_str("vmb_init:\n");
+            out.push_str("  %vmb_first_p = getelementptr i64, i64* %vmb_src, i64 0\n");
+            out.push_str("  %vmb_first = load i64, i64* %vmb_first_p\n");
+            out.push_str("  %vmb_first_k = call i64 %k(i64 %vmb_first)\n");
+            out.push_str("  %vmb_best_p = alloca i64\n");
+            out.push_str("  %vmb_best_k_p = alloca i64\n");
+            out.push_str("  store i64 %vmb_first, i64* %vmb_best_p\n");
+            out.push_str("  store i64 %vmb_first_k, i64* %vmb_best_k_p\n");
+            out.push_str("  %vmb_i_p = alloca i64\n");
+            out.push_str("  store i64 1, i64* %vmb_i_p\n");
+            out.push_str("  br label %vmb_head\n");
+            out.push_str("vmb_head:\n");
+            out.push_str("  %vmb_i = load i64, i64* %vmb_i_p\n");
+            out.push_str("  %vmb_done = icmp uge i64 %vmb_i, %vmb_n\n");
+            out.push_str("  br i1 %vmb_done, label %vmb_fin, label %vmb_body\n");
+            out.push_str("vmb_body:\n");
+            out.push_str("  %vmb_slot = getelementptr i64, i64* %vmb_src, i64 %vmb_i\n");
+            out.push_str("  %vmb_cur = load i64, i64* %vmb_slot\n");
+            out.push_str("  %vmb_cur_k = call i64 %k(i64 %vmb_cur)\n");
+            out.push_str("  %vmb_best_k_cur = load i64, i64* %vmb_best_k_p\n");
+            out.push_str(&format!(
+                "  %vmb_better = icmp {pred} i64 %vmb_cur_k, %vmb_best_k_cur\n",
+                pred = cmp_pred,
+            ));
+            out.push_str("  br i1 %vmb_better, label %vmb_swap, label %vmb_advance\n");
+            out.push_str("vmb_swap:\n");
+            out.push_str("  store i64 %vmb_cur, i64* %vmb_best_p\n");
+            out.push_str("  store i64 %vmb_cur_k, i64* %vmb_best_k_p\n");
+            out.push_str("  br label %vmb_advance\n");
+            out.push_str("vmb_advance:\n");
+            out.push_str("  %vmb_i_next = add i64 %vmb_i, 1\n");
+            out.push_str("  store i64 %vmb_i_next, i64* %vmb_i_p\n");
+            out.push_str("  br label %vmb_head\n");
+            out.push_str("vmb_fin:\n");
+            out.push_str("  %vmb_best = load i64, i64* %vmb_best_p\n");
+            out.push_str("  %vmb_s0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n");
+            out.push_str("  %vmb_s1 = insertvalue %Enum_Option__i64 %vmb_s0, i64 %vmb_best, 1\n");
+            out.push_str("  ret %Enum_Option__i64 %vmb_s1\n");
+            out.push_str("vmb_none:\n");
+            out.push_str("  %vmb_n0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n");
+            out.push_str("  %vmb_n1 = insertvalue %Enum_Option__i64 %vmb_n0, i64 0, 1\n");
+            out.push_str("  ret %Enum_Option__i64 %vmb_n1\n");
+            out.push_str("}\n");
+        }
         } // end if has_option_i64
 
         // Closure #389: vec_take_while / vec_drop_while.

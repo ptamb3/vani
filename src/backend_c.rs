@@ -5925,6 +5925,44 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
 \n}}\n",
             sn = struct_name,
         ));
+        // Closure #392: vec_max_by / vec_min_by. Key fn has
+        // shape `i64 (*)(i64)`. Walk xs tracking the best
+        // element + its key score; return Option.None for an
+        // empty Vec. Both helpers share `intent_key_fn` typedef
+        // (declared once at file scope under the per-Vec helper
+        // block — kept inline here for self-contained emit).
+        if has_option_i64 {
+            out.push_str(&format!(
+                "typedef int64_t (*{sn}__key_fn)(int64_t);\n",
+                sn = struct_name,
+            ));
+            out.push_str(&format!(
+                "static INTENT_UNUSED Enum_Option__i64 {sn}__max_by(const {sn}* xs, {sn}__key_fn k) {{\
+\n    Enum_Option__i64 r;\
+\n    if (xs->len == 0) {{ r.tag = 1; return r; }}\
+\n    int64_t best = xs->data[0]; int64_t best_k = k(best);\
+\n    for (uint64_t i = 1; i < xs->len; i++) {{\
+\n        int64_t cur = xs->data[i]; int64_t cur_k = k(cur);\
+\n        if (cur_k > best_k) {{ best = cur; best_k = cur_k; }}\
+\n    }}\
+\n    r.tag = 0; r.payload = best; return r;\
+\n}}\n",
+                sn = struct_name,
+            ));
+            out.push_str(&format!(
+                "static INTENT_UNUSED Enum_Option__i64 {sn}__min_by(const {sn}* xs, {sn}__key_fn k) {{\
+\n    Enum_Option__i64 r;\
+\n    if (xs->len == 0) {{ r.tag = 1; return r; }}\
+\n    int64_t best = xs->data[0]; int64_t best_k = k(best);\
+\n    for (uint64_t i = 1; i < xs->len; i++) {{\
+\n        int64_t cur = xs->data[i]; int64_t cur_k = k(cur);\
+\n        if (cur_k < best_k) {{ best = cur; best_k = cur_k; }}\
+\n    }}\
+\n    r.tag = 0; r.payload = best; return r;\
+\n}}\n",
+                sn = struct_name,
+            ));
+        }
         // Closure #389: vec_take_while / vec_drop_while.
         out.push_str(&format!(
             "static INTENT_UNUSED {sn} {sn}__take_while(const {sn}* xs, {sn}__pred_fn p) {{\
@@ -9385,6 +9423,19 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                     emit_expr(&args[1])
                 ),
                 _ => unreachable!("vec_count_if() arg 0 must be ref Vec<i64>"),
+            }
+        }
+        // Closure #392: vec_max_by / vec_min_by.
+        "vec_max_by" | "vec_min_by" => {
+            let op = if *&name == "vec_max_by" { "max_by" } else { "min_by" };
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, {})",
+                    vec_helper(element, op),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1])
+                ),
+                _ => unreachable!("{}() arg 0 must be ref Vec<i64>", name),
             }
         }
         // Closure #389: vec_take_while / vec_drop_while.
