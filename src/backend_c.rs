@@ -10692,6 +10692,16 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2])
         ),
+        // Closure #412: integer square root via Heron / Newton's
+        // method on integers. Returns 0 for negative input;
+        // returns n for n in {0, 1}; otherwise iterates
+        //   x = n; y = (x + n/x) / 2
+        //   while (y < x): x = y; y = (x + n/x) / 2
+        // and returns x. Converges in O(log log n) iterations.
+        "i64_isqrt" => format!(
+            "({{ int64_t __n = ({}); int64_t __ir; if (__n < 0) __ir = 0; else if (__n < 2) __ir = __n; else {{ int64_t __ix = __n; int64_t __iy = (__ix + __n / __ix) / 2; while (__iy < __ix) {{ __ix = __iy; __iy = (__ix + __n / __ix) / 2; }} __ir = __ix; }} __ir; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.

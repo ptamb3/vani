@@ -15887,6 +15887,40 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_isqrt_typecheck_and_compile() {
+        // Closure #412: i64_isqrt — integer square root.
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_isqrt(16);
+              let b: i64 = i64_isqrt(15);
+              let c: i64 = i64_isqrt(0);
+              return a + b + c;
+            }
+        "#;
+        compile_to_c(source).expect("isqrt must type-check");
+        compile_to_llvm(source).expect("isqrt must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_isqrt_emits_helper_definition() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_isqrt(100);
+              return a;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("isqrt LLVM");
+        assert!(
+            ll.contains("define i64 @intent_i64_isqrt(i64 %n)"),
+            "LLVM must define the @intent_i64_isqrt helper"
+        );
+        assert!(
+            ll.contains("call i64 @intent_i64_isqrt(i64"),
+            "LLVM must call the @intent_i64_isqrt helper"
+        );
+    }
+
+    #[test]
     fn scalar_min_max_clamp_typecheck_and_compile() {
         // Closure #411: i64_min / i64_max / i64_clamp +
         // f64_min / f64_max / f64_clamp.

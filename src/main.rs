@@ -363,6 +363,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "i64_saturating_mul"
                 || name == "i64_min" || name == "i64_max" || name == "i64_clamp"
                 || name == "f64_min" || name == "f64_max" || name == "f64_clamp"
+                || name == "i64_isqrt"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_f64"

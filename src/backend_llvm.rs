@@ -7058,6 +7058,17 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #412: integer square root via the shared
+            // @intent_i64_isqrt helper (Newton's method).
+            if name == "i64_isqrt" {
+                let n = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_isqrt(i64 {})\n",
+                    dest, n
+                ));
+                return dest;
+            }
             if name == "f64_trunc_to_i64" {
                 // LLVM's `fptosi` instruction performs a
                 // truncating conversion toward zero, matching
@@ -11099,6 +11110,47 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("p_fin:\n");
     out.push_str("  %p_r = load i64, i64* %p_r_p\n");
     out.push_str("  ret i64 %p_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #412: integer square root (Newton / Heron iteration).
+    //   if n < 0:  return 0
+    //   if n < 2:  return n
+    //   x = n; y = (x + n/x) / 2
+    //   while y < x: x = y; y = (x + n/x) / 2
+    //   return x
+    out.push_str("define i64 @intent_i64_isqrt(i64 %n) {\n");
+    out.push_str("  %is_neg = icmp slt i64 %n, 0\n");
+    out.push_str("  br i1 %is_neg, label %is_zero_ret, label %is_check_small\n");
+    out.push_str("is_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("is_check_small:\n");
+    out.push_str("  %is_small = icmp slt i64 %n, 2\n");
+    out.push_str("  br i1 %is_small, label %is_small_ret, label %is_init\n");
+    out.push_str("is_small_ret:\n");
+    out.push_str("  ret i64 %n\n");
+    out.push_str("is_init:\n");
+    out.push_str("  %is_x_p = alloca i64\n");
+    out.push_str("  %is_y_p = alloca i64\n");
+    out.push_str("  store i64 %n, i64* %is_x_p\n");
+    out.push_str("  %is_s0 = add i64 %n, 1\n"); // x=n, y0 = (n + n/n)/2 = (n+1)/2
+    out.push_str("  %is_y0 = sdiv i64 %is_s0, 2\n");
+    out.push_str("  store i64 %is_y0, i64* %is_y_p\n");
+    out.push_str("  br label %is_head\n");
+    out.push_str("is_head:\n");
+    out.push_str("  %is_x_cur = load i64, i64* %is_x_p\n");
+    out.push_str("  %is_y_cur = load i64, i64* %is_y_p\n");
+    out.push_str("  %is_done = icmp sge i64 %is_y_cur, %is_x_cur\n");
+    out.push_str("  br i1 %is_done, label %is_fin, label %is_step\n");
+    out.push_str("is_step:\n");
+    out.push_str("  store i64 %is_y_cur, i64* %is_x_p\n");
+    out.push_str("  %is_q = sdiv i64 %n, %is_y_cur\n");
+    out.push_str("  %is_s = add i64 %is_y_cur, %is_q\n");
+    out.push_str("  %is_y_new = sdiv i64 %is_s, 2\n");
+    out.push_str("  store i64 %is_y_new, i64* %is_y_p\n");
+    out.push_str("  br label %is_head\n");
+    out.push_str("is_fin:\n");
+    out.push_str("  %is_r = load i64, i64* %is_x_p\n");
+    out.push_str("  ret i64 %is_r\n");
     out.push_str("}\n\n");
 }
 
