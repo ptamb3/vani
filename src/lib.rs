@@ -15887,6 +15887,52 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_copysign_fma_remainder_typecheck_and_compile() {
+        // Closure #416: f64_copysign / f64_fma / f64_remainder.
+        let source = r#"
+            fn main() -> i64 {
+              let cs: f64 = f64_copysign(5.0, 0.0 - 1.0);
+              let f: f64 = f64_fma(2.0, 3.0, 1.0);
+              let r: f64 = f64_remainder(10.0, 3.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("copysign/fma/remainder must type-check");
+        compile_to_llvm(source).expect("copysign/fma/remainder must compile to LLVM");
+    }
+
+    #[test]
+    fn f64_copysign_fma_emit_llvm_intrinsics() {
+        let source = r#"
+            fn main() -> i64 {
+              let cs: f64 = f64_copysign(5.0, 0.0 - 1.0);
+              let f: f64 = f64_fma(2.0, 3.0, 1.0);
+              let r: f64 = f64_remainder(10.0, 3.0);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("declare double @llvm.copysign.f64(double, double)"),
+            "LLVM preamble must declare copysign intrinsic"
+        );
+        assert!(
+            ll.contains("declare double @llvm.fma.f64(double, double, double)"),
+            "LLVM preamble must declare fma intrinsic"
+        );
+        assert!(
+            ll.contains("declare double @remainder(double, double)"),
+            "LLVM preamble must declare @remainder libm fn"
+        );
+        assert!(
+            ll.contains("call double @llvm.copysign.f64(double")
+                && ll.contains("call double @llvm.fma.f64(double")
+                && ll.contains("call double @remainder(double"),
+            "LLVM must call all three"
+        );
+    }
+
+    #[test]
     fn f64_ieee_boundary_constants_typecheck_and_compile() {
         // Closure #415: f64_epsilon / f64_min_positive /
         // f64_min_subnormal — IEEE-754 boundary constants.

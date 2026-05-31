@@ -529,6 +529,14 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare double @sinh(double)\n");
     out.push_str("declare double @cosh(double)\n");
     out.push_str("declare double @tanh(double)\n");
+    // Closure #416: IEEE-754 math intrinsics (copysign + fma)
+    // and libm remainder. The intrinsic forms are preferable to
+    // libm declarations for copysign / fma because LLVM lowers
+    // them to single-instruction hardware ops on supported
+    // targets.
+    out.push_str("declare double @llvm.copysign.f64(double, double)\n");
+    out.push_str("declare double @llvm.fma.f64(double, double, double)\n");
+    out.push_str("declare double @remainder(double, double)\n");
     // Threading primitives: POSIX on Linux/macOS, Win32 on
     // Windows. `intentc` picks the host's flavor at codegen
     // time via `host_uses_win32_threading()`. Cross-
@@ -7106,6 +7114,38 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!(
                     "  {} = fmul double {}, 0x404CA5DC1A63C1F8\n",
                     dest, x
+                ));
+                return dest;
+            }
+            // Closure #416: IEEE-754 math primitives.
+            if name == "f64_copysign" {
+                let m = emit_expr(&args[0], ctx, out);
+                let s = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @llvm.copysign.f64(double {}, double {})\n",
+                    dest, m, s
+                ));
+                return dest;
+            }
+            if name == "f64_fma" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let c = emit_expr(&args[2], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @llvm.fma.f64(double {}, double {}, double {})\n",
+                    dest, a, b, c
+                ));
+                return dest;
+            }
+            if name == "f64_remainder" {
+                let x = emit_expr(&args[0], ctx, out);
+                let y = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @remainder(double {}, double {})\n",
+                    dest, x, y
                 ));
                 return dest;
             }

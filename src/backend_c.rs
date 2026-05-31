@@ -10727,6 +10727,27 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "(({}) * 57.29577951308232)",
             emit_expr(&args[0])
         ),
+        // Closure #416: IEEE-754 math primitives from libm.
+        // copysign(magnitude, sign): |magnitude| with sign(sign).
+        // fma(a, b, c): fused a*b+c, single rounding.
+        // remainder(x, y): IEEE 754 remainder (round-to-even
+        // quotient).
+        "f64_copysign" => format!(
+            "copysign(({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "f64_fma" => format!(
+            "fma(({}), ({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
+        "f64_remainder" => format!(
+            "remainder(({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.
