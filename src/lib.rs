@@ -16070,6 +16070,40 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn wrap_typecheck_and_compile() {
+        // Closure #446: i64_wrap + f64_wrap.
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_wrap(15, 0, 10);
+              let b: f64 = f64_wrap(1.5, 0.0, 1.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("wrap must type-check");
+        compile_to_llvm(source).expect("wrap must compile to LLVM");
+    }
+
+    #[test]
+    fn wrap_emits_helper_definitions() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_wrap(15, 0, 10);
+              let b: f64 = f64_wrap(1.5, 0.0, 1.0);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("define i64 @intent_i64_wrap(i64 %x, i64 %lo, i64 %hi)"),
+            "LLVM must define @intent_i64_wrap"
+        );
+        assert!(
+            ll.contains("define double @intent_f64_wrap(double %x, double %lo, double %hi)"),
+            "LLVM must define @intent_f64_wrap"
+        );
+    }
+
+    #[test]
     fn i64_avg_typecheck_and_compile() {
         // Closure #444: i64_avg (overflow-safe floor average).
         let source = r#"

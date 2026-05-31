@@ -10864,6 +10864,22 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        // Closure #446: wrap value into [lo, hi) using floor-mod.
+        // For empty range (hi <= lo), returns x unchanged.
+        // Useful for cyclic indexing (toroidal grids) and angle
+        // normalization (e.g., wrap to [0, 360) or [-π, π)).
+        "i64_wrap" => format!(
+            "({{ int64_t __iwx = ({}); int64_t __iwlo = ({}); int64_t __iwhi = ({}); int64_t __iwr = __iwhi - __iwlo; int64_t __iwout; if (__iwr <= 0) {{ __iwout = __iwx; }} else {{ int64_t __iwrel = __iwx - __iwlo; int64_t __iwm = __iwrel % __iwr; if (__iwm < 0) __iwm += __iwr; __iwout = __iwlo + __iwm; }} __iwout; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
+        "f64_wrap" => format!(
+            "({{ double __fwx = ({}); double __fwlo = ({}); double __fwhi = ({}); double __fwr = __fwhi - __fwlo; double __fwout; if (__fwr <= 0.0) {{ __fwout = __fwx; }} else {{ double __fwrel = __fwx - __fwlo; double __fwm = fmod(__fwrel, __fwr); if (__fwm < 0.0) __fwm += __fwr; __fwout = __fwlo + __fwm; }} __fwout; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         // Closure #444: overflow-safe average using bit-twiddling.
         // (a & b) + ((a ^ b) >> 1) never overflows even when
         // a + b would (e.g., avg(INT64_MAX, INT64_MAX) = INT64_MAX).

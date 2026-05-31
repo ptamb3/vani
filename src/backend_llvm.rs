@@ -564,6 +564,8 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // Closure #437: half-away-from-zero round returning double
     // (the C99 `round` — distinct from llround which returns i64).
     out.push_str("declare double @round(double)\n");
+    // Closure #446: fmod for f64_wrap (sign-of-dividend remainder).
+    out.push_str("declare double @fmod(double, double)\n");
     // Threading primitives: POSIX on Linux/macOS, Win32 on
     // Windows. `intentc` picks the host's flavor at codegen
     // time via `host_uses_win32_threading()`. Cross-
@@ -7199,6 +7201,29 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #446: wrap into [lo, hi) via helper.
+            if name == "i64_wrap" {
+                let x = emit_expr(&args[0], ctx, out);
+                let lo = emit_expr(&args[1], ctx, out);
+                let hi = emit_expr(&args[2], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_wrap(i64 {}, i64 {}, i64 {})\n",
+                    dest, x, lo, hi
+                ));
+                return dest;
+            }
+            if name == "f64_wrap" {
+                let x = emit_expr(&args[0], ctx, out);
+                let lo = emit_expr(&args[1], ctx, out);
+                let hi = emit_expr(&args[2], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @intent_f64_wrap(double {}, double {}, double {})\n",
+                    dest, x, lo, hi
+                ));
+                return dest;
+            }
             // Closure #444: overflow-safe floor average via bit
             // tricks. result = (a & b) + ((a ^ b) >> 1) where >>
             // is arithmetic shift.
@@ -12473,6 +12498,43 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("bc_fin:\n");
     out.push_str("  %bc_rfinal = load i64, i64* %bc_r_p\n");
     out.push_str("  ret i64 %bc_rfinal\n");
+    out.push_str("}\n\n");
+
+    // Closure #446: i64_wrap(x, lo, hi) — wrap into [lo, hi)
+    // via floor-mod. Returns x unchanged for empty range.
+    out.push_str("define i64 @intent_i64_wrap(i64 %x, i64 %lo, i64 %hi) {\n");
+    out.push_str("  %iw_r = sub i64 %hi, %lo\n");
+    out.push_str("  %iw_bad = icmp sle i64 %iw_r, 0\n");
+    out.push_str("  br i1 %iw_bad, label %iw_id, label %iw_calc\n");
+    out.push_str("iw_id:\n");
+    out.push_str("  ret i64 %x\n");
+    out.push_str("iw_calc:\n");
+    out.push_str("  %iw_rel = sub i64 %x, %lo\n");
+    out.push_str("  %iw_m = srem i64 %iw_rel, %iw_r\n");
+    out.push_str("  %iw_neg = icmp slt i64 %iw_m, 0\n");
+    out.push_str("  %iw_mp = add i64 %iw_m, %iw_r\n");
+    out.push_str("  %iw_mfix = select i1 %iw_neg, i64 %iw_mp, i64 %iw_m\n");
+    out.push_str("  %iw_out = add i64 %lo, %iw_mfix\n");
+    out.push_str("  ret i64 %iw_out\n");
+    out.push_str("}\n\n");
+
+    // Closure #446: f64_wrap(x, lo, hi). Uses fmod for the
+    // remainder (sign-of-dividend), then adjusts for negative
+    // remainders so the result lands in [lo, hi).
+    out.push_str("define double @intent_f64_wrap(double %x, double %lo, double %hi) {\n");
+    out.push_str("  %fw_r = fsub double %hi, %lo\n");
+    out.push_str("  %fw_bad = fcmp ole double %fw_r, 0.0\n");
+    out.push_str("  br i1 %fw_bad, label %fw_id, label %fw_calc\n");
+    out.push_str("fw_id:\n");
+    out.push_str("  ret double %x\n");
+    out.push_str("fw_calc:\n");
+    out.push_str("  %fw_rel = fsub double %x, %lo\n");
+    out.push_str("  %fw_m = call double @fmod(double %fw_rel, double %fw_r)\n");
+    out.push_str("  %fw_neg = fcmp olt double %fw_m, 0.0\n");
+    out.push_str("  %fw_mp = fadd double %fw_m, %fw_r\n");
+    out.push_str("  %fw_mfix = select i1 %fw_neg, double %fw_mp, double %fw_m\n");
+    out.push_str("  %fw_out = fadd double %lo, %fw_mfix\n");
+    out.push_str("  ret double %fw_out\n");
     out.push_str("}\n\n");
 }
 
