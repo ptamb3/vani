@@ -372,6 +372,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "f64_min_positive" || name == "f64_min_subnormal"
                 || name == "f64_copysign" || name == "f64_fma"
                 || name == "f64_remainder"
+                || name == "f64_is_normal" || name == "f64_is_subnormal"
+                || name == "f64_sign_bit"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_f64"

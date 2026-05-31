@@ -15887,6 +15887,46 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_classification_predicates_typecheck_and_compile() {
+        // Closure #417: f64_is_normal / f64_is_subnormal / f64_sign_bit.
+        let source = r#"
+            fn main() -> i64 {
+              let n: bool = f64_is_normal(1.5);
+              let s: bool = f64_is_subnormal(f64_min_subnormal());
+              let sb: bool = f64_sign_bit(0.0 - 3.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("f64 classification must type-check");
+        compile_to_llvm(source).expect("f64 classification must compile to LLVM");
+    }
+
+    #[test]
+    fn f64_classification_emits_bit_manipulation_in_llvm() {
+        let source = r#"
+            fn main() -> i64 {
+              let n: bool = f64_is_normal(1.5);
+              let s: bool = f64_is_subnormal(0.0);
+              let sb: bool = f64_sign_bit(0.0 - 3.0);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("bitcast double") && ll.contains("to i64"),
+            "must bitcast double->i64 for bit-level inspection"
+        );
+        assert!(
+            ll.contains("lshr i64") && ll.contains(", 52"),
+            "must shift right 52 to extract exponent"
+        );
+        assert!(
+            ll.contains("lshr i64") && ll.contains(", 63"),
+            "must shift right 63 to extract sign bit"
+        );
+    }
+
+    #[test]
     fn f64_copysign_fma_remainder_typecheck_and_compile() {
         // Closure #416: f64_copysign / f64_fma / f64_remainder.
         let source = r#"

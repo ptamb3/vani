@@ -7149,6 +7149,64 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #417: IEEE-754 classification predicates
+            // via bitcast + bit-manipulation on the 64-bit pattern.
+            // Exponent (bits 52-62, 11 bits): 0 = zero/subnormal,
+            // 0x7FF = inf/NaN, anything else = normal.
+            // Mantissa (bits 0-51): distinguishes subnormal/NaN.
+            // Sign (bit 63).
+            if name == "f64_is_normal" {
+                let x = emit_expr(&args[0], ctx, out);
+                let bits = ctx.fresh_tmp();
+                let shifted = ctx.fresh_tmp();
+                let exp = ctx.fresh_tmp();
+                let not_zero = ctx.fresh_tmp();
+                let not_max = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = bitcast double {} to i64\n", bits, x));
+                out.push_str(&format!("  {} = lshr i64 {}, 52\n", shifted, bits));
+                out.push_str(&format!("  {} = and i64 {}, 2047\n", exp, shifted));
+                out.push_str(&format!("  {} = icmp ne i64 {}, 0\n", not_zero, exp));
+                out.push_str(&format!("  {} = icmp ne i64 {}, 2047\n", not_max, exp));
+                out.push_str(&format!(
+                    "  {} = and i1 {}, {}\n", dest, not_zero, not_max
+                ));
+                return dest;
+            }
+            if name == "f64_is_subnormal" {
+                let x = emit_expr(&args[0], ctx, out);
+                let bits = ctx.fresh_tmp();
+                let shifted = ctx.fresh_tmp();
+                let exp = ctx.fresh_tmp();
+                let exp_zero = ctx.fresh_tmp();
+                let mantissa = ctx.fresh_tmp();
+                let mant_nonzero = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = bitcast double {} to i64\n", bits, x));
+                out.push_str(&format!("  {} = lshr i64 {}, 52\n", shifted, bits));
+                out.push_str(&format!("  {} = and i64 {}, 2047\n", exp, shifted));
+                out.push_str(&format!("  {} = icmp eq i64 {}, 0\n", exp_zero, exp));
+                out.push_str(&format!(
+                    "  {} = and i64 {}, 4503599627370495\n", mantissa, bits
+                )); // 2^52 - 1
+                out.push_str(&format!(
+                    "  {} = icmp ne i64 {}, 0\n", mant_nonzero, mantissa
+                ));
+                out.push_str(&format!(
+                    "  {} = and i1 {}, {}\n", dest, exp_zero, mant_nonzero
+                ));
+                return dest;
+            }
+            if name == "f64_sign_bit" {
+                let x = emit_expr(&args[0], ctx, out);
+                let bits = ctx.fresh_tmp();
+                let shifted = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = bitcast double {} to i64\n", bits, x));
+                out.push_str(&format!("  {} = lshr i64 {}, 63\n", shifted, bits));
+                out.push_str(&format!("  {} = icmp ne i64 {}, 0\n", dest, shifted));
+                return dest;
+            }
             if name == "f64_trunc_to_i64" {
                 // LLVM's `fptosi` instruction performs a
                 // truncating conversion toward zero, matching

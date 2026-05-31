@@ -10748,6 +10748,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        // Closure #417: IEEE-754 classification predicates.
+        // C's <math.h> macros handle these — wrap in `!= 0` so
+        // the result has explicit bool type.
+        "f64_is_normal" => format!("(isnormal(({})) != 0)", emit_expr(&args[0])),
+        "f64_is_subnormal" => format!(
+            "(fpclassify(({})) == FP_SUBNORMAL)",
+            emit_expr(&args[0])
+        ),
+        "f64_sign_bit" => format!("(signbit(({})) != 0)", emit_expr(&args[0])),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.
