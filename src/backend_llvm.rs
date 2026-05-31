@@ -7230,6 +7230,78 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #419: integer division companions.
+            // div_ceil: sdiv + srem, bump quotient by 1 when
+            // remainder is nonzero and signs match.
+            if name == "i64_div_ceil" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let q = ctx.fresh_tmp();
+                let r = ctx.fresh_tmp();
+                let r_nonzero = ctx.fresh_tmp();
+                let a_neg = ctx.fresh_tmp();
+                let b_neg = ctx.fresh_tmp();
+                let signs_match = ctx.fresh_tmp();
+                let should_bump = ctx.fresh_tmp();
+                let q_plus = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = sdiv i64 {}, {}\n", q, a, b));
+                out.push_str(&format!("  {} = srem i64 {}, {}\n", r, a, b));
+                out.push_str(&format!("  {} = icmp ne i64 {}, 0\n", r_nonzero, r));
+                out.push_str(&format!("  {} = icmp slt i64 {}, 0\n", a_neg, a));
+                out.push_str(&format!("  {} = icmp slt i64 {}, 0\n", b_neg, b));
+                out.push_str(&format!(
+                    "  {} = icmp eq i1 {}, {}\n", signs_match, a_neg, b_neg
+                ));
+                out.push_str(&format!(
+                    "  {} = and i1 {}, {}\n", should_bump, r_nonzero, signs_match
+                ));
+                out.push_str(&format!("  {} = add i64 {}, 1\n", q_plus, q));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 {}, i64 {}\n",
+                    dest, should_bump, q_plus, q
+                ));
+                return dest;
+            }
+            // div_round: round half away from zero via abs values.
+            if name == "i64_div_round" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let a_neg = ctx.fresh_tmp();
+                let a_n = ctx.fresh_tmp();
+                let abs_a = ctx.fresh_tmp();
+                let b_neg = ctx.fresh_tmp();
+                let b_n = ctx.fresh_tmp();
+                let abs_b = ctx.fresh_tmp();
+                let half = ctx.fresh_tmp();
+                let sum = ctx.fresh_tmp();
+                let q = ctx.fresh_tmp();
+                let signs_diff = ctx.fresh_tmp();
+                let q_neg = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = icmp slt i64 {}, 0\n", a_neg, a));
+                out.push_str(&format!("  {} = sub i64 0, {}\n", a_n, a));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 {}, i64 {}\n", abs_a, a_neg, a_n, a
+                ));
+                out.push_str(&format!("  {} = icmp slt i64 {}, 0\n", b_neg, b));
+                out.push_str(&format!("  {} = sub i64 0, {}\n", b_n, b));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 {}, i64 {}\n", abs_b, b_neg, b_n, b
+                ));
+                out.push_str(&format!("  {} = sdiv i64 {}, 2\n", half, abs_b));
+                out.push_str(&format!("  {} = add i64 {}, {}\n", sum, abs_a, half));
+                out.push_str(&format!("  {} = sdiv i64 {}, {}\n", q, sum, abs_b));
+                out.push_str(&format!(
+                    "  {} = icmp ne i1 {}, {}\n", signs_diff, a_neg, b_neg
+                ));
+                out.push_str(&format!("  {} = sub i64 0, {}\n", q_neg, q));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 {}, i64 {}\n",
+                    dest, signs_diff, q_neg, q
+                ));
+                return dest;
+            }
             if name == "f64_trunc_to_i64" {
                 // LLVM's `fptosi` instruction performs a
                 // truncating conversion toward zero, matching

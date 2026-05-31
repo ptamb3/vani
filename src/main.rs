@@ -375,6 +375,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "f64_is_normal" || name == "f64_is_subnormal"
                 || name == "f64_sign_bit"
                 || name == "f64_next_up" || name == "f64_next_down"
+                || name == "i64_div_ceil" || name == "i64_div_round"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_f64"

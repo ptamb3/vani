@@ -10768,6 +10768,23 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "nextafter(({}), -(double)INFINITY)",
             emit_expr(&args[0])
         ),
+        // Closure #419: integer division companions to div_floor.
+        // div_ceil(a, b) rounds quotient toward +infinity:
+        //   q = a/b (truncation), r = a%b; if r != 0 and signs
+        //   match, bump q by 1.
+        // div_round(a, b) rounds half away from zero. Computed
+        // via absolute values: q = (|a| + |b|/2) / |b|; sign is
+        // negative iff signs differ.
+        "i64_div_ceil" => format!(
+            "({{ int64_t __a = ({}); int64_t __b = ({}); int64_t __q = __a / __b; int64_t __r = __a % __b; if (__r != 0 && ((__a < 0) == (__b < 0))) __q += 1; __q; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "i64_div_round" => format!(
+            "({{ int64_t __a = ({}); int64_t __b = ({}); int64_t __aa = __a < 0 ? -__a : __a; int64_t __ab = __b < 0 ? -__b : __b; int64_t __q = (__aa + __ab / 2) / __ab; ((__a < 0) != (__b < 0)) ? -__q : __q; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.

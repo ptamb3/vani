@@ -15887,6 +15887,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_div_ceil_round_typecheck_and_compile() {
+        // Closure #419: i64_div_ceil / i64_div_round.
+        let source = r#"
+            fn main() -> i64 {
+              let c: i64 = i64_div_ceil(7, 2);
+              let r: i64 = i64_div_round(5, 2);
+              return c + r;
+            }
+        "#;
+        compile_to_c(source).expect("div_ceil/div_round must type-check");
+        compile_to_llvm(source).expect("div_ceil/div_round must compile to LLVM");
+    }
+
+    #[test]
     fn f64_nextafter_typecheck_and_compile() {
         // Closure #418: f64_next_up / f64_next_down.
         let source = r#"
