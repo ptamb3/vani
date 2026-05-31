@@ -16109,6 +16109,21 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_running_sum_typecheck_and_compile() {
+        // Closure #398: vec_running_sum(ref xs) -> Vec<i64>.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let cs: Vec<i64> = vec_running_sum(ref xs);
+              let cs2: Vec<i64> = xs.running_sum();
+              return cs[2] + cs2[0];
+            }
+        "#;
+        compile_to_c(source).expect("vec_running_sum must type-check");
+        compile_to_llvm(source).expect("vec_running_sum must compile to LLVM");
+    }
+
+    #[test]
     fn vec_zip_with_typecheck_and_compile() {
         // Closure #397: vec_zip_with(xs, ys, f) -> Vec<i64>.
         let source = r#"

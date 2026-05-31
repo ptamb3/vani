@@ -5354,6 +5354,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #398: vec_running_sum(ref xs) -> Vec<i64>.
+            if name == "vec_running_sum" {
+                let xs = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call %intent_vec_i64 @intent_vec_int64_t_running_sum(%intent_vec_i64* {})\n",
+                    dest, xs
+                ));
+                return dest;
+            }
             // Closure #385: vec_first / vec_last -> Option<i64>.
             if name == "vec_first" || name == "vec_last" {
                 let xs = emit_expr(&args[0], ctx, out);
@@ -9723,6 +9733,51 @@ pub(crate) fn emit_intent_vec_int64_utility_definitions(out: &mut String) {
             out.push_str("}\n\n");
         }
     }
+
+    // ---- Closure #398: vec_running_sum(ref xs) -> Vec<i64>.
+    // Cumulative sum with a running accumulator alloca.
+    out.push_str("define %intent_vec_i64 @intent_vec_int64_t_running_sum(%intent_vec_i64* %xs) {\n");
+    out.push_str("  %vrs_lp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 1\n");
+    out.push_str("  %vrs_len = load i64, i64* %vrs_lp\n");
+    out.push_str("  %vrs_empty = icmp eq i64 %vrs_len, 0\n");
+    out.push_str("  br i1 %vrs_empty, label %vrs_ret_empty, label %vrs_alloc\n");
+    out.push_str("vrs_ret_empty:\n");
+    out.push_str("  %vrs_e0 = insertvalue %intent_vec_i64 undef, i64* null, 0\n");
+    out.push_str("  %vrs_e1 = insertvalue %intent_vec_i64 %vrs_e0, i64 0, 1\n");
+    out.push_str("  %vrs_e2 = insertvalue %intent_vec_i64 %vrs_e1, i64 0, 2\n");
+    out.push_str("  ret %intent_vec_i64 %vrs_e2\n");
+    out.push_str("vrs_alloc:\n");
+    out.push_str("  %vrs_bytes = mul i64 %vrs_len, 8\n");
+    out.push_str("  %vrs_buf_i8 = call i8* @malloc(i64 %vrs_bytes)\n");
+    out.push_str("  %vrs_buf = bitcast i8* %vrs_buf_i8 to i64*\n");
+    out.push_str("  %vrs_dp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 0\n");
+    out.push_str("  %vrs_src = load i64*, i64** %vrs_dp\n");
+    out.push_str("  %vrs_i_p = alloca i64\n");
+    out.push_str("  %vrs_acc_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %vrs_i_p\n");
+    out.push_str("  store i64 0, i64* %vrs_acc_p\n");
+    out.push_str("  br label %vrs_head\n");
+    out.push_str("vrs_head:\n");
+    out.push_str("  %vrs_i = load i64, i64* %vrs_i_p\n");
+    out.push_str("  %vrs_done = icmp uge i64 %vrs_i, %vrs_len\n");
+    out.push_str("  br i1 %vrs_done, label %vrs_fin, label %vrs_body\n");
+    out.push_str("vrs_body:\n");
+    out.push_str("  %vrs_slot_src = getelementptr i64, i64* %vrs_src, i64 %vrs_i\n");
+    out.push_str("  %vrs_val = load i64, i64* %vrs_slot_src\n");
+    out.push_str("  %vrs_acc_cur = load i64, i64* %vrs_acc_p\n");
+    out.push_str("  %vrs_acc_new = add i64 %vrs_acc_cur, %vrs_val\n");
+    out.push_str("  store i64 %vrs_acc_new, i64* %vrs_acc_p\n");
+    out.push_str("  %vrs_slot_dst = getelementptr i64, i64* %vrs_buf, i64 %vrs_i\n");
+    out.push_str("  store i64 %vrs_acc_new, i64* %vrs_slot_dst\n");
+    out.push_str("  %vrs_i_next = add i64 %vrs_i, 1\n");
+    out.push_str("  store i64 %vrs_i_next, i64* %vrs_i_p\n");
+    out.push_str("  br label %vrs_head\n");
+    out.push_str("vrs_fin:\n");
+    out.push_str("  %vrs_r0 = insertvalue %intent_vec_i64 undef, i64* %vrs_buf, 0\n");
+    out.push_str("  %vrs_r1 = insertvalue %intent_vec_i64 %vrs_r0, i64 %vrs_len, 1\n");
+    out.push_str("  %vrs_r2 = insertvalue %intent_vec_i64 %vrs_r1, i64 %vrs_len, 2\n");
+    out.push_str("  ret %intent_vec_i64 %vrs_r2\n");
+    out.push_str("}\n\n");
 
     // ---- Closure #382: vec_iota(n) -> Vec<i64>. Fills [0, n).
     out.push_str("define %intent_vec_i64 @intent_vec_int64_t_iota(i64 %n) {\n");

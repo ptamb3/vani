@@ -2480,6 +2480,7 @@ pub(crate) fn program_uses_graph_vec_builtin(program: &TypedProgram) -> bool {
                     || name == "vec_iota"
                     || name == "vec_first"
                     || name == "vec_last"
+                    || name == "vec_running_sum"
                     || name == "str_chars"
                 {
                     return true;
@@ -4687,6 +4688,23 @@ pub(crate) fn emit_intent_vec_int64_utility_helpers_c(out: &mut String) {
          \x20 if (ys->len > 0) memcpy(v.data + xs->len, ys->data, (size_t)ys->len * sizeof(int64_t));\n\
          \x20 v.len = total;\n\
          \x20 v.capacity = total;\n\
+         \x20 return v;\n\
+         }\n\
+         /* Closure #398: vec_running_sum(ref xs) -> Vec<i64>.\n\
+          * Cumulative sum: result[i] = sum(xs[0..=i]). */\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_running_sum(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_running_sum(const intent_vec_int64_t* xs) {\n\
+         \x20 intent_vec_int64_t v; v.data = (int64_t*)0; v.len = 0; v.capacity = 0;\n\
+         \x20 if (!xs || xs->len == 0) return v;\n\
+         \x20 v.capacity = xs->len;\n\
+         \x20 v.data = (int64_t*)malloc(v.capacity * sizeof(int64_t));\n\
+         \x20 if (!v.data) abort();\n\
+         \x20 int64_t acc = 0;\n\
+         \x20 for (uint64_t i = 0; i < xs->len; i++) {\n\
+         \x20   acc = acc + xs->data[i];\n\
+         \x20   v.data[i] = acc;\n\
+         \x20 }\n\
+         \x20 v.len = xs->len;\n\
          \x20 return v;\n\
          }\n\
          /* Closure #382: vec_iota(n) -> Vec<i64>. Fills [0, n).\n\
@@ -9412,6 +9430,11 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         // Closure #382: vec_iota(n) -> Vec<i64>.
         "vec_iota" => format!(
             "intent_vec_int64_t_iota(({}))",
+            emit_expr(&args[0])
+        ),
+        // Closure #398: vec_running_sum(ref xs) -> Vec<i64>.
+        "vec_running_sum" => format!(
+            "intent_vec_int64_t_running_sum({})",
             emit_expr(&args[0])
         ),
         // Closure #385: vec_first / vec_last(ref xs) -> Option<i64>.
