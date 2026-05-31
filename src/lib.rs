@@ -15987,6 +15987,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_smoothstep5_typecheck_and_compile() {
+        // Closure #438: f64_smoothstep5 (quintic).
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_smoothstep5(0.0, 1.0, 0.5);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("smoothstep5 must type-check");
+        compile_to_llvm(source).expect("smoothstep5 must compile to LLVM");
+    }
+
+    #[test]
     fn f64_step_smoothstep_typecheck_and_compile() {
         // Closure #430: f64_step / f64_smoothstep.
         let source = r#"

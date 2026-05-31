@@ -10890,6 +10890,16 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2])
         ),
+        // Closure #438: quintic smoothstep. Polynomial
+        // 6t^5 - 15t^4 + 10t^3 has zero first AND second
+        // derivatives at t=0 and t=1, giving smoother
+        // (C^2-continuous) transitions than the cubic form.
+        "f64_smoothstep5" => format!(
+            "({{ double __s5e0 = ({}); double __s5e1 = ({}); double __s5x = ({}); double __s5t = (__s5x - __s5e0) / (__s5e1 - __s5e0); if (__s5t < 0.0) __s5t = 0.0; else if (__s5t > 1.0) __s5t = 1.0; __s5t * __s5t * __s5t * (__s5t * (__s5t * 6.0 - 15.0) + 10.0); }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         // Closure #432: ML activations.
         // relu(x) = max(0, x)
         // leaky_relu(x, alpha) = x if x >= 0 else alpha * x

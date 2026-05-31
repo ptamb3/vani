@@ -7365,6 +7365,56 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            //   smoothstep5: quintic. 6t^5 - 15t^4 + 10t^3.
+            //   t^3 * (t * (t * 6 - 15) + 10).
+            if name == "f64_smoothstep5" {
+                let e0 = emit_expr(&args[0], ctx, out);
+                let e1 = emit_expr(&args[1], ctx, out);
+                let x = emit_expr(&args[2], ctx, out);
+                let dx = ctx.fresh_tmp();
+                let de = ctx.fresh_tmp();
+                let raw = ctx.fresh_tmp();
+                let lt0 = ctx.fresh_tmp();
+                let t1 = ctx.fresh_tmp();
+                let gt1 = ctx.fresh_tmp();
+                let t = ctx.fresh_tmp();
+                let t2 = ctx.fresh_tmp();
+                let t3 = ctx.fresh_tmp();
+                // inner1 = t * 6 - 15
+                let t6 = ctx.fresh_tmp();
+                let inner1 = ctx.fresh_tmp();
+                // inner2 = t * inner1 + 10
+                let t_inner1 = ctx.fresh_tmp();
+                let inner2 = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = fsub double {}, {}\n", dx, x, e0));
+                out.push_str(&format!("  {} = fsub double {}, {}\n", de, e1, e0));
+                out.push_str(&format!("  {} = fdiv double {}, {}\n", raw, dx, de));
+                out.push_str(&format!("  {} = fcmp olt double {}, 0.0\n", lt0, raw));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 0.0, double {}\n", t1, lt0, raw
+                ));
+                out.push_str(&format!("  {} = fcmp ogt double {}, 1.0\n", gt1, t1));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 1.0, double {}\n", t, gt1, t1
+                ));
+                out.push_str(&format!("  {} = fmul double {}, {}\n", t2, t, t));
+                out.push_str(&format!("  {} = fmul double {}, {}\n", t3, t2, t));
+                out.push_str(&format!("  {} = fmul double {}, 6.0\n", t6, t));
+                out.push_str(&format!(
+                    "  {} = fsub double {}, 15.0\n", inner1, t6
+                ));
+                out.push_str(&format!(
+                    "  {} = fmul double {}, {}\n", t_inner1, t, inner1
+                ));
+                out.push_str(&format!(
+                    "  {} = fadd double {}, 10.0\n", inner2, t_inner1
+                ));
+                out.push_str(&format!(
+                    "  {} = fmul double {}, {}\n", dest, t3, inner2
+                ));
+                return dest;
+            }
             //   smoothstep(edge0, edge1, x) = t*t*(3 - 2*t),
             //   t = clamp((x - edge0)/(edge1 - edge0), 0, 1)
             if name == "f64_smoothstep" {
