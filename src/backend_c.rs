@@ -10907,6 +10907,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "log(1.0 + exp(({})))",
             emit_expr(&args[0])
         ),
+        // Closure #433: libm special functions.
+        //   erf(x)    — Gauss error function
+        //   erfc(x)   — complementary error function (= 1 - erf(x))
+        //   tgamma(x) — true gamma function: gamma(n+1) = n!
+        //   lgamma(x) — log(|gamma(x)|)
+        "f64_erf" => format!("erf(({}))", emit_expr(&args[0])),
+        "f64_erfc" => format!("erfc(({}))", emit_expr(&args[0])),
+        "f64_tgamma" => format!("tgamma(({}))", emit_expr(&args[0])),
+        "f64_lgamma" => format!("lgamma(({}))", emit_expr(&args[0])),
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).

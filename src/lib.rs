@@ -15887,6 +15887,48 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_special_functions_typecheck_and_compile() {
+        // Closure #433: f64_erf / f64_erfc / f64_tgamma / f64_lgamma.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_erf(1.0);
+              let b: f64 = f64_erfc(1.0);
+              let c: f64 = f64_tgamma(5.0);
+              let d: f64 = f64_lgamma(10.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("special functions must type-check");
+        compile_to_llvm(source).expect("special functions must compile to LLVM");
+    }
+
+    #[test]
+    fn f64_special_functions_emit_libm_declarations() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_erf(1.0);
+              let b: f64 = f64_erfc(1.0);
+              let c: f64 = f64_tgamma(5.0);
+              let d: f64 = f64_lgamma(10.0);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        for fn_name in &["erf", "erfc", "tgamma", "lgamma"] {
+            assert!(
+                ll.contains(&format!("declare double @{}(double)", fn_name)),
+                "LLVM preamble must declare @{}",
+                fn_name
+            );
+            assert!(
+                ll.contains(&format!("call double @{}(double", fn_name)),
+                "LLVM must call @{}",
+                fn_name
+            );
+        }
+    }
+
+    #[test]
     fn f64_relu_leaky_relu_softplus_typecheck_and_compile() {
         // Closure #432: f64_relu / f64_leaky_relu / f64_softplus.
         let source = r#"

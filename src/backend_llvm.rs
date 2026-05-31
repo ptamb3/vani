@@ -544,6 +544,11 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare double @nextafter(double, double)\n");
     // Closure #420: trunc (toward zero) from libm.
     out.push_str("declare double @trunc(double)\n");
+    // Closure #433: libm special functions — error / gamma family.
+    out.push_str("declare double @erf(double)\n");
+    out.push_str("declare double @erfc(double)\n");
+    out.push_str("declare double @tgamma(double)\n");
+    out.push_str("declare double @lgamma(double)\n");
     // Threading primitives: POSIX on Linux/macOS, Win32 on
     // Windows. `intentc` picks the host's flavor at codegen
     // time via `host_uses_win32_threading()`. Cross-
@@ -7280,6 +7285,20 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 out.push_str(&format!(
                     "  {} = call double @log(double {})\n", dest, sum
+                ));
+                return dest;
+            }
+            // Closure #433: libm special functions. Strip the
+            // `f64_` prefix to derive the libm symbol name.
+            if matches!(
+                name.as_str(),
+                "f64_erf" | "f64_erfc" | "f64_tgamma" | "f64_lgamma"
+            ) {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                let libm = name.strip_prefix("f64_").unwrap();
+                out.push_str(&format!(
+                    "  {} = call double @{}(double {})\n", dest, libm, x
                 ));
                 return dest;
             }
