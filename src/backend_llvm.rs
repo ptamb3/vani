@@ -7118,6 +7118,43 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #409: power-of-2 helpers.
+            if name == "i64_is_power_of_2" {
+                let n = emit_expr(&args[0], ctx, out);
+                let positive = ctx.fresh_tmp();
+                let n_minus = ctx.fresh_tmp();
+                let masked = ctx.fresh_tmp();
+                let zero_low = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = icmp sgt i64 {}, 0\n", positive, n));
+                out.push_str(&format!("  {} = sub i64 {}, 1\n", n_minus, n));
+                out.push_str(&format!("  {} = and i64 {}, {}\n", masked, n, n_minus));
+                out.push_str(&format!("  {} = icmp eq i64 {}, 0\n", zero_low, masked));
+                out.push_str(&format!("  {} = and i1 {}, {}\n", dest, positive, zero_low));
+                return dest;
+            }
+            if name == "i64_next_power_of_2" {
+                // n <= 1 ? 1 : 1 << (64 - clz(n - 1))
+                let n = emit_expr(&args[0], ctx, out);
+                let le_one = ctx.fresh_tmp();
+                let n_minus = ctx.fresh_tmp();
+                let clz_pre = ctx.fresh_tmp();
+                let shift = ctx.fresh_tmp();
+                let power = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = icmp sle i64 {}, 1\n", le_one, n));
+                out.push_str(&format!("  {} = sub i64 {}, 1\n", n_minus, n));
+                out.push_str(&format!(
+                    "  {} = call i64 @llvm.ctlz.i64(i64 {}, i1 false)\n", clz_pre, n_minus
+                ));
+                out.push_str(&format!("  {} = sub i64 64, {}\n", shift, clz_pre));
+                out.push_str(&format!("  {} = shl i64 1, {}\n", power, shift));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 1, i64 {}\n",
+                    dest, le_one, power
+                ));
+                return dest;
+            }
             // Closure #408: integer log2 (floor/ceil).
             if name == "i64_log2_floor" {
                 let n = emit_expr(&args[0], ctx, out);

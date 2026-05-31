@@ -15873,6 +15873,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_power_of_2_typecheck_and_compile() {
+        // Closure #409: i64_is_power_of_2 + i64_next_power_of_2.
+        let source = r#"
+            fn main() -> i64 {
+              let p: bool = i64_is_power_of_2(8);
+              let n: i64 = i64_next_power_of_2(7);
+              return n;
+            }
+        "#;
+        compile_to_c(source).expect("power-of-2 must type-check");
+        compile_to_llvm(source).expect("power-of-2 must compile to LLVM");
+    }
+
+    #[test]
     fn i64_log2_typecheck_and_compile() {
         // Closure #408: i64_log2_floor / i64_log2_ceil.
         let source = r#"

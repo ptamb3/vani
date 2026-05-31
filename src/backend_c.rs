@@ -10610,6 +10610,25 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[0])
             )
         }
+        // Closure #409: power-of-2 helpers.
+        // is_power_of_2(n): n > 0 && (n & (n-1)) == 0.
+        // next_power_of_2(n): n <= 1 ? 1 : 2 ^ log2_ceil(n) =
+        //   1 << (64 - clz(n - 1)).
+        "i64_is_power_of_2" => {
+            format!(
+                "({{ int64_t __pn = ({}); (bool)(__pn > 0 && (__pn & (__pn - 1)) == 0); }})",
+                emit_expr(&args[0])
+            )
+        }
+        "i64_next_power_of_2" => {
+            // Returns 1 for n <= 1; otherwise the smallest power
+            // of 2 >= n. For n = 2^k exactly, returns n (since
+            // log2_ceil(2^k) = k → 1 << k = 2^k).
+            format!(
+                "({{ int64_t __np = ({}); __np <= 1 ? (int64_t)1 : (int64_t)((int64_t)1 << (64 - __builtin_clzll((unsigned long long)(__np - 1)))); }})",
+                emit_expr(&args[0])
+            )
+        }
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.
