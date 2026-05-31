@@ -15887,6 +15887,40 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_count_digits_typecheck_and_compile() {
+        // Closure #421: i64_count_digits.
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_count_digits(0);
+              let b: i64 = i64_count_digits(12345);
+              let c: i64 = i64_count_digits(0 - 100);
+              return a + b + c;
+            }
+        "#;
+        compile_to_c(source).expect("count_digits must type-check");
+        compile_to_llvm(source).expect("count_digits must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_count_digits_emits_helper_definition() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_count_digits(100);
+              return a;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("define i64 @intent_i64_count_digits(i64 %n)"),
+            "LLVM must define the @intent_i64_count_digits helper"
+        );
+        assert!(
+            ll.contains("call i64 @intent_i64_count_digits(i64"),
+            "LLVM must call the @intent_i64_count_digits helper"
+        );
+    }
+
+    #[test]
     fn f64_trunc_frac_typecheck_and_compile() {
         // Closure #420: f64_trunc / f64_frac.
         let source = r#"

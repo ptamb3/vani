@@ -10793,6 +10793,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ double __fx = ({}); __fx - trunc(__fx); }})",
             emit_expr(&args[0])
         ),
+        // Closure #421: decimal digit count. n = 0 → 1 (the
+        // digit '0'). For negative n, count the digits of |n|;
+        // the sign is not a digit. INT64_MIN edge: cast through
+        // uint64_t so -INT64_MIN doesn't overflow signed.
+        "i64_count_digits" => format!(
+            "({{ int64_t __n = ({}); int64_t __c; if (__n == 0) {{ __c = 1; }} else {{ uint64_t __un = (__n < 0) ? ((uint64_t)(-(__n + 1)) + 1) : (uint64_t)__n; __c = 0; while (__un > 0) {{ __c += 1; __un /= 10; }} }} __c; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.

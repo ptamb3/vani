@@ -7092,6 +7092,17 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #421: decimal digit count via the shared
+            // @intent_i64_count_digits helper.
+            if name == "i64_count_digits" {
+                let n = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_count_digits(i64 {})\n",
+                    dest, n
+                ));
+                return dest;
+            }
             // Closure #413: trig / geometry helpers.
             if name == "f64_hypot" {
                 let a = emit_expr(&args[0], ctx, out);
@@ -11419,6 +11430,44 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("is_fin:\n");
     out.push_str("  %is_r = load i64, i64* %is_x_p\n");
     out.push_str("  ret i64 %is_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #421: decimal digit count.
+    //   if n == 0:  return 1
+    //   c = 0; abs_n = |n|  (via subneg select)
+    //   while abs_n > 0:
+    //     c += 1; abs_n = abs_n / 10  (use unsigned udiv to
+    //     handle INT64_MIN; we abs via 0 - n which wraps to
+    //     INT64_MIN -> still negative, but udiv handles it as
+    //     unsigned).
+    out.push_str("define i64 @intent_i64_count_digits(i64 %n) {\n");
+    out.push_str("  %cd_zero = icmp eq i64 %n, 0\n");
+    out.push_str("  br i1 %cd_zero, label %cd_zero_ret, label %cd_init\n");
+    out.push_str("cd_zero_ret:\n");
+    out.push_str("  ret i64 1\n");
+    out.push_str("cd_init:\n");
+    out.push_str("  %cd_neg = icmp slt i64 %n, 0\n");
+    out.push_str("  %cd_nn = sub i64 0, %n\n");
+    out.push_str("  %cd_abs = select i1 %cd_neg, i64 %cd_nn, i64 %n\n");
+    out.push_str("  %cd_p = alloca i64\n");
+    out.push_str("  %cd_c_p = alloca i64\n");
+    out.push_str("  store i64 %cd_abs, i64* %cd_p\n");
+    out.push_str("  store i64 0, i64* %cd_c_p\n");
+    out.push_str("  br label %cd_head\n");
+    out.push_str("cd_head:\n");
+    out.push_str("  %cd_cur = load i64, i64* %cd_p\n");
+    out.push_str("  %cd_done = icmp eq i64 %cd_cur, 0\n");
+    out.push_str("  br i1 %cd_done, label %cd_fin, label %cd_step\n");
+    out.push_str("cd_step:\n");
+    out.push_str("  %cd_c_cur = load i64, i64* %cd_c_p\n");
+    out.push_str("  %cd_c_new = add i64 %cd_c_cur, 1\n");
+    out.push_str("  store i64 %cd_c_new, i64* %cd_c_p\n");
+    out.push_str("  %cd_next = udiv i64 %cd_cur, 10\n");
+    out.push_str("  store i64 %cd_next, i64* %cd_p\n");
+    out.push_str("  br label %cd_head\n");
+    out.push_str("cd_fin:\n");
+    out.push_str("  %cd_r = load i64, i64* %cd_c_p\n");
+    out.push_str("  ret i64 %cd_r\n");
     out.push_str("}\n\n");
 }
 
