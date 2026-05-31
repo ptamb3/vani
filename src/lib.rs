@@ -15873,6 +15873,21 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_log2_typecheck_and_compile() {
+        // Closure #408: i64_log2_floor / i64_log2_ceil.
+        let source = r#"
+            fn main() -> i64 {
+              let f: i64 = i64_log2_floor(8);
+              let c: i64 = i64_log2_ceil(7);
+              let invalid: i64 = i64_log2_floor(0);
+              return f + c + invalid;
+            }
+        "#;
+        compile_to_c(source).expect("log2 must type-check");
+        compile_to_llvm(source).expect("log2 must compile to LLVM");
+    }
+
+    #[test]
     fn f64_lerp_clamp01_typecheck_and_compile() {
         // Closure #406: f64_lerp / f64_clamp01.
         let source = r#"

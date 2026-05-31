@@ -7118,6 +7118,53 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #408: integer log2 (floor/ceil).
+            if name == "i64_log2_floor" {
+                let n = emit_expr(&args[0], ctx, out);
+                let invalid = ctx.fresh_tmp();
+                let clz = ctx.fresh_tmp();
+                let log = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = icmp sle i64 {}, 0\n", invalid, n));
+                out.push_str(&format!(
+                    "  {} = call i64 @llvm.ctlz.i64(i64 {}, i1 false)\n", clz, n
+                ));
+                out.push_str(&format!("  {} = sub i64 63, {}\n", log, clz));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 -1, i64 {}\n",
+                    dest, invalid, log
+                ));
+                return dest;
+            }
+            if name == "i64_log2_ceil" {
+                // log2_ceil(n) = n <= 0 ? -1 : (n == 1 ? 0 : 64 - clz(n - 1))
+                let n = emit_expr(&args[0], ctx, out);
+                let neg = ctx.fresh_tmp();
+                let is_one = ctx.fresh_tmp();
+                let n_minus = ctx.fresh_tmp();
+                let clz_pre = ctx.fresh_tmp();
+                let log_pre = ctx.fresh_tmp();
+                let post_one = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = icmp sle i64 {}, 0\n", neg, n));
+                out.push_str(&format!("  {} = icmp eq i64 {}, 1\n", is_one, n));
+                out.push_str(&format!("  {} = sub i64 {}, 1\n", n_minus, n));
+                out.push_str(&format!(
+                    "  {} = call i64 @llvm.ctlz.i64(i64 {}, i1 false)\n", clz_pre, n_minus
+                ));
+                out.push_str(&format!("  {} = sub i64 64, {}\n", log_pre, clz_pre));
+                // is_one ? 0 : log_pre
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 0, i64 {}\n",
+                    post_one, is_one, log_pre
+                ));
+                // neg ? -1 : post_one
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 -1, i64 {}\n",
+                    dest, neg, post_one
+                ));
+                return dest;
+            }
             // Closure #405: i64_div_floor / i64_mod_floor.
             // Use sdiv/srem (truncating), then adjust for the
             // "different signs + nonzero remainder" case.

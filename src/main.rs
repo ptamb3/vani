@@ -356,6 +356,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "f64_max_finite"
                 || name == "i64_div_floor" || name == "i64_mod_floor"
                 || name == "f64_lerp" || name == "f64_clamp01"
+                || name == "i64_log2_floor" || name == "i64_log2_ceil"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_f64"

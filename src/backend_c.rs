@@ -10592,6 +10592,24 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[1])
             )
         }
+        // Closure #408: integer log2.
+        // log2_floor(n) = 63 - clz(n) for n > 0; -1 for n <= 0
+        //   (we return -1 to signal "undefined" rather than abort —
+        //   callers can check the sentinel).
+        // log2_ceil(n) = log2_floor(n - 1) + 1 for n >= 2;
+        //   0 for n == 1; -1 for n <= 0.
+        "i64_log2_floor" => {
+            format!(
+                "({{ int64_t __lf_n = ({}); __lf_n <= 0 ? (int64_t)-1 : (int64_t)(63 - __builtin_clzll((unsigned long long)__lf_n)); }})",
+                emit_expr(&args[0])
+            )
+        }
+        "i64_log2_ceil" => {
+            format!(
+                "({{ int64_t __lc_n = ({}); __lc_n <= 0 ? (int64_t)-1 : (__lc_n == 1 ? (int64_t)0 : (int64_t)(64 - __builtin_clzll((unsigned long long)(__lc_n - 1)))); }})",
+                emit_expr(&args[0])
+            )
+        }
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.
