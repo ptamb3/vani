@@ -11016,6 +11016,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        // Closure #443: last occurrence of byte b in s, as
+        // Option<i64>. strrchr returns NULL or pointer to last
+        // matching byte.
+        "str_last_index_of_byte" => format!(
+            "({{ const char* __slib_s = ({}); int64_t __slib_b = ({}); const char* __slib_m = strrchr(__slib_s, (int)__slib_b); Enum_Option__i64 __slib_r; if (__slib_m == NULL) {{ __slib_r.tag = 1; __slib_r.payload = 0; }} else {{ __slib_r.tag = 0; __slib_r.payload = (int64_t)(__slib_m - __slib_s); }} __slib_r; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.

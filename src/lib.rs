@@ -16155,6 +16155,40 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_last_index_of_byte_typecheck_and_compile() {
+        // Closure #443: str_last_index_of_byte returns Option<i64>.
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "a.b.c";
+              let i: i64 = option_unwrap_or(str_last_index_of_byte(s, 46), 0 - 1);
+              return i;
+            }
+        "#;
+        compile_to_c(source).expect("last_index_of_byte must type-check");
+        compile_to_llvm(source).expect("last_index_of_byte must compile to LLVM");
+    }
+
+    #[test]
+    fn str_last_index_of_byte_emits_strrchr() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "hello";
+              let i: i64 = option_unwrap_or(str_last_index_of_byte(s, 108), 0 - 1);
+              return i;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("declare i8* @strrchr(i8*, i32)"),
+            "LLVM must declare @strrchr"
+        );
+        assert!(
+            ll.contains("call i8* @strrchr(i8*"),
+            "LLVM must call @strrchr"
+        );
+    }
+
+    #[test]
     fn str_index_of_byte_typecheck_and_compile() {
         // Closure #442: str_index_of_byte returns Option<i64>.
         let source = r#"

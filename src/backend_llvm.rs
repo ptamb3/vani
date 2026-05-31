@@ -484,6 +484,9 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // Closure #442: strchr returns pointer to first byte match
     // (or NULL) — used by str_index_of_byte.
     out.push_str("declare i8* @strchr(i8*, i32)\n");
+    // Closure #443: strrchr returns pointer to last byte match
+    // (or NULL) — used by str_last_index_of_byte.
+    out.push_str("declare i8* @strrchr(i8*, i32)\n");
     out.push_str("declare i8* @strstr(i8*, i8*)\n");
     out.push_str("declare i64 @strtoll(i8*, i8**, i32)\n");
     out.push_str("declare double @strtod(i8*, i8**)\n");
@@ -7584,9 +7587,19 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
-            // Closure #442: first byte index. Mirrors str_index_of
-            // but uses strchr for single-byte lookup.
-            if name == "str_index_of_byte" {
+            // Closures #442 + #443: first / last byte index. Mirror
+            // str_index_of's shape but use strchr or strrchr based
+            // on which builtin is being called.
+            if matches!(
+                name.as_str(),
+                "str_index_of_byte" | "str_last_index_of_byte"
+            ) {
+                let libc_fn = if name == "str_index_of_byte" {
+                    "strchr"
+                } else {
+                    "strrchr"
+                };
+                let prefix = if name == "str_index_of_byte" { "sib" } else { "slib" };
                 let s = emit_expr(&args[0], ctx, out);
                 let b = emit_expr(&args[1], ctx, out);
                 let b32 = ctx.fresh_tmp();
@@ -7596,14 +7609,14 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     "  {} = trunc i64 {} to i32\n", b32, b
                 ));
                 out.push_str(&format!(
-                    "  {} = call i8* @strchr(i8* {}, i32 {})\n", hit, s, b32
+                    "  {} = call i8* @{}(i8* {}, i32 {})\n", hit, libc_fn, s, b32
                 ));
                 out.push_str(&format!(
                     "  {} = icmp eq i8* {}, null\n", is_null, hit
                 ));
-                let some_lbl = ctx.fresh_label("sib_some");
-                let none_lbl = ctx.fresh_label("sib_none");
-                let done = ctx.fresh_label("sib_done");
+                let some_lbl = ctx.fresh_label(&format!("{}_some", prefix));
+                let none_lbl = ctx.fresh_label(&format!("{}_none", prefix));
+                let done = ctx.fresh_label(&format!("{}_done", prefix));
                 out.push_str(&format!(
                     "  br i1 {}, label %{}, label %{}\n",
                     is_null, none_lbl, some_lbl
