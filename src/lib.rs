@@ -15873,6 +15873,47 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn bswap_and_rotate_typecheck_and_compile() {
+        // Closure #402: i64_bswap / i64_rotate_left /
+        // i64_rotate_right.
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_bswap(1);
+              let b: i64 = i64_rotate_left(1, 4);
+              let c: i64 = i64_rotate_right(16, 4);
+              return a + b + c;
+            }
+        "#;
+        compile_to_c(source).expect("bswap/rotate must type-check");
+        compile_to_llvm(source).expect("bswap/rotate must compile to LLVM");
+    }
+
+    #[test]
+    fn bswap_and_rotate_emit_llvm_intrinsics() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_bswap(1);
+              let b: i64 = i64_rotate_left(1, 4);
+              let c: i64 = i64_rotate_right(16, 4);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("declare i64 @llvm.bswap.i64(i64)")
+                && ll.contains("declare i64 @llvm.fshl.i64(i64, i64, i64)")
+                && ll.contains("declare i64 @llvm.fshr.i64(i64, i64, i64)"),
+            "LLVM preamble must declare bswap + funnel-shift intrinsics"
+        );
+        assert!(
+            ll.contains("call i64 @llvm.bswap.i64(i64")
+                && ll.contains("call i64 @llvm.fshl.i64(i64")
+                && ll.contains("call i64 @llvm.fshr.i64(i64"),
+            "LLVM output must call all three intrinsics"
+        );
+    }
+
+    #[test]
     fn bit_manipulation_typecheck_and_compile() {
         // Closure #401: i64_count_set_bits / leading_zeros /
         // trailing_zeros.

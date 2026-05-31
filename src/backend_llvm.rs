@@ -500,6 +500,10 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare i64 @llvm.ctpop.i64(i64)\n");
     out.push_str("declare i64 @llvm.ctlz.i64(i64, i1)\n");
     out.push_str("declare i64 @llvm.cttz.i64(i64, i1)\n");
+    // Closure #402: byte-swap + rotate intrinsics.
+    out.push_str("declare i64 @llvm.bswap.i64(i64)\n");
+    out.push_str("declare i64 @llvm.fshl.i64(i64, i64, i64)\n");
+    out.push_str("declare i64 @llvm.fshr.i64(i64, i64, i64)\n");
     // Closure #363: log family + exp + atan2 round out the libm
     // surface. Same `-lm` link covers them.
     out.push_str("declare double @log(double)\n");
@@ -6938,6 +6942,35 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!(
                     "  {} = call i64 @llvm.ctpop.i64(i64 {})\n",
                     dest, x
+                ));
+                return dest;
+            }
+            // Closure #402: bswap + rotate via LLVM intrinsics.
+            if name == "i64_bswap" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @llvm.bswap.i64(i64 {})\n",
+                    dest, x
+                ));
+                return dest;
+            }
+            if name == "i64_rotate_left" || name == "i64_rotate_right" {
+                // Funnel-shift intrinsics: fshl(a, b, n) is the
+                // concatenation `(a << 64) | b`, shifted left by
+                // n. For pure rotate, a == b == x. fshr is the
+                // right-rotate equivalent.
+                let x = emit_expr(&args[0], ctx, out);
+                let n = emit_expr(&args[1], ctx, out);
+                let intrinsic = if name == "i64_rotate_left" {
+                    "@llvm.fshl.i64"
+                } else {
+                    "@llvm.fshr.i64"
+                };
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 {}(i64 {}, i64 {}, i64 {})\n",
+                    dest, intrinsic, x, x, n
                 ));
                 return dest;
             }

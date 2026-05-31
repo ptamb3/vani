@@ -10543,6 +10543,31 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[0])
             )
         }
+        // Closure #402: byte-swap + rotate.
+        "i64_bswap" => {
+            format!(
+                "((int64_t)__builtin_bswap64((unsigned long long)({})))",
+                emit_expr(&args[0])
+            )
+        }
+        "i64_rotate_left" => {
+            // Mask shift count to [0..63] to avoid UB when n is
+            // out of range. ((x << n) | (x >> (64 - n))) is the
+            // canonical rotate idiom; the masking + a conditional
+            // avoids the (64 - 0) shift-by-64 UB on n = 0.
+            format!(
+                "({{ unsigned long long __rlv = (unsigned long long)({}); int64_t __rln = ({}) & 63; __rln == 0 ? (int64_t)__rlv : (int64_t)((__rlv << __rln) | (__rlv >> (64 - __rln))); }})",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
+        "i64_rotate_right" => {
+            format!(
+                "({{ unsigned long long __rrv = (unsigned long long)({}); int64_t __rrn = ({}) & 63; __rrn == 0 ? (int64_t)__rrv : (int64_t)((__rrv >> __rrn) | (__rrv << (64 - __rrn))); }})",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
         // Closure #393: i64_abs_diff(a, b) — |a - b| in signed
         // arithmetic. Done via select on a < b to avoid overflow
         // on borderline values like INT64_MIN / INT64_MAX.
