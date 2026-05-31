@@ -10833,6 +10833,18 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __ipn = ({}); bool __ipr; if (__ipn < 2) {{ __ipr = false; }} else if (__ipn < 4) {{ __ipr = true; }} else if (__ipn % 2 == 0 || __ipn % 3 == 0) {{ __ipr = false; }} else {{ __ipr = true; int64_t __ipi = 5; while (__ipi * __ipi <= __ipn) {{ if (__ipn % __ipi == 0 || __ipn % (__ipi + 2) == 0) {{ __ipr = false; break; }} __ipi += 6; }} }} __ipr; }})",
             emit_expr(&args[0])
         ),
+        // Closure #426: byte access. Caller is responsible for
+        // bounds — out-of-range reads are undefined behavior
+        // (matches the safety contract of pointer arithmetic).
+        "str_byte_at" => format!(
+            "((int64_t)(unsigned char)(({})[({})]))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "str_len_bytes" => format!(
+            "((int64_t)strlen(({})))",
+            emit_expr(&args[0])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.

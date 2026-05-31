@@ -7145,6 +7145,28 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #426: byte access on Str (i8* in IR).
+            if name == "str_byte_at" {
+                let s = emit_expr(&args[0], ctx, out);
+                let i = emit_expr(&args[1], ctx, out);
+                let p = ctx.fresh_tmp();
+                let b = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr i8, i8* {}, i64 {}\n", p, s, i
+                ));
+                out.push_str(&format!("  {} = load i8, i8* {}\n", b, p));
+                out.push_str(&format!("  {} = zext i8 {} to i64\n", dest, b));
+                return dest;
+            }
+            if name == "str_len_bytes" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @strlen(i8* {})\n", dest, s
+                ));
+                return dest;
+            }
             // Closure #413: trig / geometry helpers.
             if name == "f64_hypot" {
                 let a = emit_expr(&args[0], ctx, out);

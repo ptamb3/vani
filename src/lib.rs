@@ -15887,6 +15887,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_byte_at_and_len_bytes_typecheck_and_compile() {
+        // Closure #426: str_byte_at + str_len_bytes.
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "Hello";
+              let a: i64 = str_byte_at(s, 0);
+              let n: i64 = str_len_bytes(s);
+              return a + n;
+            }
+        "#;
+        compile_to_c(source).expect("byte_at/len_bytes must type-check");
+        compile_to_llvm(source).expect("byte_at/len_bytes must compile to LLVM");
+    }
+
+    #[test]
+    fn str_byte_at_emits_gep_load_zext() {
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "abc";
+              let a: i64 = str_byte_at(s, 1);
+              return a;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("getelementptr i8, i8*")
+                && ll.contains("load i8, i8*")
+                && ll.contains("zext i8"),
+            "str_byte_at must emit gep + load i8 + zext to i64"
+        );
+    }
+
+    #[test]
     fn i64_is_prime_typecheck_and_compile() {
         // Closure #425: i64_is_prime.
         let source = r#"
