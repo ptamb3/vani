@@ -504,6 +504,10 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare i64 @llvm.bswap.i64(i64)\n");
     out.push_str("declare i64 @llvm.fshl.i64(i64, i64, i64)\n");
     out.push_str("declare i64 @llvm.fshr.i64(i64, i64, i64)\n");
+    // Closure #410: saturating arithmetic intrinsics.
+    out.push_str("declare i64 @llvm.sadd.sat.i64(i64, i64)\n");
+    out.push_str("declare i64 @llvm.ssub.sat.i64(i64, i64)\n");
+    out.push_str("declare i64 @llvm.smul.fix.sat.i64(i64, i64, i32)\n");
     // Closure #363: log family + exp + atan2 round out the libm
     // surface. Same `-lm` link covers them.
     out.push_str("declare double @log(double)\n");
@@ -7115,6 +7119,42 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!(
                     "  {} = select i1 {}, double 1.0, double {}\n",
                     dest, gt_one, mid
+                ));
+                return dest;
+            }
+            // Closure #410: saturating arithmetic via LLVM
+            // intrinsics. The sadd.sat / ssub.sat intrinsics
+            // saturate at INT64_MIN / INT64_MAX automatically;
+            // smul.fix.sat takes a scale arg (0 = pure integer
+            // semantics).
+            if name == "i64_saturating_add" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @llvm.sadd.sat.i64(i64 {}, i64 {})\n",
+                    dest, a, b
+                ));
+                return dest;
+            }
+            if name == "i64_saturating_sub" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @llvm.ssub.sat.i64(i64 {}, i64 {})\n",
+                    dest, a, b
+                ));
+                return dest;
+            }
+            if name == "i64_saturating_mul" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                // scale = 0 → pure integer (no fixed-point).
+                out.push_str(&format!(
+                    "  {} = call i64 @llvm.smul.fix.sat.i64(i64 {}, i64 {}, i32 0)\n",
+                    dest, a, b
                 ));
                 return dest;
             }

@@ -15887,6 +15887,46 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_saturating_arith_typecheck_and_compile() {
+        // Closure #410: i64_saturating_add / sub / mul.
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_saturating_add(1, 2);
+              let b: i64 = i64_saturating_sub(5, 3);
+              let c: i64 = i64_saturating_mul(4, 6);
+              return a + b + c;
+            }
+        "#;
+        compile_to_c(source).expect("saturating arith must type-check");
+        compile_to_llvm(source).expect("saturating arith must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_saturating_arith_emit_llvm_intrinsics() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_saturating_add(1, 2);
+              let b: i64 = i64_saturating_sub(5, 3);
+              let c: i64 = i64_saturating_mul(4, 6);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("saturating arith LLVM");
+        assert!(
+            ll.contains("declare i64 @llvm.sadd.sat.i64(i64, i64)")
+                && ll.contains("declare i64 @llvm.ssub.sat.i64(i64, i64)")
+                && ll.contains("declare i64 @llvm.smul.fix.sat.i64(i64, i64, i32)"),
+            "LLVM preamble must declare all three saturating intrinsics"
+        );
+        assert!(
+            ll.contains("call i64 @llvm.sadd.sat.i64(i64")
+                && ll.contains("call i64 @llvm.ssub.sat.i64(i64")
+                && ll.contains("call i64 @llvm.smul.fix.sat.i64(i64"),
+            "LLVM output must call all three saturating intrinsics"
+        );
+    }
+
+    #[test]
     fn i64_log2_typecheck_and_compile() {
         // Closure #408: i64_log2_floor / i64_log2_ceil.
         let source = r#"

@@ -10629,6 +10629,40 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[0])
             )
         }
+        // Closure #410: saturating arithmetic — clamps to
+        // INT64_MIN / INT64_MAX on overflow. Routes through
+        // GCC / Clang `__builtin_*_overflow`. If overflow, the
+        // saturation direction depends on the sign-prediction:
+        //   add: a + b overflows positive iff both >= 0;
+        //   sub: a - b overflows positive iff a >= 0 && b < 0;
+        //   mul: signed-multiply overflow direction is the sign
+        //        of the (mathematical) product, which equals
+        //        sign(a) XOR sign(b) (≥ 0 for same-sign, < 0 for
+        //        different-sign), with the special case where
+        //        either operand is 0 (no overflow possible).
+        "i64_saturating_add" => {
+            format!(
+                "({{ int64_t __sa_a = ({}); int64_t __sa_b = ({}); int64_t __sa_r; if (__builtin_add_overflow(__sa_a, __sa_b, &__sa_r)) __sa_r = (__sa_a >= 0) ? (int64_t)9223372036854775807LL : (int64_t)(-9223372036854775807LL - 1LL); __sa_r; }})",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
+        "i64_saturating_sub" => {
+            format!(
+                "({{ int64_t __ss_a = ({}); int64_t __ss_b = ({}); int64_t __ss_r; if (__builtin_sub_overflow(__ss_a, __ss_b, &__ss_r)) __ss_r = (__ss_a >= 0) ? (int64_t)9223372036854775807LL : (int64_t)(-9223372036854775807LL - 1LL); __ss_r; }})",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
+        "i64_saturating_mul" => {
+            // For mul, sign of overflow is sign(a) XOR sign(b).
+            // If either operand is 0, no overflow possible.
+            format!(
+                "({{ int64_t __sm_a = ({}); int64_t __sm_b = ({}); int64_t __sm_r; if (__builtin_mul_overflow(__sm_a, __sm_b, &__sm_r)) __sm_r = ((__sm_a ^ __sm_b) < 0) ? (int64_t)(-9223372036854775807LL - 1LL) : (int64_t)9223372036854775807LL; __sm_r; }})",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.
