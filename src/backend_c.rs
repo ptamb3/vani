@@ -6018,6 +6018,25 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
                 sn = struct_name,
             ));
         }
+        // Closure #397: vec_zip_with(ref xs, ref ys, f) ->
+        // Vec<i64>. Truncates to the shorter Vec.
+        out.push_str(&format!(
+            "typedef int64_t (*{sn}__zip_fn)(int64_t, int64_t);\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED {sn} {sn}__zip_with(const {sn}* xs, const {sn}* ys, {sn}__zip_fn f) {{\
+\n    {sn} out;\
+\n    uint64_t n = xs->len < ys->len ? xs->len : ys->len;\
+\n    out.len = n; out.capacity = n;\
+\n    if (n == 0) {{ out.data = (int64_t*)0; return out; }}\
+\n    out.data = (int64_t*)malloc(n * sizeof(int64_t));\
+\n    if (!out.data) abort();\
+\n    for (uint64_t i = 0; i < n; i++) out.data[i] = f(xs->data[i], ys->data[i]);\
+\n    return out;\
+\n}}\n",
+            sn = struct_name,
+        ));
         // Closure #389: vec_take_while / vec_drop_while.
         out.push_str(&format!(
             "static INTENT_UNUSED {sn} {sn}__take_while(const {sn}* xs, {sn}__pred_fn p) {{\
@@ -9478,6 +9497,19 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 old = emit_expr(&args[1]),
                 new = emit_expr(&args[2]),
             )
+        }
+        // Closure #397: vec_zip_with(ref xs, ref ys, f) -> Vec<i64>.
+        "vec_zip_with" => {
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, {}, {})",
+                    vec_helper(element, "zip_with"),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1]),
+                    emit_expr(&args[2])
+                ),
+                _ => unreachable!("vec_zip_with() arg 0 must be ref Vec<i64>"),
+            }
         }
         // Closure #386: vec_count_if(ref xs, pred) -> i64.
         "vec_count_if" => {

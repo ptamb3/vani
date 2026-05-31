@@ -7576,6 +7576,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "vec_count_if"
                     | "vec_max_by"
                     | "vec_min_by"
+                    | "vec_zip_with"
                     | "vec_take"
                     | "vec_drop"
                     | "vec_take_while"
@@ -7621,6 +7622,8 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     "max_by"
                 } else if name == "vec_min_by" {
                     "min_by"
+                } else if name == "vec_zip_with" {
+                    "zip_with"
                 } else if name == "vec_take" {
                     "take"
                 } else if name == "vec_drop" {
@@ -19356,6 +19359,84 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
             out.push_str("}\n");
         }
         } // end if has_option_i64
+
+        // Closure #397: vec_zip_with(ref xs, ref ys, f) -> Vec<i64>.
+        // Truncates to shorter Vec; pairwise applies f.
+        let zip_with_name = format!("@intent_vec_{}__zip_with", tag);
+        out.push_str(&format!(
+            "define {sty} {sn}({sty}* %xs_p, {sty}* %ys_p, i64 (i64, i64)* %f) {{\n",
+            sn = zip_with_name, sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %vzw_xdp = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %vzw_xlp = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %vzw_ydp = getelementptr {sty}, {sty}* %ys_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %vzw_ylp = getelementptr {sty}, {sty}* %ys_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %vzw_xsrc = load i64*, i64** %vzw_xdp\n");
+        out.push_str("  %vzw_ysrc = load i64*, i64** %vzw_ydp\n");
+        out.push_str("  %vzw_xlen = load i64, i64* %vzw_xlp\n");
+        out.push_str("  %vzw_ylen = load i64, i64* %vzw_ylp\n");
+        // n = min(xlen, ylen) via icmp + select.
+        out.push_str("  %vzw_x_lt = icmp ult i64 %vzw_xlen, %vzw_ylen\n");
+        out.push_str("  %vzw_n = select i1 %vzw_x_lt, i64 %vzw_xlen, i64 %vzw_ylen\n");
+        out.push_str("  %vzw_empty = icmp eq i64 %vzw_n, 0\n");
+        out.push_str("  br i1 %vzw_empty, label %vzw_ret_empty, label %vzw_alloc\n");
+        out.push_str("vzw_ret_empty:\n");
+        out.push_str(&format!(
+            "  %vzw_e0 = insertvalue {sty} undef, i64* null, 0\n", sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %vzw_e1 = insertvalue {sty} %vzw_e0, i64 0, 1\n", sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %vzw_e2 = insertvalue {sty} %vzw_e1, i64 0, 2\n", sty = s_ty,
+        ));
+        out.push_str(&format!("  ret {sty} %vzw_e2\n", sty = s_ty));
+        out.push_str("vzw_alloc:\n");
+        out.push_str("  %vzw_bytes = mul i64 %vzw_n, 8\n");
+        out.push_str("  %vzw_buf_i8 = call i8* @malloc(i64 %vzw_bytes)\n");
+        out.push_str("  %vzw_buf = bitcast i8* %vzw_buf_i8 to i64*\n");
+        out.push_str("  %vzw_i_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %vzw_i_p\n");
+        out.push_str("  br label %vzw_head\n");
+        out.push_str("vzw_head:\n");
+        out.push_str("  %vzw_i = load i64, i64* %vzw_i_p\n");
+        out.push_str("  %vzw_done = icmp uge i64 %vzw_i, %vzw_n\n");
+        out.push_str("  br i1 %vzw_done, label %vzw_fin, label %vzw_body\n");
+        out.push_str("vzw_body:\n");
+        out.push_str("  %vzw_xs_slot = getelementptr i64, i64* %vzw_xsrc, i64 %vzw_i\n");
+        out.push_str("  %vzw_ys_slot = getelementptr i64, i64* %vzw_ysrc, i64 %vzw_i\n");
+        out.push_str("  %vzw_xv = load i64, i64* %vzw_xs_slot\n");
+        out.push_str("  %vzw_yv = load i64, i64* %vzw_ys_slot\n");
+        out.push_str("  %vzw_r = call i64 %f(i64 %vzw_xv, i64 %vzw_yv)\n");
+        out.push_str("  %vzw_dst = getelementptr i64, i64* %vzw_buf, i64 %vzw_i\n");
+        out.push_str("  store i64 %vzw_r, i64* %vzw_dst\n");
+        out.push_str("  %vzw_i_next = add i64 %vzw_i, 1\n");
+        out.push_str("  store i64 %vzw_i_next, i64* %vzw_i_p\n");
+        out.push_str("  br label %vzw_head\n");
+        out.push_str("vzw_fin:\n");
+        out.push_str(&format!(
+            "  %vzw_r0 = insertvalue {sty} undef, i64* %vzw_buf, 0\n", sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %vzw_r1 = insertvalue {sty} %vzw_r0, i64 %vzw_n, 1\n", sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %vzw_r2 = insertvalue {sty} %vzw_r1, i64 %vzw_n, 2\n", sty = s_ty,
+        ));
+        out.push_str(&format!("  ret {sty} %vzw_r2\n", sty = s_ty));
+        out.push_str("}\n");
 
         // Closure #389: vec_take_while / vec_drop_while.
         // Two-phase: scan the prefix, then memcpy the keep slice.

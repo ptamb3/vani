@@ -16109,6 +16109,36 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_zip_with_typecheck_and_compile() {
+        // Closure #397: vec_zip_with(xs, ys, f) -> Vec<i64>.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let ys: Vec<i64> = vec(10, 20, 30);
+              let r: Vec<i64> = vec_zip_with(ref xs, ref ys, |a, b| a + b);
+              let m: Vec<i64> = xs.zip_with(ref ys, |a, b| a * b);
+              return r[0] + m[0];
+            }
+        "#;
+        compile_to_c(source).expect("vec_zip_with must type-check");
+        compile_to_llvm(source).expect("vec_zip_with must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_zip_with_truncates_to_shorter() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4, 5);
+              let ys: Vec<i64> = vec(10, 20, 30);
+              let r: Vec<i64> = vec_zip_with(ref xs, ref ys, |a, b| a + b);
+              return r[0];
+            }
+        "#;
+        compile_to_c(source).expect("uneven lengths must compile");
+        compile_to_llvm(source).expect("uneven lengths must compile");
+    }
+
+    #[test]
     fn vec_max_min_by_typecheck_and_compile() {
         // Closure #392: vec_max_by / vec_min_by(ref xs, key) ->
         // Option<i64>. Returns the element with the extremum key.
