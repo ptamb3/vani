@@ -352,6 +352,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "i64_rotate_left"
                 || name == "i64_rotate_right"
                 || name == "f64_to_bits" || name == "f64_from_bits"
+                || name == "i64_min_value" || name == "i64_max_value"
+                || name == "f64_max_finite"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_f64"

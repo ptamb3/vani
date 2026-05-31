@@ -10483,6 +10483,18 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         "f64_e" => "(2.71828182845904523536)".to_string(),
         "f64_inf" => "((double)INFINITY)".to_string(),
         "f64_nan" => "((double)NAN)".to_string(),
+        // Closure #404: i64 / f64 boundary constants.
+        // INT64_MIN's literal form needs care: -9223372036854775808
+        // would parse as `-(9223372036854775808)` where the
+        // positive operand overflows i64. Use the (INT64_MAX) - 1
+        // form or the hex literal — we go with the explicit
+        // unary form `(-INT64_MAX - 1)` for maximum portability.
+        "i64_min_value" => "((int64_t)(-9223372036854775807LL - 1LL))".to_string(),
+        "i64_max_value" => "((int64_t)9223372036854775807LL)".to_string(),
+        // DBL_MAX is in <float.h> but math.h pulls it in
+        // transitively on glibc. Be explicit by using the
+        // hex-float literal that matches IEEE-754 DBL_MAX.
+        "f64_max_finite" => "(1.7976931348623157e308)".to_string(),
         // Closure #372: float-to-int rounding.
         // f64_round: round half away from zero (libc `llround`).
         // f64_trunc_to_i64: C truncating cast — chops the fractional

@@ -15873,6 +15873,21 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn boundary_constants_typecheck_and_compile() {
+        // Closure #404: i64_min_value / i64_max_value / f64_max_finite.
+        let source = r#"
+            fn main() -> i64 {
+              let lo: i64 = i64_min_value();
+              let hi: i64 = i64_max_value();
+              let mxf: f64 = f64_max_finite();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("boundary constants must type-check");
+        compile_to_llvm(source).expect("boundary constants must compile to LLVM");
+    }
+
+    #[test]
     fn f64_bits_typecheck_and_compile() {
         // Closure #403: f64_to_bits / f64_from_bits.
         let source = r#"

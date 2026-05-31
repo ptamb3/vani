@@ -7057,6 +7057,18 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 // instruction's operand position.
                 return lit.to_string();
             }
+            // Closure #404: integer / float boundary constants.
+            // i64 limits are decimal literals; f64 max-finite is
+            // the IEEE-754 hex-float bit pattern.
+            if name == "i64_min_value" {
+                return "-9223372036854775808".to_string();
+            }
+            if name == "i64_max_value" {
+                return "9223372036854775807".to_string();
+            }
+            if name == "f64_max_finite" {
+                return "0x7FEFFFFFFFFFFFFF".to_string();
+            }
             if name == "f64_is_inf" || name == "f64_is_finite" {
                 let x = emit_expr(&args[0], ctx, out);
                 let fa = ctx.fresh_tmp();
