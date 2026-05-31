@@ -382,6 +382,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "option_unwrap_or_f64"
                 || name == "option_is_some_f64" || name == "option_is_none_f64"
                 || name == "vec_take" || name == "vec_drop" || name == "vec_map_fold"
+                || name == "vec_take_while" || name == "vec_drop_while"
                 || name == "vec_filter_fold" || name == "vec_map_filter"
                 || name == "vec_map_filter_fold"
                 || name == "vec_sum" || name == "vec_product"

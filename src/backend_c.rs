@@ -5877,6 +5877,36 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
 \n}}\n",
             sn = struct_name,
         ));
+        // Closure #389: vec_take_while / vec_drop_while.
+        out.push_str(&format!(
+            "static INTENT_UNUSED {sn} {sn}__take_while(const {sn}* xs, {sn}__pred_fn p) {{\
+\n    {sn} out;\
+\n    uint64_t n = 0;\
+\n    while (n < xs->len && p(xs->data[n])) {{ n++; }}\
+\n    out.len = n; out.capacity = n;\
+\n    if (n == 0) {{ out.data = (int64_t*)0; return out; }}\
+\n    out.data = (int64_t*)malloc(n * sizeof(int64_t));\
+\n    if (!out.data) abort();\
+\n    memcpy(out.data, xs->data, n * sizeof(int64_t));\
+\n    return out;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED {sn} {sn}__drop_while(const {sn}* xs, {sn}__pred_fn p) {{\
+\n    {sn} out;\
+\n    uint64_t skip = 0;\
+\n    while (skip < xs->len && p(xs->data[skip])) {{ skip++; }}\
+\n    uint64_t n = xs->len - skip;\
+\n    out.len = n; out.capacity = n;\
+\n    if (n == 0) {{ out.data = (int64_t*)0; return out; }}\
+\n    out.data = (int64_t*)malloc(n * sizeof(int64_t));\
+\n    if (!out.data) abort();\
+\n    memcpy(out.data, xs->data + skip, n * sizeof(int64_t));\
+\n    return out;\
+\n}}\n",
+            sn = struct_name,
+        ));
         // dedup: remove consecutive duplicates. Returns the
         // post-dedup length so the caller can verify the work
         // was done. Sort first if you want unique-set behavior.
@@ -9298,6 +9328,19 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                     emit_expr(&args[1])
                 ),
                 _ => unreachable!("vec_count_if() arg 0 must be ref Vec<i64>"),
+            }
+        }
+        // Closure #389: vec_take_while / vec_drop_while.
+        "vec_take_while" | "vec_drop_while" => {
+            let op = if *&name == "vec_take_while" { "take_while" } else { "drop_while" };
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, {})",
+                    vec_helper(element, op),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1])
+                ),
+                _ => unreachable!("{}() arg 0 must be ref Vec<i64>", name),
             }
         }
         "vec_take" | "vec_drop" => {

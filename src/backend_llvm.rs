@@ -7298,6 +7298,8 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "vec_count_if"
                     | "vec_take"
                     | "vec_drop"
+                    | "vec_take_while"
+                    | "vec_drop_while"
                     | "vec_map_fold"
                     | "vec_filter_fold"
                     | "vec_map_filter"
@@ -7339,6 +7341,10 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     "take"
                 } else if name == "vec_drop" {
                     "drop"
+                } else if name == "vec_take_while" {
+                    "take_while"
+                } else if name == "vec_drop_while" {
+                    "drop_while"
                 } else if name == "vec_map_fold" {
                     "map_fold"
                 } else if name == "vec_filter_fold" {
@@ -18819,6 +18825,101 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
         out.push_str("  ret %Enum_Option__i64 %vpo_none1\n");
         out.push_str("}\n");
         } // end if has_option_i64
+
+        // Closure #389: vec_take_while / vec_drop_while.
+        // Two-phase: scan the prefix, then memcpy the keep slice.
+        for (helper_op, scan_keep_pred) in &[
+            ("take_while", true),  // keep [0..n) where pred holds
+            ("drop_while", false), // keep [n..end) after the matching prefix
+        ] {
+            let helper_name = format!("@intent_vec_{}__{}", tag, helper_op);
+            out.push_str(&format!(
+                "define {sty} {sn}({sty}* %xs_p, i1 (i64)* %p) {{\n",
+                sn = helper_name, sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  %vw_data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+                sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  %vw_len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+                sty = s_ty,
+            ));
+            out.push_str("  %vw_src = load i64*, i64** %vw_data_p\n");
+            out.push_str("  %vw_n = load i64, i64* %vw_len_p\n");
+            out.push_str("  %vw_skip_p = alloca i64\n");
+            out.push_str("  store i64 0, i64* %vw_skip_p\n");
+            out.push_str("  br label %vw_scan_head\n");
+            out.push_str("vw_scan_head:\n");
+            out.push_str("  %vw_skip = load i64, i64* %vw_skip_p\n");
+            out.push_str("  %vw_eob = icmp uge i64 %vw_skip, %vw_n\n");
+            out.push_str("  br i1 %vw_eob, label %vw_alloc, label %vw_scan_body\n");
+            out.push_str("vw_scan_body:\n");
+            out.push_str("  %vw_slot = getelementptr i64, i64* %vw_src, i64 %vw_skip\n");
+            out.push_str("  %vw_val = load i64, i64* %vw_slot\n");
+            out.push_str("  %vw_keep = call i1 %p(i64 %vw_val)\n");
+            out.push_str("  br i1 %vw_keep, label %vw_advance, label %vw_alloc\n");
+            out.push_str("vw_advance:\n");
+            out.push_str("  %vw_skip_next = add i64 %vw_skip, 1\n");
+            out.push_str("  store i64 %vw_skip_next, i64* %vw_skip_p\n");
+            out.push_str("  br label %vw_scan_head\n");
+            out.push_str("vw_alloc:\n");
+            // For take_while: keep_count = skip (the prefix that matched).
+            // For drop_while: keep_count = n - skip (everything after).
+            let keep_expr = if *scan_keep_pred {
+                "  %vw_keep_n = load i64, i64* %vw_skip_p\n".to_string()
+            } else {
+                "  %vw_skip_v = load i64, i64* %vw_skip_p\n  %vw_keep_n = sub i64 %vw_n, %vw_skip_v\n".to_string()
+            };
+            out.push_str(&keep_expr);
+            out.push_str("  %vw_empty = icmp eq i64 %vw_keep_n, 0\n");
+            out.push_str("  br i1 %vw_empty, label %vw_ret_empty, label %vw_alloc_buf\n");
+            out.push_str("vw_ret_empty:\n");
+            out.push_str(&format!(
+                "  %vw_e0 = insertvalue {sty} undef, i64* null, 0\n",
+                sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  %vw_e1 = insertvalue {sty} %vw_e0, i64 0, 1\n",
+                sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  %vw_e2 = insertvalue {sty} %vw_e1, i64 0, 2\n",
+                sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  ret {sty} %vw_e2\n", sty = s_ty,
+            ));
+            out.push_str("vw_alloc_buf:\n");
+            out.push_str("  %vw_bytes = mul i64 %vw_keep_n, 8\n");
+            out.push_str("  %vw_buf_i8 = call i8* @malloc(i64 %vw_bytes)\n");
+            out.push_str("  %vw_buf = bitcast i8* %vw_buf_i8 to i64*\n");
+            // src_start = take_while ? 0 : skip
+            let src_start_expr = if *scan_keep_pred {
+                "  %vw_src_start_p = getelementptr i64, i64* %vw_src, i64 0\n".to_string()
+            } else {
+                "  %vw_src_start_p = getelementptr i64, i64* %vw_src, i64 %vw_skip_v\n".to_string()
+            };
+            out.push_str(&src_start_expr);
+            out.push_str("  %vw_src_i8 = bitcast i64* %vw_src_start_p to i8*\n");
+            out.push_str("  %_vw_c = call i8* @memcpy(i8* %vw_buf_i8, i8* %vw_src_i8, i64 %vw_bytes)\n");
+            out.push_str(&format!(
+                "  %vw_r0 = insertvalue {sty} undef, i64* %vw_buf, 0\n",
+                sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  %vw_r1 = insertvalue {sty} %vw_r0, i64 %vw_keep_n, 1\n",
+                sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  %vw_r2 = insertvalue {sty} %vw_r1, i64 %vw_keep_n, 2\n",
+                sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  ret {sty} %vw_r2\n", sty = s_ty,
+            ));
+            out.push_str("}\n");
+        }
 
         // Closure #386: vec_count_if(ref xs, pred) -> i64.
         // Plain i64 return — no Option<i64> dependency.

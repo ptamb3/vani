@@ -15951,6 +15951,35 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_take_drop_while_typecheck_and_compile() {
+        // Closure #389: predicate-based prefix slicing.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 3, 5, 4, 7);
+              let p: Vec<i64> = vec_take_while(ref xs, |x| x % 2 == 1);
+              let r: Vec<i64> = vec_drop_while(ref xs, |x| x % 2 == 1);
+              return p[0] + r[0];
+            }
+        "#;
+        compile_to_c(source).expect("take_while/drop_while must type-check");
+        compile_to_llvm(source).expect("take_while/drop_while must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_take_drop_while_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let p: Vec<i64> = xs.take_while(|x| x < 3);
+              let r: Vec<i64> = xs.drop_while(|x| x < 3);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("method-sugar take_while/drop_while must type-check");
+        compile_to_llvm(source).expect("method-sugar take_while/drop_while must compile to LLVM");
+    }
+
+    #[test]
     fn vec_swap_typecheck_and_compile() {
         // Closure #387: vec_swap(mut ref xs, i, j) -> i64.
         let source = r#"
