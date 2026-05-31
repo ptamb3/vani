@@ -7165,6 +7165,45 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #429: neural net activations.
+            //   sigmoid(x) = 1 / (1 + exp(-x))
+            if name == "f64_sigmoid" {
+                let x = emit_expr(&args[0], ctx, out);
+                let neg_x = ctx.fresh_tmp();
+                let e_neg = ctx.fresh_tmp();
+                let denom = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fsub double 0.0, {}\n", neg_x, x
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @exp(double {})\n", e_neg, neg_x
+                ));
+                out.push_str(&format!(
+                    "  {} = fadd double 1.0, {}\n", denom, e_neg
+                ));
+                out.push_str(&format!(
+                    "  {} = fdiv double 1.0, {}\n", dest, denom
+                ));
+                return dest;
+            }
+            //   softsign(x) = x / (1 + |x|)
+            if name == "f64_softsign" {
+                let x = emit_expr(&args[0], ctx, out);
+                let abs_x = ctx.fresh_tmp();
+                let denom = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @fabs(double {})\n", abs_x, x
+                ));
+                out.push_str(&format!(
+                    "  {} = fadd double 1.0, {}\n", denom, abs_x
+                ));
+                out.push_str(&format!(
+                    "  {} = fdiv double {}, {}\n", dest, x, denom
+                ));
+                return dest;
+            }
             // Closure #426: byte access on Str (i8* in IR).
             if name == "str_byte_at" {
                 let s = emit_expr(&args[0], ctx, out);

@@ -10849,6 +10849,17 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __fbn = ({}); int64_t __fbr; if (__fbn < 0) {{ __fbr = 0; }} else if (__fbn > 92) {{ __fbr = (int64_t)9223372036854775807LL; }} else if (__fbn < 2) {{ __fbr = __fbn; }} else {{ int64_t __fba = 0; int64_t __fbb = 1; for (int64_t __fbi = 2; __fbi <= __fbn; __fbi += 1) {{ int64_t __fbt = __fba + __fbb; __fba = __fbb; __fbb = __fbt; }} __fbr = __fbb; }} __fbr; }})",
             emit_expr(&args[0])
         ),
+        // Closure #429: neural net activations.
+        // sigmoid(x) = 1 / (1 + exp(-x))
+        // softsign(x) = x / (1 + |x|)
+        "f64_sigmoid" => format!(
+            "({{ double __sx = ({}); 1.0 / (1.0 + exp(-__sx)); }})",
+            emit_expr(&args[0])
+        ),
+        "f64_softsign" => format!(
+            "({{ double __ssx = ({}); __ssx / (1.0 + fabs(__ssx)); }})",
+            emit_expr(&args[0])
+        ),
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).
