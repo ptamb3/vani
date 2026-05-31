@@ -10518,6 +10518,24 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[1])
             )
         }
+        // Closure #406: linear interpolation + clamp to [0, 1].
+        // lerp(a, b, t) = a + (b - a) * t. Standard form;
+        // overflow-safe within representable range.
+        "f64_lerp" => {
+            format!(
+                "({{ double __la = ({}); double __lb = ({}); double __lt = ({}); __la + (__lb - __la) * __lt; }})",
+                emit_expr(&args[0]),
+                emit_expr(&args[1]),
+                emit_expr(&args[2])
+            )
+        }
+        // clamp01(x) = max(0, min(1, x))
+        "f64_clamp01" => {
+            format!(
+                "({{ double __cx = ({}); __cx < 0.0 ? 0.0 : (__cx > 1.0 ? 1.0 : __cx); }})",
+                emit_expr(&args[0])
+            )
+        }
         // Closure #372: float-to-int rounding.
         // f64_round: round half away from zero (libc `llround`).
         // f64_trunc_to_i64: C truncating cast — chops the fractional

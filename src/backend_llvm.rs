@@ -7069,6 +7069,38 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             if name == "f64_max_finite" {
                 return "0x7FEFFFFFFFFFFFFF".to_string();
             }
+            // Closure #406: f64_lerp(a, b, t) = a + (b - a) * t.
+            if name == "f64_lerp" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let t = emit_expr(&args[2], ctx, out);
+                let diff = ctx.fresh_tmp();
+                let scaled = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = fsub double {}, {}\n", diff, b, a));
+                out.push_str(&format!("  {} = fmul double {}, {}\n", scaled, diff, t));
+                out.push_str(&format!("  {} = fadd double {}, {}\n", dest, a, scaled));
+                return dest;
+            }
+            // Closure #406: f64_clamp01(x).
+            if name == "f64_clamp01" {
+                let x = emit_expr(&args[0], ctx, out);
+                let lt_zero = ctx.fresh_tmp();
+                let mid = ctx.fresh_tmp();
+                let gt_one = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = fcmp olt double {}, 0.0\n", lt_zero, x));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 0.0, double {}\n",
+                    mid, lt_zero, x
+                ));
+                out.push_str(&format!("  {} = fcmp ogt double {}, 1.0\n", gt_one, mid));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 1.0, double {}\n",
+                    dest, gt_one, mid
+                ));
+                return dest;
+            }
             // Closure #405: i64_div_floor / i64_mod_floor.
             // Use sdiv/srem (truncating), then adjust for the
             // "different signs + nonzero remainder" case.

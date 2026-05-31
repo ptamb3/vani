@@ -15873,6 +15873,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_lerp_clamp01_typecheck_and_compile() {
+        // Closure #406: f64_lerp / f64_clamp01.
+        let source = r#"
+            fn main() -> i64 {
+              let m: f64 = f64_lerp(0.0, 10.0, 0.5);
+              let c: f64 = f64_clamp01(1.5);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("lerp/clamp01 must type-check");
+        compile_to_llvm(source).expect("lerp/clamp01 must compile to LLVM");
+    }
+
+    #[test]
     fn floor_div_typecheck_and_compile() {
         // Closure #405: i64_div_floor / i64_mod_floor (Python
         // semantics — floor toward -infinity, mod sign matches
