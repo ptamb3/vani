@@ -537,6 +537,9 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare double @llvm.copysign.f64(double, double)\n");
     out.push_str("declare double @llvm.fma.f64(double, double, double)\n");
     out.push_str("declare double @remainder(double, double)\n");
+    // Closure #431: signed multiplication-with-overflow for
+    // overflow-detecting binomial helper.
+    out.push_str("declare {i64, i1} @llvm.smul.with.overflow.i64(i64, i64)\n");
     // Closure #418: nextafter from libm.
     out.push_str("declare double @nextafter(double, double)\n");
     // Closure #420: trunc (toward zero) from libm.
@@ -7165,6 +7168,17 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #431: binomial coefficient via helper.
+            if name == "i64_binomial" {
+                let n = emit_expr(&args[0], ctx, out);
+                let k = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_binomial(i64 {}, i64 {})\n",
+                    dest, n, k
+                ));
+                return dest;
+            }
             // Closure #429: neural net activations.
             //   sigmoid(x) = 1 / (1 + exp(-x))
             if name == "f64_sigmoid" {
@@ -11900,6 +11914,65 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("fb_fin:\n");
     out.push_str("  %fb_r = load i64, i64* %fb_b_p\n");
     out.push_str("  ret i64 %fb_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #431: binomial coefficient C(n, k).
+    //   if k < 0 || n < 0 || k > n:  return 0
+    //   if k == 0 || k == n:         return 1
+    //   if k > n - k:                k = n - k   (symmetry)
+    //   r = 1
+    //   for i = 1 to k:  r = r * (n - i + 1) / i
+    //   return r
+    out.push_str("define i64 @intent_i64_binomial(i64 %n, i64 %k) {\n");
+    out.push_str("  %bc_k_neg = icmp slt i64 %k, 0\n");
+    out.push_str("  %bc_n_neg = icmp slt i64 %n, 0\n");
+    out.push_str("  %bc_k_gt_n = icmp sgt i64 %k, %n\n");
+    out.push_str("  %bc_bad1 = or i1 %bc_k_neg, %bc_n_neg\n");
+    out.push_str("  %bc_bad = or i1 %bc_bad1, %bc_k_gt_n\n");
+    out.push_str("  br i1 %bc_bad, label %bc_zero_ret, label %bc_check_trivial\n");
+    out.push_str("bc_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("bc_check_trivial:\n");
+    out.push_str("  %bc_k_z = icmp eq i64 %k, 0\n");
+    out.push_str("  %bc_k_n = icmp eq i64 %k, %n\n");
+    out.push_str("  %bc_triv = or i1 %bc_k_z, %bc_k_n\n");
+    out.push_str("  br i1 %bc_triv, label %bc_one_ret, label %bc_init\n");
+    out.push_str("bc_one_ret:\n");
+    out.push_str("  ret i64 1\n");
+    out.push_str("bc_init:\n");
+    // pick the smaller of k and n-k for fewer iterations
+    out.push_str("  %bc_nmk = sub i64 %n, %k\n");
+    out.push_str("  %bc_sym = icmp sgt i64 %k, %bc_nmk\n");
+    out.push_str("  %bc_keff = select i1 %bc_sym, i64 %bc_nmk, i64 %k\n");
+    out.push_str("  %bc_r_p = alloca i64\n");
+    out.push_str("  %bc_i_p = alloca i64\n");
+    out.push_str("  store i64 1, i64* %bc_r_p\n");
+    out.push_str("  store i64 1, i64* %bc_i_p\n");
+    out.push_str("  br label %bc_head\n");
+    out.push_str("bc_head:\n");
+    out.push_str("  %bc_i = load i64, i64* %bc_i_p\n");
+    out.push_str("  %bc_done = icmp sgt i64 %bc_i, %bc_keff\n");
+    out.push_str("  br i1 %bc_done, label %bc_fin, label %bc_step\n");
+    out.push_str("bc_step:\n");
+    out.push_str("  %bc_r = load i64, i64* %bc_r_p\n");
+    // r * (n - i + 1) with overflow detection
+    out.push_str("  %bc_nmip1 = sub i64 %n, %bc_i\n");
+    out.push_str("  %bc_fac = add i64 %bc_nmip1, 1\n");
+    out.push_str("  %bc_movf = call {i64, i1} @llvm.smul.with.overflow.i64(i64 %bc_r, i64 %bc_fac)\n");
+    out.push_str("  %bc_mul = extractvalue {i64, i1} %bc_movf, 0\n");
+    out.push_str("  %bc_ov = extractvalue {i64, i1} %bc_movf, 1\n");
+    out.push_str("  br i1 %bc_ov, label %bc_sat_ret, label %bc_div\n");
+    out.push_str("bc_sat_ret:\n");
+    out.push_str("  ret i64 9223372036854775807\n");
+    out.push_str("bc_div:\n");
+    out.push_str("  %bc_q = sdiv i64 %bc_mul, %bc_i\n");
+    out.push_str("  store i64 %bc_q, i64* %bc_r_p\n");
+    out.push_str("  %bc_i_new = add i64 %bc_i, 1\n");
+    out.push_str("  store i64 %bc_i_new, i64* %bc_i_p\n");
+    out.push_str("  br label %bc_head\n");
+    out.push_str("bc_fin:\n");
+    out.push_str("  %bc_rfinal = load i64, i64* %bc_r_p\n");
+    out.push_str("  ret i64 %bc_rfinal\n");
     out.push_str("}\n\n");
 }
 

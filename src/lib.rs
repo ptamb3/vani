@@ -15915,6 +15915,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_binomial_typecheck_and_compile() {
+        // Closure #431: i64_binomial.
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_binomial(10, 5);
+              let b: i64 = i64_binomial(20, 10);
+              return a + b;
+            }
+        "#;
+        compile_to_c(source).expect("binomial must type-check");
+        compile_to_llvm(source).expect("binomial must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_binomial_emits_helper_with_overflow_check() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_binomial(10, 5);
+              return a;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("define i64 @intent_i64_binomial(i64 %n, i64 %k)"),
+            "LLVM must define the @intent_i64_binomial helper"
+        );
+        assert!(
+            ll.contains("@llvm.smul.with.overflow.i64"),
+            "LLVM must use signed-mul-with-overflow for saturation"
+        );
+    }
+
+    #[test]
     fn i64_fibonacci_typecheck_and_compile() {
         // Closure #428: i64_fibonacci (saturating).
         let source = r#"

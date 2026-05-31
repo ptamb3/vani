@@ -10849,6 +10849,21 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __fbn = ({}); int64_t __fbr; if (__fbn < 0) {{ __fbr = 0; }} else if (__fbn > 92) {{ __fbr = (int64_t)9223372036854775807LL; }} else if (__fbn < 2) {{ __fbr = __fbn; }} else {{ int64_t __fba = 0; int64_t __fbb = 1; for (int64_t __fbi = 2; __fbi <= __fbn; __fbi += 1) {{ int64_t __fbt = __fba + __fbb; __fba = __fbb; __fbb = __fbt; }} __fbr = __fbb; }} __fbr; }})",
             emit_expr(&args[0])
         ),
+        // Closure #431: binomial coefficient C(n, k).
+        //   returns 0 for k < 0, k > n, n < 0 (defensive)
+        //   returns 1 for k == 0 or k == n
+        //   uses symmetry C(n, k) = C(n, n-k) to minimize iterations
+        //   iterative formula: r = r * (n - i + 1) / i
+        // Saturates to INT64_MAX on intermediate overflow
+        // (detected via __builtin_mul_overflow). Even when the
+        // final C(n, k) would fit in i64, the running product
+        // r * (n - i + 1) can overflow before the divide;
+        // saturating makes overflow visible to the caller.
+        "i64_binomial" => format!(
+            "({{ int64_t __bcn = ({}); int64_t __bck = ({}); int64_t __bcr; if (__bck < 0 || __bcn < 0 || __bck > __bcn) {{ __bcr = 0; }} else if (__bck == 0 || __bck == __bcn) {{ __bcr = 1; }} else {{ if (__bck > __bcn - __bck) __bck = __bcn - __bck; __bcr = 1; bool __bc_ov = false; for (int64_t __bci = 1; __bci <= __bck && !__bc_ov; __bci += 1) {{ int64_t __bc_prod; if (__builtin_mul_overflow(__bcr, __bcn - __bci + 1, &__bc_prod)) {{ __bcr = (int64_t)9223372036854775807LL; __bc_ov = true; }} else {{ __bcr = __bc_prod / __bci; }} }} }} __bcr; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #429: neural net activations.
         // sigmoid(x) = 1 / (1 + exp(-x))
         // softsign(x) = x / (1 + |x|)

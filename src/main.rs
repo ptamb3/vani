@@ -380,7 +380,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "i64_count_digits" || name == "i64_log10_floor"
                 || name == "i64_log10_ceil" || name == "i64_pow_mod"
                 || name == "i64_is_prime" || name == "i64_factorial"
-                || name == "i64_fibonacci"
+                || name == "i64_fibonacci" || name == "i64_binomial"
                 || name == "f64_sigmoid" || name == "f64_softsign"
                 || name == "f64_step" || name == "f64_smoothstep"
                 || name == "str_byte_at" || name == "str_len_bytes"
