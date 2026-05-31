@@ -10940,6 +10940,19 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "((int64_t)strlen(({})))",
             emit_expr(&args[0])
         ),
+        // Closure #436: byte-level prefix/suffix checks.
+        // starts_with_byte: s[0] != 0 and s[0] == b
+        // ends_with_byte: strlen(s) > 0 and s[len-1] == b
+        "str_starts_with_byte" => format!(
+            "({{ const char* __sb_s = ({}); int64_t __sb_b = ({}); (__sb_s[0] != 0 && (int64_t)(unsigned char)__sb_s[0] == __sb_b); }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "str_ends_with_byte" => format!(
+            "({{ const char* __se_s = ({}); int64_t __se_b = ({}); int64_t __se_n = (int64_t)strlen(__se_s); (__se_n > 0 && (int64_t)(unsigned char)__se_s[__se_n - 1] == __se_b); }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.

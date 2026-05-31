@@ -16100,6 +16100,21 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_starts_ends_with_byte_typecheck_and_compile() {
+        // Closure #436: str_starts_with_byte + str_ends_with_byte.
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "Hello";
+              let a: bool = str_starts_with_byte(s, 72);
+              let b: bool = str_ends_with_byte(s, 111);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("starts/ends_with_byte must type-check");
+        compile_to_llvm(source).expect("starts/ends_with_byte must compile to LLVM");
+    }
+
+    #[test]
     fn str_byte_at_and_len_bytes_typecheck_and_compile() {
         // Closure #426: str_byte_at + str_len_bytes.
         let source = r#"

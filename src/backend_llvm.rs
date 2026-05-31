@@ -7381,6 +7381,69 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #436: byte-level prefix/suffix.
+            //   starts_with_byte: load s[0], compare to b
+            //   (also handle empty string — s[0] == 0).
+            if name == "str_starts_with_byte" {
+                let s = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let first_b = ctx.fresh_tmp();
+                let first_i64 = ctx.fresh_tmp();
+                let not_empty = ctx.fresh_tmp();
+                let matches = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = load i8, i8* {}\n", first_b, s));
+                out.push_str(&format!(
+                    "  {} = icmp ne i8 {}, 0\n", not_empty, first_b
+                ));
+                out.push_str(&format!(
+                    "  {} = zext i8 {} to i64\n", first_i64, first_b
+                ));
+                out.push_str(&format!(
+                    "  {} = icmp eq i64 {}, {}\n", matches, first_i64, b
+                ));
+                out.push_str(&format!(
+                    "  {} = and i1 {}, {}\n", dest, not_empty, matches
+                ));
+                return dest;
+            }
+            //   ends_with_byte: strlen(s); if 0 → false;
+            //   else s[len-1] == b.
+            if name == "str_ends_with_byte" {
+                let s = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let len = ctx.fresh_tmp();
+                let nonempty = ctx.fresh_tmp();
+                let last_idx = ctx.fresh_tmp();
+                let last_p = ctx.fresh_tmp();
+                let last_b = ctx.fresh_tmp();
+                let last_i64 = ctx.fresh_tmp();
+                let matches = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @strlen(i8* {})\n", len, s
+                ));
+                out.push_str(&format!(
+                    "  {} = icmp sgt i64 {}, 0\n", nonempty, len
+                ));
+                out.push_str(&format!(
+                    "  {} = sub i64 {}, 1\n", last_idx, len
+                ));
+                out.push_str(&format!(
+                    "  {} = getelementptr i8, i8* {}, i64 {}\n", last_p, s, last_idx
+                ));
+                out.push_str(&format!("  {} = load i8, i8* {}\n", last_b, last_p));
+                out.push_str(&format!(
+                    "  {} = zext i8 {} to i64\n", last_i64, last_b
+                ));
+                out.push_str(&format!(
+                    "  {} = icmp eq i64 {}, {}\n", matches, last_i64, b
+                ));
+                out.push_str(&format!(
+                    "  {} = and i1 {}, {}\n", dest, nonempty, matches
+                ));
+                return dest;
+            }
             // Closure #413: trig / geometry helpers.
             if name == "f64_hypot" {
                 let a = emit_expr(&args[0], ctx, out);

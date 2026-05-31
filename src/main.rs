@@ -391,6 +391,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "f64_log1p"
                 || name == "f64_exp2" || name == "f64_exp10"
                 || name == "str_byte_at" || name == "str_len_bytes"
+                || name == "str_starts_with_byte"
+                || name == "str_ends_with_byte"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_f64"
