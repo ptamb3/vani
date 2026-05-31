@@ -7069,6 +7069,47 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             if name == "f64_max_finite" {
                 return "0x7FEFFFFFFFFFFFFF".to_string();
             }
+            // Closure #405: i64_div_floor / i64_mod_floor.
+            // Use sdiv/srem (truncating), then adjust for the
+            // "different signs + nonzero remainder" case.
+            if name == "i64_div_floor" || name == "i64_mod_floor" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let q = ctx.fresh_tmp();
+                let r = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = sdiv i64 {}, {}\n", q, a, b));
+                out.push_str(&format!("  {} = srem i64 {}, {}\n", r, a, b));
+                // need_adjust = (r != 0) && ((a ^ b) < 0)
+                let r_nz = ctx.fresh_tmp();
+                let xor = ctx.fresh_tmp();
+                let sign_diff = ctx.fresh_tmp();
+                let need = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = icmp ne i64 {}, 0\n", r_nz, r));
+                out.push_str(&format!("  {} = xor i64 {}, {}\n", xor, a, b));
+                out.push_str(&format!("  {} = icmp slt i64 {}, 0\n", sign_diff, xor));
+                out.push_str(&format!("  {} = and i1 {}, {}\n", need, r_nz, sign_diff));
+                if name == "i64_div_floor" {
+                    // q' = need ? q - 1 : q
+                    let q_minus = ctx.fresh_tmp();
+                    let dest = ctx.fresh_tmp();
+                    out.push_str(&format!("  {} = sub i64 {}, 1\n", q_minus, q));
+                    out.push_str(&format!(
+                        "  {} = select i1 {}, i64 {}, i64 {}\n",
+                        dest, need, q_minus, q
+                    ));
+                    return dest;
+                } else {
+                    // r' = need ? r + b : r
+                    let r_plus = ctx.fresh_tmp();
+                    let dest = ctx.fresh_tmp();
+                    out.push_str(&format!("  {} = add i64 {}, {}\n", r_plus, r, b));
+                    out.push_str(&format!(
+                        "  {} = select i1 {}, i64 {}, i64 {}\n",
+                        dest, need, r_plus, r
+                    ));
+                    return dest;
+                }
+            }
             if name == "f64_is_inf" || name == "f64_is_finite" {
                 let x = emit_expr(&args[0], ctx, out);
                 let fa = ctx.fresh_tmp();

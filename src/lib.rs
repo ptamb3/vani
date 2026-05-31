@@ -15873,6 +15873,22 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn floor_div_typecheck_and_compile() {
+        // Closure #405: i64_div_floor / i64_mod_floor (Python
+        // semantics — floor toward -infinity, mod sign matches
+        // divisor).
+        let source = r#"
+            fn main() -> i64 {
+              let q: i64 = i64_div_floor(0 - 7, 2);
+              let r: i64 = i64_mod_floor(0 - 7, 3);
+              return q + r;
+            }
+        "#;
+        compile_to_c(source).expect("floor div must type-check");
+        compile_to_llvm(source).expect("floor div must compile to LLVM");
+    }
+
+    #[test]
     fn boundary_constants_typecheck_and_compile() {
         // Closure #404: i64_min_value / i64_max_value / f64_max_finite.
         let source = r#"

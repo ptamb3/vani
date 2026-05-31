@@ -10495,6 +10495,29 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         // transitively on glibc. Be explicit by using the
         // hex-float literal that matches IEEE-754 DBL_MAX.
         "f64_max_finite" => "(1.7976931348623157e308)".to_string(),
+        // Closure #405: Python-style floor division. C's `/`
+        // truncates toward zero — for negative dividends with
+        // positive divisors (and vice versa), `floor(a/b)` is
+        // one less than the truncated quotient when there's a
+        // non-zero remainder. The `(a ^ b) < 0` test detects
+        // "different sign" via the high bit XOR.
+        "i64_div_floor" => {
+            format!(
+                "({{ int64_t __da = ({}); int64_t __db = ({}); int64_t __dq = __da / __db; int64_t __dr = __da % __db; if (__dr != 0 && ((__da ^ __db) < 0)) __dq--; __dq; }})",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
+        // i64_mod_floor(a, b) — always non-negative remainder
+        // when b > 0; sign matches b for negative b. Defined as
+        // `a - i64_div_floor(a, b) * b`.
+        "i64_mod_floor" => {
+            format!(
+                "({{ int64_t __ma = ({}); int64_t __mb = ({}); int64_t __mr = __ma % __mb; if (__mr != 0 && ((__ma ^ __mb) < 0)) __mr += __mb; __mr; }})",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
         // Closure #372: float-to-int rounding.
         // f64_round: round half away from zero (libc `llround`).
         // f64_trunc_to_i64: C truncating cast — chops the fractional
