@@ -15951,6 +15951,52 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn option_filter_typecheck_and_compile() {
+        // Closure #384: o.filter(pred) keeps Some(v) iff pred(v).
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20, 30);
+              let p: Option<i64> = xs.find(20);
+              let kept: Option<i64> = p.filter(|x| x > 0);
+              let dropped: Option<i64> = p.filter(|x| x > 999);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("option_filter must type-check");
+        compile_to_llvm(source).expect("option_filter must compile to LLVM");
+    }
+
+    #[test]
+    fn option_or_typecheck_and_compile() {
+        // Closure #384: o.or(alt) — first Some wins.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2);
+              let a: Option<i64> = xs.find(1);
+              let b: Option<i64> = xs.find(999);
+              let r: Option<i64> = a.or(b);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("option_or must type-check");
+        compile_to_llvm(source).expect("option_or must compile to LLVM");
+    }
+
+    #[test]
+    fn option_filter_arity_2_required() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1);
+              let p: Option<i64> = xs.find(1);
+              let r: Option<i64> = option_filter(p);
+              return 0;
+            }
+        "#;
+        assert!(compile_to_c(source).is_err(),
+            "option_filter must require 2 args");
+    }
+
+    #[test]
     fn option_map_typecheck_and_compile() {
         // Closure #377: option_map(o, f) and o.map(f) for
         // Option<i64>. f must be fn(i64) -> i64.

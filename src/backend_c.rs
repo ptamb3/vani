@@ -9111,6 +9111,22 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             o = emit_expr(&args[0]),
             f = emit_expr(&args[1]),
         ),
+        // Closure #384: option_filter(o, pred) — keep Some(v) if
+        // pred(v) is true; None and Some(v)-where-!pred(v) both
+        // become None.
+        "option_filter" => format!(
+            "({{ Enum_Option__i64 __of_o = ({o}); Enum_Option__i64 __of_r; if (__of_o.tag == 0 && ({p})(__of_o.payload)) {{ __of_r = __of_o; }} else {{ __of_r.tag = 1; }} __of_r; }})",
+            o = emit_expr(&args[0]),
+            p = emit_expr(&args[1]),
+        ),
+        // Closure #384: option_or(a, b) — first Some wins; if a
+        // is None, fall back to b. Pure value combinator (b is
+        // always evaluated; no short-circuit).
+        "option_or" => format!(
+            "({{ Enum_Option__i64 __oo_a = ({a}); Enum_Option__i64 __oo_b = ({b}); (__oo_a.tag == 0) ? __oo_a : __oo_b; }})",
+            a = emit_expr(&args[0]),
+            b = emit_expr(&args[1]),
+        ),
         "option_is_some" => format!(
             "intent_option_i64_is_some(({}))",
             emit_expr(&args[0])

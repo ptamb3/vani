@@ -4871,6 +4871,85 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #384: option_filter(o, pred) — keep
+            // Some(v) only if pred(v) is true.
+            if name == "option_filter" {
+                let o = emit_expr(&args[0], ctx, out);
+                let p = emit_expr(&args[1], ctx, out);
+                let tag = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = extractvalue %Enum_Option__i64 {}, 0\n",
+                    tag, o
+                ));
+                let is_some = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp eq i32 {}, 0\n", is_some, tag
+                ));
+                let check_lbl = ctx.fresh_label("of_check");
+                let none_lbl = ctx.fresh_label("of_none");
+                let keep_lbl = ctx.fresh_label("of_keep");
+                let done = ctx.fresh_label("of_done");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    is_some, check_lbl, none_lbl
+                ));
+                out.push_str(&format!("{}:\n", check_lbl));
+                let payload = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = extractvalue %Enum_Option__i64 {}, 1\n",
+                    payload, o
+                ));
+                let hit = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i1 {}(i64 {})\n",
+                    hit, p, payload
+                ));
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    hit, keep_lbl, none_lbl
+                ));
+                out.push_str(&format!("{}:\n", keep_lbl));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", none_lbl));
+                let r_n0 = ctx.fresh_tmp();
+                let r_n1 = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 undef, i32 1, 0\n",
+                    r_n0
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 {}, i64 0, 1\n",
+                    r_n1, r_n0
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", done));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = phi %Enum_Option__i64 [ {}, %{} ], [ {}, %{} ]\n",
+                    dest, o, keep_lbl, r_n1, none_lbl
+                ));
+                return dest;
+            }
+            // Closure #384: option_or(a, b) — first Some wins.
+            if name == "option_or" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let tag = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = extractvalue %Enum_Option__i64 {}, 0\n",
+                    tag, a
+                ));
+                let is_some = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp eq i32 {}, 0\n", is_some, tag
+                ));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = select i1 {}, %Enum_Option__i64 {}, %Enum_Option__i64 {}\n",
+                    dest, is_some, a, b
+                ));
+                return dest;
+            }
             // Closure #377: option_map(o, f). Branch on tag —
             // some-path calls f on payload + insertvalue tag=0
             // + payload; none-path passes the original through.
