@@ -15887,6 +15887,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_step_smoothstep_typecheck_and_compile() {
+        // Closure #430: f64_step / f64_smoothstep.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_step(0.5, 0.3);
+              let b: f64 = f64_smoothstep(0.0, 1.0, 0.5);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("step/smoothstep must type-check");
+        compile_to_llvm(source).expect("step/smoothstep must compile to LLVM");
+    }
+
+    #[test]
     fn f64_sigmoid_softsign_typecheck_and_compile() {
         // Closure #429: f64_sigmoid / f64_softsign.
         let source = r#"

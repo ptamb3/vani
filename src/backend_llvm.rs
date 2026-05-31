@@ -7204,6 +7204,60 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #430: GLSL-style step functions.
+            //   step(edge, x) = x < edge ? 0 : 1
+            if name == "f64_step" {
+                let edge = emit_expr(&args[0], ctx, out);
+                let x = emit_expr(&args[1], ctx, out);
+                let cmp = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fcmp olt double {}, {}\n", cmp, x, edge
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 0.0, double 1.0\n", dest, cmp
+                ));
+                return dest;
+            }
+            //   smoothstep(edge0, edge1, x) = t*t*(3 - 2*t),
+            //   t = clamp((x - edge0)/(edge1 - edge0), 0, 1)
+            if name == "f64_smoothstep" {
+                let e0 = emit_expr(&args[0], ctx, out);
+                let e1 = emit_expr(&args[1], ctx, out);
+                let x = emit_expr(&args[2], ctx, out);
+                let dx = ctx.fresh_tmp();
+                let de = ctx.fresh_tmp();
+                let raw = ctx.fresh_tmp();
+                // clamp t to [0, 1]
+                let lt0 = ctx.fresh_tmp();
+                let t1 = ctx.fresh_tmp();
+                let gt1 = ctx.fresh_tmp();
+                let t = ctx.fresh_tmp();
+                let t_sq = ctx.fresh_tmp();
+                let two_t = ctx.fresh_tmp();
+                let three_minus_2t = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = fsub double {}, {}\n", dx, x, e0));
+                out.push_str(&format!("  {} = fsub double {}, {}\n", de, e1, e0));
+                out.push_str(&format!("  {} = fdiv double {}, {}\n", raw, dx, de));
+                out.push_str(&format!("  {} = fcmp olt double {}, 0.0\n", lt0, raw));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 0.0, double {}\n", t1, lt0, raw
+                ));
+                out.push_str(&format!("  {} = fcmp ogt double {}, 1.0\n", gt1, t1));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 1.0, double {}\n", t, gt1, t1
+                ));
+                out.push_str(&format!("  {} = fmul double {}, {}\n", t_sq, t, t));
+                out.push_str(&format!("  {} = fmul double 2.0, {}\n", two_t, t));
+                out.push_str(&format!(
+                    "  {} = fsub double 3.0, {}\n", three_minus_2t, two_t
+                ));
+                out.push_str(&format!(
+                    "  {} = fmul double {}, {}\n", dest, t_sq, three_minus_2t
+                ));
+                return dest;
+            }
             // Closure #426: byte access on Str (i8* in IR).
             if name == "str_byte_at" {
                 let s = emit_expr(&args[0], ctx, out);

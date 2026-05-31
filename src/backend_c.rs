@@ -10860,6 +10860,21 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ double __ssx = ({}); __ssx / (1.0 + fabs(__ssx)); }})",
             emit_expr(&args[0])
         ),
+        // Closure #430: GLSL-style step functions.
+        // step(edge, x) = x < edge ? 0 : 1
+        // smoothstep(edge0, edge1, x) = t*t*(3 - 2*t) where
+        //   t = clamp((x - edge0) / (edge1 - edge0), 0, 1)
+        "f64_step" => format!(
+            "((({}) < ({})) ? 0.0 : 1.0)",
+            emit_expr(&args[1]),
+            emit_expr(&args[0])
+        ),
+        "f64_smoothstep" => format!(
+            "({{ double __sse0 = ({}); double __sse1 = ({}); double __ssx2 = ({}); double __sst = (__ssx2 - __sse0) / (__sse1 - __sse0); if (__sst < 0.0) __sst = 0.0; else if (__sst > 1.0) __sst = 1.0; __sst * __sst * (3.0 - 2.0 * __sst); }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).
