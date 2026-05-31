@@ -15887,6 +15887,47 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn scalar_min_max_clamp_typecheck_and_compile() {
+        // Closure #411: i64_min / i64_max / i64_clamp +
+        // f64_min / f64_max / f64_clamp.
+        let source = r#"
+            fn main() -> i64 {
+              let i1: i64 = i64_min(5, 3);
+              let i2: i64 = i64_max(5, 3);
+              let c1: i64 = i64_clamp(5, 0, 10);
+              let f1: f64 = f64_min(1.5, 2.5);
+              let f2: f64 = f64_max(1.5, 2.5);
+              let fc1: f64 = f64_clamp(0.5, 0.0, 1.0);
+              return i1 + i2 + c1;
+            }
+        "#;
+        compile_to_c(source).expect("scalar min/max/clamp must type-check");
+        compile_to_llvm(source).expect("scalar min/max/clamp must compile to LLVM");
+    }
+
+    #[test]
+    fn scalar_f64_min_max_emit_llvm_intrinsics() {
+        let source = r#"
+            fn main() -> i64 {
+              let f1: f64 = f64_min(1.5, 2.5);
+              let f2: f64 = f64_max(1.5, 2.5);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("min/max LLVM");
+        assert!(
+            ll.contains("declare double @llvm.minnum.f64(double, double)")
+                && ll.contains("declare double @llvm.maxnum.f64(double, double)"),
+            "LLVM preamble must declare IEEE-754 min/max intrinsics"
+        );
+        assert!(
+            ll.contains("call double @llvm.minnum.f64(double")
+                && ll.contains("call double @llvm.maxnum.f64(double"),
+            "LLVM output must call both intrinsics"
+        );
+    }
+
+    #[test]
     fn i64_saturating_arith_typecheck_and_compile() {
         // Closure #410: i64_saturating_add / sub / mul.
         let source = r#"

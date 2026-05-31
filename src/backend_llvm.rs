@@ -508,6 +508,11 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare i64 @llvm.sadd.sat.i64(i64, i64)\n");
     out.push_str("declare i64 @llvm.ssub.sat.i64(i64, i64)\n");
     out.push_str("declare i64 @llvm.smul.fix.sat.i64(i64, i64, i32)\n");
+    // Closure #411: scalar min / max for f64 use the IEEE-754
+    // NaN-handling intrinsics. (i64 min / max are emitted
+    // inline via icmp + select — no intrinsic needed.)
+    out.push_str("declare double @llvm.minnum.f64(double, double)\n");
+    out.push_str("declare double @llvm.maxnum.f64(double, double)\n");
     // Closure #363: log family + exp + atan2 round out the libm
     // surface. Same `-lm` link covers them.
     out.push_str("declare double @log(double)\n");
@@ -7155,6 +7160,74 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!(
                     "  {} = call i64 @llvm.smul.fix.sat.i64(i64 {}, i64 {}, i32 0)\n",
                     dest, a, b
+                ));
+                return dest;
+            }
+            // Closure #411: scalar binary min / max / clamp.
+            // i64 versions: icmp + select (no intrinsic).
+            // f64 versions: @llvm.minnum.f64 / @llvm.maxnum.f64
+            // — the IEEE-754 "treat-NaN-as-missing" variants.
+            if name == "i64_min" || name == "i64_max" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let cmp = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                let pred = if name == "i64_min" { "slt" } else { "sgt" };
+                out.push_str(&format!(
+                    "  {} = icmp {} i64 {}, {}\n", cmp, pred, a, b
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 {}, i64 {}\n", dest, cmp, a, b
+                ));
+                return dest;
+            }
+            if name == "i64_clamp" {
+                let x = emit_expr(&args[0], ctx, out);
+                let lo = emit_expr(&args[1], ctx, out);
+                let hi = emit_expr(&args[2], ctx, out);
+                // step 1: lo_clamped = x < lo ? lo : x
+                let lt_lo = ctx.fresh_tmp();
+                let lo_step = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = icmp slt i64 {}, {}\n", lt_lo, x, lo));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 {}, i64 {}\n", lo_step, lt_lo, lo, x
+                ));
+                // step 2: dest = lo_step > hi ? hi : lo_step
+                let gt_hi = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = icmp sgt i64 {}, {}\n", gt_hi, lo_step, hi));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 {}, i64 {}\n", dest, gt_hi, hi, lo_step
+                ));
+                return dest;
+            }
+            if name == "f64_min" || name == "f64_max" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                let intrinsic = if name == "f64_min" { "minnum" } else { "maxnum" };
+                out.push_str(&format!(
+                    "  {} = call double @llvm.{}.f64(double {}, double {})\n",
+                    dest, intrinsic, a, b
+                ));
+                return dest;
+            }
+            if name == "f64_clamp" {
+                let x = emit_expr(&args[0], ctx, out);
+                let lo = emit_expr(&args[1], ctx, out);
+                let hi = emit_expr(&args[2], ctx, out);
+                // step 1: x < lo ? lo : x  (use fcmp olt → C ternary)
+                let lt_lo = ctx.fresh_tmp();
+                let lo_step = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = fcmp olt double {}, {}\n", lt_lo, x, lo));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double {}, double {}\n", lo_step, lt_lo, lo, x
+                ));
+                let gt_hi = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = fcmp ogt double {}, {}\n", gt_hi, lo_step, hi));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double {}, double {}\n", dest, gt_hi, hi, lo_step
                 ));
                 return dest;
             }

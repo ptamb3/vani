@@ -10663,6 +10663,35 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[1])
             )
         }
+        // Closure #411: scalar binary min / max / clamp.
+        // i64 versions use plain C ternary on signed compare.
+        // f64 versions emit `fmin` / `fmax` from <math.h> so
+        // NaN-handling matches the IEEE-754 semantics LLVM's
+        // minnum / maxnum intrinsics also use.
+        "i64_min" => format!(
+            "({{ int64_t __ma = ({}); int64_t __mb = ({}); __ma < __mb ? __ma : __mb; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "i64_max" => format!(
+            "({{ int64_t __ma = ({}); int64_t __mb = ({}); __ma > __mb ? __ma : __mb; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "i64_clamp" => format!(
+            "({{ int64_t __cx = ({}); int64_t __clo = ({}); int64_t __chi = ({}); __cx < __clo ? __clo : (__cx > __chi ? __chi : __cx); }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
+        "f64_min" => format!("fmin(({}), ({}))", emit_expr(&args[0]), emit_expr(&args[1])),
+        "f64_max" => format!("fmax(({}), ({}))", emit_expr(&args[0]), emit_expr(&args[1])),
+        "f64_clamp" => format!(
+            "({{ double __cx = ({}); double __clo = ({}); double __chi = ({}); __cx < __clo ? __clo : (__cx > __chi ? __chi : __cx); }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.
