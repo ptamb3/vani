@@ -384,6 +384,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "vec_iota"
                 || name == "vec_first" || name == "vec_last"
                 || name == "vec_running_sum"
+                || name == "vec_dot"
                 || name == "option_unwrap_or"
                 || name == "option_is_some" || name == "option_is_none"
                 || name == "option_map"

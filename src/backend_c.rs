@@ -2481,6 +2481,7 @@ pub(crate) fn program_uses_graph_vec_builtin(program: &TypedProgram) -> bool {
                     || name == "vec_first"
                     || name == "vec_last"
                     || name == "vec_running_sum"
+                    || name == "vec_dot"
                     || name == "str_chars"
                 {
                     return true;
@@ -4689,6 +4690,16 @@ pub(crate) fn emit_intent_vec_int64_utility_helpers_c(out: &mut String) {
          \x20 v.len = total;\n\
          \x20 v.capacity = total;\n\
          \x20 return v;\n\
+         }\n\
+         /* Closure #399: vec_dot(ref xs, ref ys) -> i64.\n\
+          * Dot product (sum of xs[i] * ys[i]); truncates to the\n\
+          * shorter Vec. */\n\
+         static INTENT_UNUSED int64_t intent_vec_int64_t_dot(const intent_vec_int64_t* xs, const intent_vec_int64_t* ys) INTENT_UNUSED;\n\
+         static INTENT_UNUSED int64_t intent_vec_int64_t_dot(const intent_vec_int64_t* xs, const intent_vec_int64_t* ys) {\n\
+         \x20 uint64_t n = xs->len < ys->len ? xs->len : ys->len;\n\
+         \x20 int64_t acc = 0;\n\
+         \x20 for (uint64_t i = 0; i < n; i++) acc = acc + xs->data[i] * ys->data[i];\n\
+         \x20 return acc;\n\
          }\n\
          /* Closure #398: vec_running_sum(ref xs) -> Vec<i64>.\n\
           * Cumulative sum: result[i] = sum(xs[0..=i]). */\n\
@@ -9436,6 +9447,12 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         "vec_running_sum" => format!(
             "intent_vec_int64_t_running_sum({})",
             emit_expr(&args[0])
+        ),
+        // Closure #399: vec_dot(ref xs, ref ys) -> i64.
+        "vec_dot" => format!(
+            "intent_vec_int64_t_dot({}, {})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
         ),
         // Closure #385: vec_first / vec_last(ref xs) -> Option<i64>.
         "vec_first" => format!(

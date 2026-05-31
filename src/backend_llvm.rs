@@ -5364,6 +5364,17 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #399: vec_dot(ref xs, ref ys) -> i64.
+            if name == "vec_dot" {
+                let xs = emit_expr(&args[0], ctx, out);
+                let ys = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_vec_int64_t_dot(%intent_vec_i64* {}, %intent_vec_i64* {})\n",
+                    dest, xs, ys
+                ));
+                return dest;
+            }
             // Closure #385: vec_first / vec_last -> Option<i64>.
             if name == "vec_first" || name == "vec_last" {
                 let xs = emit_expr(&args[0], ctx, out);
@@ -9733,6 +9744,45 @@ pub(crate) fn emit_intent_vec_int64_utility_definitions(out: &mut String) {
             out.push_str("}\n\n");
         }
     }
+
+    // ---- Closure #399: vec_dot(ref xs, ref ys) -> i64.
+    // Pairwise multiply + accumulate; truncates to shorter.
+    out.push_str("define i64 @intent_vec_int64_t_dot(%intent_vec_i64* %xs, %intent_vec_i64* %ys) {\n");
+    out.push_str("  %vdt_xdp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 0\n");
+    out.push_str("  %vdt_xlp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 1\n");
+    out.push_str("  %vdt_ydp = getelementptr %intent_vec_i64, %intent_vec_i64* %ys, i32 0, i32 0\n");
+    out.push_str("  %vdt_ylp = getelementptr %intent_vec_i64, %intent_vec_i64* %ys, i32 0, i32 1\n");
+    out.push_str("  %vdt_xsrc = load i64*, i64** %vdt_xdp\n");
+    out.push_str("  %vdt_ysrc = load i64*, i64** %vdt_ydp\n");
+    out.push_str("  %vdt_xlen = load i64, i64* %vdt_xlp\n");
+    out.push_str("  %vdt_ylen = load i64, i64* %vdt_ylp\n");
+    out.push_str("  %vdt_x_lt = icmp ult i64 %vdt_xlen, %vdt_ylen\n");
+    out.push_str("  %vdt_n = select i1 %vdt_x_lt, i64 %vdt_xlen, i64 %vdt_ylen\n");
+    out.push_str("  %vdt_i_p = alloca i64\n");
+    out.push_str("  %vdt_acc_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %vdt_i_p\n");
+    out.push_str("  store i64 0, i64* %vdt_acc_p\n");
+    out.push_str("  br label %vdt_head\n");
+    out.push_str("vdt_head:\n");
+    out.push_str("  %vdt_i = load i64, i64* %vdt_i_p\n");
+    out.push_str("  %vdt_done = icmp uge i64 %vdt_i, %vdt_n\n");
+    out.push_str("  br i1 %vdt_done, label %vdt_fin, label %vdt_body\n");
+    out.push_str("vdt_body:\n");
+    out.push_str("  %vdt_xslot = getelementptr i64, i64* %vdt_xsrc, i64 %vdt_i\n");
+    out.push_str("  %vdt_yslot = getelementptr i64, i64* %vdt_ysrc, i64 %vdt_i\n");
+    out.push_str("  %vdt_xv = load i64, i64* %vdt_xslot\n");
+    out.push_str("  %vdt_yv = load i64, i64* %vdt_yslot\n");
+    out.push_str("  %vdt_prod = mul i64 %vdt_xv, %vdt_yv\n");
+    out.push_str("  %vdt_acc_cur = load i64, i64* %vdt_acc_p\n");
+    out.push_str("  %vdt_acc_new = add i64 %vdt_acc_cur, %vdt_prod\n");
+    out.push_str("  store i64 %vdt_acc_new, i64* %vdt_acc_p\n");
+    out.push_str("  %vdt_i_next = add i64 %vdt_i, 1\n");
+    out.push_str("  store i64 %vdt_i_next, i64* %vdt_i_p\n");
+    out.push_str("  br label %vdt_head\n");
+    out.push_str("vdt_fin:\n");
+    out.push_str("  %vdt_r = load i64, i64* %vdt_acc_p\n");
+    out.push_str("  ret i64 %vdt_r\n");
+    out.push_str("}\n\n");
 
     // ---- Closure #398: vec_running_sum(ref xs) -> Vec<i64>.
     // Cumulative sum with a running accumulator alloca.

@@ -16109,6 +16109,22 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_dot_typecheck_and_compile() {
+        // Closure #399: vec_dot(ref xs, ref ys) -> i64.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              let ys: Vec<i64> = vec(10, 20, 30);
+              let d: i64 = vec_dot(ref xs, ref ys);
+              let d2: i64 = xs.dot(ref ys);
+              return d + d2;
+            }
+        "#;
+        compile_to_c(source).expect("vec_dot must type-check");
+        compile_to_llvm(source).expect("vec_dot must compile to LLVM");
+    }
+
+    #[test]
     fn vec_running_sum_typecheck_and_compile() {
         // Closure #398: vec_running_sum(ref xs) -> Vec<i64>.
         let source = r#"
