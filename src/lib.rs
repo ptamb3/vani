@@ -15887,6 +15887,40 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_trig_geometry_typecheck_and_compile() {
+        // Closure #413: f64_hypot / f64_to_radians / f64_to_degrees.
+        let source = r#"
+            fn main() -> i64 {
+              let h: f64 = f64_hypot(3.0, 4.0);
+              let r: f64 = f64_to_radians(180.0);
+              let d: f64 = f64_to_degrees(f64_pi());
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("hypot/rad/deg must type-check");
+        compile_to_llvm(source).expect("hypot/rad/deg must compile to LLVM");
+    }
+
+    #[test]
+    fn f64_hypot_emits_libm_declaration_and_call() {
+        let source = r#"
+            fn main() -> i64 {
+              let h: f64 = f64_hypot(3.0, 4.0);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("hypot LLVM");
+        assert!(
+            ll.contains("declare double @hypot(double, double)"),
+            "LLVM preamble must declare @hypot"
+        );
+        assert!(
+            ll.contains("call double @hypot(double"),
+            "LLVM output must call @hypot"
+        );
+    }
+
+    #[test]
     fn i64_isqrt_typecheck_and_compile() {
         // Closure #412: i64_isqrt — integer square root.
         let source = r#"

@@ -520,6 +520,8 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare double @log10(double)\n");
     out.push_str("declare double @exp(double)\n");
     out.push_str("declare double @atan2(double, double)\n");
+    // Closure #413: hypot (overflow-safe sqrt(a^2+b^2)) from libm.
+    out.push_str("declare double @hypot(double, double)\n");
     // Threading primitives: POSIX on Linux/macOS, Win32 on
     // Windows. `intentc` picks the host's flavor at codegen
     // time via `host_uses_win32_threading()`. Cross-
@@ -7066,6 +7068,35 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!(
                     "  {} = call i64 @intent_i64_isqrt(i64 {})\n",
                     dest, n
+                ));
+                return dest;
+            }
+            // Closure #413: trig / geometry helpers.
+            if name == "f64_hypot" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @hypot(double {}, double {})\n",
+                    dest, a, b
+                ));
+                return dest;
+            }
+            if name == "f64_to_radians" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fmul double {}, 0x3F91DF46A2529D39\n",
+                    dest, x
+                ));
+                return dest;
+            }
+            if name == "f64_to_degrees" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fmul double {}, 0x404CA5DC1A63C1F8\n",
+                    dest, x
                 ));
                 return dest;
             }

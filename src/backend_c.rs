@@ -10702,6 +10702,24 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __n = ({}); int64_t __ir; if (__n < 0) __ir = 0; else if (__n < 2) __ir = __n; else {{ int64_t __ix = __n; int64_t __iy = (__ix + __n / __ix) / 2; while (__iy < __ix) {{ __ix = __iy; __iy = (__ix + __n / __ix) / 2; }} __ir = __ix; }} __ir; }})",
             emit_expr(&args[0])
         ),
+        // Closure #413: trig / geometry helpers.
+        // f64_hypot uses libm `hypot()` — the overflow-safe form
+        // of sqrt(a*a + b*b). Angle-conversion ops use plain
+        // multiply with the inverse constant. π/180 and 180/π
+        // are written as full-precision doubles.
+        "f64_hypot" => format!(
+            "hypot(({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "f64_to_radians" => format!(
+            "(({}) * 0.017453292519943295)",
+            emit_expr(&args[0])
+        ),
+        "f64_to_degrees" => format!(
+            "(({}) * 57.29577951308232)",
+            emit_expr(&args[0])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.
