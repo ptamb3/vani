@@ -9271,6 +9271,23 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 _ => unreachable!("vec_position() arg 0 must be ref Vec<i64>"),
             }
         }
+        // Closure #387: vec_swap(mut ref xs, i, j) -> i64.
+        "vec_swap" => {
+            format!(
+                "({{ intent_vec_int64_t* __vs_xs = ({xs}); int64_t __vs_i = ({i}); int64_t __vs_j = ({j}); int64_t __vs_t = __vs_xs->data[__vs_i]; __vs_xs->data[__vs_i] = __vs_xs->data[__vs_j]; __vs_xs->data[__vs_j] = __vs_t; (int64_t)0; }})",
+                xs = emit_expr(&args[0]),
+                i = emit_expr(&args[1]),
+                j = emit_expr(&args[2]),
+            )
+        }
+        // Closure #388: vec_remove_at(mut ref xs, i) -> i64.
+        "vec_remove_at" => {
+            format!(
+                "({{ intent_vec_int64_t* __vra_xs = ({xs}); int64_t __vra_i = ({i}); int64_t __vra_r = __vra_xs->data[__vra_i]; for (uint64_t __k = (uint64_t)__vra_i; __k + 1 < __vra_xs->len; __k++) {{ __vra_xs->data[__k] = __vra_xs->data[__k + 1]; }} __vra_xs->len--; __vra_r; }})",
+                xs = emit_expr(&args[0]),
+                i = emit_expr(&args[1]),
+            )
+        }
         // Closure #386: vec_count_if(ref xs, pred) -> i64.
         "vec_count_if" => {
             match args[0].ty.deref() {

@@ -15951,6 +15951,49 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_swap_typecheck_and_compile() {
+        // Closure #387: vec_swap(mut ref xs, i, j) -> i64.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20, 30);
+              vec_swap(mut ref xs, 0, 2);
+              xs.swap(0, 1);
+              return xs[0];
+            }
+        "#;
+        compile_to_c(source).expect("vec_swap must type-check");
+        compile_to_llvm(source).expect("vec_swap must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_remove_at_typecheck_and_compile() {
+        // Closure #388: vec_remove_at(mut ref xs, i) -> i64.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 4);
+              let r: i64 = vec_remove_at(mut ref xs, 1);
+              let r2: i64 = xs.remove_at(0);
+              return r + r2;
+            }
+        "#;
+        compile_to_c(source).expect("vec_remove_at must type-check");
+        compile_to_llvm(source).expect("vec_remove_at must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_swap_rejects_by_value() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3);
+              vec_swap(xs, 0, 1);
+              return 0;
+            }
+        "#;
+        assert!(compile_to_c(source).is_err(),
+            "vec_swap must require mut ref");
+    }
+
+    #[test]
     fn vec_count_if_typecheck_and_compile() {
         // Closure #386: vec_count_if(ref xs, pred) -> i64.
         let source = r#"
