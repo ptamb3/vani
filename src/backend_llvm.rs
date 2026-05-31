@@ -5262,6 +5262,88 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return removed;
             }
+            // Closure #396: vec_replace_all(mut ref xs, old, new)
+            // -> i64. Walks xs once, swapping every old → new
+            // and counting replacements.
+            if name == "vec_replace_all" {
+                let xs = emit_expr(&args[0], ctx, out);
+                let old_v = emit_expr(&args[1], ctx, out);
+                let new_v = emit_expr(&args[2], ctx, out);
+                let dp = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr %intent_vec_i64, %intent_vec_i64* {}, i32 0, i32 0\n",
+                    dp, xs
+                ));
+                let lp = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr %intent_vec_i64, %intent_vec_i64* {}, i32 0, i32 1\n",
+                    lp, xs
+                ));
+                let data = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load i64*, i64** {}\n", data, dp
+                ));
+                let len = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load i64, i64* {}\n", len, lp
+                ));
+                let i_p = ctx.fresh_tmp();
+                let n_p = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = alloca i64\n", i_p));
+                out.push_str(&format!("  {} = alloca i64\n", n_p));
+                out.push_str(&format!("  store i64 0, i64* {}\n", i_p));
+                out.push_str(&format!("  store i64 0, i64* {}\n", n_p));
+                let head = ctx.fresh_label("vrpa_head");
+                let body = ctx.fresh_label("vrpa_body");
+                let swap_lbl = ctx.fresh_label("vrpa_swap");
+                let advance = ctx.fresh_label("vrpa_adv");
+                let fin = ctx.fresh_label("vrpa_fin");
+                out.push_str(&format!("  br label %{}\n", head));
+                out.push_str(&format!("{}:\n", head));
+                let i = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = load i64, i64* {}\n", i, i_p));
+                let done = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp uge i64 {}, {}\n", done, i, len
+                ));
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n", done, fin, body
+                ));
+                out.push_str(&format!("{}:\n", body));
+                let slot = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = getelementptr i64, i64* {}, i64 {}\n", slot, data, i
+                ));
+                let cur = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = load i64, i64* {}\n", cur, slot
+                ));
+                let matches = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp eq i64 {}, {}\n", matches, cur, old_v
+                ));
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    matches, swap_lbl, advance
+                ));
+                out.push_str(&format!("{}:\n", swap_lbl));
+                out.push_str(&format!("  store i64 {}, i64* {}\n", new_v, slot));
+                let n_cur = ctx.fresh_tmp();
+                let n_new = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = load i64, i64* {}\n", n_cur, n_p));
+                out.push_str(&format!("  {} = add i64 {}, 1\n", n_new, n_cur));
+                out.push_str(&format!("  store i64 {}, i64* {}\n", n_new, n_p));
+                out.push_str(&format!("  br label %{}\n", advance));
+                out.push_str(&format!("{}:\n", advance));
+                let i_next = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = add i64 {}, 1\n", i_next, i));
+                out.push_str(&format!("  store i64 {}, i64* {}\n", i_next, i_p));
+                out.push_str(&format!("  br label %{}\n", head));
+                out.push_str(&format!("{}:\n", fin));
+                let result = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = load i64, i64* {}\n", result, n_p));
+                return result;
+            }
             // Closure #382: vec_iota(n) -> Vec<i64>.
             if name == "vec_iota" {
                 let n = emit_expr(&args[0], ctx, out);

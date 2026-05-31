@@ -7,7 +7,7 @@ use crate::span::Span;
 use std::collections::{BTreeMap, HashMap};
 
 const BUILTIN_FUNCTION_NAMES: &[&str] =
-    &["vec", "push", "pop", "set", "sort", "sort_by", "sort_desc", "vec_swap", "vec_remove_at", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "str_trim", "str_replace", "str_split", "parse_int", "parse_float", "i64_to_str", "f64_to_str", "bool_to_str", "str_index_of", "substring", "str_repeat", "str_to_upper", "str_to_lower", "parse_bool", "str_join", "str_pad_left", "str_pad_right", "str_lines", "str_chars", "str_reverse", "str_strip_prefix", "str_strip_suffix", "str_count_char", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "log", "log2", "log10", "exp", "atan2", "f64_is_nan", "f64_is_inf", "f64_is_finite", "f64_pi", "f64_e", "f64_inf", "f64_nan", "f64_round", "f64_trunc_to_i64", "i64_gcd", "i64_lcm", "i64_pow", "i64_abs_diff", "i64_signum", "f64_signum", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_f64", "hash_str", "hash_combine", "siphash_i64", "siphash_str", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "deque_clear", "hashset_new", "hashset_insert", "hashset_contains", "hashset_remove", "hashset_len", "hashset_clear", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_remove", "hashmap_len", "hashmap_clear", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreeset_range", "btreeset_min", "btreeset_max", "btreeset_clear", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "btreemap_range_keys", "btreemap_range_values", "btreemap_min_key", "btreemap_max_key", "btreemap_clear", "vec_map", "vec_fold", "vec_filter", "vec_position", "vec_count_if", "vec_max_by", "vec_min_by", "vec_take", "vec_drop", "vec_take_while", "vec_drop_while", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "vec_range", "vec_repeat", "vec_extend", "vec_concat", "vec_reverse_copy", "vec_unique", "vec_iota", "vec_first", "vec_last", "option_unwrap_or", "option_is_some", "option_is_none", "option_map", "option_filter", "option_or", "option_and_then", "option_unwrap_or_f64", "option_is_some_f64", "option_is_none_f64", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "union_find_clear", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "binary_heap_clear", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bloom_filter_clear", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "bst_clear", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "graph_has_cycle", "graph_mst_kruskal", "graph_mst_prim", "graph_astar", "graph_topo_sort", "graph_clear", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_delete", "trie_len", "trie_node_count", "trie_clear", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_remove", "skiplist_len", "skiplist_min", "skiplist_max", "skiplist_clear", "clone", "clone_at"];
+    &["vec", "push", "pop", "set", "sort", "sort_by", "sort_desc", "vec_swap", "vec_remove_at", "vec_replace_all", "reverse", "dedup", "find", "contains", "binary_search", "swap_remove", "insert", "clear", "str_contains", "str_starts_with", "str_ends_with", "str_trim", "str_replace", "str_split", "parse_int", "parse_float", "i64_to_str", "f64_to_str", "bool_to_str", "str_index_of", "substring", "str_repeat", "str_to_upper", "str_to_lower", "parse_bool", "str_join", "str_pad_left", "str_pad_right", "str_lines", "str_chars", "str_reverse", "str_strip_prefix", "str_strip_suffix", "str_count_char", "pow", "sqrt", "sin", "cos", "tan", "floor", "ceil", "abs", "log", "log2", "log10", "exp", "atan2", "f64_is_nan", "f64_is_inf", "f64_is_finite", "f64_pi", "f64_e", "f64_inf", "f64_nan", "f64_round", "f64_trunc_to_i64", "i64_gcd", "i64_lcm", "i64_pow", "i64_abs_diff", "i64_signum", "f64_signum", "seed_rng", "rand_i64", "rand_in_range", "hash_i64", "hash_f64", "hash_str", "hash_combine", "siphash_i64", "siphash_str", "heap_push", "heap_pop", "heap_peek", "heapify", "deque_new", "deque_push_back", "deque_push_front", "deque_pop_back", "deque_pop_front", "deque_peek_back", "deque_peek_front", "deque_len", "deque_clear", "hashset_new", "hashset_insert", "hashset_contains", "hashset_remove", "hashset_len", "hashset_clear", "hashmap_new", "hashmap_insert", "hashmap_get", "hashmap_contains_key", "hashmap_remove", "hashmap_len", "hashmap_clear", "btreeset_new", "btreeset_insert", "btreeset_contains", "btreeset_remove", "btreeset_len", "btreeset_range", "btreeset_min", "btreeset_max", "btreeset_clear", "btreemap_new", "btreemap_insert", "btreemap_get", "btreemap_contains_key", "btreemap_remove", "btreemap_len", "btreemap_range_keys", "btreemap_range_values", "btreemap_min_key", "btreemap_max_key", "btreemap_clear", "vec_map", "vec_fold", "vec_filter", "vec_position", "vec_count_if", "vec_max_by", "vec_min_by", "vec_take", "vec_drop", "vec_take_while", "vec_drop_while", "vec_map_fold", "vec_filter_fold", "vec_map_filter", "vec_map_filter_fold", "vec_sum", "vec_product", "vec_min", "vec_max", "vec_count", "vec_any", "vec_all", "vec_chain", "vec_range", "vec_repeat", "vec_extend", "vec_concat", "vec_reverse_copy", "vec_unique", "vec_iota", "vec_first", "vec_last", "option_unwrap_or", "option_is_some", "option_is_none", "option_map", "option_filter", "option_or", "option_and_then", "option_unwrap_or_f64", "option_is_some_f64", "option_is_none_f64", "union_find_new", "union_find_union", "union_find_find", "union_find_connected", "union_find_count", "union_find_clear", "binary_heap_new", "binary_heap_push", "binary_heap_pop", "binary_heap_peek", "binary_heap_len", "binary_heap_clear", "bloom_filter_new", "bloom_filter_insert", "bloom_filter_contains", "bloom_filter_len", "bloom_filter_count", "bloom_filter_clear", "bst_new", "bst_insert", "bst_contains", "bst_remove", "bst_len", "bst_min", "bst_max", "bst_clear", "graph_new", "graph_add_edge", "graph_num_nodes", "graph_num_edges", "graph_bfs_reach", "graph_dfs_reach", "graph_dijkstra", "graph_has_cycle", "graph_mst_kruskal", "graph_mst_prim", "graph_astar", "graph_topo_sort", "graph_clear", "trie_new", "trie_insert", "trie_contains", "trie_starts_with", "trie_delete", "trie_len", "trie_node_count", "trie_clear", "skiplist_new", "skiplist_insert", "skiplist_contains", "skiplist_remove", "skiplist_len", "skiplist_min", "skiplist_max", "skiplist_clear", "clone", "clone_at"];
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -10642,6 +10642,7 @@ fn check_expr(
                             // Closures #387, #388:
                             "swap" => ("vec_swap", true),
                             "remove_at" => ("vec_remove_at", true),
+                            "replace_all" => ("vec_replace_all", true),
                             _ => ("", false),
                         };
                     if !builtin_name.is_empty() {
@@ -14059,6 +14060,9 @@ fn check_call(
         "vec_remove_at" => {
             return check_vec_remove_at_builtin(args, env, signatures, span, diagnostics);
         }
+        "vec_replace_all" => {
+            return check_vec_replace_all_builtin(args, env, signatures, span, diagnostics);
+        }
         "vec_map" | "vec_fold" | "vec_filter" => {
             return check_vec_map_fold_builtin(
                 name, args, env, signatures, span, diagnostics,
@@ -16325,6 +16329,59 @@ fn check_vec_map_fold_builtin(
             args: typed_args,
         },
         ret_ty(),
+        None,
+        span,
+    )
+}
+
+/// Closure #396: `vec_replace_all(mut ref xs, old, new) -> i64`.
+/// Replaces every occurrence of `old` in `xs` with `new`,
+/// returning the number of replacements made.
+fn check_vec_replace_all_builtin(
+    args: &[Expr],
+    env: &mut Env,
+    signatures: &HashMap<String, Signature>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedExpr {
+    if args.len() != 3 {
+        diagnostics.push(Diagnostic::new(
+            span,
+            format!("vec_replace_all() expects 3 arguments, got {}", args.len()),
+        ));
+        return CheckedExpr::fallback(Type::I64, span);
+    }
+    let xs = check_expr(&args[0], env, signatures, diagnostics);
+    let ok = matches!(
+        xs.ty(),
+        Type::RefMut(inner) if matches!(&**inner, Type::Vec(el) if matches!(**el, Type::I64))
+    );
+    if !ok {
+        diagnostics.push(Diagnostic::new(
+            args[0].span,
+            format!(
+                "vec_replace_all() arg 0 must be `mut ref Vec<i64>`, got {}",
+                xs.ty()
+            ),
+        ));
+    }
+    let old_raw = check_expr(&args[1], env, signatures, diagnostics);
+    let old = coerce_checked(
+        old_raw, &Type::I64, args[1].span,
+        "vec_replace_all `old` argument", diagnostics,
+    );
+    let new_raw = check_expr(&args[2], env, signatures, diagnostics);
+    let new = coerce_checked(
+        new_raw, &Type::I64, args[2].span,
+        "vec_replace_all `new` argument", diagnostics,
+    );
+    CheckedExpr::new(
+        TypedExprKind::Call {
+            name: "vec_replace_all".to_string(),
+            name_span: span,
+            args: vec![xs.expr, old.expr, new.expr],
+        },
+        Type::I64,
         None,
         span,
     )

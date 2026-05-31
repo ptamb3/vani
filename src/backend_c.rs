@@ -9468,6 +9468,17 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 i = emit_expr(&args[1]),
             )
         }
+        // Closure #396: vec_replace_all(mut ref xs, old, new) -> i64.
+        // Walks xs once, swapping every occurrence of old with
+        // new. Returns the count of replacements.
+        "vec_replace_all" => {
+            format!(
+                "({{ intent_vec_int64_t* __vrp_xs = ({xs}); int64_t __vrp_old = ({old}); int64_t __vrp_new = ({new}); int64_t __vrp_n = 0; for (uint64_t __vrp_i = 0; __vrp_i < __vrp_xs->len; __vrp_i++) {{ if (__vrp_xs->data[__vrp_i] == __vrp_old) {{ __vrp_xs->data[__vrp_i] = __vrp_new; __vrp_n++; }} }} __vrp_n; }})",
+                xs = emit_expr(&args[0]),
+                old = emit_expr(&args[1]),
+                new = emit_expr(&args[2]),
+            )
+        }
         // Closure #386: vec_count_if(ref xs, pred) -> i64.
         "vec_count_if" => {
             match args[0].ty.deref() {

@@ -16051,6 +16051,21 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_replace_all_typecheck_and_compile() {
+        // Closure #396: vec_replace_all(mut ref xs, old, new) -> i64.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 2, 1);
+              let n: i64 = vec_replace_all(mut ref xs, 2, 99);
+              let m: i64 = xs.replace_all(99, 0);
+              return n + m;
+            }
+        "#;
+        compile_to_c(source).expect("vec_replace_all must type-check");
+        compile_to_llvm(source).expect("vec_replace_all must compile to LLVM");
+    }
+
+    #[test]
     fn vec_swap_typecheck_and_compile() {
         // Closure #387: vec_swap(mut ref xs, i, j) -> i64.
         let source = r#"

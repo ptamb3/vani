@@ -305,6 +305,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
             if name == "push_mut" || name == "pop"
                 || name == "sort" || name == "sort_by" || name == "sort_desc"
                 || name == "vec_swap" || name == "vec_remove_at"
+                || name == "vec_replace_all"
                 || name == "reverse" || name == "dedup"
                 || name == "find" || name == "contains"
                 || name == "binary_search"
