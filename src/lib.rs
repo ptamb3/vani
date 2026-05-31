@@ -15951,6 +15951,35 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_first_last_typecheck_and_compile() {
+        // Closure #385: vec_first / vec_last(ref xs) -> Option<i64>.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20, 30);
+              let f: Option<i64> = vec_first(ref xs);
+              let l: Option<i64> = vec_last(ref xs);
+              return f.unwrap_or(0) + l.unwrap_or(0);
+            }
+        "#;
+        compile_to_c(source).expect("vec_first/last must type-check");
+        compile_to_llvm(source).expect("vec_first/last must compile to LLVM");
+    }
+
+    #[test]
+    fn vec_first_last_method_sugar() {
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20);
+              let f: Option<i64> = xs.first();
+              let l: Option<i64> = xs.last();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("xs.first/last must type-check");
+        compile_to_llvm(source).expect("xs.first/last must compile to LLVM");
+    }
+
+    #[test]
     fn option_filter_typecheck_and_compile() {
         // Closure #384: o.filter(pred) keeps Some(v) iff pred(v).
         let source = r#"

@@ -5072,6 +5072,21 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #385: vec_first / vec_last -> Option<i64>.
+            if name == "vec_first" || name == "vec_last" {
+                let xs = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                let helper = if name == "vec_first" {
+                    "intent_vec_int64_t_first"
+                } else {
+                    "intent_vec_int64_t_last"
+                };
+                out.push_str(&format!(
+                    "  {} = call %Enum_Option__i64 @{}(%intent_vec_i64* {})\n",
+                    dest, helper, xs
+                ));
+                return dest;
+            }
             // Closure #371: vec_reverse_copy / vec_unique.
             if name == "vec_reverse_copy" || name == "vec_unique" {
                 let xs = emit_expr(&args[0], ctx, out);
@@ -9202,6 +9217,81 @@ pub(crate) fn emit_intent_vec_int64_utility_definitions(out: &mut String) {
     out.push_str("  %vc_r2 = insertvalue %intent_vec_i64 %vc_r1, i64 %vc_total, 2\n");
     out.push_str("  ret %intent_vec_i64 %vc_r2\n");
     out.push_str("}\n\n");
+
+    // ---- Closure #385: vec_first / vec_last(ref xs) -> Option<i64>.
+    // Both gated on Option<i64> being in the payload registry,
+    // since the helper return-types reference %Enum_Option__i64.
+    let has_option_i64 = LLVM_ENUM_PAYLOAD_REGISTRY
+        .with(|r| r.borrow().contains_key("Option__i64"));
+    if has_option_i64 {
+        for (fn_name, prefix, get_index) in &[
+            ("intent_vec_int64_t_first", "vf", "first"),
+            ("intent_vec_int64_t_last",  "vl", "last"),
+        ] {
+            let p = prefix;
+            out.push_str(&format!(
+                "define %Enum_Option__i64 @{fn_name}(%intent_vec_i64* %xs_p) {{\n",
+                fn_name = fn_name
+            ));
+            out.push_str(&format!(
+                "  %{p}_lp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs_p, i32 0, i32 1\n",
+                p = p
+            ));
+            out.push_str(&format!(
+                "  %{p}_len = load i64, i64* %{p}_lp\n", p = p
+            ));
+            out.push_str(&format!(
+                "  %{p}_empty = icmp eq i64 %{p}_len, 0\n", p = p
+            ));
+            out.push_str(&format!(
+                "  br i1 %{p}_empty, label %{p}_none, label %{p}_some\n", p = p
+            ));
+            out.push_str(&format!("{p}_some:\n", p = p));
+            out.push_str(&format!(
+                "  %{p}_dp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs_p, i32 0, i32 0\n",
+                p = p
+            ));
+            out.push_str(&format!(
+                "  %{p}_data = load i64*, i64** %{p}_dp\n", p = p
+            ));
+            // idx = first ? 0 : (len - 1)
+            let idx_expr = if *get_index == "first" {
+                format!("i64 0")
+            } else {
+                out.push_str(&format!(
+                    "  %{p}_idx = sub i64 %{p}_len, 1\n", p = p
+                ));
+                format!("i64 %{p}_idx", p = p)
+            };
+            out.push_str(&format!(
+                "  %{p}_slot = getelementptr i64, i64* %{p}_data, {idx}\n",
+                p = p, idx = idx_expr
+            ));
+            out.push_str(&format!(
+                "  %{p}_val = load i64, i64* %{p}_slot\n", p = p
+            ));
+            out.push_str(&format!(
+                "  %{p}_s0 = insertvalue %Enum_Option__i64 undef, i32 0, 0\n", p = p
+            ));
+            out.push_str(&format!(
+                "  %{p}_s1 = insertvalue %Enum_Option__i64 %{p}_s0, i64 %{p}_val, 1\n", p = p
+            ));
+            out.push_str(&format!(
+                "  ret %Enum_Option__i64 %{p}_s1\n", p = p
+            ));
+            out.push_str(&format!("{p}_none:\n", p = p));
+            out.push_str(&format!(
+                "  %{p}_n0 = insertvalue %Enum_Option__i64 undef, i32 1, 0\n", p = p
+            ));
+            out.push_str(&format!(
+                "  %{p}_n1 = insertvalue %Enum_Option__i64 %{p}_n0, i64 0, 1\n", p = p
+            ));
+            out.push_str(&format!(
+                "  ret %Enum_Option__i64 %{p}_n1\n", p = p
+            ));
+            out.push_str("}\n\n");
+        }
+    }
 
     // ---- Closure #382: vec_iota(n) -> Vec<i64>. Fills [0, n).
     out.push_str("define %intent_vec_i64 @intent_vec_int64_t_iota(i64 %n) {\n");

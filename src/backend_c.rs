@@ -2463,6 +2463,8 @@ pub(crate) fn program_uses_graph_vec_builtin(program: &TypedProgram) -> bool {
                     || name == "vec_reverse_copy"
                     || name == "vec_unique"
                     || name == "vec_iota"
+                    || name == "vec_first"
+                    || name == "vec_last"
                 {
                     return true;
                 }
@@ -4721,6 +4723,33 @@ pub(crate) fn emit_intent_vec_int64_utility_helpers_c(out: &mut String) {
          \x20 return v;\n\
          }\n\n",
     );
+    // Closure #385: vec_first / vec_last(ref xs) -> Option<i64>.
+    // Gated on Option<i64> being in the payload registry — the
+    // helper bodies reference `Enum_Option__i64`. If callers
+    // already use anything that materialized the Option<i64>
+    // monomorph (the auto-mono walker registers it for these),
+    // the struct is in scope.
+    let has_option_i64 = ENUM_PAYLOAD_REGISTRY.with(|r| {
+        r.borrow().contains_key("Option__i64")
+    });
+    if has_option_i64 {
+        out.push_str(
+            "static INTENT_UNUSED Enum_Option__i64 intent_vec_int64_t_first(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_vec_int64_t_first(const intent_vec_int64_t* xs) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (!xs || xs->len == 0) { r.tag = 1; return r; }\n\
+             \x20 r.tag = 0; r.payload = xs->data[0];\n\
+             \x20 return r;\n\
+             }\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_vec_int64_t_last(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+             static INTENT_UNUSED Enum_Option__i64 intent_vec_int64_t_last(const intent_vec_int64_t* xs) {\n\
+             \x20 Enum_Option__i64 r;\n\
+             \x20 if (!xs || xs->len == 0) { r.tag = 1; return r; }\n\
+             \x20 r.tag = 0; r.payload = xs->data[xs->len - 1];\n\
+             \x20 return r;\n\
+             }\n\n",
+        );
+    }
 }
 
 /// Closure #379: `str_join(ref strs, sep) -> OwnedStr`. Two-pass
@@ -9171,6 +9200,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         // Closure #382: vec_iota(n) -> Vec<i64>.
         "vec_iota" => format!(
             "intent_vec_int64_t_iota(({}))",
+            emit_expr(&args[0])
+        ),
+        // Closure #385: vec_first / vec_last(ref xs) -> Option<i64>.
+        "vec_first" => format!(
+            "intent_vec_int64_t_first({})",
+            emit_expr(&args[0])
+        ),
+        "vec_last" => format!(
+            "intent_vec_int64_t_last({})",
             emit_expr(&args[0])
         ),
         // Closure #371: fresh-allocating reverse / dedup.
