@@ -15887,6 +15887,41 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_trunc_frac_typecheck_and_compile() {
+        // Closure #420: f64_trunc / f64_frac.
+        let source = r#"
+            fn main() -> i64 {
+              let t: f64 = f64_trunc(3.7);
+              let f: f64 = f64_frac(3.7);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("trunc/frac must type-check");
+        compile_to_llvm(source).expect("trunc/frac must compile to LLVM");
+    }
+
+    #[test]
+    fn f64_trunc_frac_emit_libm() {
+        let source = r#"
+            fn main() -> i64 {
+              let t: f64 = f64_trunc(3.7);
+              let f: f64 = f64_frac(3.7);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("declare double @trunc(double)"),
+            "LLVM must declare @trunc"
+        );
+        // frac uses trunc + fsub.
+        assert!(
+            ll.contains("call double @trunc(double") && ll.contains("fsub double"),
+            "LLVM must emit trunc + fsub for f64_frac"
+        );
+    }
+
+    #[test]
     fn i64_div_ceil_round_typecheck_and_compile() {
         // Closure #419: i64_div_ceil / i64_div_round.
         let source = r#"

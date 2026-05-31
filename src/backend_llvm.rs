@@ -539,6 +539,8 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare double @remainder(double, double)\n");
     // Closure #418: nextafter from libm.
     out.push_str("declare double @nextafter(double, double)\n");
+    // Closure #420: trunc (toward zero) from libm.
+    out.push_str("declare double @trunc(double)\n");
     // Threading primitives: POSIX on Linux/macOS, Win32 on
     // Windows. `intentc` picks the host's flavor at codegen
     // time via `host_uses_win32_threading()`. Cross-
@@ -7260,6 +7262,29 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!(
                     "  {} = select i1 {}, i64 {}, i64 {}\n",
                     dest, should_bump, q_plus, q
+                ));
+                return dest;
+            }
+            // Closure #420: f64_trunc + f64_frac.
+            if name == "f64_trunc" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @trunc(double {})\n",
+                    dest, x
+                ));
+                return dest;
+            }
+            if name == "f64_frac" {
+                let x = emit_expr(&args[0], ctx, out);
+                let truncated = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @trunc(double {})\n",
+                    truncated, x
+                ));
+                out.push_str(&format!(
+                    "  {} = fsub double {}, {}\n", dest, x, truncated
                 ));
                 return dest;
             }

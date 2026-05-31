@@ -10785,6 +10785,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        // Closure #420: float truncation + fractional part.
+        // trunc(x) truncates toward zero (libm). frac(x) returns
+        // the signed fractional part such that x = trunc(x) + frac(x).
+        "f64_trunc" => format!("trunc(({}))", emit_expr(&args[0])),
+        "f64_frac" => format!(
+            "({{ double __fx = ({}); __fx - trunc(__fx); }})",
+            emit_expr(&args[0])
+        ),
         // Closure #406: linear interpolation + clamp to [0, 1].
         // lerp(a, b, t) = a + (b - a) * t. Standard form;
         // overflow-safe within representable range.
