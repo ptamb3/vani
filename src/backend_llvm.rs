@@ -7145,6 +7145,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #427: saturating factorial via helper.
+            if name == "i64_factorial" {
+                let n = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_factorial(i64 {})\n",
+                    dest, n
+                ));
+                return dest;
+            }
             // Closure #426: byte access on Str (i8* in IR).
             if name == "str_byte_at" {
                 let s = emit_expr(&args[0], ctx, out);
@@ -11701,6 +11711,44 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("  %ip_inew = add i64 %ip_i, 6\n");
     out.push_str("  store i64 %ip_inew, i64* %ip_i_p\n");
     out.push_str("  br label %ip_head\n");
+    out.push_str("}\n\n");
+
+    // Closure #427: saturating factorial.
+    //   if n < 0:  return 0
+    //   if n > 20: return INT64_MAX
+    //   r = 1; i = 2
+    //   while i <= n: r *= i; i += 1
+    //   return r
+    out.push_str("define i64 @intent_i64_factorial(i64 %n) {\n");
+    out.push_str("  %ft_neg = icmp slt i64 %n, 0\n");
+    out.push_str("  br i1 %ft_neg, label %ft_zero_ret, label %ft_check_big\n");
+    out.push_str("ft_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("ft_check_big:\n");
+    out.push_str("  %ft_big = icmp sgt i64 %n, 20\n");
+    out.push_str("  br i1 %ft_big, label %ft_max_ret, label %ft_init\n");
+    out.push_str("ft_max_ret:\n");
+    out.push_str("  ret i64 9223372036854775807\n");
+    out.push_str("ft_init:\n");
+    out.push_str("  %ft_r_p = alloca i64\n");
+    out.push_str("  %ft_i_p = alloca i64\n");
+    out.push_str("  store i64 1, i64* %ft_r_p\n");
+    out.push_str("  store i64 2, i64* %ft_i_p\n");
+    out.push_str("  br label %ft_head\n");
+    out.push_str("ft_head:\n");
+    out.push_str("  %ft_i = load i64, i64* %ft_i_p\n");
+    out.push_str("  %ft_done = icmp sgt i64 %ft_i, %n\n");
+    out.push_str("  br i1 %ft_done, label %ft_fin, label %ft_step\n");
+    out.push_str("ft_step:\n");
+    out.push_str("  %ft_r_cur = load i64, i64* %ft_r_p\n");
+    out.push_str("  %ft_r_new = mul i64 %ft_r_cur, %ft_i\n");
+    out.push_str("  store i64 %ft_r_new, i64* %ft_r_p\n");
+    out.push_str("  %ft_i_new = add i64 %ft_i, 1\n");
+    out.push_str("  store i64 %ft_i_new, i64* %ft_i_p\n");
+    out.push_str("  br label %ft_head\n");
+    out.push_str("ft_fin:\n");
+    out.push_str("  %ft_r = load i64, i64* %ft_r_p\n");
+    out.push_str("  ret i64 %ft_r\n");
     out.push_str("}\n\n");
 }
 

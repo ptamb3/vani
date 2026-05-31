@@ -379,7 +379,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "f64_trunc" || name == "f64_frac"
                 || name == "i64_count_digits" || name == "i64_log10_floor"
                 || name == "i64_log10_ceil" || name == "i64_pow_mod"
-                || name == "i64_is_prime"
+                || name == "i64_is_prime" || name == "i64_factorial"
                 || name == "str_byte_at" || name == "str_len_bytes"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"

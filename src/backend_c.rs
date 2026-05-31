@@ -10833,6 +10833,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __ipn = ({}); bool __ipr; if (__ipn < 2) {{ __ipr = false; }} else if (__ipn < 4) {{ __ipr = true; }} else if (__ipn % 2 == 0 || __ipn % 3 == 0) {{ __ipr = false; }} else {{ __ipr = true; int64_t __ipi = 5; while (__ipi * __ipi <= __ipn) {{ if (__ipn % __ipi == 0 || __ipn % (__ipi + 2) == 0) {{ __ipr = false; break; }} __ipi += 6; }} }} __ipr; }})",
             emit_expr(&args[0])
         ),
+        // Closure #427: saturating factorial. Returns 0 for
+        // negative n (defensive — n! undefined for negative).
+        // For n > 20, returns INT64_MAX (21! > 2^63 - 1). For
+        // n in [0, 20], computes by direct multiplication.
+        "i64_factorial" => format!(
+            "({{ int64_t __fn = ({}); int64_t __fr; if (__fn < 0) {{ __fr = 0; }} else if (__fn > 20) {{ __fr = (int64_t)9223372036854775807LL; }} else {{ __fr = 1; for (int64_t __fi = 2; __fi <= __fn; __fi += 1) {{ __fr *= __fi; }} }} __fr; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).

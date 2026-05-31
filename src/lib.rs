@@ -15887,6 +15887,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_factorial_typecheck_and_compile() {
+        // Closure #427: i64_factorial (saturating).
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_factorial(5);
+              let b: i64 = i64_factorial(20);
+              return a + b;
+            }
+        "#;
+        compile_to_c(source).expect("factorial must type-check");
+        compile_to_llvm(source).expect("factorial must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_factorial_emits_helper_definition() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_factorial(10);
+              return a;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("define i64 @intent_i64_factorial(i64 %n)"),
+            "LLVM must define the @intent_i64_factorial helper"
+        );
+        assert!(
+            ll.contains("call i64 @intent_i64_factorial(i64"),
+            "LLVM must call the @intent_i64_factorial helper"
+        );
+    }
+
+    #[test]
     fn str_byte_at_and_len_bytes_typecheck_and_compile() {
         // Closure #426: str_byte_at + str_len_bytes.
         let source = r#"
