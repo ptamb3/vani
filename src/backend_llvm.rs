@@ -522,6 +522,13 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare double @atan2(double, double)\n");
     // Closure #413: hypot (overflow-safe sqrt(a^2+b^2)) from libm.
     out.push_str("declare double @hypot(double, double)\n");
+    // Closure #414: inverse + hyperbolic trig from libm.
+    out.push_str("declare double @asin(double)\n");
+    out.push_str("declare double @acos(double)\n");
+    out.push_str("declare double @atan(double)\n");
+    out.push_str("declare double @sinh(double)\n");
+    out.push_str("declare double @cosh(double)\n");
+    out.push_str("declare double @tanh(double)\n");
     // Threading primitives: POSIX on Linux/macOS, Win32 on
     // Windows. `intentc` picks the host's flavor at codegen
     // time via `host_uses_win32_threading()`. Cross-
@@ -6700,6 +6707,8 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 name.as_str(),
                 "sqrt" | "sin" | "cos" | "tan" | "floor" | "ceil"
                 | "log" | "log2" | "log10" | "exp"
+                // Closure #414: inverse + hyperbolic trig.
+                | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh"
             ) {
                 let x = emit_expr(&args[0], ctx, out);
                 let dest = ctx.fresh_tmp();

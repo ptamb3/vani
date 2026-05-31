@@ -10532,7 +10532,9 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             )
         }
         "sqrt" | "sin" | "cos" | "tan" | "floor" | "ceil"
-        | "log" | "log2" | "log10" | "exp" => {
+        | "log" | "log2" | "log10" | "exp"
+        // Closure #414: inverse + hyperbolic trig (libm).
+        | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh" => {
             format!("{}(({}))", name, emit_expr(&args[0]))
         }
         "atan2" => {

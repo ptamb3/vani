@@ -15887,6 +15887,52 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn inverse_hyperbolic_trig_typecheck_and_compile() {
+        // Closure #414: asin / acos / atan + sinh / cosh / tanh.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = asin(0.5);
+              let b: f64 = acos(0.5);
+              let c: f64 = atan(1.0);
+              let d: f64 = sinh(1.0);
+              let e: f64 = cosh(1.0);
+              let f: f64 = tanh(1.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("inverse/hyp trig must type-check");
+        compile_to_llvm(source).expect("inverse/hyp trig must compile to LLVM");
+    }
+
+    #[test]
+    fn inverse_hyperbolic_trig_emits_libm_declarations() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = asin(0.5);
+              let b: f64 = acos(0.5);
+              let c: f64 = atan(1.0);
+              let d: f64 = sinh(1.0);
+              let e: f64 = cosh(1.0);
+              let f: f64 = tanh(1.0);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        for fn_name in &["asin", "acos", "atan", "sinh", "cosh", "tanh"] {
+            assert!(
+                ll.contains(&format!("declare double @{}(double)", fn_name)),
+                "LLVM preamble must declare @{}",
+                fn_name
+            );
+            assert!(
+                ll.contains(&format!("call double @{}(double", fn_name)),
+                "LLVM must call @{}",
+                fn_name
+            );
+        }
+    }
+
+    #[test]
     fn f64_trig_geometry_typecheck_and_compile() {
         // Closure #413: f64_hypot / f64_to_radians / f64_to_degrees.
         let source = r#"
