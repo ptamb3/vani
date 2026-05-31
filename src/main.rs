@@ -368,6 +368,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "f64_to_radians" || name == "f64_to_degrees"
                 || name == "asin" || name == "acos" || name == "atan"
                 || name == "sinh" || name == "cosh" || name == "tanh"
+                || name == "f64_epsilon"
+                || name == "f64_min_positive" || name == "f64_min_subnormal"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_f64"

@@ -15887,6 +15887,47 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_ieee_boundary_constants_typecheck_and_compile() {
+        // Closure #415: f64_epsilon / f64_min_positive /
+        // f64_min_subnormal — IEEE-754 boundary constants.
+        let source = r#"
+            fn main() -> i64 {
+              let e: f64 = f64_epsilon();
+              let mp: f64 = f64_min_positive();
+              let ms: f64 = f64_min_subnormal();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("IEEE constants must type-check");
+        compile_to_llvm(source).expect("IEEE constants must compile to LLVM");
+    }
+
+    #[test]
+    fn f64_ieee_constants_emit_exact_hex_literals() {
+        let source = r#"
+            fn main() -> i64 {
+              let e: f64 = f64_epsilon();
+              let mp: f64 = f64_min_positive();
+              let ms: f64 = f64_min_subnormal();
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("0x3CB0000000000000"),
+            "LLVM must emit exact-bit-pattern hex for f64_epsilon"
+        );
+        assert!(
+            ll.contains("0x0010000000000000"),
+            "LLVM must emit exact-bit-pattern hex for f64_min_positive"
+        );
+        assert!(
+            ll.contains("0x0000000000000001"),
+            "LLVM must emit exact-bit-pattern hex for f64_min_subnormal"
+        );
+    }
+
+    #[test]
     fn inverse_hyperbolic_trig_typecheck_and_compile() {
         // Closure #414: asin / acos / atan + sinh / cosh / tanh.
         let source = r#"

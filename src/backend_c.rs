@@ -10571,6 +10571,11 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         // transitively on glibc. Be explicit by using the
         // hex-float literal that matches IEEE-754 DBL_MAX.
         "f64_max_finite" => "(1.7976931348623157e308)".to_string(),
+        // Closure #415: IEEE-754 small-magnitude constants.
+        // DBL_EPSILON, DBL_MIN, smallest subnormal.
+        "f64_epsilon" => "(2.220446049250313e-16)".to_string(),
+        "f64_min_positive" => "(2.2250738585072014e-308)".to_string(),
+        "f64_min_subnormal" => "(5e-324)".to_string(),
         // Closure #405: Python-style floor division. C's `/`
         // truncates toward zero — for negative dividends with
         // positive divisors (and vice versa), `floor(a/b)` is

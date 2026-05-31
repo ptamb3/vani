@@ -7146,6 +7146,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
             if name == "f64_max_finite" {
                 return "0x7FEFFFFFFFFFFFFF".to_string();
             }
+            // Closure #415: IEEE-754 small-magnitude boundary constants.
+            if name == "f64_epsilon" {
+                return "0x3CB0000000000000".to_string();
+            }
+            if name == "f64_min_positive" {
+                return "0x0010000000000000".to_string();
+            }
+            if name == "f64_min_subnormal" {
+                return "0x0000000000000001".to_string();
+            }
             // Closure #406: f64_lerp(a, b, t) = a + (b - a) * t.
             if name == "f64_lerp" {
                 let a = emit_expr(&args[0], ctx, out);
