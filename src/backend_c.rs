@@ -10520,6 +10520,29 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[1])
             )
         }
+        // Closure #401: bit-manipulation primitives.
+        // GCC / Clang __builtin_popcountll / clzll / ctzll all
+        // take `unsigned long long`. Returns are wrapped as
+        // (int64_t)... For zero input, clzll/ctzll are
+        // undefined per the ABI, so we special-case 0 → 64.
+        "i64_count_set_bits" => {
+            format!(
+                "((int64_t)__builtin_popcountll((unsigned long long)({})))",
+                emit_expr(&args[0])
+            )
+        }
+        "i64_leading_zeros" => {
+            format!(
+                "({{ unsigned long long __lzv = (unsigned long long)({}); __lzv == 0 ? (int64_t)64 : (int64_t)__builtin_clzll(__lzv); }})",
+                emit_expr(&args[0])
+            )
+        }
+        "i64_trailing_zeros" => {
+            format!(
+                "({{ unsigned long long __tzv = (unsigned long long)({}); __tzv == 0 ? (int64_t)64 : (int64_t)__builtin_ctzll(__tzv); }})",
+                emit_expr(&args[0])
+            )
+        }
         // Closure #393: i64_abs_diff(a, b) — |a - b| in signed
         // arithmetic. Done via select on a < b to avoid overflow
         // on borderline values like INT64_MIN / INT64_MAX.

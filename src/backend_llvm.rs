@@ -496,6 +496,10 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare double @fabs(double)\n");
     out.push_str("declare i64 @llabs(i64)\n");
     out.push_str("declare i64 @llround(double)\n");
+    // Closure #401: bit-manipulation intrinsics (i64).
+    out.push_str("declare i64 @llvm.ctpop.i64(i64)\n");
+    out.push_str("declare i64 @llvm.ctlz.i64(i64, i1)\n");
+    out.push_str("declare i64 @llvm.cttz.i64(i64, i1)\n");
     // Closure #363: log family + exp + atan2 round out the libm
     // surface. Same `-lm` link covers them.
     out.push_str("declare double @log(double)\n");
@@ -6924,6 +6928,34 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!(
                     "  {} = select i1 {}, double {}, double {}\n",
                     dest, is_nan, x, normal
+                ));
+                return dest;
+            }
+            // Closure #401: bit-manipulation intrinsics.
+            if name == "i64_count_set_bits" {
+                let x = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @llvm.ctpop.i64(i64 {})\n",
+                    dest, x
+                ));
+                return dest;
+            }
+            if name == "i64_leading_zeros" || name == "i64_trailing_zeros" {
+                // The `i1 is_zero_poison` flag is true here, so we
+                // route through the explicit-zero-check shape: if
+                // x == 0, return 64; else call the intrinsic with
+                // is_zero_poison=false (i1 0).
+                let x = emit_expr(&args[0], ctx, out);
+                let intrinsic = if name == "i64_leading_zeros" {
+                    "@llvm.ctlz.i64"
+                } else {
+                    "@llvm.cttz.i64"
+                };
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 {}(i64 {}, i1 false)\n",
+                    dest, intrinsic, x
                 ));
                 return dest;
             }

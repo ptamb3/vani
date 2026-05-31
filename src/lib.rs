@@ -15873,6 +15873,47 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn bit_manipulation_typecheck_and_compile() {
+        // Closure #401: i64_count_set_bits / leading_zeros /
+        // trailing_zeros.
+        let source = r#"
+            fn main() -> i64 {
+              let p: i64 = i64_count_set_bits(7);
+              let l: i64 = i64_leading_zeros(1);
+              let t: i64 = i64_trailing_zeros(8);
+              return p + l + t;
+            }
+        "#;
+        compile_to_c(source).expect("bit ops must type-check");
+        compile_to_llvm(source).expect("bit ops must compile to LLVM");
+    }
+
+    #[test]
+    fn bit_manipulation_emit_llvm_intrinsics() {
+        let source = r#"
+            fn main() -> i64 {
+              let p: i64 = i64_count_set_bits(5);
+              let l: i64 = i64_leading_zeros(5);
+              let t: i64 = i64_trailing_zeros(5);
+              return 0;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("bit ops LLVM");
+        assert!(
+            ll.contains("declare i64 @llvm.ctpop.i64(i64)")
+                && ll.contains("declare i64 @llvm.ctlz.i64(i64, i1)")
+                && ll.contains("declare i64 @llvm.cttz.i64(i64, i1)"),
+            "LLVM preamble must declare all three intrinsics"
+        );
+        assert!(
+            ll.contains("call i64 @llvm.ctpop.i64(i64")
+                && ll.contains("call i64 @llvm.ctlz.i64(i64")
+                && ll.contains("call i64 @llvm.cttz.i64(i64"),
+            "LLVM output must call all three intrinsics"
+        );
+    }
+
+    #[test]
     fn ascii_byte_classes_typecheck_and_compile() {
         // Closure #400: is_ascii_digit / alpha / alphanumeric /
         // whitespace. All take i64 byte values, return bool.
