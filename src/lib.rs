@@ -15844,6 +15844,35 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_strip_typecheck_and_compile() {
+        // Closure #394: str_strip_prefix / str_strip_suffix.
+        let source = r#"
+            fn main() -> i64 {
+              let a: OwnedStr = str_strip_prefix("hello world", "hello ");
+              let b: OwnedStr = str_strip_suffix("file.txt", ".txt");
+              let c: OwnedStr = "abc".strip_prefix("a");
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("str_strip_* must type-check");
+        compile_to_llvm(source).expect("str_strip_* must compile to LLVM");
+    }
+
+    #[test]
+    fn str_count_char_typecheck_and_compile() {
+        // Closure #395: str_count_char(s, ch) -> i64.
+        let source = r#"
+            fn main() -> i64 {
+              let n: i64 = str_count_char("banana", "a");
+              let m: i64 = "abc".count_char("z");
+              return n + m;
+            }
+        "#;
+        compile_to_c(source).expect("str_count_char must type-check");
+        compile_to_llvm(source).expect("str_count_char must compile to LLVM");
+    }
+
+    #[test]
     fn sign_helpers_typecheck_and_compile() {
         // Closure #393: i64_abs_diff / i64_signum / f64_signum.
         let source = r#"

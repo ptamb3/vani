@@ -322,6 +322,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "str_pad_left" || name == "str_pad_right"
                 || name == "str_lines"
                 || name == "str_chars" || name == "str_reverse"
+                || name == "str_strip_prefix" || name == "str_strip_suffix"
+                || name == "str_count_char"
                 || name == "i64_to_str"
                 || name == "f64_to_str"
                 || name == "bool_to_str"

@@ -897,6 +897,10 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     // always-on; str_chars references %intent_vec_i64 so it's
     // gated on the same usage signal as Vec<i64> bundles.
     emit_intent_str_reverse_definition(&mut out);
+    // Closures #394 + #395: str_strip_prefix / str_strip_suffix /
+    // str_count_char. Always-on.
+    emit_intent_str_strip_definitions(&mut out);
+    emit_intent_str_count_char_definition(&mut out);
     if crate::backend_c::program_uses_graph_vec_builtin(program) {
         emit_intent_str_chars_definition(&mut out);
     }
@@ -6830,6 +6834,32 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closures #394 + #395.
+            if name == "str_strip_prefix" || name == "str_strip_suffix" {
+                let s = emit_expr(&args[0], ctx, out);
+                let p = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                let helper = if name == "str_strip_prefix" {
+                    "intent_str_strip_prefix"
+                } else {
+                    "intent_str_strip_suffix"
+                };
+                out.push_str(&format!(
+                    "  {} = call i8* @{}(i8* {}, i8* {})\n",
+                    dest, helper, s, p
+                ));
+                return dest;
+            }
+            if name == "str_count_char" {
+                let s = emit_expr(&args[0], ctx, out);
+                let ch = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_str_count_char(i8* {}, i8* {})\n",
+                    dest, s, ch
+                ));
+                return dest;
+            }
             // Closure #390: str_chars / str_reverse.
             if name == "str_reverse" {
                 let s = emit_expr(&args[0], ctx, out);
@@ -9796,6 +9826,113 @@ pub(crate) fn emit_intent_str_lines_definition(out: &mut String) {
     out.push_str("sl_fin:\n");
     out.push_str("  %v_final = load %intent_vec_i8p, %intent_vec_i8p* %v_p\n");
     out.push_str("  ret %intent_vec_i8p %v_final\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #394: emit `str_strip_prefix` / `str_strip_suffix`.
+/// Both return a fresh malloc'd copy with the prefix / suffix
+/// removed iff it matches; otherwise an unchanged copy of `s`.
+pub(crate) fn emit_intent_str_strip_definitions(out: &mut String) {
+    // strip_prefix
+    out.push_str("define i8* @intent_str_strip_prefix(i8* %s, i8* %p) {\n");
+    out.push_str("  %sp_sl = call i64 @strlen(i8* %s)\n");
+    out.push_str("  %sp_pl = call i64 @strlen(i8* %p)\n");
+    out.push_str("  %sp_p_nonempty = icmp ugt i64 %sp_pl, 0\n");
+    out.push_str("  %sp_fits = icmp ule i64 %sp_pl, %sp_sl\n");
+    out.push_str("  %sp_eligible = and i1 %sp_p_nonempty, %sp_fits\n");
+    out.push_str("  br i1 %sp_eligible, label %sp_check, label %sp_skip0\n");
+    out.push_str("sp_check:\n");
+    out.push_str("  %sp_cmp = call i32 @strncmp(i8* %s, i8* %p, i64 %sp_pl)\n");
+    out.push_str("  %sp_match = icmp eq i32 %sp_cmp, 0\n");
+    out.push_str("  br i1 %sp_match, label %sp_use_off, label %sp_skip0\n");
+    out.push_str("sp_use_off:\n");
+    out.push_str("  br label %sp_alloc\n");
+    out.push_str("sp_skip0:\n");
+    out.push_str("  br label %sp_alloc\n");
+    out.push_str("sp_alloc:\n");
+    out.push_str("  %sp_off = phi i64 [ %sp_pl, %sp_use_off ], [ 0, %sp_skip0 ]\n");
+    out.push_str("  %sp_out_len = sub i64 %sp_sl, %sp_off\n");
+    out.push_str("  %sp_alloc_n = add i64 %sp_out_len, 1\n");
+    out.push_str("  %sp_out = call i8* @malloc(i64 %sp_alloc_n)\n");
+    out.push_str("  %sp_pos = icmp ugt i64 %sp_out_len, 0\n");
+    out.push_str("  br i1 %sp_pos, label %sp_copy, label %sp_nul\n");
+    out.push_str("sp_copy:\n");
+    out.push_str("  %sp_src = getelementptr i8, i8* %s, i64 %sp_off\n");
+    out.push_str("  %_sp_c = call i8* @memcpy(i8* %sp_out, i8* %sp_src, i64 %sp_out_len)\n");
+    out.push_str("  br label %sp_nul\n");
+    out.push_str("sp_nul:\n");
+    out.push_str("  %sp_nul_p = getelementptr i8, i8* %sp_out, i64 %sp_out_len\n");
+    out.push_str("  store i8 0, i8* %sp_nul_p\n");
+    out.push_str("  ret i8* %sp_out\n");
+    out.push_str("}\n\n");
+
+    // strip_suffix
+    out.push_str("define i8* @intent_str_strip_suffix(i8* %s, i8* %sfx) {\n");
+    out.push_str("  %ss_sl = call i64 @strlen(i8* %s)\n");
+    out.push_str("  %ss_fl = call i64 @strlen(i8* %sfx)\n");
+    out.push_str("  %ss_f_nonempty = icmp ugt i64 %ss_fl, 0\n");
+    out.push_str("  %ss_fits = icmp ule i64 %ss_fl, %ss_sl\n");
+    out.push_str("  %ss_eligible = and i1 %ss_f_nonempty, %ss_fits\n");
+    out.push_str("  br i1 %ss_eligible, label %ss_check, label %ss_full\n");
+    out.push_str("ss_check:\n");
+    out.push_str("  %ss_tail_off = sub i64 %ss_sl, %ss_fl\n");
+    out.push_str("  %ss_tail = getelementptr i8, i8* %s, i64 %ss_tail_off\n");
+    out.push_str("  %ss_cmp = call i32 @strncmp(i8* %ss_tail, i8* %sfx, i64 %ss_fl)\n");
+    out.push_str("  %ss_match = icmp eq i32 %ss_cmp, 0\n");
+    out.push_str("  br i1 %ss_match, label %ss_trim, label %ss_full\n");
+    out.push_str("ss_trim:\n");
+    out.push_str("  br label %ss_alloc\n");
+    out.push_str("ss_full:\n");
+    out.push_str("  br label %ss_alloc\n");
+    out.push_str("ss_alloc:\n");
+    out.push_str("  %ss_out_len = phi i64 [ %ss_tail_off, %ss_trim ], [ %ss_sl, %ss_full ]\n");
+    out.push_str("  %ss_alloc_n = add i64 %ss_out_len, 1\n");
+    out.push_str("  %ss_out = call i8* @malloc(i64 %ss_alloc_n)\n");
+    out.push_str("  %ss_pos = icmp ugt i64 %ss_out_len, 0\n");
+    out.push_str("  br i1 %ss_pos, label %ss_copy, label %ss_nul\n");
+    out.push_str("ss_copy:\n");
+    out.push_str("  %_ss_c = call i8* @memcpy(i8* %ss_out, i8* %s, i64 %ss_out_len)\n");
+    out.push_str("  br label %ss_nul\n");
+    out.push_str("ss_nul:\n");
+    out.push_str("  %ss_nul_p = getelementptr i8, i8* %ss_out, i64 %ss_out_len\n");
+    out.push_str("  store i8 0, i8* %ss_nul_p\n");
+    out.push_str("  ret i8* %ss_out\n");
+    out.push_str("}\n\n");
+}
+
+/// Closure #395: emit `str_count_char(s, ch) -> i64`. Counts
+/// occurrences of `ch[0]` in `s`. Empty `ch` returns 0.
+pub(crate) fn emit_intent_str_count_char_definition(out: &mut String) {
+    out.push_str("define i64 @intent_str_count_char(i8* %s, i8* %ch) {\n");
+    out.push_str("  %scc_target = load i8, i8* %ch\n");
+    out.push_str("  %scc_zero = icmp eq i8 %scc_target, 0\n");
+    out.push_str("  br i1 %scc_zero, label %scc_ret_zero, label %scc_loop\n");
+    out.push_str("scc_ret_zero:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("scc_loop:\n");
+    out.push_str("  %scc_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %scc_i_p\n");
+    out.push_str("  %scc_n_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %scc_n_p\n");
+    out.push_str("  br label %scc_head\n");
+    out.push_str("scc_head:\n");
+    out.push_str("  %scc_i = load i64, i64* %scc_i_p\n");
+    out.push_str("  %scc_p = getelementptr i8, i8* %s, i64 %scc_i\n");
+    out.push_str("  %scc_b = load i8, i8* %scc_p\n");
+    out.push_str("  %scc_end = icmp eq i8 %scc_b, 0\n");
+    out.push_str("  br i1 %scc_end, label %scc_fin, label %scc_body\n");
+    out.push_str("scc_body:\n");
+    out.push_str("  %scc_hit = icmp eq i8 %scc_b, %scc_target\n");
+    out.push_str("  %scc_inc = zext i1 %scc_hit to i64\n");
+    out.push_str("  %scc_n_cur = load i64, i64* %scc_n_p\n");
+    out.push_str("  %scc_n_new = add i64 %scc_n_cur, %scc_inc\n");
+    out.push_str("  store i64 %scc_n_new, i64* %scc_n_p\n");
+    out.push_str("  %scc_i_next = add i64 %scc_i, 1\n");
+    out.push_str("  store i64 %scc_i_next, i64* %scc_i_p\n");
+    out.push_str("  br label %scc_head\n");
+    out.push_str("scc_fin:\n");
+    out.push_str("  %scc_r = load i64, i64* %scc_n_p\n");
+    out.push_str("  ret i64 %scc_r\n");
     out.push_str("}\n\n");
 }
 

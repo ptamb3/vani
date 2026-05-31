@@ -506,6 +506,10 @@ pub fn emit_c(program: &TypedProgram) -> String {
     // Closure #390: str_reverse helper. Always-on (no Vec
     // dependency).
     emit_intent_str_reverse_c(&mut body);
+    // Closure #394 + #395: str_strip_prefix / str_strip_suffix /
+    // str_count_char. All always-on (no Vec / Option deps).
+    emit_intent_str_strip_c(&mut body);
+    emit_intent_str_count_char_c(&mut body);
     // Closure #390: str_chars helper returns Vec<i64>, so gate
     // on the graph_vec_builtin walker that's already tracking
     // Vec<i64> demand — that walker fires emission of
@@ -4823,6 +4827,57 @@ pub(crate) fn emit_intent_str_lines_c(out: &mut String) {
          \x20   if (ll > 0 && line[ll - 1] == '\\r') line[ll - 1] = 0;\n\
          \x20 }\n\
          \x20 return v;\n\
+         }\n\n",
+    );
+}
+
+/// Closure #394: `str_strip_prefix(s, p)` / `str_strip_suffix(s,
+/// sfx)` -> OwnedStr. Returns a fresh copy with the prefix /
+/// suffix removed if it matches; otherwise returns a fresh copy
+/// of `s` unchanged. Empty prefix / suffix never matches in the
+/// "strip" sense, so returns `s` unchanged.
+pub(crate) fn emit_intent_str_strip_c(out: &mut String) {
+    out.push_str(
+        "static char* intent_str_strip_prefix(const char* s, const char* p) INTENT_UNUSED;\n\
+         static char* intent_str_strip_prefix(const char* s, const char* p) {\n\
+         \x20 size_t sl = s ? strlen(s) : 0;\n\
+         \x20 size_t pl = p ? strlen(p) : 0;\n\
+         \x20 size_t off = 0;\n\
+         \x20 if (pl > 0 && pl <= sl && strncmp(s, p, pl) == 0) off = pl;\n\
+         \x20 size_t out_len = sl - off;\n\
+         \x20 char* out = (char*)malloc(out_len + 1);\n\
+         \x20 if (!out) abort();\n\
+         \x20 if (out_len > 0) memcpy(out, s + off, out_len);\n\
+         \x20 out[out_len] = 0;\n\
+         \x20 return out;\n\
+         }\n\
+         static char* intent_str_strip_suffix(const char* s, const char* sfx) INTENT_UNUSED;\n\
+         static char* intent_str_strip_suffix(const char* s, const char* sfx) {\n\
+         \x20 size_t sl = s ? strlen(s) : 0;\n\
+         \x20 size_t fl = sfx ? strlen(sfx) : 0;\n\
+         \x20 size_t out_len = sl;\n\
+         \x20 if (fl > 0 && fl <= sl && strncmp(s + sl - fl, sfx, fl) == 0) out_len = sl - fl;\n\
+         \x20 char* out = (char*)malloc(out_len + 1);\n\
+         \x20 if (!out) abort();\n\
+         \x20 if (out_len > 0) memcpy(out, s, out_len);\n\
+         \x20 out[out_len] = 0;\n\
+         \x20 return out;\n\
+         }\n\n",
+    );
+}
+
+/// Closure #395: `str_count_char(s, ch) -> i64`. Counts the
+/// occurrences of the first byte of `ch` in `s`. Empty ch
+/// returns 0 (no characters to count).
+pub(crate) fn emit_intent_str_count_char_c(out: &mut String) {
+    out.push_str(
+        "static int64_t intent_str_count_char(const char* s, const char* ch) INTENT_UNUSED;\n\
+         static int64_t intent_str_count_char(const char* s, const char* ch) {\n\
+         \x20 if (!s || !ch || ch[0] == 0) return 0;\n\
+         \x20 char target = ch[0];\n\
+         \x20 int64_t n = 0;\n\
+         \x20 for (const char* p = s; *p; p++) if (*p == target) n++;\n\
+         \x20 return n;\n\
          }\n\n",
     );
 }
@@ -9742,6 +9797,22 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         "str_reverse" => format!(
             "intent_str_reverse(({}))",
             emit_expr(&args[0]),
+        ),
+        // Closures #394, #395.
+        "str_strip_prefix" => format!(
+            "intent_str_strip_prefix(({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+        ),
+        "str_strip_suffix" => format!(
+            "intent_str_strip_suffix(({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+        ),
+        "str_count_char" => format!(
+            "intent_str_count_char(({}), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
         ),
         // Closure #369: ASCII case conversion -> OwnedStr.
         "str_to_upper" => {
