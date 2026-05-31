@@ -555,6 +555,9 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare double @log1p(double)\n");
     // Closure #435: base-2 exp from libm (exp10 routes through @pow).
     out.push_str("declare double @exp2(double)\n");
+    // Closure #437: half-away-from-zero round returning double
+    // (the C99 `round` — distinct from llround which returns i64).
+    out.push_str("declare double @round(double)\n");
     // Threading primitives: POSIX on Linux/macOS, Win32 on
     // Windows. `intentc` picks the host's flavor at codegen
     // time via `host_uses_win32_threading()`. Cross-
@@ -7317,6 +7320,48 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!(
                     "  {} = call double @pow(double 1.000000e+01, double {})\n",
                     dest, x
+                ));
+                return dest;
+            }
+            // Closure #437: reciprocal sqrt — fdiv 1.0 / sqrt(x).
+            if name == "f64_inv_sqrt" {
+                let x = emit_expr(&args[0], ctx, out);
+                let sq = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @sqrt(double {})\n", sq, x
+                ));
+                out.push_str(&format!(
+                    "  {} = fdiv double 1.0, {}\n", dest, sq
+                ));
+                return dest;
+            }
+            // Closure #437: round_to(x, digits).
+            //   m = pow(10, (double)digits)
+            //   return round(x * m) / m
+            if name == "f64_round_to" {
+                let x = emit_expr(&args[0], ctx, out);
+                let d = emit_expr(&args[1], ctx, out);
+                let df = ctx.fresh_tmp();
+                let m = ctx.fresh_tmp();
+                let scaled = ctx.fresh_tmp();
+                let rounded = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = sitofp i64 {} to double\n", df, d
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @pow(double 1.000000e+01, double {})\n",
+                    m, df
+                ));
+                out.push_str(&format!(
+                    "  {} = fmul double {}, {}\n", scaled, x, m
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @round(double {})\n", rounded, scaled
+                ));
+                out.push_str(&format!(
+                    "  {} = fdiv double {}, {}\n", dest, rounded, m
                 ));
                 return dest;
             }

@@ -390,6 +390,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "f64_cbrt" || name == "f64_expm1"
                 || name == "f64_log1p"
                 || name == "f64_exp2" || name == "f64_exp10"
+                || name == "f64_inv_sqrt" || name == "f64_round_to"
                 || name == "str_byte_at" || name == "str_len_bytes"
                 || name == "str_starts_with_byte"
                 || name == "str_ends_with_byte"

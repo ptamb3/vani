@@ -15887,6 +15887,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_inv_sqrt_and_round_to_typecheck_and_compile() {
+        // Closure #437: f64_inv_sqrt / f64_round_to.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_inv_sqrt(4.0);
+              let b: f64 = f64_round_to(3.14159, 2);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("inv_sqrt/round_to must type-check");
+        compile_to_llvm(source).expect("inv_sqrt/round_to must compile to LLVM");
+    }
+
+    #[test]
     fn f64_exp2_exp10_typecheck_and_compile() {
         // Closure #435: f64_exp2 / f64_exp10.
         let source = r#"

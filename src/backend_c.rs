@@ -10928,6 +10928,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         // platforms; implement portably as pow(10, x).
         "f64_exp2" => format!("exp2(({}))", emit_expr(&args[0])),
         "f64_exp10" => format!("pow(10.0, ({}))", emit_expr(&args[0])),
+        // Closure #437: reciprocal sqrt + decimal-place rounding.
+        // inv_sqrt(x) = 1 / sqrt(x)
+        // round_to(x, d) = round(x * 10^d) / 10^d
+        "f64_inv_sqrt" => format!("(1.0 / sqrt(({})))", emit_expr(&args[0])),
+        "f64_round_to" => format!(
+            "({{ double __rtx = ({}); int64_t __rtd = ({}); double __rtm = pow(10.0, (double)__rtd); round(__rtx * __rtm) / __rtm; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).
