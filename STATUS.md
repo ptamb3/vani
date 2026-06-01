@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-06-01 (closure #470 — **`i64_divisor_sum(n) -> i64`** σ(n) — sum of positive divisors. Same shape as #469 but sums i + n/i per divisor pair. LLVM: `@intent_i64_divisor_sum` helper. Both backends byte-identical: `ds(1) = 1`, `ds(6) = 12` (1+2+3+6), `ds(12) = 28` (1+2+3+4+6+12), `ds(28) = 56` (perfect number — σ(28) = 56 = 2·28), `ds(36) = 91`, `ds(0) = 0`. 1 new lib test. 1494 lib + 54 parity green.)
-**Test totals:** 1494 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-06-01 (closure #471 — **`i64_totient(n) -> i64`** Euler's totient φ(n) — count of k in [1, n] coprime to n. Uses the Euler product formula φ(n) = n · ∏(1 - 1/p) over prime factors, implemented iteratively via `r -= r/p` for each prime p found by trial division. LLVM: `@intent_i64_totient` helper. Both backends byte-identical: `tt(1) = 1`, `tt(2) = 1`, `tt(6) = 2` (k=1,5), `tt(9) = 6`, `tt(10) = 4` (k=1,3,7,9), `tt(12) = 4` (k=1,5,7,11), `tt(36) = 12`, `tt(0) = 0`. 1 new lib test. 1495 lib + 54 parity green.)
+**Test totals:** 1495 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,

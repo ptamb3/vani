@@ -7730,6 +7730,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #471: Euler's totient φ(n).
+            if name == "i64_totient" {
+                let n = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_totient(i64 {})\n",
+                    dest, n
+                ));
+                return dest;
+            }
             // Closure #468: is_perfect_square(n) — n is a non-
             // negative perfect square iff floor_isqrt(n)^2 == n.
             if name == "i64_is_perfect_square" {
@@ -13368,6 +13378,74 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("ds_fin:\n");
     out.push_str("  %ds_r = load i64, i64* %ds_r_p\n");
     out.push_str("  ret i64 %ds_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #471: Euler's totient φ(n) via Euler product
+    // formula, using trial division for prime factors.
+    //   if n <= 0: return 0
+    //   r = n; m = n; i = 2
+    //   while i*i <= m:
+    //     if m % i == 0:
+    //       r -= r / i
+    //       while m % i == 0: m /= i
+    //     i += 1
+    //   if m > 1: r -= r / m
+    //   return r
+    out.push_str("define i64 @intent_i64_totient(i64 %n) {\n");
+    out.push_str("  %tt_lez = icmp sle i64 %n, 0\n");
+    out.push_str("  br i1 %tt_lez, label %tt_zero_ret, label %tt_init\n");
+    out.push_str("tt_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("tt_init:\n");
+    out.push_str("  %tt_r_p = alloca i64\n");
+    out.push_str("  %tt_m_p = alloca i64\n");
+    out.push_str("  %tt_i_p = alloca i64\n");
+    out.push_str("  store i64 %n, i64* %tt_r_p\n");
+    out.push_str("  store i64 %n, i64* %tt_m_p\n");
+    out.push_str("  store i64 2, i64* %tt_i_p\n");
+    out.push_str("  br label %tt_head\n");
+    out.push_str("tt_head:\n");
+    out.push_str("  %tt_i = load i64, i64* %tt_i_p\n");
+    out.push_str("  %tt_m = load i64, i64* %tt_m_p\n");
+    out.push_str("  %tt_sq = mul i64 %tt_i, %tt_i\n");
+    out.push_str("  %tt_done = icmp sgt i64 %tt_sq, %tt_m\n");
+    out.push_str("  br i1 %tt_done, label %tt_tail, label %tt_body\n");
+    out.push_str("tt_body:\n");
+    out.push_str("  %tt_rem = srem i64 %tt_m, %tt_i\n");
+    out.push_str("  %tt_div = icmp eq i64 %tt_rem, 0\n");
+    out.push_str("  br i1 %tt_div, label %tt_factor, label %tt_incr\n");
+    out.push_str("tt_factor:\n");
+    out.push_str("  %tt_r_cur = load i64, i64* %tt_r_p\n");
+    out.push_str("  %tt_r_div = sdiv i64 %tt_r_cur, %tt_i\n");
+    out.push_str("  %tt_r_new = sub i64 %tt_r_cur, %tt_r_div\n");
+    out.push_str("  store i64 %tt_r_new, i64* %tt_r_p\n");
+    out.push_str("  br label %tt_strip\n");
+    out.push_str("tt_strip:\n");
+    out.push_str("  %tt_m_cur = load i64, i64* %tt_m_p\n");
+    out.push_str("  %tt_srem = srem i64 %tt_m_cur, %tt_i\n");
+    out.push_str("  %tt_sdiv = icmp eq i64 %tt_srem, 0\n");
+    out.push_str("  br i1 %tt_sdiv, label %tt_strip_step, label %tt_incr\n");
+    out.push_str("tt_strip_step:\n");
+    out.push_str("  %tt_m_new = sdiv i64 %tt_m_cur, %tt_i\n");
+    out.push_str("  store i64 %tt_m_new, i64* %tt_m_p\n");
+    out.push_str("  br label %tt_strip\n");
+    out.push_str("tt_incr:\n");
+    out.push_str("  %tt_i_new = add i64 %tt_i, 1\n");
+    out.push_str("  store i64 %tt_i_new, i64* %tt_i_p\n");
+    out.push_str("  br label %tt_head\n");
+    out.push_str("tt_tail:\n");
+    out.push_str("  %tt_m_fin = load i64, i64* %tt_m_p\n");
+    out.push_str("  %tt_big = icmp sgt i64 %tt_m_fin, 1\n");
+    out.push_str("  br i1 %tt_big, label %tt_last_fac, label %tt_fin\n");
+    out.push_str("tt_last_fac:\n");
+    out.push_str("  %tt_r_cur2 = load i64, i64* %tt_r_p\n");
+    out.push_str("  %tt_r_div2 = sdiv i64 %tt_r_cur2, %tt_m_fin\n");
+    out.push_str("  %tt_r_new2 = sub i64 %tt_r_cur2, %tt_r_div2\n");
+    out.push_str("  store i64 %tt_r_new2, i64* %tt_r_p\n");
+    out.push_str("  br label %tt_fin\n");
+    out.push_str("tt_fin:\n");
+    out.push_str("  %tt_r = load i64, i64* %tt_r_p\n");
+    out.push_str("  ret i64 %tt_r\n");
     out.push_str("}\n\n");
 
     // Closure #447: permutation P(n, k) = n*(n-1)*...*(n-k+1).

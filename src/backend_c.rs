@@ -11013,6 +11013,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __dsn = ({}); int64_t __dsr; if (__dsn <= 0) {{ __dsr = 0; }} else {{ __dsr = 0; int64_t __dsi = 1; while (__dsi * __dsi <= __dsn) {{ if (__dsn % __dsi == 0) {{ if (__dsi * __dsi == __dsn) __dsr += __dsi; else __dsr += __dsi + __dsn / __dsi; }} __dsi += 1; }} }} __dsr; }})",
             emit_expr(&args[0])
         ),
+        // Closure #471: Euler's totient φ(n) — count of k in
+        // [1, n] coprime to n. Uses Euler product:
+        //   φ(n) = n · prod_{p|n} (1 - 1/p)
+        // implemented iteratively by `result -= result/p` for
+        // each prime p dividing n (found by trial division).
+        "i64_totient" => format!(
+            "({{ int64_t __ttn = ({}); int64_t __ttr; if (__ttn <= 0) {{ __ttr = 0; }} else {{ __ttr = __ttn; int64_t __ttm = __ttn; int64_t __tti = 2; while (__tti * __tti <= __ttm) {{ if (__ttm % __tti == 0) {{ __ttr -= __ttr / __tti; while (__ttm % __tti == 0) __ttm /= __tti; }} __tti += 1; }} if (__ttm > 1) __ttr -= __ttr / __ttm; }} __ttr; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #438: quintic smoothstep. Polynomial
         // 6t^5 - 15t^4 + 10t^3 has zero first AND second
         // derivatives at t=0 and t=1, giving smoother

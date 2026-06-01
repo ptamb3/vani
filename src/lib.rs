@@ -16071,6 +16071,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_totient_typecheck_and_compile() {
+        // Closure #471: i64_totient (Euler's totient).
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_totient(12);
+              return a;
+            }
+        "#;
+        compile_to_c(source).expect("i64_totient must type-check");
+        compile_to_llvm(source).expect("i64_totient must compile to LLVM");
+    }
+
+    #[test]
     fn i64_divisor_sum_typecheck_and_compile() {
         // Closure #470: i64_divisor_sum.
         let source = r#"
