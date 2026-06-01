@@ -7740,6 +7740,27 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #496: f64_remap — to_lo + (x-from_lo)*(to_range)/(from_range).
+            if name == "f64_remap" {
+                let x = emit_expr(&args[0], ctx, out);
+                let fl = emit_expr(&args[1], ctx, out);
+                let fh = emit_expr(&args[2], ctx, out);
+                let tl = emit_expr(&args[3], ctx, out);
+                let th = emit_expr(&args[4], ctx, out);
+                let xd = ctx.fresh_tmp();
+                let tr = ctx.fresh_tmp();
+                let fr = ctx.fresh_tmp();
+                let mul = ctx.fresh_tmp();
+                let div = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = fsub double {}, {}\n", xd, x, fl));
+                out.push_str(&format!("  {} = fsub double {}, {}\n", tr, th, tl));
+                out.push_str(&format!("  {} = fsub double {}, {}\n", fr, fh, fl));
+                out.push_str(&format!("  {} = fmul double {}, {}\n", mul, xd, tr));
+                out.push_str(&format!("  {} = fdiv double {}, {}\n", div, mul, fr));
+                out.push_str(&format!("  {} = fadd double {}, {}\n", dest, tl, div));
+                return dest;
+            }
             // Closures #492-#495: RGB pack / unpack as 24-bit.
             if name == "i64_pack_rgb" {
                 let r = emit_expr(&args[0], ctx, out);

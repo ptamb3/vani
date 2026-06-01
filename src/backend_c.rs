@@ -11275,6 +11275,17 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         "i64_unpack_rgb_r" => format!("((({}) >> 16) & 0xFF)", emit_expr(&args[0])),
         "i64_unpack_rgb_g" => format!("((({}) >> 8) & 0xFF)", emit_expr(&args[0])),
         "i64_unpack_rgb_b" => format!("(({}) & 0xFF)", emit_expr(&args[0])),
+        // Closure #496: f64_remap(x, from_lo, from_hi, to_lo, to_hi)
+        // = to_lo + (x - from_lo) * (to_hi - to_lo) / (from_hi - from_lo).
+        // No clamping — extrapolation works outside [from_lo, from_hi].
+        "f64_remap" => format!(
+            "({{ double __rmx = ({}); double __rmfl = ({}); double __rmfh = ({}); double __rmtl = ({}); double __rmth = ({}); __rmtl + (__rmx - __rmfl) * (__rmth - __rmtl) / (__rmfh - __rmfl); }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2]),
+            emit_expr(&args[3]),
+            emit_expr(&args[4])
+        ),
         // Closure #488: uniform random in [0, 1). Uses
         // intent_rng_next() (the same source as rand_i64).
         // Divides by 2^63 to map u63 magnitude to [0, 1).
