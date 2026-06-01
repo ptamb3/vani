@@ -11255,6 +11255,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "(atan(({})) * 57.29577951308232)",
             emit_expr(&args[0])
         ),
+        // Closure #491: RGB → grayscale via ITU-R BT.601 weights:
+        //   Y = 0.299·R + 0.587·G + 0.114·B
+        "f64_rgb_to_grayscale" => format!(
+            "(0.299 * ({}) + 0.587 * ({}) + 0.114 * ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         // Closure #488: uniform random in [0, 1). Uses
         // intent_rng_next() (the same source as rand_i64).
         // Divides by 2^63 to map u63 magnitude to [0, 1).

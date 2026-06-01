@@ -15887,6 +15887,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_rgb_to_grayscale_typecheck_and_compile() {
+        // Closure #491: f64_rgb_to_grayscale.
+        let source = r#"
+            fn main() -> i64 {
+              let y: f64 = f64_rgb_to_grayscale(255.0, 128.0, 0.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("rgb_to_grayscale must type-check");
+        compile_to_llvm(source).expect("rgb_to_grayscale must compile to LLVM");
+    }
+
+    #[test]
     fn f64_atan_deg_typecheck_and_compile() {
         // Closure #490: f64_atan_deg.
         let source = r#"

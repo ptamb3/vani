@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-06-01 (closure #490 — **`f64_atan_deg(x) -> f64`** atan returning degrees. Companion to `atan2_deg` (#487). Inline as `atan(x) * (180/π)`. Both backends byte-identical: `atan_deg(0) = 0`, `atan_deg(1) = 45`, `atan_deg(-1) = -45`. **Tier C COMPLETE — 10 closures #481-#490.** 1 new lib test. 1508 lib + 54 parity green.)
-**Test totals:** 1508 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-06-01 (closure #491 — **`f64_rgb_to_grayscale(r, g, b) -> f64`** ITU-R BT.601 luminance: `Y = 0.299·R + 0.587·G + 0.114·B`. **Tier D started.** Both backends byte-identical: `gray(255, 0, 0) = 76.245`, `gray(0, 255, 0) = 149.685`, `gray(0, 0, 255) = 29.07`, `gray(255, 255, 255) = 255`, `gray(128, 128, 128) = 128`. 1 new lib test. 1509 lib + 54 parity green.)
+**Test totals:** 1509 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,

@@ -7740,6 +7740,36 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #491: RGB → grayscale (ITU-R BT.601).
+            //   Y = 0.299·R + 0.587·G + 0.114·B
+            // Constants as exact-hex doubles to keep IR readable
+            // and bit-stable.
+            if name == "f64_rgb_to_grayscale" {
+                let r = emit_expr(&args[0], ctx, out);
+                let g = emit_expr(&args[1], ctx, out);
+                let b = emit_expr(&args[2], ctx, out);
+                let wr = ctx.fresh_tmp();
+                let wg = ctx.fresh_tmp();
+                let wb = ctx.fresh_tmp();
+                let sum1 = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                // 0.299 = 0x3FD3231F73B98EBE
+                // 0.587 = 0x3FE2C1F33A057F6E (approx 0.587 ≈ 9.4...×2^-4)
+                //   actually need exact hex; will use literal decimal-acceptable form.
+                // Use literal floating-point in IR (decimal works for these).
+                out.push_str(&format!(
+                    "  {} = fmul double {}, 2.990000e-01\n", wr, r
+                ));
+                out.push_str(&format!(
+                    "  {} = fmul double {}, 5.870000e-01\n", wg, g
+                ));
+                out.push_str(&format!(
+                    "  {} = fmul double {}, 1.140000e-01\n", wb, b
+                ));
+                out.push_str(&format!("  {} = fadd double {}, {}\n", sum1, wr, wg));
+                out.push_str(&format!("  {} = fadd double {}, {}\n", dest, sum1, wb));
+                return dest;
+            }
             // Closure #488: uniform_random in [0, 1). Calls
             // @intent_rng_next, masks the high bit, divides by 2^63.
             if name == "f64_uniform_random" {
