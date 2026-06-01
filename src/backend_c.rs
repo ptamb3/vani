@@ -10560,6 +10560,21 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[2])
             )
         }
+        "str_hash_pair" => {
+            format!(
+                "intent_hash_combine(intent_hash_str(({})), intent_hash_str(({})))",
+                emit_expr(&args[0]),
+                emit_expr(&args[1])
+            )
+        }
+        "str_hash_triple" => {
+            format!(
+                "intent_hash_combine(intent_hash_combine(intent_hash_str(({})), intent_hash_str(({}))), intent_hash_str(({})))",
+                emit_expr(&args[0]),
+                emit_expr(&args[1]),
+                emit_expr(&args[2])
+            )
+        }
         "seed_rng" => {
             format!("intent_rng_seed(({}))", emit_expr(&args[0]))
         }

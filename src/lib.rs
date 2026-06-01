@@ -15961,6 +15961,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_hash_pair_triple_typecheck_and_compile() {
+        // Closures #503/#504: str_hash_pair / str_hash_triple.
+        let source = r#"
+            fn main() -> i64 {
+              let h2: u64 = str_hash_pair("foo", "bar");
+              let h3: u64 = str_hash_triple("foo", "bar", "baz");
+              return (h2 as i64) ^ (h3 as i64);
+            }
+        "#;
+        compile_to_c(source).expect("str_hash_pair/triple must type-check");
+        compile_to_llvm(source).expect("str_hash_pair/triple must compile to LLVM");
+    }
+
+    #[test]
     fn i64_rgb_pack_unpack_typecheck_and_compile() {
         // Closures #492-#495: i64_pack_rgb + unpack_r/g/b.
         let source = r#"

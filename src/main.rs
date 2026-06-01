@@ -448,6 +448,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "hash_combine_4"
                 || name == "hash_pair" || name == "hash_triple"
                 || name == "f64_hash_pair" || name == "f64_hash_triple"
+                || name == "str_hash_pair" || name == "str_hash_triple"
                 || name == "siphash_i64" || name == "siphash_str"
                 || name == "heap_push" || name == "heap_pop"
                 || name == "heap_peek" || name == "heapify"

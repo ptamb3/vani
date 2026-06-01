@@ -6828,6 +6828,57 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            if name == "str_hash_pair" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let ha = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hash_str(i8* {})\n",
+                    ha, a
+                ));
+                let hb = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hash_str(i8* {})\n",
+                    hb, b
+                ));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hash_combine(i64 {}, i64 {})\n",
+                    dest, ha, hb
+                ));
+                return dest;
+            }
+            if name == "str_hash_triple" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let c = emit_expr(&args[2], ctx, out);
+                let ha = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hash_str(i8* {})\n",
+                    ha, a
+                ));
+                let hb = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hash_str(i8* {})\n",
+                    hb, b
+                ));
+                let hc = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hash_str(i8* {})\n",
+                    hc, c
+                ));
+                let ab = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hash_combine(i64 {}, i64 {})\n",
+                    ab, ha, hb
+                ));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hash_combine(i64 {}, i64 {})\n",
+                    dest, ab, hc
+                ));
+                return dest;
+            }
             if name == "siphash_i64" {
                 let k0 = emit_expr(&args[0], ctx, out);
                 let k1 = emit_expr(&args[1], ctx, out);
@@ -14994,6 +15045,7 @@ fn program_uses_hash(program: &TypedProgram) -> bool {
                     | "hash_combine_3" | "hash_combine_4"
                     | "hash_pair" | "hash_triple"
                     | "f64_hash_pair" | "f64_hash_triple"
+                    | "str_hash_pair" | "str_hash_triple"
                 ) {
                     return true;
                 }
