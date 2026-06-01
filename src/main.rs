@@ -384,7 +384,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "i64_perm" || name == "i64_avg"
                 || name == "i64_wrap" || name == "f64_wrap"
                 || name == "f64_mod_floor"
-                || name == "i64_min_3"
+                || name == "i64_min_3" || name == "i64_max_3"
                 || name == "f64_sigmoid" || name == "f64_softsign"
                 || name == "f64_step" || name == "f64_smoothstep"
                 || name == "f64_smoothstep5"

@@ -8434,21 +8434,26 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
-            // Closure #458: i64_min_3 — three-arg min via chained
-            // icmp slt + select.
-            if name == "i64_min_3" {
+            // Closures #458 / #459: three-arg min / max via
+            // chained icmp slt-or-sgt + select.
+            if name == "i64_min_3" || name == "i64_max_3" {
                 let a = emit_expr(&args[0], ctx, out);
                 let b = emit_expr(&args[1], ctx, out);
                 let c = emit_expr(&args[2], ctx, out);
+                let pred = if name == "i64_min_3" { "slt" } else { "sgt" };
                 let cmp1 = ctx.fresh_tmp();
                 let ab = ctx.fresh_tmp();
                 let cmp2 = ctx.fresh_tmp();
                 let dest = ctx.fresh_tmp();
-                out.push_str(&format!("  {} = icmp slt i64 {}, {}\n", cmp1, a, b));
+                out.push_str(&format!(
+                    "  {} = icmp {} i64 {}, {}\n", cmp1, pred, a, b
+                ));
                 out.push_str(&format!(
                     "  {} = select i1 {}, i64 {}, i64 {}\n", ab, cmp1, a, b
                 ));
-                out.push_str(&format!("  {} = icmp slt i64 {}, {}\n", cmp2, ab, c));
+                out.push_str(&format!(
+                    "  {} = icmp {} i64 {}, {}\n", cmp2, pred, ab, c
+                ));
                 out.push_str(&format!(
                     "  {} = select i1 {}, i64 {}, i64 {}\n", dest, cmp2, ab, c
                 ));

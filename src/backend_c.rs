@@ -10699,6 +10699,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2])
         ),
+        // Closure #459: i64_max_3(a, b, c) — three-arg max.
+        "i64_max_3" => format!(
+            "({{ int64_t __M3a = ({}); int64_t __M3b = ({}); int64_t __M3c = ({}); int64_t __M3ab = __M3a > __M3b ? __M3a : __M3b; __M3ab > __M3c ? __M3ab : __M3c; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         "f64_min" => format!("fmin(({}), ({}))", emit_expr(&args[0]), emit_expr(&args[1])),
         "f64_max" => format!("fmax(({}), ({}))", emit_expr(&args[0]), emit_expr(&args[1])),
         "f64_clamp" => format!(
