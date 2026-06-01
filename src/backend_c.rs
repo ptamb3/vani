@@ -11204,6 +11204,11 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ const char* __fb_s = ({}); Enum_Option__i64 __fb_r; if (__fb_s[0] == 0) {{ __fb_r.tag = 1; __fb_r.payload = 0; }} else {{ __fb_r.tag = 0; __fb_r.payload = (int64_t)(unsigned char)__fb_s[0]; }} __fb_r; }})",
             emit_expr(&args[0])
         ),
+        // Closure #467: last byte of s as Option<i64>.
+        "str_last_byte" => format!(
+            "({{ const char* __lb_s = ({}); size_t __lb_n = strlen(__lb_s); Enum_Option__i64 __lb_r; if (__lb_n == 0) {{ __lb_r.tag = 1; __lb_r.payload = 0; }} else {{ __lb_r.tag = 0; __lb_r.payload = (int64_t)(unsigned char)__lb_s[__lb_n - 1]; }} __lb_r; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #441: count occurrences of byte b in s.
         // Walks the string until the null terminator.
         "str_byte_count" => format!(

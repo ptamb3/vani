@@ -16401,6 +16401,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_last_byte_typecheck_and_compile() {
+        // Closure #467: str_last_byte -> Option<i64>.
+        let source = r#"
+            fn main() -> i64 {
+              let i: i64 = option_unwrap_or(str_last_byte("Hello"), 0 - 1);
+              return i;
+            }
+        "#;
+        compile_to_c(source).expect("str_last_byte must type-check");
+        compile_to_llvm(source).expect("str_last_byte must compile to LLVM");
+    }
+
+    #[test]
     fn str_first_byte_typecheck_and_compile() {
         // Closure #466: str_first_byte -> Option<i64>.
         let source = r#"

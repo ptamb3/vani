@@ -8057,6 +8057,63 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #467: last byte of s as Option<i64>. None for empty s.
+            if name == "str_last_byte" {
+                let s = emit_expr(&args[0], ctx, out);
+                let len = ctx.fresh_tmp();
+                let is_empty = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @strlen(i8* {})\n", len, s
+                ));
+                out.push_str(&format!(
+                    "  {} = icmp eq i64 {}, 0\n", is_empty, len
+                ));
+                let some_lbl = ctx.fresh_label("lb_some");
+                let none_lbl = ctx.fresh_label("lb_none");
+                let done = ctx.fresh_label("lb_done");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    is_empty, none_lbl, some_lbl
+                ));
+                out.push_str(&format!("{}:\n", some_lbl));
+                let last_idx = ctx.fresh_tmp();
+                let last_p = ctx.fresh_tmp();
+                let lb = ctx.fresh_tmp();
+                let lb_i64 = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = sub i64 {}, 1\n", last_idx, len));
+                out.push_str(&format!(
+                    "  {} = getelementptr i8, i8* {}, i64 {}\n", last_p, s, last_idx
+                ));
+                out.push_str(&format!("  {} = load i8, i8* {}\n", lb, last_p));
+                out.push_str(&format!("  {} = zext i8 {} to i64\n", lb_i64, lb));
+                let r1s = ctx.fresh_tmp();
+                let r2s = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 undef, i32 0, 0\n", r1s
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 {}, i64 {}, 1\n",
+                    r2s, r1s, lb_i64
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", none_lbl));
+                let r1n = ctx.fresh_tmp();
+                let r2n = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 undef, i32 1, 0\n", r1n
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 {}, i64 0, 1\n", r2n, r1n
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", done));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = phi %Enum_Option__i64 [ {}, %{} ], [ {}, %{} ]\n",
+                    dest, r2s, some_lbl, r2n, none_lbl
+                ));
+                return dest;
+            }
             // Closure #466: first byte as Option<i64>. None for empty s.
             if name == "str_first_byte" {
                 let s = emit_expr(&args[0], ctx, out);
