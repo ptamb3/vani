@@ -16188,6 +16188,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_min_3_typecheck_and_compile() {
+        // Closure #460: f64_min_3 (3-arg min for f64).
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_min_3(3.14, 2.71, 1.41);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("f64_min_3 must type-check");
+        compile_to_llvm(source).expect("f64_min_3 must compile to LLVM");
+    }
+
+    #[test]
     fn i64_max_3_typecheck_and_compile() {
         // Closure #459: i64_max_3 (3-arg max).
         let source = r#"
