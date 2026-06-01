@@ -5969,6 +5969,28 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
             sn = struct_name,
         ));
         out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__count_value(const {sn}* xs, int64_t v) {{\
+\n    int64_t c = 0;\
+\n    for (uint64_t i = 0; i < xs->len; i++) if (xs->data[i] == v) c++;\
+\n    return c;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__index_of_value(const {sn}* xs, int64_t v) {{\
+\n    for (uint64_t i = 0; i < xs->len; i++) if (xs->data[i] == v) return (int64_t)i;\
+\n    return -1;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__last_index_of_value(const {sn}* xs, int64_t v) {{\
+\n    for (int64_t i = (int64_t)xs->len - 1; i >= 0; i--) if (xs->data[i] == v) return i;\
+\n    return -1;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
             "static INTENT_UNUSED int64_t {sn}__count(const {sn}* xs, {sn}__pred_fn p) {{\
 \n    int64_t c = 0;\
 \n    for (uint64_t i = 0; i < xs->len; i++) if (p(xs->data[i])) c++;\
@@ -9773,6 +9795,18 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         }
         "vec_argmin" | "vec_argmax" => {
             // Closures #505/#506. args = ref xs, default.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, ({}))",
+                    vec_helper(element, name.strip_prefix("vec_").unwrap()),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1])
+                ),
+                _ => unreachable!("{}() arg 0 must be ref Vec<i64>", name),
+            }
+        }
+        "vec_count_value" | "vec_index_of_value" | "vec_last_index_of_value" => {
+            // Closures #507/#508/#509. args = ref xs, search-value.
             match args[0].ty.deref() {
                 Type::Vec(element) => format!(
                     "{}({}, ({}))",

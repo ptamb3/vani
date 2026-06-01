@@ -10144,6 +10144,9 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "vec_max"
                     | "vec_argmin"
                     | "vec_argmax"
+                    | "vec_count_value"
+                    | "vec_index_of_value"
+                    | "vec_last_index_of_value"
                     | "vec_count"
                     | "vec_any"
                     | "vec_all"
@@ -10198,7 +10201,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 } else if let Some(op) = name.strip_prefix("vec_") {
                     // closure #322 reductions + #324 chain share
                     // this strip-the-`vec_` prefix shape.
-                    if matches!(op, "sum" | "product" | "min" | "max" | "argmin" | "argmax" | "count" | "any" | "all" | "chain") {
+                    if matches!(op, "sum" | "product" | "min" | "max" | "argmin" | "argmax" | "count_value" | "index_of_value" | "last_index_of_value" | "count" | "any" | "all" | "chain") {
                         op
                     } else {
                         name.as_str()
@@ -22921,6 +22924,131 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
             out.push_str("  ret i64 %r\n");
             out.push_str("}\n");
         }
+
+        // Closures #507/#508/#509: value-search reductions.
+        // count_value(v) — count occurrences of v.
+        // index_of_value(v) — first index of v, or -1 if absent.
+        // last_index_of_value(v) — last index of v, or -1 if absent.
+        let cv_name = format!("@intent_vec_{}__count_value", tag);
+        out.push_str(&format!(
+            "define i64 {sn}({sty}* %xs_p, i64 %v) {{\n",
+            sn = cv_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %data = load i64*, i64** %data_p\n");
+        out.push_str("  %n = load i64, i64* %len_p\n");
+        out.push_str("  %c_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %c_p\n");
+        out.push_str("  %i_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %i_p\n");
+        out.push_str("  br label %cv_loop\n");
+        out.push_str("cv_loop:\n");
+        out.push_str("  %i = load i64, i64* %i_p\n");
+        out.push_str("  %cont = icmp slt i64 %i, %n\n");
+        out.push_str("  br i1 %cont, label %cv_body, label %cv_done\n");
+        out.push_str("cv_body:\n");
+        out.push_str("  %slot = getelementptr i64, i64* %data, i64 %i\n");
+        out.push_str("  %elt = load i64, i64* %slot\n");
+        out.push_str("  %eq = icmp eq i64 %elt, %v\n");
+        out.push_str("  %c_old = load i64, i64* %c_p\n");
+        out.push_str("  %inc = zext i1 %eq to i64\n");
+        out.push_str("  %c_new = add i64 %c_old, %inc\n");
+        out.push_str("  store i64 %c_new, i64* %c_p\n");
+        out.push_str("  %i_n = add i64 %i, 1\n");
+        out.push_str("  store i64 %i_n, i64* %i_p\n");
+        out.push_str("  br label %cv_loop\n");
+        out.push_str("cv_done:\n");
+        out.push_str("  %r = load i64, i64* %c_p\n");
+        out.push_str("  ret i64 %r\n");
+        out.push_str("}\n");
+
+        let iv_name = format!("@intent_vec_{}__index_of_value", tag);
+        out.push_str(&format!(
+            "define i64 {sn}({sty}* %xs_p, i64 %v) {{\n",
+            sn = iv_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %data = load i64*, i64** %data_p\n");
+        out.push_str("  %n = load i64, i64* %len_p\n");
+        out.push_str("  %i_p = alloca i64\n");
+        out.push_str("  store i64 0, i64* %i_p\n");
+        out.push_str("  br label %iv_loop\n");
+        out.push_str("iv_loop:\n");
+        out.push_str("  %i = load i64, i64* %i_p\n");
+        out.push_str("  %cont = icmp slt i64 %i, %n\n");
+        out.push_str("  br i1 %cont, label %iv_body, label %iv_miss\n");
+        out.push_str("iv_body:\n");
+        out.push_str("  %slot = getelementptr i64, i64* %data, i64 %i\n");
+        out.push_str("  %elt = load i64, i64* %slot\n");
+        out.push_str("  %eq = icmp eq i64 %elt, %v\n");
+        out.push_str("  br i1 %eq, label %iv_hit, label %iv_next\n");
+        out.push_str("iv_next:\n");
+        out.push_str("  %i_n = add i64 %i, 1\n");
+        out.push_str("  store i64 %i_n, i64* %i_p\n");
+        out.push_str("  br label %iv_loop\n");
+        out.push_str("iv_hit:\n");
+        out.push_str("  ret i64 %i\n");
+        out.push_str("iv_miss:\n");
+        out.push_str("  ret i64 -1\n");
+        out.push_str("}\n");
+
+        let lv_name = format!("@intent_vec_{}__last_index_of_value", tag);
+        out.push_str(&format!(
+            "define i64 {sn}({sty}* %xs_p, i64 %v) {{\n",
+            sn = lv_name,
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+            sty = s_ty,
+        ));
+        out.push_str(&format!(
+            "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+            sty = s_ty,
+        ));
+        out.push_str("  %data = load i64*, i64** %data_p\n");
+        out.push_str("  %n = load i64, i64* %len_p\n");
+        out.push_str("  %empty = icmp eq i64 %n, 0\n");
+        out.push_str("  br i1 %empty, label %lv_miss, label %lv_init\n");
+        out.push_str("lv_init:\n");
+        out.push_str("  %start = sub i64 %n, 1\n");
+        out.push_str("  %i_p = alloca i64\n");
+        out.push_str("  store i64 %start, i64* %i_p\n");
+        out.push_str("  br label %lv_loop\n");
+        out.push_str("lv_loop:\n");
+        out.push_str("  %i = load i64, i64* %i_p\n");
+        out.push_str("  %slot = getelementptr i64, i64* %data, i64 %i\n");
+        out.push_str("  %elt = load i64, i64* %slot\n");
+        out.push_str("  %eq = icmp eq i64 %elt, %v\n");
+        out.push_str("  br i1 %eq, label %lv_hit, label %lv_next\n");
+        out.push_str("lv_next:\n");
+        out.push_str("  %is_zero = icmp eq i64 %i, 0\n");
+        out.push_str("  br i1 %is_zero, label %lv_miss, label %lv_dec\n");
+        out.push_str("lv_dec:\n");
+        out.push_str("  %i_n = sub i64 %i, 1\n");
+        out.push_str("  store i64 %i_n, i64* %i_p\n");
+        out.push_str("  br label %lv_loop\n");
+        out.push_str("lv_hit:\n");
+        out.push_str("  ret i64 %i\n");
+        out.push_str("lv_miss:\n");
+        out.push_str("  ret i64 -1\n");
+        out.push_str("}\n");
 
         // count(p) → i64: number of matching elements.
         let count_name = format!("@intent_vec_{}__count", tag);

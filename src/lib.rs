@@ -15990,6 +15990,23 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_value_search_typecheck_and_compile() {
+        // Closures #507/#508/#509: vec_count_value / vec_index_of_value
+        // / vec_last_index_of_value.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(10, 20, 30, 20, 10);
+              let c: i64 = vec_count_value(ref xs, 20);
+              let f: i64 = vec_index_of_value(ref xs, 20);
+              let l: i64 = vec_last_index_of_value(ref xs, 20);
+              return c + f + l;
+            }
+        "#;
+        compile_to_c(source).expect("vec value-search must type-check");
+        compile_to_llvm(source).expect("vec value-search must compile to LLVM");
+    }
+
+    #[test]
     fn i64_rgb_pack_unpack_typecheck_and_compile() {
         // Closures #492-#495: i64_pack_rgb + unpack_r/g/b.
         let source = r#"
