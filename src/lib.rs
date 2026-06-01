@@ -15972,6 +15972,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_harmonic_quadratic_mean_typecheck_and_compile() {
+        // Closure #452: harmonic + quadratic means.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_harmonic_mean(2.0, 6.0);
+              let b: f64 = f64_quadratic_mean(3.0, 4.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("harmonic/quadratic means must type-check");
+        compile_to_llvm(source).expect("harmonic/quadratic means must compile to LLVM");
+    }
+
+    #[test]
     fn f64_safe_log_geometric_mean_typecheck_and_compile() {
         // Closure #451: f64_safe_log + f64_geometric_mean.
         let source = r#"

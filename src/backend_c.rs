@@ -11042,6 +11042,19 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        // Closure #452: harmonic + quadratic means.
+        // harmonic(a, b) = 2ab / (a + b), or 0 if a + b == 0.
+        // quadratic(a, b) = sqrt((a² + b²) / 2).  (= RMS for 2 vals)
+        "f64_harmonic_mean" => format!(
+            "({{ double __hma = ({}); double __hmb = ({}); double __hms = __hma + __hmb; __hms == 0.0 ? 0.0 : (2.0 * __hma * __hmb) / __hms; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "f64_quadratic_mean" => format!(
+            "({{ double __qma = ({}); double __qmb = ({}); sqrt((__qma * __qma + __qmb * __qmb) / 2.0); }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #433: libm special functions.
         //   erf(x)    — Gauss error function
         //   erfc(x)   — complementary error function (= 1 - erf(x))

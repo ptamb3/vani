@@ -7464,6 +7464,48 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #452: harmonic mean = 2ab / (a+b), 0 if a+b=0.
+            if name == "f64_harmonic_mean" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let s = ctx.fresh_tmp();
+                let s_zero = ctx.fresh_tmp();
+                let ab = ctx.fresh_tmp();
+                let two_ab = ctx.fresh_tmp();
+                let q = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = fadd double {}, {}\n", s, a, b));
+                out.push_str(&format!(
+                    "  {} = fcmp oeq double {}, 0.0\n", s_zero, s
+                ));
+                out.push_str(&format!("  {} = fmul double {}, {}\n", ab, a, b));
+                out.push_str(&format!(
+                    "  {} = fmul double 2.0, {}\n", two_ab, ab
+                ));
+                out.push_str(&format!("  {} = fdiv double {}, {}\n", q, two_ab, s));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 0.0, double {}\n", dest, s_zero, q
+                ));
+                return dest;
+            }
+            // Closure #452: quadratic mean = sqrt((a² + b²) / 2).
+            if name == "f64_quadratic_mean" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let a2 = ctx.fresh_tmp();
+                let b2 = ctx.fresh_tmp();
+                let sum = ctx.fresh_tmp();
+                let half = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = fmul double {}, {}\n", a2, a, a));
+                out.push_str(&format!("  {} = fmul double {}, {}\n", b2, b, b));
+                out.push_str(&format!("  {} = fadd double {}, {}\n", sum, a2, b2));
+                out.push_str(&format!("  {} = fdiv double {}, 2.0\n", half, sum));
+                out.push_str(&format!(
+                    "  {} = call double @sqrt(double {})\n", dest, half
+                ));
+                return dest;
+            }
             // Closure #451: f64_geometric_mean(a, b) = sqrt(a*b)
             // with negative product clamped to 0.
             if name == "f64_geometric_mean" {
