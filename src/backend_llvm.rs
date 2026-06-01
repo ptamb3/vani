@@ -5453,6 +5453,19 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closures #516-#519: Vec<i64> bool predicates.
+            if matches!(name.as_str(),
+                "vec_all_equal" | "vec_is_sorted_asc"
+                | "vec_is_sorted_desc" | "vec_is_palindrome") {
+                let op = name.strip_prefix("vec_").unwrap();
+                let xs = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i1 @intent_vec_int64_t_{}(%intent_vec_i64* {})\n",
+                    dest, op, xs
+                ));
+                return dest;
+            }
             // Closure #399: vec_dot(ref xs, ref ys) -> i64.
             if name == "vec_dot" {
                 let xs = emit_expr(&args[0], ctx, out);
@@ -12707,6 +12720,162 @@ pub(crate) fn emit_intent_vec_int64_utility_definitions(out: &mut String) {
         ));
         out.push_str("}\n\n");
     }
+
+    // ---- Closures #516-#519: Vec<i64> bool predicates.
+    // all_equal / is_sorted_asc / is_sorted_desc share a "fail-fast
+    // pairwise" shape: compare adjacent elements (or first vs each)
+    // and bail to `false` on mismatch.
+    // For empty/1-elt input each predicate is vacuously true.
+    for (op, cmp_pred, prefix, ref_kind) in [
+        ("all_equal",      "ne",  "vae", "first"),
+        ("is_sorted_asc",  "slt", "vsa", "prev"),
+        ("is_sorted_desc", "sgt", "vsd", "prev"),
+    ].iter() {
+        out.push_str(&format!(
+            "define i1 @intent_vec_int64_t_{op}(%intent_vec_i64* %xs) {{\n",
+            op = op,
+        ));
+        out.push_str(&format!(
+            "  %{p}_lp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 1\n",
+            p = prefix,
+        ));
+        out.push_str(&format!(
+            "  %{p}_len = load i64, i64* %{p}_lp\n",
+            p = prefix,
+        ));
+        out.push_str(&format!(
+            "  %{p}_short = icmp ult i64 %{p}_len, 2\n",
+            p = prefix,
+        ));
+        out.push_str(&format!(
+            "  br i1 %{p}_short, label %{p}_true, label %{p}_setup\n",
+            p = prefix,
+        ));
+        out.push_str(&format!("{p}_true:\n  ret i1 1\n", p = prefix));
+        out.push_str(&format!("{p}_false:\n  ret i1 0\n", p = prefix));
+        out.push_str(&format!("{p}_setup:\n", p = prefix));
+        out.push_str(&format!(
+            "  %{p}_dp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 0\n",
+            p = prefix,
+        ));
+        out.push_str(&format!(
+            "  %{p}_src = load i64*, i64** %{p}_dp\n",
+            p = prefix,
+        ));
+        out.push_str(&format!(
+            "  %{p}_first = load i64, i64* %{p}_src\n",
+            p = prefix,
+        ));
+        out.push_str(&format!(
+            "  %{p}_i_p = alloca i64\n",
+            p = prefix,
+        ));
+        out.push_str(&format!(
+            "  store i64 1, i64* %{p}_i_p\n",
+            p = prefix,
+        ));
+        out.push_str(&format!(
+            "  br label %{p}_head\n",
+            p = prefix,
+        ));
+        out.push_str(&format!("{p}_head:\n", p = prefix));
+        out.push_str(&format!(
+            "  %{p}_i = load i64, i64* %{p}_i_p\n",
+            p = prefix,
+        ));
+        out.push_str(&format!(
+            "  %{p}_done = icmp uge i64 %{p}_i, %{p}_len\n",
+            p = prefix,
+        ));
+        out.push_str(&format!(
+            "  br i1 %{p}_done, label %{p}_true, label %{p}_body\n",
+            p = prefix,
+        ));
+        out.push_str(&format!("{p}_body:\n", p = prefix));
+        out.push_str(&format!(
+            "  %{p}_slot_cur = getelementptr i64, i64* %{p}_src, i64 %{p}_i\n",
+            p = prefix,
+        ));
+        out.push_str(&format!(
+            "  %{p}_cur = load i64, i64* %{p}_slot_cur\n",
+            p = prefix,
+        ));
+        let ref_val = match *ref_kind {
+            "first" => format!("%{p}_first", p = prefix),
+            "prev" => {
+                out.push_str(&format!(
+                    "  %{p}_prev_idx = sub i64 %{p}_i, 1\n",
+                    p = prefix,
+                ));
+                out.push_str(&format!(
+                    "  %{p}_slot_prev = getelementptr i64, i64* %{p}_src, i64 %{p}_prev_idx\n",
+                    p = prefix,
+                ));
+                out.push_str(&format!(
+                    "  %{p}_prev = load i64, i64* %{p}_slot_prev\n",
+                    p = prefix,
+                ));
+                format!("%{p}_prev", p = prefix)
+            }
+            _ => unreachable!(),
+        };
+        out.push_str(&format!(
+            "  %{p}_bad = icmp {pred} i64 %{p}_cur, {rv}\n",
+            p = prefix, pred = cmp_pred, rv = ref_val,
+        ));
+        out.push_str(&format!(
+            "  br i1 %{p}_bad, label %{p}_false, label %{p}_next\n",
+            p = prefix,
+        ));
+        out.push_str(&format!("{p}_next:\n", p = prefix));
+        out.push_str(&format!(
+            "  %{p}_i_inc = add i64 %{p}_i, 1\n",
+            p = prefix,
+        ));
+        out.push_str(&format!(
+            "  store i64 %{p}_i_inc, i64* %{p}_i_p\n",
+            p = prefix,
+        ));
+        out.push_str(&format!("  br label %{p}_head\n", p = prefix));
+        out.push_str("}\n\n");
+    }
+
+    // ---- Closure #519: vec_is_palindrome — two-pointer walk.
+    out.push_str("define i1 @intent_vec_int64_t_is_palindrome(%intent_vec_i64* %xs) {\n");
+    out.push_str("  %vp_lp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 1\n");
+    out.push_str("  %vp_len = load i64, i64* %vp_lp\n");
+    out.push_str("  %vp_short = icmp ult i64 %vp_len, 2\n");
+    out.push_str("  br i1 %vp_short, label %vp_true, label %vp_setup\n");
+    out.push_str("vp_true:\n  ret i1 1\n");
+    out.push_str("vp_false:\n  ret i1 0\n");
+    out.push_str("vp_setup:\n");
+    out.push_str("  %vp_dp = getelementptr %intent_vec_i64, %intent_vec_i64* %xs, i32 0, i32 0\n");
+    out.push_str("  %vp_src = load i64*, i64** %vp_dp\n");
+    out.push_str("  %vp_i_p = alloca i64\n");
+    out.push_str("  %vp_j_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %vp_i_p\n");
+    out.push_str("  %vp_j0 = sub i64 %vp_len, 1\n");
+    out.push_str("  store i64 %vp_j0, i64* %vp_j_p\n");
+    out.push_str("  br label %vp_head\n");
+    out.push_str("vp_head:\n");
+    out.push_str("  %vp_i = load i64, i64* %vp_i_p\n");
+    out.push_str("  %vp_j = load i64, i64* %vp_j_p\n");
+    out.push_str("  %vp_done = icmp uge i64 %vp_i, %vp_j\n");
+    out.push_str("  br i1 %vp_done, label %vp_true, label %vp_body\n");
+    out.push_str("vp_body:\n");
+    out.push_str("  %vp_si = getelementptr i64, i64* %vp_src, i64 %vp_i\n");
+    out.push_str("  %vp_sj = getelementptr i64, i64* %vp_src, i64 %vp_j\n");
+    out.push_str("  %vp_vi = load i64, i64* %vp_si\n");
+    out.push_str("  %vp_vj = load i64, i64* %vp_sj\n");
+    out.push_str("  %vp_neq = icmp ne i64 %vp_vi, %vp_vj\n");
+    out.push_str("  br i1 %vp_neq, label %vp_false, label %vp_next\n");
+    out.push_str("vp_next:\n");
+    out.push_str("  %vp_i_inc = add i64 %vp_i, 1\n");
+    out.push_str("  %vp_j_dec = sub i64 %vp_j, 1\n");
+    out.push_str("  store i64 %vp_i_inc, i64* %vp_i_p\n");
+    out.push_str("  store i64 %vp_j_dec, i64* %vp_j_p\n");
+    out.push_str("  br label %vp_head\n");
+    out.push_str("}\n\n");
 
     // ---- Closures #510/#511: vec_cumulative_max / vec_cumulative_min.
     // Running extremum: result[i] = extremum(xs[0..=i]). Tracks the

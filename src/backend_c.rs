@@ -2487,6 +2487,10 @@ pub(crate) fn program_uses_graph_vec_builtin(program: &TypedProgram) -> bool {
                     || name == "vec_running_xor"
                     || name == "vec_running_and"
                     || name == "vec_running_or"
+                    || name == "vec_all_equal"
+                    || name == "vec_is_sorted_asc"
+                    || name == "vec_is_sorted_desc"
+                    || name == "vec_is_palindrome"
                     || name == "vec_dot"
                     || name == "vec_intersect"
                     || name == "vec_difference"
@@ -4847,6 +4851,40 @@ pub(crate) fn emit_intent_vec_int64_utility_helpers_c(out: &mut String) {
          \x20 }\n\
          \x20 v.len = xs->len;\n\
          \x20 return v;\n\
+         }\n\
+         /* Closures #516-#519: Vec<i64> predicates.\n\
+          *   all_equal       — true iff all elts equal (vacuous: empty/single → true)\n\
+          *   is_sorted_asc   — true iff non-decreasing (vacuous: empty/single → true)\n\
+          *   is_sorted_desc  — true iff non-increasing (vacuous: empty/single → true)\n\
+          *   is_palindrome   — true iff xs == reverse(xs) (vacuous: empty/single → true) */\n\
+         static INTENT_UNUSED bool intent_vec_int64_t_all_equal(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+         static INTENT_UNUSED bool intent_vec_int64_t_all_equal(const intent_vec_int64_t* xs) {\n\
+         \x20 if (!xs || xs->len < 2) return true;\n\
+         \x20 int64_t v = xs->data[0];\n\
+         \x20 for (uint64_t i = 1; i < xs->len; i++) if (xs->data[i] != v) return false;\n\
+         \x20 return true;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_vec_int64_t_is_sorted_asc(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+         static INTENT_UNUSED bool intent_vec_int64_t_is_sorted_asc(const intent_vec_int64_t* xs) {\n\
+         \x20 if (!xs || xs->len < 2) return true;\n\
+         \x20 for (uint64_t i = 1; i < xs->len; i++) if (xs->data[i] < xs->data[i-1]) return false;\n\
+         \x20 return true;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_vec_int64_t_is_sorted_desc(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+         static INTENT_UNUSED bool intent_vec_int64_t_is_sorted_desc(const intent_vec_int64_t* xs) {\n\
+         \x20 if (!xs || xs->len < 2) return true;\n\
+         \x20 for (uint64_t i = 1; i < xs->len; i++) if (xs->data[i] > xs->data[i-1]) return false;\n\
+         \x20 return true;\n\
+         }\n\
+         static INTENT_UNUSED bool intent_vec_int64_t_is_palindrome(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+         static INTENT_UNUSED bool intent_vec_int64_t_is_palindrome(const intent_vec_int64_t* xs) {\n\
+         \x20 if (!xs || xs->len < 2) return true;\n\
+         \x20 uint64_t i = 0; uint64_t j = xs->len - 1;\n\
+         \x20 while (i < j) {\n\
+         \x20   if (xs->data[i] != xs->data[j]) return false;\n\
+         \x20   i++; j--;\n\
+         \x20 }\n\
+         \x20 return true;\n\
          }\n\
          /* Closures #510/#511: vec_cumulative_max / vec_cumulative_min.\n\
           * Running max / min: result[i] = extremum(xs[0..=i]). */\n\
@@ -9674,6 +9712,23 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         ),
         "vec_running_or" => format!(
             "intent_vec_int64_t_running_or({})",
+            emit_expr(&args[0])
+        ),
+        // Closures #516-#519: Vec<i64> predicates.
+        "vec_all_equal" => format!(
+            "intent_vec_int64_t_all_equal({})",
+            emit_expr(&args[0])
+        ),
+        "vec_is_sorted_asc" => format!(
+            "intent_vec_int64_t_is_sorted_asc({})",
+            emit_expr(&args[0])
+        ),
+        "vec_is_sorted_desc" => format!(
+            "intent_vec_int64_t_is_sorted_desc({})",
+            emit_expr(&args[0])
+        ),
+        "vec_is_palindrome" => format!(
+            "intent_vec_int64_t_is_palindrome({})",
             emit_expr(&args[0])
         ),
         // Closure #399: vec_dot(ref xs, ref ys) -> i64.

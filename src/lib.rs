@@ -16022,6 +16022,24 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_predicates_typecheck_and_compile() {
+        // Closures #516-#519: vec_all_equal / vec_is_sorted_asc /
+        // vec_is_sorted_desc / vec_is_palindrome.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(1, 2, 3, 2, 1);
+              let eq: bool = vec_all_equal(ref xs);
+              let asc: bool = vec_is_sorted_asc(ref xs);
+              let dsc: bool = vec_is_sorted_desc(ref xs);
+              let pal: bool = vec_is_palindrome(ref xs);
+              return if pal { 1 } else { 0 };
+            }
+        "#;
+        compile_to_c(source).expect("vec predicates must type-check");
+        compile_to_llvm(source).expect("vec predicates must compile to LLVM");
+    }
+
+    #[test]
     fn vec_running_monoids_typecheck_and_compile() {
         // Closures #512-#515: vec_running_product / xor / and / or.
         let source = r#"
