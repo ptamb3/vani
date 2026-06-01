@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-06-01 (closure #491 — **`f64_rgb_to_grayscale(r, g, b) -> f64`** ITU-R BT.601 luminance: `Y = 0.299·R + 0.587·G + 0.114·B`. **Tier D started.** Both backends byte-identical: `gray(255, 0, 0) = 76.245`, `gray(0, 255, 0) = 149.685`, `gray(0, 0, 255) = 29.07`, `gray(255, 255, 255) = 255`, `gray(128, 128, 128) = 128`. 1 new lib test. 1509 lib + 54 parity green.)
-**Test totals:** 1509 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-06-01 (closures #492-#495 — **`i64_pack_rgb / i64_unpack_rgb_r / _g / _b`** 24-bit RGB packing. `pack_rgb(r, g, b) = (r & 0xFF) << 16 | (g & 0xFF) << 8 | (b & 0xFF)`. Unpack ops extract individual channels via shift + mask. Both backends byte-identical: `pack(255, 128, 64) = 16744512` (0xFF8040), `unpack_r/g/b` round-trip correctly. `red = pack(255, 0, 0) = 16711680` (0xFF0000). 1 new lib test covering all four. 1510 lib + 54 parity green.)
+**Test totals:** 1510 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,

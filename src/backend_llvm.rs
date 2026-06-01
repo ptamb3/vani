@@ -7740,6 +7740,47 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closures #492-#495: RGB pack / unpack as 24-bit.
+            if name == "i64_pack_rgb" {
+                let r = emit_expr(&args[0], ctx, out);
+                let g = emit_expr(&args[1], ctx, out);
+                let b = emit_expr(&args[2], ctx, out);
+                let r_byte = ctx.fresh_tmp();
+                let g_byte = ctx.fresh_tmp();
+                let b_byte = ctx.fresh_tmp();
+                let r_shift = ctx.fresh_tmp();
+                let g_shift = ctx.fresh_tmp();
+                let rg = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = and i64 {}, 255\n", r_byte, r));
+                out.push_str(&format!("  {} = and i64 {}, 255\n", g_byte, g));
+                out.push_str(&format!("  {} = and i64 {}, 255\n", b_byte, b));
+                out.push_str(&format!("  {} = shl i64 {}, 16\n", r_shift, r_byte));
+                out.push_str(&format!("  {} = shl i64 {}, 8\n", g_shift, g_byte));
+                out.push_str(&format!("  {} = or i64 {}, {}\n", rg, r_shift, g_shift));
+                out.push_str(&format!("  {} = or i64 {}, {}\n", dest, rg, b_byte));
+                return dest;
+            }
+            if matches!(
+                name.as_str(),
+                "i64_unpack_rgb_r" | "i64_unpack_rgb_g" | "i64_unpack_rgb_b"
+            ) {
+                let p = emit_expr(&args[0], ctx, out);
+                let shift = match name.as_str() {
+                    "i64_unpack_rgb_r" => 16,
+                    "i64_unpack_rgb_g" => 8,
+                    _ => 0,
+                };
+                let shifted = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                if shift == 0 {
+                    out.push_str(&format!("  {} = and i64 {}, 255\n", dest, p));
+                } else {
+                    out.push_str(&format!("  {} = lshr i64 {}, {}\n", shifted, p, shift));
+                    out.push_str(&format!("  {} = and i64 {}, 255\n", dest, shifted));
+                }
+                return dest;
+            }
             // Closure #491: RGB → grayscale (ITU-R BT.601).
             //   Y = 0.299·R + 0.587·G + 0.114·B
             // Constants as exact-hex doubles to keep IR readable

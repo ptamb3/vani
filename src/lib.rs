@@ -15887,6 +15887,22 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_rgb_pack_unpack_typecheck_and_compile() {
+        // Closures #492-#495: i64_pack_rgb + unpack_r/g/b.
+        let source = r#"
+            fn main() -> i64 {
+              let p: i64 = i64_pack_rgb(255, 128, 64);
+              let r: i64 = i64_unpack_rgb_r(p);
+              let g: i64 = i64_unpack_rgb_g(p);
+              let b: i64 = i64_unpack_rgb_b(p);
+              return r + g + b;
+            }
+        "#;
+        compile_to_c(source).expect("pack_rgb/unpack must type-check");
+        compile_to_llvm(source).expect("pack_rgb/unpack must compile to LLVM");
+    }
+
+    #[test]
     fn f64_rgb_to_grayscale_typecheck_and_compile() {
         // Closure #491: f64_rgb_to_grayscale.
         let source = r#"
