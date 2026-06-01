@@ -7977,6 +7977,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #454: count ASCII digit bytes in s.
+            if name == "str_count_ascii_digits" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_str_count_ascii_digits(i8* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
             // Closure #441: byte count via helper. Walks the
             // string until the null terminator.
             if name == "str_byte_count" {
@@ -12033,6 +12043,36 @@ pub(crate) fn emit_intent_str_count_char_definition(out: &mut String) {
     out.push_str("sbc_fin:\n");
     out.push_str("  %sbc_r = load i64, i64* %sbc_n_p\n");
     out.push_str("  ret i64 %sbc_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #454: count ASCII decimal-digit bytes in s.
+    // Walks until null terminator; predicate is 48 <= b <= 57.
+    out.push_str("define i64 @intent_str_count_ascii_digits(i8* %s) {\n");
+    out.push_str("  %scd_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %scd_i_p\n");
+    out.push_str("  %scd_n_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %scd_n_p\n");
+    out.push_str("  br label %scd_head\n");
+    out.push_str("scd_head:\n");
+    out.push_str("  %scd_i = load i64, i64* %scd_i_p\n");
+    out.push_str("  %scd_p = getelementptr i8, i8* %s, i64 %scd_i\n");
+    out.push_str("  %scd_b = load i8, i8* %scd_p\n");
+    out.push_str("  %scd_end = icmp eq i8 %scd_b, 0\n");
+    out.push_str("  br i1 %scd_end, label %scd_fin, label %scd_body\n");
+    out.push_str("scd_body:\n");
+    out.push_str("  %scd_ge0 = icmp uge i8 %scd_b, 48\n");
+    out.push_str("  %scd_le9 = icmp ule i8 %scd_b, 57\n");
+    out.push_str("  %scd_hit = and i1 %scd_ge0, %scd_le9\n");
+    out.push_str("  %scd_inc = zext i1 %scd_hit to i64\n");
+    out.push_str("  %scd_n_cur = load i64, i64* %scd_n_p\n");
+    out.push_str("  %scd_n_new = add i64 %scd_n_cur, %scd_inc\n");
+    out.push_str("  store i64 %scd_n_new, i64* %scd_n_p\n");
+    out.push_str("  %scd_i_next = add i64 %scd_i, 1\n");
+    out.push_str("  store i64 %scd_i_next, i64* %scd_i_p\n");
+    out.push_str("  br label %scd_head\n");
+    out.push_str("scd_fin:\n");
+    out.push_str("  %scd_r = load i64, i64* %scd_n_p\n");
+    out.push_str("  ret i64 %scd_r\n");
     out.push_str("}\n\n");
 }
 

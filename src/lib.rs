@@ -16349,6 +16349,35 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_count_ascii_digits_typecheck_and_compile() {
+        // Closure #454: str_count_ascii_digits.
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "abc123";
+              let n: i64 = str_count_ascii_digits(s);
+              return n;
+            }
+        "#;
+        compile_to_c(source).expect("str_count_ascii_digits must type-check");
+        compile_to_llvm(source).expect("str_count_ascii_digits must compile to LLVM");
+    }
+
+    #[test]
+    fn str_count_ascii_digits_emits_helper() {
+        let source = r#"
+            fn main() -> i64 {
+              let n: i64 = str_count_ascii_digits("3.14");
+              return n;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("define i64 @intent_str_count_ascii_digits(i8* %s)"),
+            "LLVM must define @intent_str_count_ascii_digits"
+        );
+    }
+
+    #[test]
     fn str_last_index_of_byte_typecheck_and_compile() {
         // Closure #443: str_last_index_of_byte returns Option<i64>.
         let source = r#"
