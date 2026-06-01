@@ -7710,6 +7710,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #469: divisor count τ(n).
+            if name == "i64_divisor_count" {
+                let n = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_divisor_count(i64 {})\n",
+                    dest, n
+                ));
+                return dest;
+            }
             // Closure #468: is_perfect_square(n) — n is a non-
             // negative perfect square iff floor_isqrt(n)^2 == n.
             if name == "i64_is_perfect_square" {
@@ -13269,6 +13279,45 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("bc_fin:\n");
     out.push_str("  %bc_rfinal = load i64, i64* %bc_r_p\n");
     out.push_str("  ret i64 %bc_rfinal\n");
+    out.push_str("}\n\n");
+
+    // Closure #469: divisor count τ(n). Walk i = 1..sqrt(n),
+    // for each divisor count its pair; subtract 1 if n is a
+    // perfect square (sqrt counted twice).
+    out.push_str("define i64 @intent_i64_divisor_count(i64 %n) {\n");
+    out.push_str("  %dc_lez = icmp sle i64 %n, 0\n");
+    out.push_str("  br i1 %dc_lez, label %dc_zero_ret, label %dc_init\n");
+    out.push_str("dc_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("dc_init:\n");
+    out.push_str("  %dc_i_p = alloca i64\n");
+    out.push_str("  %dc_r_p = alloca i64\n");
+    out.push_str("  store i64 1, i64* %dc_i_p\n");
+    out.push_str("  store i64 0, i64* %dc_r_p\n");
+    out.push_str("  br label %dc_head\n");
+    out.push_str("dc_head:\n");
+    out.push_str("  %dc_i = load i64, i64* %dc_i_p\n");
+    out.push_str("  %dc_sq = mul i64 %dc_i, %dc_i\n");
+    out.push_str("  %dc_done = icmp sgt i64 %dc_sq, %n\n");
+    out.push_str("  br i1 %dc_done, label %dc_fin, label %dc_body\n");
+    out.push_str("dc_body:\n");
+    out.push_str("  %dc_rem = srem i64 %n, %dc_i\n");
+    out.push_str("  %dc_div = icmp eq i64 %dc_rem, 0\n");
+    out.push_str("  br i1 %dc_div, label %dc_count, label %dc_incr\n");
+    out.push_str("dc_count:\n");
+    out.push_str("  %dc_exact = icmp eq i64 %dc_sq, %n\n");
+    out.push_str("  %dc_inc = select i1 %dc_exact, i64 1, i64 2\n");
+    out.push_str("  %dc_r_cur = load i64, i64* %dc_r_p\n");
+    out.push_str("  %dc_r_new = add i64 %dc_r_cur, %dc_inc\n");
+    out.push_str("  store i64 %dc_r_new, i64* %dc_r_p\n");
+    out.push_str("  br label %dc_incr\n");
+    out.push_str("dc_incr:\n");
+    out.push_str("  %dc_i_new = add i64 %dc_i, 1\n");
+    out.push_str("  store i64 %dc_i_new, i64* %dc_i_p\n");
+    out.push_str("  br label %dc_head\n");
+    out.push_str("dc_fin:\n");
+    out.push_str("  %dc_r = load i64, i64* %dc_r_p\n");
+    out.push_str("  ret i64 %dc_r\n");
     out.push_str("}\n\n");
 
     // Closure #447: permutation P(n, k) = n*(n-1)*...*(n-k+1).

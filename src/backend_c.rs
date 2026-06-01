@@ -10998,6 +10998,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __ipsn = ({}); bool __ipsr; if (__ipsn < 0) {{ __ipsr = false; }} else if (__ipsn < 2) {{ __ipsr = true; }} else {{ int64_t __ix = __ipsn; int64_t __iy = (__ix + __ipsn / __ix) / 2; while (__iy < __ix) {{ __ix = __iy; __iy = (__ix + __ipsn / __ix) / 2; }} __ipsr = (__ix * __ix == __ipsn); }} __ipsr; }})",
             emit_expr(&args[0])
         ),
+        // Closure #469: divisor count τ(n). Walk i from 1 to
+        // sqrt(n); for each divisor, count its pair. Subtract 1
+        // if n is a perfect square (sqrt counted twice).
+        // Returns 0 for n <= 0 (defensive).
+        "i64_divisor_count" => format!(
+            "({{ int64_t __dcn = ({}); int64_t __dcr; if (__dcn <= 0) {{ __dcr = 0; }} else {{ __dcr = 0; int64_t __dci = 1; while (__dci * __dci <= __dcn) {{ if (__dcn % __dci == 0) {{ if (__dci * __dci == __dcn) __dcr += 1; else __dcr += 2; }} __dci += 1; }} }} __dcr; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #438: quintic smoothstep. Polynomial
         // 6t^5 - 15t^4 + 10t^3 has zero first AND second
         // derivatives at t=0 and t=1, giving smoother
