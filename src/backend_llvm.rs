@@ -7997,6 +7997,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #456: count ASCII alphanumeric bytes in s.
+            if name == "str_count_ascii_alphanumeric" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_str_count_ascii_alphanumeric(i8* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
             // Closure #441: byte count via helper. Walks the
             // string until the null terminator.
             if name == "str_byte_count" {
@@ -12117,6 +12127,48 @@ pub(crate) fn emit_intent_str_count_char_definition(out: &mut String) {
     out.push_str("sca_fin:\n");
     out.push_str("  %sca_r = load i64, i64* %sca_n_p\n");
     out.push_str("  ret i64 %sca_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #456: count ASCII alphanumeric bytes in s.
+    // Predicate: digit OR upper OR lower.
+    out.push_str("define i64 @intent_str_count_ascii_alphanumeric(i8* %s) {\n");
+    out.push_str("  %san_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %san_i_p\n");
+    out.push_str("  %san_n_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %san_n_p\n");
+    out.push_str("  br label %san_head\n");
+    out.push_str("san_head:\n");
+    out.push_str("  %san_i = load i64, i64* %san_i_p\n");
+    out.push_str("  %san_p = getelementptr i8, i8* %s, i64 %san_i\n");
+    out.push_str("  %san_b = load i8, i8* %san_p\n");
+    out.push_str("  %san_end = icmp eq i8 %san_b, 0\n");
+    out.push_str("  br i1 %san_end, label %san_fin, label %san_body\n");
+    out.push_str("san_body:\n");
+    // digit range
+    out.push_str("  %san_ge0 = icmp uge i8 %san_b, 48\n");
+    out.push_str("  %san_le9 = icmp ule i8 %san_b, 57\n");
+    out.push_str("  %san_digit = and i1 %san_ge0, %san_le9\n");
+    // upper range
+    out.push_str("  %san_geA = icmp uge i8 %san_b, 65\n");
+    out.push_str("  %san_leZ = icmp ule i8 %san_b, 90\n");
+    out.push_str("  %san_upper = and i1 %san_geA, %san_leZ\n");
+    // lower range
+    out.push_str("  %san_gea = icmp uge i8 %san_b, 97\n");
+    out.push_str("  %san_lez = icmp ule i8 %san_b, 122\n");
+    out.push_str("  %san_lower = and i1 %san_gea, %san_lez\n");
+    // any-of
+    out.push_str("  %san_du = or i1 %san_digit, %san_upper\n");
+    out.push_str("  %san_hit = or i1 %san_du, %san_lower\n");
+    out.push_str("  %san_inc = zext i1 %san_hit to i64\n");
+    out.push_str("  %san_n_cur = load i64, i64* %san_n_p\n");
+    out.push_str("  %san_n_new = add i64 %san_n_cur, %san_inc\n");
+    out.push_str("  store i64 %san_n_new, i64* %san_n_p\n");
+    out.push_str("  %san_i_next = add i64 %san_i, 1\n");
+    out.push_str("  store i64 %san_i_next, i64* %san_i_p\n");
+    out.push_str("  br label %san_head\n");
+    out.push_str("san_fin:\n");
+    out.push_str("  %san_r = load i64, i64* %san_n_p\n");
+    out.push_str("  ret i64 %san_r\n");
     out.push_str("}\n\n");
 }
 

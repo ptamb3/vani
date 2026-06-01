@@ -16349,6 +16349,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_count_ascii_alphanumeric_typecheck_and_compile() {
+        // Closure #456: str_count_ascii_alphanumeric.
+        let source = r#"
+            fn main() -> i64 {
+              let s: Str = "abc123!";
+              let n: i64 = str_count_ascii_alphanumeric(s);
+              return n;
+            }
+        "#;
+        compile_to_c(source).expect("str_count_ascii_alphanumeric must type-check");
+        compile_to_llvm(source).expect("str_count_ascii_alphanumeric must compile to LLVM");
+    }
+
+    #[test]
     fn str_count_ascii_alpha_typecheck_and_compile() {
         // Closure #455: str_count_ascii_alpha.
         let source = r#"
