@@ -7720,6 +7720,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #470: divisor sum σ(n).
+            if name == "i64_divisor_sum" {
+                let n = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_divisor_sum(i64 {})\n",
+                    dest, n
+                ));
+                return dest;
+            }
             // Closure #468: is_perfect_square(n) — n is a non-
             // negative perfect square iff floor_isqrt(n)^2 == n.
             if name == "i64_is_perfect_square" {
@@ -13318,6 +13328,46 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("dc_fin:\n");
     out.push_str("  %dc_r = load i64, i64* %dc_r_p\n");
     out.push_str("  ret i64 %dc_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #470: divisor sum σ(n). Same shape as τ; sums
+    // i + n/i per divisor pair (i alone if perfect square).
+    out.push_str("define i64 @intent_i64_divisor_sum(i64 %n) {\n");
+    out.push_str("  %ds_lez = icmp sle i64 %n, 0\n");
+    out.push_str("  br i1 %ds_lez, label %ds_zero_ret, label %ds_init\n");
+    out.push_str("ds_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("ds_init:\n");
+    out.push_str("  %ds_i_p = alloca i64\n");
+    out.push_str("  %ds_r_p = alloca i64\n");
+    out.push_str("  store i64 1, i64* %ds_i_p\n");
+    out.push_str("  store i64 0, i64* %ds_r_p\n");
+    out.push_str("  br label %ds_head\n");
+    out.push_str("ds_head:\n");
+    out.push_str("  %ds_i = load i64, i64* %ds_i_p\n");
+    out.push_str("  %ds_sq = mul i64 %ds_i, %ds_i\n");
+    out.push_str("  %ds_done = icmp sgt i64 %ds_sq, %n\n");
+    out.push_str("  br i1 %ds_done, label %ds_fin, label %ds_body\n");
+    out.push_str("ds_body:\n");
+    out.push_str("  %ds_rem = srem i64 %n, %ds_i\n");
+    out.push_str("  %ds_div = icmp eq i64 %ds_rem, 0\n");
+    out.push_str("  br i1 %ds_div, label %ds_add, label %ds_incr\n");
+    out.push_str("ds_add:\n");
+    out.push_str("  %ds_exact = icmp eq i64 %ds_sq, %n\n");
+    out.push_str("  %ds_co = sdiv i64 %n, %ds_i\n");
+    out.push_str("  %ds_pair = add i64 %ds_i, %ds_co\n");
+    out.push_str("  %ds_inc = select i1 %ds_exact, i64 %ds_i, i64 %ds_pair\n");
+    out.push_str("  %ds_r_cur = load i64, i64* %ds_r_p\n");
+    out.push_str("  %ds_r_new = add i64 %ds_r_cur, %ds_inc\n");
+    out.push_str("  store i64 %ds_r_new, i64* %ds_r_p\n");
+    out.push_str("  br label %ds_incr\n");
+    out.push_str("ds_incr:\n");
+    out.push_str("  %ds_i_new = add i64 %ds_i, 1\n");
+    out.push_str("  store i64 %ds_i_new, i64* %ds_i_p\n");
+    out.push_str("  br label %ds_head\n");
+    out.push_str("ds_fin:\n");
+    out.push_str("  %ds_r = load i64, i64* %ds_r_p\n");
+    out.push_str("  ret i64 %ds_r\n");
     out.push_str("}\n\n");
 
     // Closure #447: permutation P(n, k) = n*(n-1)*...*(n-k+1).

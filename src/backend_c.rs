@@ -11006,6 +11006,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __dcn = ({}); int64_t __dcr; if (__dcn <= 0) {{ __dcr = 0; }} else {{ __dcr = 0; int64_t __dci = 1; while (__dci * __dci <= __dcn) {{ if (__dcn % __dci == 0) {{ if (__dci * __dci == __dcn) __dcr += 1; else __dcr += 2; }} __dci += 1; }} }} __dcr; }})",
             emit_expr(&args[0])
         ),
+        // Closure #470: divisor sum σ(n) — sum of positive
+        // divisors of n. Same structure as #469 but adds
+        // (i + n/i) per divisor pair instead of counting.
+        "i64_divisor_sum" => format!(
+            "({{ int64_t __dsn = ({}); int64_t __dsr; if (__dsn <= 0) {{ __dsr = 0; }} else {{ __dsr = 0; int64_t __dsi = 1; while (__dsi * __dsi <= __dsn) {{ if (__dsn % __dsi == 0) {{ if (__dsi * __dsi == __dsn) __dsr += __dsi; else __dsr += __dsi + __dsn / __dsi; }} __dsi += 1; }} }} __dsr; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #438: quintic smoothstep. Polynomial
         // 6t^5 - 15t^4 + 10t^3 has zero first AND second
         // derivatives at t=0 and t=1, giving smoother
