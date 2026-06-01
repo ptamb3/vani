@@ -7235,6 +7235,33 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #448: Python-style float modulo —
+            // result = x - y * floor(x / y).
+            // For y == 0, defensively returns 0.
+            if name == "f64_mod_floor" {
+                let x = emit_expr(&args[0], ctx, out);
+                let y = emit_expr(&args[1], ctx, out);
+                let y_zero = ctx.fresh_tmp();
+                let q_raw = ctx.fresh_tmp();
+                let q_floor = ctx.fresh_tmp();
+                let y_q = ctx.fresh_tmp();
+                let raw_result = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = fcmp oeq double {}, 0.0\n", y_zero, y));
+                out.push_str(&format!("  {} = fdiv double {}, {}\n", q_raw, x, y));
+                out.push_str(&format!(
+                    "  {} = call double @floor(double {})\n", q_floor, q_raw
+                ));
+                out.push_str(&format!("  {} = fmul double {}, {}\n", y_q, y, q_floor));
+                out.push_str(&format!(
+                    "  {} = fsub double {}, {}\n", raw_result, x, y_q
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 0.0, double {}\n",
+                    dest, y_zero, raw_result
+                ));
+                return dest;
+            }
             // Closure #444: overflow-safe floor average via bit
             // tricks. result = (a & b) + ((a ^ b) >> 1) where >>
             // is arithmetic shift.

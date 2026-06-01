@@ -10890,6 +10890,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2])
         ),
+        // Closure #448: f64_mod_floor(x, y) — Python-style float
+        // modulo. result = x - y * floor(x / y). Sign of result
+        // matches sign of y. For y == 0, returns 0 (defensive).
+        "f64_mod_floor" => format!(
+            "({{ double __mfx = ({}); double __mfy = ({}); __mfy == 0.0 ? 0.0 : (__mfx - __mfy * floor(__mfx / __mfy)); }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #444: overflow-safe average using bit-twiddling.
         // (a & b) + ((a ^ b) >> 1) never overflows even when
         // a + b would (e.g., avg(INT64_MAX, INT64_MAX) = INT64_MAX).

@@ -16070,6 +16070,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_mod_floor_typecheck_and_compile() {
+        // Closure #448: f64_mod_floor.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_mod_floor(7.0, 3.0);
+              let b: f64 = f64_mod_floor(0.0 - 7.0, 3.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("f64_mod_floor must type-check");
+        compile_to_llvm(source).expect("f64_mod_floor must compile to LLVM");
+    }
+
+    #[test]
     fn wrap_typecheck_and_compile() {
         // Closure #446: i64_wrap + f64_wrap.
         let source = r#"
