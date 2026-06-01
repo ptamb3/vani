@@ -396,6 +396,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "i64_divisor_sum"
                 || name == "i64_totient" || name == "i64_radical"
                 || name == "i64_next_prime" || name == "i64_prev_prime"
+                || name == "i64_mod_inverse"
                 || name == "f64_relu" || name == "f64_leaky_relu"
                 || name == "f64_softplus"
                 || name == "f64_swish" || name == "f64_logit"

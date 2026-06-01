@@ -11036,6 +11036,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __npn = ({}); int64_t __npr; if (__npn <= 2) {{ __npr = 2; }} else if (__npn == 3) {{ __npr = 3; }} else {{ int64_t __npc = (__npn % 2 == 0) ? __npn + 1 : __npn; while (1) {{ bool __np_isp; if (__npc % 3 == 0) {{ __np_isp = (__npc == 3); }} else {{ __np_isp = true; int64_t __npi = 5; while (__npi * __npi <= __npc) {{ if (__npc % __npi == 0 || __npc % (__npi + 2) == 0) {{ __np_isp = false; break; }} __npi += 6; }} }} if (__np_isp) {{ __npr = __npc; break; }} __npc += 2; }} }} __npr; }})",
             emit_expr(&args[0])
         ),
+        // Closure #475: modular multiplicative inverse via the
+        // extended Euclidean algorithm. Returns x s.t.
+        // (a · x) mod m == 1; returns 0 if no inverse exists
+        // (gcd(a, m) != 1) or m ≤ 1 (defensive).
+        "i64_mod_inverse" => format!(
+            "({{ int64_t __mia = ({}); int64_t __mim = ({}); int64_t __mir; if (__mim <= 1) {{ __mir = 0; }} else {{ int64_t __mi_g = __mim; int64_t __mi_x = 0; int64_t __mi_og = ((__mia % __mim) + __mim) % __mim; int64_t __mi_ox = 1; while (__mi_og != 0) {{ int64_t __mi_q = __mi_g / __mi_og; int64_t __mi_tmp = __mi_g - __mi_q * __mi_og; __mi_g = __mi_og; __mi_og = __mi_tmp; __mi_tmp = __mi_x - __mi_q * __mi_ox; __mi_x = __mi_ox; __mi_ox = __mi_tmp; }} if (__mi_g != 1) {{ __mir = 0; }} else {{ __mir = ((__mi_x % __mim) + __mim) % __mim; }} }} __mir; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #474: largest prime ≤ n. Returns 0 for n < 2.
         // n=2 → 2; n=3 → 3; else step odd candidates downward.
         "i64_prev_prime" => format!(

@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-06-01 (closure #474 — **`i64_prev_prime(n) -> i64`** largest prime ≤ n. Returns 0 for n < 2. LLVM: `@intent_i64_prev_prime` helper calling `@intent_i64_is_prime`, stepping odd candidates downward. Both backends byte-identical: `pp(0/1) = 0`, `pp(2) = 2`, `pp(3) = 3`, `pp(4) = 3`, `pp(10) = 7`, `pp(13) = 13`, `pp(100) = 97`. 1 new lib test. 1498 lib + 54 parity green.)
-**Test totals:** 1498 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-06-01 (closure #475 — **`i64_mod_inverse(a, m) -> i64`** modular multiplicative inverse via extended Euclidean. Returns x s.t. `(a · x) mod m == 1`, or 0 if no inverse exists (gcd(a, m) != 1) or m ≤ 1. LLVM: `@intent_i64_mod_inverse` helper. Both backends byte-identical: `mi(3, 7) = 5` (3·5 = 15 = 2·7 + 1), `mi(5, 11) = 9`, `mi(2, 4) = 0` (gcd = 2), `mi(1, 10) = 1`, `mi(7, 26) = 15`, `mi(3, 0) = 0` (defensive). 1 new lib test. 1499 lib + 54 parity green.)
+**Test totals:** 1499 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,

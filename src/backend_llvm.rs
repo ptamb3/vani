@@ -7750,6 +7750,17 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #475: modular inverse via helper.
+            if name == "i64_mod_inverse" {
+                let a = emit_expr(&args[0], ctx, out);
+                let m = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_mod_inverse(i64 {}, i64 {})\n",
+                    dest, a, m
+                ));
+                return dest;
+            }
             // Closures #473 + #474: next/prev prime via helpers.
             if name == "i64_next_prime" || name == "i64_prev_prime" {
                 let n = emit_expr(&args[0], ctx, out);
@@ -13594,6 +13605,66 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("  br label %pp_head\n");
     out.push_str("pp_ret:\n");
     out.push_str("  ret i64 %pp_c\n");
+    out.push_str("}\n\n");
+
+    // Closure #475: modular multiplicative inverse via extended
+    // Euclidean. Returns 0 if m ≤ 1 or gcd(a, m) != 1.
+    //   g = m; x = 0; og = ((a % m) + m) % m; ox = 1
+    //   while og != 0:
+    //     q = g / og
+    //     (g, og) = (og, g - q·og)
+    //     (x, ox) = (ox, x - q·ox)
+    //   if g != 1: return 0
+    //   return ((x % m) + m) % m
+    out.push_str("define i64 @intent_i64_mod_inverse(i64 %a, i64 %m) {\n");
+    out.push_str("  %mi_m_le1 = icmp sle i64 %m, 1\n");
+    out.push_str("  br i1 %mi_m_le1, label %mi_zero_ret, label %mi_init\n");
+    out.push_str("mi_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("mi_init:\n");
+    // a_norm = ((a % m) + m) % m
+    out.push_str("  %mi_amod = srem i64 %a, %m\n");
+    out.push_str("  %mi_aplus = add i64 %mi_amod, %m\n");
+    out.push_str("  %mi_anorm = srem i64 %mi_aplus, %m\n");
+    out.push_str("  %mi_g_p = alloca i64\n");
+    out.push_str("  %mi_og_p = alloca i64\n");
+    out.push_str("  %mi_x_p = alloca i64\n");
+    out.push_str("  %mi_ox_p = alloca i64\n");
+    out.push_str("  store i64 %m, i64* %mi_g_p\n");
+    out.push_str("  store i64 %mi_anorm, i64* %mi_og_p\n");
+    out.push_str("  store i64 0, i64* %mi_x_p\n");
+    out.push_str("  store i64 1, i64* %mi_ox_p\n");
+    out.push_str("  br label %mi_head\n");
+    out.push_str("mi_head:\n");
+    out.push_str("  %mi_og = load i64, i64* %mi_og_p\n");
+    out.push_str("  %mi_done = icmp eq i64 %mi_og, 0\n");
+    out.push_str("  br i1 %mi_done, label %mi_check, label %mi_step\n");
+    out.push_str("mi_step:\n");
+    out.push_str("  %mi_g = load i64, i64* %mi_g_p\n");
+    out.push_str("  %mi_x = load i64, i64* %mi_x_p\n");
+    out.push_str("  %mi_ox = load i64, i64* %mi_ox_p\n");
+    out.push_str("  %mi_q = sdiv i64 %mi_g, %mi_og\n");
+    // (g, og) = (og, g - q*og)
+    out.push_str("  %mi_qog = mul i64 %mi_q, %mi_og\n");
+    out.push_str("  %mi_g_new = sub i64 %mi_g, %mi_qog\n");
+    out.push_str("  store i64 %mi_og, i64* %mi_g_p\n");
+    out.push_str("  store i64 %mi_g_new, i64* %mi_og_p\n");
+    // (x, ox) = (ox, x - q*ox)
+    out.push_str("  %mi_qox = mul i64 %mi_q, %mi_ox\n");
+    out.push_str("  %mi_x_new = sub i64 %mi_x, %mi_qox\n");
+    out.push_str("  store i64 %mi_ox, i64* %mi_x_p\n");
+    out.push_str("  store i64 %mi_x_new, i64* %mi_ox_p\n");
+    out.push_str("  br label %mi_head\n");
+    out.push_str("mi_check:\n");
+    out.push_str("  %mi_g_fin = load i64, i64* %mi_g_p\n");
+    out.push_str("  %mi_co = icmp eq i64 %mi_g_fin, 1\n");
+    out.push_str("  br i1 %mi_co, label %mi_norm_ret, label %mi_zero_ret\n");
+    out.push_str("mi_norm_ret:\n");
+    out.push_str("  %mi_x_fin = load i64, i64* %mi_x_p\n");
+    out.push_str("  %mi_x_mod = srem i64 %mi_x_fin, %m\n");
+    out.push_str("  %mi_x_pls = add i64 %mi_x_mod, %m\n");
+    out.push_str("  %mi_r = srem i64 %mi_x_pls, %m\n");
+    out.push_str("  ret i64 %mi_r\n");
     out.push_str("}\n\n");
 
     // Closure #447: permutation P(n, k) = n*(n-1)*...*(n-k+1).
