@@ -7638,6 +7638,30 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closures #481-#483: reciprocal trig sec/csc/cot.
+            if name == "f64_sec" || name == "f64_csc" {
+                let x = emit_expr(&args[0], ctx, out);
+                let trig = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                let fn_name = if name == "f64_sec" { "cos" } else { "sin" };
+                out.push_str(&format!(
+                    "  {} = call double @{}(double {})\n", trig, fn_name, x
+                ));
+                out.push_str(&format!(
+                    "  {} = fdiv double 1.0, {}\n", dest, trig
+                ));
+                return dest;
+            }
+            if name == "f64_cot" {
+                let x = emit_expr(&args[0], ctx, out);
+                let cx = ctx.fresh_tmp();
+                let sx = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = call double @cos(double {})\n", cx, x));
+                out.push_str(&format!("  {} = call double @sin(double {})\n", sx, x));
+                out.push_str(&format!("  {} = fdiv double {}, {}\n", dest, cx, sx));
+                return dest;
+            }
             // Closure #437: reciprocal sqrt — fdiv 1.0 / sqrt(x).
             if name == "f64_inv_sqrt" {
                 let x = emit_expr(&args[0], ctx, out);

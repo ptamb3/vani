@@ -15887,6 +15887,21 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_recip_trig_typecheck_and_compile() {
+        // Closures #481-#483: reciprocal trig sec/csc/cot.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_sec(1.0);
+              let b: f64 = f64_csc(1.0);
+              let c: f64 = f64_cot(1.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("sec/csc/cot must type-check");
+        compile_to_llvm(source).expect("sec/csc/cot must compile to LLVM");
+    }
+
+    #[test]
     fn f64_inv_sqrt_and_round_to_typecheck_and_compile() {
         // Closure #437: f64_inv_sqrt / f64_round_to.
         let source = r#"

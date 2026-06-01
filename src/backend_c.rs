@@ -11216,6 +11216,10 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        // Closures #481-#483: reciprocal trig (sec/csc/cot).
+        "f64_sec" => format!("(1.0 / cos(({})))", emit_expr(&args[0])),
+        "f64_csc" => format!("(1.0 / sin(({})))", emit_expr(&args[0])),
+        "f64_cot" => format!("(cos(({0})) / sin(({0})))", emit_expr(&args[0])),
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).
