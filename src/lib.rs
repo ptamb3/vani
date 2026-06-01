@@ -16071,6 +16071,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_next_prime_typecheck_and_compile() {
+        // Closure #473: i64_next_prime.
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_next_prime(10);
+              return a;
+            }
+        "#;
+        compile_to_c(source).expect("i64_next_prime must type-check");
+        compile_to_llvm(source).expect("i64_next_prime must compile to LLVM");
+    }
+
+    #[test]
     fn i64_radical_typecheck_and_compile() {
         // Closure #472: i64_radical.
         let source = r#"

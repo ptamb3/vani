@@ -11029,6 +11029,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __rdn = ({}); int64_t __rdr; if (__rdn <= 0) {{ __rdr = 0; }} else {{ __rdr = 1; int64_t __rdm = __rdn; int64_t __rdi = 2; while (__rdi * __rdi <= __rdm) {{ if (__rdm % __rdi == 0) {{ __rdr *= __rdi; while (__rdm % __rdi == 0) __rdm /= __rdi; }} __rdi += 1; }} if (__rdm > 1) __rdr *= __rdm; }} __rdr; }})",
             emit_expr(&args[0])
         ),
+        // Closure #473: next prime ≥ n. Returns 2 for n ≤ 2.
+        // Bumps odd candidates by 2 and uses 6k±1 trial division
+        // inline for primality testing.
+        "i64_next_prime" => format!(
+            "({{ int64_t __npn = ({}); int64_t __npr; if (__npn <= 2) {{ __npr = 2; }} else if (__npn == 3) {{ __npr = 3; }} else {{ int64_t __npc = (__npn % 2 == 0) ? __npn + 1 : __npn; while (1) {{ bool __np_isp; if (__npc % 3 == 0) {{ __np_isp = (__npc == 3); }} else {{ __np_isp = true; int64_t __npi = 5; while (__npi * __npi <= __npc) {{ if (__npc % __npi == 0 || __npc % (__npi + 2) == 0) {{ __np_isp = false; break; }} __npi += 6; }} }} if (__np_isp) {{ __npr = __npc; break; }} __npc += 2; }} }} __npr; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #438: quintic smoothstep. Polynomial
         // 6t^5 - 15t^4 + 10t^3 has zero first AND second
         // derivatives at t=0 and t=1, giving smoother
