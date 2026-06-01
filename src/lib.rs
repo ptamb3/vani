@@ -15975,6 +15975,21 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_argmin_argmax_typecheck_and_compile() {
+        // Closures #505/#506: vec_argmin / vec_argmax.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(30, 10, 50, 20);
+              let ai: i64 = vec_argmin(ref xs, -1);
+              let ax: i64 = vec_argmax(ref xs, -1);
+              return ai + ax;
+            }
+        "#;
+        compile_to_c(source).expect("vec_argmin/argmax must type-check");
+        compile_to_llvm(source).expect("vec_argmin/argmax must compile to LLVM");
+    }
+
+    #[test]
     fn i64_rgb_pack_unpack_typecheck_and_compile() {
         // Closures #492-#495: i64_pack_rgb + unpack_r/g/b.
         let source = r#"

@@ -10142,6 +10142,8 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     | "vec_product"
                     | "vec_min"
                     | "vec_max"
+                    | "vec_argmin"
+                    | "vec_argmax"
                     | "vec_count"
                     | "vec_any"
                     | "vec_all"
@@ -10196,7 +10198,7 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 } else if let Some(op) = name.strip_prefix("vec_") {
                     // closure #322 reductions + #324 chain share
                     // this strip-the-`vec_` prefix shape.
-                    if matches!(op, "sum" | "product" | "min" | "max" | "count" | "any" | "all" | "chain") {
+                    if matches!(op, "sum" | "product" | "min" | "max" | "argmin" | "argmax" | "count" | "any" | "all" | "chain") {
                         op
                     } else {
                         name.as_str()
@@ -22851,6 +22853,71 @@ pub(crate) fn emit_vec_helpers(element: &Type, out: &mut String) {
             out.push_str(&format!("  br label %{op}_loop\n", op = op));
             out.push_str(&format!("{op}_done:\n", op = op));
             out.push_str("  %r = load i64, i64* %m_p\n");
+            out.push_str("  ret i64 %r\n");
+            out.push_str("}\n");
+        }
+
+        // Closures #505/#506: argmin/argmax. Tracks both the best
+        // value and its index, returning the index (or `def` when
+        // the input is empty).
+        for (op, cmp_pred) in [("argmin", "slt"), ("argmax", "sgt")].iter() {
+            let helper_name = format!("@intent_vec_{}__{}", tag, op);
+            out.push_str(&format!(
+                "define i64 {sn}({sty}* %xs_p, i64 %def) {{\n",
+                sn = helper_name,
+                sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  %data_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 0\n",
+                sty = s_ty,
+            ));
+            out.push_str(&format!(
+                "  %len_p = getelementptr {sty}, {sty}* %xs_p, i32 0, i32 1\n",
+                sty = s_ty,
+            ));
+            out.push_str("  %data = load i64*, i64** %data_p\n");
+            out.push_str("  %n = load i64, i64* %len_p\n");
+            out.push_str("  %empty = icmp eq i64 %n, 0\n");
+            out.push_str(&format!(
+                "  br i1 %empty, label %{op}_default, label %{op}_start\n",
+                op = op,
+            ));
+            out.push_str(&format!("{op}_default:\n", op = op));
+            out.push_str("  ret i64 %def\n");
+            out.push_str(&format!("{op}_start:\n", op = op));
+            out.push_str("  %first = load i64, i64* %data\n");
+            out.push_str("  %mv_p = alloca i64\n");
+            out.push_str("  store i64 %first, i64* %mv_p\n");
+            out.push_str("  %mi_p = alloca i64\n");
+            out.push_str("  store i64 0, i64* %mi_p\n");
+            out.push_str("  %i_p = alloca i64\n");
+            out.push_str("  store i64 1, i64* %i_p\n");
+            out.push_str(&format!("  br label %{op}_loop\n", op = op));
+            out.push_str(&format!("{op}_loop:\n", op = op));
+            out.push_str("  %i = load i64, i64* %i_p\n");
+            out.push_str("  %cont = icmp slt i64 %i, %n\n");
+            out.push_str(&format!(
+                "  br i1 %cont, label %{op}_body, label %{op}_done\n",
+                op = op,
+            ));
+            out.push_str(&format!("{op}_body:\n", op = op));
+            out.push_str("  %slot = getelementptr i64, i64* %data, i64 %i\n");
+            out.push_str("  %v = load i64, i64* %slot\n");
+            out.push_str("  %mv_old = load i64, i64* %mv_p\n");
+            out.push_str("  %mi_old = load i64, i64* %mi_p\n");
+            out.push_str(&format!(
+                "  %better = icmp {pred} i64 %v, %mv_old\n",
+                pred = cmp_pred,
+            ));
+            out.push_str("  %mv_new = select i1 %better, i64 %v, i64 %mv_old\n");
+            out.push_str("  %mi_new = select i1 %better, i64 %i, i64 %mi_old\n");
+            out.push_str("  store i64 %mv_new, i64* %mv_p\n");
+            out.push_str("  store i64 %mi_new, i64* %mi_p\n");
+            out.push_str("  %i_n = add i64 %i, 1\n");
+            out.push_str("  store i64 %i_n, i64* %i_p\n");
+            out.push_str(&format!("  br label %{op}_loop\n", op = op));
+            out.push_str(&format!("{op}_done:\n", op = op));
+            out.push_str("  %r = load i64, i64* %mi_p\n");
             out.push_str("  ret i64 %r\n");
             out.push_str("}\n");
         }

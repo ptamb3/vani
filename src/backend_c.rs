@@ -5951,6 +5951,24 @@ pub(crate) fn emit_vec_bundle(element: &Type, out: &mut String) {
             sn = struct_name,
         ));
         out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__argmin(const {sn}* xs, int64_t def) {{\
+\n    if (xs->len == 0) return def;\
+\n    int64_t mv = xs->data[0]; int64_t mi = 0;\
+\n    for (uint64_t i = 1; i < xs->len; i++) if (xs->data[i] < mv) {{ mv = xs->data[i]; mi = (int64_t)i; }}\
+\n    return mi;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
+            "static INTENT_UNUSED int64_t {sn}__argmax(const {sn}* xs, int64_t def) {{\
+\n    if (xs->len == 0) return def;\
+\n    int64_t mv = xs->data[0]; int64_t mi = 0;\
+\n    for (uint64_t i = 1; i < xs->len; i++) if (xs->data[i] > mv) {{ mv = xs->data[i]; mi = (int64_t)i; }}\
+\n    return mi;\
+\n}}\n",
+            sn = struct_name,
+        ));
+        out.push_str(&format!(
             "static INTENT_UNUSED int64_t {sn}__count(const {sn}* xs, {sn}__pred_fn p) {{\
 \n    int64_t c = 0;\
 \n    for (uint64_t i = 0; i < xs->len; i++) if (p(xs->data[i])) c++;\
@@ -9743,6 +9761,18 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         }
         "vec_min" | "vec_max" => {
             // Closure #322. args = ref xs, default.
+            match args[0].ty.deref() {
+                Type::Vec(element) => format!(
+                    "{}({}, ({}))",
+                    vec_helper(element, name.strip_prefix("vec_").unwrap()),
+                    emit_expr(&args[0]),
+                    emit_expr(&args[1])
+                ),
+                _ => unreachable!("{}() arg 0 must be ref Vec<i64>", name),
+            }
+        }
+        "vec_argmin" | "vec_argmax" => {
+            // Closures #505/#506. args = ref xs, default.
             match args[0].ty.deref() {
                 Type::Vec(element) => format!(
                     "{}({}, ({}))",

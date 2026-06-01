@@ -501,6 +501,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "vec_map_filter_fold"
                 || name == "vec_sum" || name == "vec_product"
                 || name == "vec_min" || name == "vec_max"
+                || name == "vec_argmin" || name == "vec_argmax"
                 || name == "vec_count" || name == "vec_any" || name == "vec_all"
                 || name == "vec_chain"
                 || name == "union_find_new" || name == "union_find_union"
