@@ -15933,6 +15933,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn hash_pair_triple_typecheck_and_compile() {
+        // Closures #499/#500: hash_pair / hash_triple — i64 tuple sugar.
+        let source = r#"
+            fn main() -> i64 {
+              let h2: u64 = hash_pair(1, 2);
+              let h3: u64 = hash_triple(1, 2, 3);
+              return (h2 as i64) ^ (h3 as i64);
+            }
+        "#;
+        compile_to_c(source).expect("hash_pair/triple must type-check");
+        compile_to_llvm(source).expect("hash_pair/triple must compile to LLVM");
+    }
+
+    #[test]
     fn i64_rgb_pack_unpack_typecheck_and_compile() {
         // Closures #492-#495: i64_pack_rgb + unpack_r/g/b.
         let source = r#"
