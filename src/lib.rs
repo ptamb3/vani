@@ -15900,6 +15900,22 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn hash_combine_3_typecheck_and_compile() {
+        // Closure #497: hash_combine_3 — 3-arg hash combiner.
+        let source = r#"
+            fn main() -> i64 {
+              let a: u64 = hash_i64(1);
+              let b: u64 = hash_i64(2);
+              let c: u64 = hash_i64(3);
+              let h: u64 = hash_combine_3(a, b, c);
+              return h as i64;
+            }
+        "#;
+        compile_to_c(source).expect("hash_combine_3 must type-check");
+        compile_to_llvm(source).expect("hash_combine_3 must compile to LLVM");
+    }
+
+    #[test]
     fn i64_rgb_pack_unpack_typecheck_and_compile() {
         // Closures #492-#495: i64_pack_rgb + unpack_r/g/b.
         let source = r#"

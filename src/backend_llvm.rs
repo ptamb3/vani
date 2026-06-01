@@ -6688,6 +6688,22 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            if name == "hash_combine_3" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let c = emit_expr(&args[2], ctx, out);
+                let ab = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hash_combine(i64 {}, i64 {})\n",
+                    ab, a, b
+                ));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_hash_combine(i64 {}, i64 {})\n",
+                    dest, ab, c
+                ));
+                return dest;
+            }
             if name == "siphash_i64" {
                 let k0 = emit_expr(&args[0], ctx, out);
                 let k1 = emit_expr(&args[1], ctx, out);
@@ -14851,6 +14867,7 @@ fn program_uses_hash(program: &TypedProgram) -> bool {
                 if matches!(
                     name.as_str(),
                     "hash_i64" | "hash_f64" | "hash_str" | "hash_combine"
+                    | "hash_combine_3"
                 ) {
                     return true;
                 }
