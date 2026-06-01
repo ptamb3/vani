@@ -11256,6 +11256,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         "f64_uniform_random" => {
             "((double)(((uint64_t)intent_rng_next()) >> 1) / 9223372036854775808.0)".to_string()
         }
+        // Closure #489: inverse smoothstep — solves smoothstep(0,1,t) = y
+        // analytically: t = 0.5 - sin(asin(1 - 2y) / 3).
+        // y outside [0, 1] clamps to 0 or 1.
+        "f64_inv_smoothstep" => format!(
+            "({{ double __isy = ({}); double __isr; if (__isy <= 0.0) {{ __isr = 0.0; }} else if (__isy >= 1.0) {{ __isr = 1.0; }} else {{ __isr = 0.5 - sin(asin(1.0 - 2.0 * __isy) / 3.0); }} __isr; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).

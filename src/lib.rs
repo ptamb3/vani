@@ -15887,6 +15887,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_inv_smoothstep_typecheck_and_compile() {
+        // Closure #489: f64_inv_smoothstep.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_inv_smoothstep(0.5);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("f64_inv_smoothstep must type-check");
+        compile_to_llvm(source).expect("f64_inv_smoothstep must compile to LLVM");
+    }
+
+    #[test]
     fn f64_atan2_deg_and_uniform_random_typecheck_and_compile() {
         // Closures #487, #488: atan2_deg, uniform_random.
         let source = r#"

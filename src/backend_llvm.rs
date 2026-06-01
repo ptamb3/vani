@@ -7674,6 +7674,44 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #489: inverse smoothstep.
+            //   t = 0.5 - sin(asin(1 - 2y) / 3); clamps outside [0,1].
+            if name == "f64_inv_smoothstep" {
+                let y = emit_expr(&args[0], ctx, out);
+                let is_le0 = ctx.fresh_tmp();
+                let is_ge1 = ctx.fresh_tmp();
+                let two_y = ctx.fresh_tmp();
+                let arg_asin = ctx.fresh_tmp();
+                let inner = ctx.fresh_tmp();
+                let div3 = ctx.fresh_tmp();
+                let sin_d = ctx.fresh_tmp();
+                let raw = ctx.fresh_tmp();
+                let after_lo = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = fcmp ole double {}, 0.0\n", is_le0, y));
+                out.push_str(&format!("  {} = fcmp oge double {}, 1.0\n", is_ge1, y));
+                out.push_str(&format!("  {} = fmul double 2.0, {}\n", two_y, y));
+                out.push_str(&format!(
+                    "  {} = fsub double 1.0, {}\n", arg_asin, two_y
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @asin(double {})\n", inner, arg_asin
+                ));
+                out.push_str(&format!("  {} = fdiv double {}, 3.0\n", div3, inner));
+                out.push_str(&format!(
+                    "  {} = call double @sin(double {})\n", sin_d, div3
+                ));
+                out.push_str(&format!("  {} = fsub double 0.5, {}\n", raw, sin_d));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 0.0, double {}\n",
+                    after_lo, is_le0, raw
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 1.0, double {}\n",
+                    dest, is_ge1, after_lo
+                ));
+                return dest;
+            }
             // Closure #487: atan2_deg(y, x) = atan2 * (180/π).
             if name == "f64_atan2_deg" {
                 let y = emit_expr(&args[0], ctx, out);

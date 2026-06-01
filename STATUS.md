@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-06-01 (closures #487-#488 — **`f64_atan2_deg(y, x)`** + **`f64_uniform_random()`**. atan2_deg = `atan2(y,x) * (180/π)`. uniform_random returns a pseudo-random `f64` in `[0, 1)` by masking the high bit of `intent_rng_next()` and dividing by 2^63. Same RNG state as `rand_i64`/`rand_in_range`, so `seed_rng` controls reproducibility. Both backends byte-identical: `atan2_deg(0, 1) = 0°`, `atan2_deg(1, 0) = 90°`, `atan2_deg(1, 1) = 45°`, `atan2_deg(-1, 0) = -90°`; `uniform_random` produces same sequence on both backends from same seed. 1 new lib test. 1506 lib + 54 parity green.)
-**Test totals:** 1506 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-06-01 (closure #489 — **`f64_inv_smoothstep(y) -> f64`** analytical inverse of `f64_smoothstep` (#430). Formula: `t = 0.5 - sin(asin(1 - 2y) / 3)`. Saturates outside `[0, 1]`. Verifies round-trip: `inv_smoothstep(0.15625) = 0.25`, matching `smoothstep(0, 1, 0.25) = 0.15625`. Both backends byte-identical: `iss(0) = 0`, `iss(0.5) = 0.5` (midpoint stable), `iss(1) = 1`, `iss(0.15625) = 0.25`, `iss(-0.5) = 0` (clamps). 1 new lib test. 1507 lib + 54 parity green.)
+**Test totals:** 1507 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
