@@ -15972,6 +15972,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_safe_log_geometric_mean_typecheck_and_compile() {
+        // Closure #451: f64_safe_log + f64_geometric_mean.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_safe_log(0.0, 0.0 - 1.0);
+              let b: f64 = f64_geometric_mean(4.0, 9.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("safe_log/geom_mean must type-check");
+        compile_to_llvm(source).expect("safe_log/geom_mean must compile to LLVM");
+    }
+
+    #[test]
     fn safe_math_typecheck_and_compile() {
         // Closure #450: f64_safe_sqrt + i64_safe_div.
         let source = r#"

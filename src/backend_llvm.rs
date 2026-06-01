@@ -7445,6 +7445,46 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #451: f64_safe_log(x, default).
+            if name == "f64_safe_log" {
+                let x = emit_expr(&args[0], ctx, out);
+                let def = emit_expr(&args[1], ctx, out);
+                let pos = ctx.fresh_tmp();
+                let lx = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fcmp ogt double {}, 0.0\n", pos, x
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @log(double {})\n", lx, x
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double {}, double {}\n",
+                    dest, pos, lx, def
+                ));
+                return dest;
+            }
+            // Closure #451: f64_geometric_mean(a, b) = sqrt(a*b)
+            // with negative product clamped to 0.
+            if name == "f64_geometric_mean" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let prod = ctx.fresh_tmp();
+                let neg = ctx.fresh_tmp();
+                let sq = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = fmul double {}, {}\n", prod, a, b));
+                out.push_str(&format!(
+                    "  {} = fcmp olt double {}, 0.0\n", neg, prod
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @sqrt(double {})\n", sq, prod
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 0.0, double {}\n", dest, neg, sq
+                ));
+                return dest;
+            }
             // Closure #450: f64_safe_sqrt — sqrt(x) for x >= 0, else 0.
             if name == "f64_safe_sqrt" {
                 let x = emit_expr(&args[0], ctx, out);

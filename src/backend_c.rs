@@ -11029,6 +11029,19 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2])
         ),
+        // Closure #451: safe_log(x, default) and geometric_mean.
+        // safe_log: log(x) for x > 0, else default.
+        // geometric_mean: sqrt(a*b) for a*b >= 0, else 0.
+        "f64_safe_log" => format!(
+            "({{ double __slx = ({}); double __sld = ({}); __slx > 0.0 ? log(__slx) : __sld; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "f64_geometric_mean" => format!(
+            "({{ double __gma = ({}); double __gmb = ({}); double __gmp = __gma * __gmb; __gmp < 0.0 ? 0.0 : sqrt(__gmp); }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #433: libm special functions.
         //   erf(x)    — Gauss error function
         //   erfc(x)   — complementary error function (= 1 - erf(x))
