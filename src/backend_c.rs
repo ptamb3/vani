@@ -2483,6 +2483,10 @@ pub(crate) fn program_uses_graph_vec_builtin(program: &TypedProgram) -> bool {
                     || name == "vec_running_sum"
                     || name == "vec_cumulative_max"
                     || name == "vec_cumulative_min"
+                    || name == "vec_running_product"
+                    || name == "vec_running_xor"
+                    || name == "vec_running_and"
+                    || name == "vec_running_or"
                     || name == "vec_dot"
                     || name == "vec_intersect"
                     || name == "vec_difference"
@@ -4773,6 +4777,72 @@ pub(crate) fn emit_intent_vec_int64_utility_helpers_c(out: &mut String) {
          \x20 int64_t acc = 0;\n\
          \x20 for (uint64_t i = 0; i < xs->len; i++) {\n\
          \x20   acc = acc + xs->data[i];\n\
+         \x20   v.data[i] = acc;\n\
+         \x20 }\n\
+         \x20 v.len = xs->len;\n\
+         \x20 return v;\n\
+         }\n\
+         /* Closures #512-#515: vec_running_product / vec_running_xor / vec_running_and / vec_running_or.\n\
+          * Same shape as vec_running_sum (#398) with different monoid:\n\
+          *   product (identity 1, op mul)\n\
+          *   xor     (identity 0, op xor)\n\
+          *   and     (identity -1 / all-ones, op bitand)\n\
+          *   or      (identity 0, op bitor) */\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_running_product(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_running_product(const intent_vec_int64_t* xs) {\n\
+         \x20 intent_vec_int64_t v; v.data = (int64_t*)0; v.len = 0; v.capacity = 0;\n\
+         \x20 if (!xs || xs->len == 0) return v;\n\
+         \x20 v.capacity = xs->len;\n\
+         \x20 v.data = (int64_t*)malloc(v.capacity * sizeof(int64_t));\n\
+         \x20 if (!v.data) abort();\n\
+         \x20 int64_t acc = 1;\n\
+         \x20 for (uint64_t i = 0; i < xs->len; i++) {\n\
+         \x20   acc = acc * xs->data[i];\n\
+         \x20   v.data[i] = acc;\n\
+         \x20 }\n\
+         \x20 v.len = xs->len;\n\
+         \x20 return v;\n\
+         }\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_running_xor(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_running_xor(const intent_vec_int64_t* xs) {\n\
+         \x20 intent_vec_int64_t v; v.data = (int64_t*)0; v.len = 0; v.capacity = 0;\n\
+         \x20 if (!xs || xs->len == 0) return v;\n\
+         \x20 v.capacity = xs->len;\n\
+         \x20 v.data = (int64_t*)malloc(v.capacity * sizeof(int64_t));\n\
+         \x20 if (!v.data) abort();\n\
+         \x20 int64_t acc = 0;\n\
+         \x20 for (uint64_t i = 0; i < xs->len; i++) {\n\
+         \x20   acc = acc ^ xs->data[i];\n\
+         \x20   v.data[i] = acc;\n\
+         \x20 }\n\
+         \x20 v.len = xs->len;\n\
+         \x20 return v;\n\
+         }\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_running_and(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_running_and(const intent_vec_int64_t* xs) {\n\
+         \x20 intent_vec_int64_t v; v.data = (int64_t*)0; v.len = 0; v.capacity = 0;\n\
+         \x20 if (!xs || xs->len == 0) return v;\n\
+         \x20 v.capacity = xs->len;\n\
+         \x20 v.data = (int64_t*)malloc(v.capacity * sizeof(int64_t));\n\
+         \x20 if (!v.data) abort();\n\
+         \x20 int64_t acc = (int64_t)-1;\n\
+         \x20 for (uint64_t i = 0; i < xs->len; i++) {\n\
+         \x20   acc = acc & xs->data[i];\n\
+         \x20   v.data[i] = acc;\n\
+         \x20 }\n\
+         \x20 v.len = xs->len;\n\
+         \x20 return v;\n\
+         }\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_running_or(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_running_or(const intent_vec_int64_t* xs) {\n\
+         \x20 intent_vec_int64_t v; v.data = (int64_t*)0; v.len = 0; v.capacity = 0;\n\
+         \x20 if (!xs || xs->len == 0) return v;\n\
+         \x20 v.capacity = xs->len;\n\
+         \x20 v.data = (int64_t*)malloc(v.capacity * sizeof(int64_t));\n\
+         \x20 if (!v.data) abort();\n\
+         \x20 int64_t acc = 0;\n\
+         \x20 for (uint64_t i = 0; i < xs->len; i++) {\n\
+         \x20   acc = acc | xs->data[i];\n\
          \x20   v.data[i] = acc;\n\
          \x20 }\n\
          \x20 v.len = xs->len;\n\
@@ -9587,6 +9657,23 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         ),
         "vec_cumulative_min" => format!(
             "intent_vec_int64_t_cumulative_min({})",
+            emit_expr(&args[0])
+        ),
+        // Closures #512-#515: monoidal running reductions.
+        "vec_running_product" => format!(
+            "intent_vec_int64_t_running_product({})",
+            emit_expr(&args[0])
+        ),
+        "vec_running_xor" => format!(
+            "intent_vec_int64_t_running_xor({})",
+            emit_expr(&args[0])
+        ),
+        "vec_running_and" => format!(
+            "intent_vec_int64_t_running_and({})",
+            emit_expr(&args[0])
+        ),
+        "vec_running_or" => format!(
+            "intent_vec_int64_t_running_or({})",
             emit_expr(&args[0])
         ),
         // Closure #399: vec_dot(ref xs, ref ys) -> i64.

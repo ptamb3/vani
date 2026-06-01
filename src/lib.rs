@@ -16022,6 +16022,26 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_running_monoids_typecheck_and_compile() {
+        // Closures #512-#515: vec_running_product / xor / and / or.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(2, 3, 4);
+              let rp: Vec<i64> = vec_running_product(ref xs);
+              let ys: Vec<i64> = vec(1, 2, 4);
+              let rx: Vec<i64> = vec_running_xor(ref ys);
+              let zs: Vec<i64> = vec(15, 7, 3);
+              let ra: Vec<i64> = vec_running_and(ref zs);
+              let ws: Vec<i64> = vec(1, 2, 4);
+              let ro: Vec<i64> = vec_running_or(ref ws);
+              return rp[0] + rx[0] + ra[0] + ro[0];
+            }
+        "#;
+        compile_to_c(source).expect("vec running-monoids must type-check");
+        compile_to_llvm(source).expect("vec running-monoids must compile to LLVM");
+    }
+
+    #[test]
     fn i64_rgb_pack_unpack_typecheck_and_compile() {
         // Closures #492-#495: i64_pack_rgb + unpack_r/g/b.
         let source = r#"
