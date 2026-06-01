@@ -7488,6 +7488,24 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #453: log_b(x, base) = log(x) / log(base).
+            if name == "f64_log_b" {
+                let x = emit_expr(&args[0], ctx, out);
+                let base = emit_expr(&args[1], ctx, out);
+                let lx = ctx.fresh_tmp();
+                let lb = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @log(double {})\n", lx, x
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @log(double {})\n", lb, base
+                ));
+                out.push_str(&format!(
+                    "  {} = fdiv double {}, {}\n", dest, lx, lb
+                ));
+                return dest;
+            }
             // Closure #452: quadratic mean = sqrt((a² + b²) / 2).
             if name == "f64_quadratic_mean" {
                 let a = emit_expr(&args[0], ctx, out);

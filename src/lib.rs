@@ -15972,6 +15972,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_log_b_typecheck_and_compile() {
+        // Closure #453: f64_log_b (arbitrary-base log).
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_log_b(8.0, 2.0);
+              let b: f64 = f64_log_b(100.0, 10.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("log_b must type-check");
+        compile_to_llvm(source).expect("log_b must compile to LLVM");
+    }
+
+    #[test]
     fn f64_harmonic_quadratic_mean_typecheck_and_compile() {
         // Closure #452: harmonic + quadratic means.
         let source = r#"

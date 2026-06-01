@@ -396,6 +396,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "f64_safe_sqrt" || name == "i64_safe_div"
                 || name == "f64_safe_log" || name == "f64_geometric_mean"
                 || name == "f64_harmonic_mean" || name == "f64_quadratic_mean"
+                || name == "f64_log_b"
                 || name == "f64_erf" || name == "f64_erfc"
                 || name == "f64_tgamma" || name == "f64_lgamma"
                 || name == "f64_cbrt" || name == "f64_expm1"

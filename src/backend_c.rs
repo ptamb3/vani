@@ -11055,6 +11055,17 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        // Closure #453: log_b(x, base) = log(x) / log(base).
+        // Algebraic identity covers any positive base except 1.
+        // For base in (0, 1): mathematically valid, gives
+        // negative values for x > 1. For invalid inputs the
+        // libm log() returns NaN/Inf — propagated rather than
+        // masked.
+        "f64_log_b" => format!(
+            "(log(({})) / log(({})))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #433: libm special functions.
         //   erf(x)    — Gauss error function
         //   erfc(x)   — complementary error function (= 1 - erf(x))
