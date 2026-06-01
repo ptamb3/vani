@@ -15887,6 +15887,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_normal_cdf_typecheck_and_compile() {
+        // Closure #485: f64_normal_cdf.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_normal_cdf(1.0, 0.0, 1.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("f64_normal_cdf must type-check");
+        compile_to_llvm(source).expect("f64_normal_cdf must compile to LLVM");
+    }
+
+    #[test]
     fn f64_normal_pdf_typecheck_and_compile() {
         // Closure #484: f64_normal_pdf.
         let source = r#"

@@ -7674,6 +7674,18 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #485: normal_cdf via @intent_f64_normal_cdf helper.
+            if name == "f64_normal_cdf" {
+                let x = emit_expr(&args[0], ctx, out);
+                let m = emit_expr(&args[1], ctx, out);
+                let s = emit_expr(&args[2], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @intent_f64_normal_cdf(double {}, double {}, double {})\n",
+                    dest, x, m, s
+                ));
+                return dest;
+            }
             // Closure #437: reciprocal sqrt — fdiv 1.0 / sqrt(x).
             if name == "f64_inv_sqrt" {
                 let x = emit_expr(&args[0], ctx, out);
@@ -13773,6 +13785,24 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("  %npd_den = fmul double %s, 0x40040D931FF62705\n");
     out.push_str("  %npd_r = fdiv double %npd_ex, %npd_den\n");
     out.push_str("  ret double %npd_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #485: Gaussian CDF via erf.
+    //   F(x) = ½ · (1 + erf((x - m) / (s · √2)))
+    out.push_str("define double @intent_f64_normal_cdf(double %x, double %m, double %s) {\n");
+    out.push_str("  %ncd_bad = fcmp ole double %s, 0.0\n");
+    out.push_str("  br i1 %ncd_bad, label %ncd_zero, label %ncd_calc\n");
+    out.push_str("ncd_zero:\n");
+    out.push_str("  ret double 0.0\n");
+    out.push_str("ncd_calc:\n");
+    out.push_str("  %ncd_diff = fsub double %x, %m\n");
+    // s * √2 — √2 = 1.4142135623730951 → 0x3FF6A09E667F3BCD
+    out.push_str("  %ncd_sden = fmul double %s, 0x3FF6A09E667F3BCD\n");
+    out.push_str("  %ncd_arg = fdiv double %ncd_diff, %ncd_sden\n");
+    out.push_str("  %ncd_e = call double @erf(double %ncd_arg)\n");
+    out.push_str("  %ncd_1pe = fadd double 1.0, %ncd_e\n");
+    out.push_str("  %ncd_r = fmul double 0.5, %ncd_1pe\n");
+    out.push_str("  ret double %ncd_r\n");
     out.push_str("}\n\n");
 
     // Closure #447: permutation P(n, k) = n*(n-1)*...*(n-k+1).

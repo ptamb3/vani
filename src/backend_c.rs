@@ -11229,6 +11229,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2])
         ),
+        // Closure #485: normal_cdf(x, m, s) = ½(1 + erf((x-m)/(s·√2))).
+        // sd ≤ 0 returns 0 (defensive). √2 ≈ 1.4142135623730951.
+        "f64_normal_cdf" => format!(
+            "({{ double __ncdx = ({}); double __ncdm = ({}); double __ncds = ({}); double __ncdr; if (__ncds <= 0.0) {{ __ncdr = 0.0; }} else {{ __ncdr = 0.5 * (1.0 + erf((__ncdx - __ncdm) / (__ncds * 1.4142135623730951))); }} __ncdr; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).
