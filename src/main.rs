@@ -388,6 +388,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "f64_step" || name == "f64_smoothstep"
                 || name == "f64_smoothstep5"
                 || name == "f64_inv_lerp" || name == "f64_chebyshev"
+                || name == "f64_l1_norm" || name == "i64_isqrt_ceil"
                 || name == "f64_relu" || name == "f64_leaky_relu"
                 || name == "f64_softplus"
                 || name == "f64_swish" || name == "f64_logit"

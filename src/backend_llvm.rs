@@ -7547,6 +7547,60 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!("  {} = fdiv double {}, {}\n", dest, num, den));
                 return dest;
             }
+            //   l1_norm(a, b) = |a| + |b|  (Manhattan distance)
+            if name == "f64_l1_norm" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let abs_a = ctx.fresh_tmp();
+                let abs_b = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @fabs(double {})\n", abs_a, a
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @fabs(double {})\n", abs_b, b
+                ));
+                out.push_str(&format!(
+                    "  {} = fadd double {}, {}\n", dest, abs_a, abs_b
+                ));
+                return dest;
+            }
+            //   isqrt_ceil(n): call @intent_i64_isqrt, then bump
+            //   by 1 unless the floor was exact (s*s == n).
+            if name == "i64_isqrt_ceil" {
+                let n = emit_expr(&args[0], ctx, out);
+                let n_pos = ctx.fresh_tmp();
+                let floor_s = ctx.fresh_tmp();
+                let sq = ctx.fresh_tmp();
+                let exact = ctx.fresh_tmp();
+                let bumped = ctx.fresh_tmp();
+                let result = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp sgt i64 {}, 0\n", n_pos, n
+                ));
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_isqrt(i64 {})\n", floor_s, n
+                ));
+                out.push_str(&format!(
+                    "  {} = mul i64 {}, {}\n", sq, floor_s, floor_s
+                ));
+                out.push_str(&format!(
+                    "  {} = icmp eq i64 {}, {}\n", exact, sq, n
+                ));
+                out.push_str(&format!(
+                    "  {} = add i64 {}, 1\n", bumped, floor_s
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 {}, i64 {}\n",
+                    result, exact, floor_s, bumped
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 {}, i64 0\n",
+                    dest, n_pos, result
+                ));
+                return dest;
+            }
             //   chebyshev(x, y) = max(|x|, |y|)
             if name == "f64_chebyshev" {
                 let x = emit_expr(&args[0], ctx, out);

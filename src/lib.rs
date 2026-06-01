@@ -16015,6 +16015,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_l1_norm_and_i64_isqrt_ceil_typecheck_and_compile() {
+        // Closure #449: f64_l1_norm + i64_isqrt_ceil.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_l1_norm(3.0, 4.0);
+              let b: i64 = i64_isqrt_ceil(10);
+              return b;
+            }
+        "#;
+        compile_to_c(source).expect("l1_norm/isqrt_ceil must type-check");
+        compile_to_llvm(source).expect("l1_norm/isqrt_ceil must compile to LLVM");
+    }
+
+    #[test]
     fn f64_inv_lerp_chebyshev_typecheck_and_compile() {
         // Closure #445: f64_inv_lerp + f64_chebyshev.
         let source = r#"
