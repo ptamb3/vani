@@ -15887,6 +15887,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_atan_deg_typecheck_and_compile() {
+        // Closure #490: f64_atan_deg.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_atan_deg(1.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("f64_atan_deg must type-check");
+        compile_to_llvm(source).expect("f64_atan_deg must compile to LLVM");
+    }
+
+    #[test]
     fn f64_inv_smoothstep_typecheck_and_compile() {
         // Closure #489: f64_inv_smoothstep.
         let source = r#"

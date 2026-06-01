@@ -7727,6 +7727,19 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #490: atan_deg(x) = atan(x) * (180/π).
+            if name == "f64_atan_deg" {
+                let x = emit_expr(&args[0], ctx, out);
+                let rad = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @atan(double {})\n", rad, x
+                ));
+                out.push_str(&format!(
+                    "  {} = fmul double {}, 0x404CA5DC1A63C1F8\n", dest, rad
+                ));
+                return dest;
+            }
             // Closure #488: uniform_random in [0, 1). Calls
             // @intent_rng_next, masks the high bit, divides by 2^63.
             if name == "f64_uniform_random" {

@@ -11250,6 +11250,11 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        // Closure #490: atan returning degrees.
+        "f64_atan_deg" => format!(
+            "(atan(({})) * 57.29577951308232)",
+            emit_expr(&args[0])
+        ),
         // Closure #488: uniform random in [0, 1). Uses
         // intent_rng_next() (the same source as rand_i64).
         // Divides by 2^63 to map u63 magnitude to [0, 1).
