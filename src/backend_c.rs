@@ -11061,6 +11061,12 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        // Closure #480: reverse_bits — bit-level reversal via
+        // standard parallel-swap sequence.
+        "i64_reverse_bits" => format!(
+            "({{ uint64_t __rbx = (uint64_t)({}); __rbx = ((__rbx >> 1) & 0x5555555555555555ULL) | ((__rbx & 0x5555555555555555ULL) << 1); __rbx = ((__rbx >> 2) & 0x3333333333333333ULL) | ((__rbx & 0x3333333333333333ULL) << 2); __rbx = ((__rbx >> 4) & 0x0F0F0F0F0F0F0F0FULL) | ((__rbx & 0x0F0F0F0F0F0F0F0FULL) << 4); __rbx = ((__rbx >> 8) & 0x00FF00FF00FF00FFULL) | ((__rbx & 0x00FF00FF00FF00FFULL) << 8); __rbx = ((__rbx >> 16) & 0x0000FFFF0000FFFFULL) | ((__rbx & 0x0000FFFF0000FFFFULL) << 16); __rbx = (__rbx >> 32) | (__rbx << 32); (int64_t)__rbx; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #475: modular multiplicative inverse via the
         // extended Euclidean algorithm. Returns x s.t.
         // (a · x) mod m == 1; returns 0 if no inverse exists

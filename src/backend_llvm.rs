@@ -510,6 +510,8 @@ pub fn emit_llvm(program: &TypedProgram) -> String {
     out.push_str("declare i64 @llvm.bswap.i64(i64)\n");
     out.push_str("declare i64 @llvm.fshl.i64(i64, i64, i64)\n");
     out.push_str("declare i64 @llvm.fshr.i64(i64, i64, i64)\n");
+    // Closure #480: bit-reverse intrinsic.
+    out.push_str("declare i64 @llvm.bitreverse.i64(i64)\n");
     // Closure #410: saturating arithmetic intrinsics.
     out.push_str("declare i64 @llvm.sadd.sat.i64(i64, i64)\n");
     out.push_str("declare i64 @llvm.ssub.sat.i64(i64, i64)\n");
@@ -7778,6 +7780,15 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                     )),
                     _ => unreachable!(),
                 }
+                return dest;
+            }
+            // Closure #480: reverse_bits via LLVM intrinsic.
+            if name == "i64_reverse_bits" {
+                let n = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @llvm.bitreverse.i64(i64 {})\n", dest, n
+                ));
                 return dest;
             }
             // Closure #479: test_bit returns bool.

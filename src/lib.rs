@@ -16071,6 +16071,23 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_reverse_bits_typecheck_and_compile() {
+        // Closure #480: i64_reverse_bits via @llvm.bitreverse.i64.
+        let source = r#"
+            fn main() -> i64 {
+              let r: i64 = i64_reverse_bits(1);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("i64_reverse_bits must type-check");
+        let ll = compile_to_llvm(source).expect("i64_reverse_bits must compile to LLVM");
+        assert!(
+            ll.contains("declare i64 @llvm.bitreverse.i64(i64)"),
+            "LLVM must declare @llvm.bitreverse.i64"
+        );
+    }
+
+    #[test]
     fn i64_bit_ops_typecheck_and_compile() {
         // Closures #476-#479: set_bit/clear_bit/toggle_bit/test_bit.
         let source = r#"
