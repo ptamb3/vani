@@ -16401,6 +16401,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_first_byte_typecheck_and_compile() {
+        // Closure #466: str_first_byte -> Option<i64>.
+        let source = r#"
+            fn main() -> i64 {
+              let i: i64 = option_unwrap_or(str_first_byte("Hello"), 0 - 1);
+              return i;
+            }
+        "#;
+        compile_to_c(source).expect("str_first_byte must type-check");
+        compile_to_llvm(source).expect("str_first_byte must compile to LLVM");
+    }
+
+    #[test]
     fn str_count_ascii_control_typecheck_and_compile() {
         // Closure #465: str_count_ascii_control.
         let source = r#"

@@ -8057,6 +8057,55 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #466: first byte as Option<i64>. None for empty s.
+            if name == "str_first_byte" {
+                let s = emit_expr(&args[0], ctx, out);
+                let fb = ctx.fresh_tmp();
+                let is_empty = ctx.fresh_tmp();
+                let fb_i64 = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = load i8, i8* {}\n", fb, s));
+                out.push_str(&format!(
+                    "  {} = icmp eq i8 {}, 0\n", is_empty, fb
+                ));
+                out.push_str(&format!(
+                    "  {} = zext i8 {} to i64\n", fb_i64, fb
+                ));
+                let some_lbl = ctx.fresh_label("fb_some");
+                let none_lbl = ctx.fresh_label("fb_none");
+                let done = ctx.fresh_label("fb_done");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    is_empty, none_lbl, some_lbl
+                ));
+                out.push_str(&format!("{}:\n", some_lbl));
+                let r1s = ctx.fresh_tmp();
+                let r2s = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 undef, i32 0, 0\n", r1s
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 {}, i64 {}, 1\n",
+                    r2s, r1s, fb_i64
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", none_lbl));
+                let r1n = ctx.fresh_tmp();
+                let r2n = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 undef, i32 1, 0\n", r1n
+                ));
+                out.push_str(&format!(
+                    "  {} = insertvalue %Enum_Option__i64 {}, i64 0, 1\n", r2n, r1n
+                ));
+                out.push_str(&format!("  br label %{}\n", done));
+                out.push_str(&format!("{}:\n", done));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = phi %Enum_Option__i64 [ {}, %{} ], [ {}, %{} ]\n",
+                    dest, r2s, some_lbl, r2n, none_lbl
+                ));
+                return dest;
+            }
             // Closure #441: byte count via helper. Walks the
             // string until the null terminator.
             if name == "str_byte_count" {

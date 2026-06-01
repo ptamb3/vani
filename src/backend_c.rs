@@ -11199,6 +11199,11 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ const char* __cct_s = ({}); int64_t __cct_n = 0; for (const char* __cct_p = __cct_s; *__cct_p != 0; __cct_p++) {{ unsigned char __cct_c = (unsigned char)*__cct_p; if ((__cct_c >= 1 && __cct_c <= 31) || __cct_c == 127) __cct_n += 1; }} __cct_n; }})",
             emit_expr(&args[0])
         ),
+        // Closure #466: first byte of s as Option<i64>.
+        "str_first_byte" => format!(
+            "({{ const char* __fb_s = ({}); Enum_Option__i64 __fb_r; if (__fb_s[0] == 0) {{ __fb_r.tag = 1; __fb_r.payload = 0; }} else {{ __fb_r.tag = 0; __fb_r.payload = (int64_t)(unsigned char)__fb_s[0]; }} __fb_r; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #441: count occurrences of byte b in s.
         // Walks the string until the null terminator.
         "str_byte_count" => format!(
