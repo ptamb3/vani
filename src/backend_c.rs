@@ -11016,6 +11016,19 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2])
         ),
+        // Closure #450: defensive math.
+        // safe_sqrt(x): sqrt(x) for x >= 0, else 0.
+        // i64_safe_div(a, b, default): a/b for b != 0, else default.
+        "f64_safe_sqrt" => format!(
+            "({{ double __ssx = ({}); __ssx < 0.0 ? 0.0 : sqrt(__ssx); }})",
+            emit_expr(&args[0])
+        ),
+        "i64_safe_div" => format!(
+            "({{ int64_t __isda = ({}); int64_t __isdb = ({}); int64_t __isdd = ({}); __isdb == 0 ? __isdd : __isda / __isdb; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         // Closure #433: libm special functions.
         //   erf(x)    — Gauss error function
         //   erfc(x)   — complementary error function (= 1 - erf(x))

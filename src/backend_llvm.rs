@@ -7445,6 +7445,51 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #450: f64_safe_sqrt — sqrt(x) for x >= 0, else 0.
+            if name == "f64_safe_sqrt" {
+                let x = emit_expr(&args[0], ctx, out);
+                let neg = ctx.fresh_tmp();
+                let sq = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = fcmp olt double {}, 0.0\n", neg, x
+                ));
+                out.push_str(&format!(
+                    "  {} = call double @sqrt(double {})\n", sq, x
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 0.0, double {}\n", dest, neg, sq
+                ));
+                return dest;
+            }
+            // Closure #450: i64_safe_div — branch on b == 0 to
+            // avoid UB from LLVM sdiv with zero divisor.
+            if name == "i64_safe_div" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let def = emit_expr(&args[2], ctx, out);
+                let b_zero = ctx.fresh_tmp();
+                let def_lbl = ctx.fresh_label("isd_def");
+                let div_lbl = ctx.fresh_label("isd_div");
+                let done_lbl = ctx.fresh_label("isd_done");
+                out.push_str(&format!("  {} = icmp eq i64 {}, 0\n", b_zero, b));
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n", b_zero, def_lbl, div_lbl
+                ));
+                out.push_str(&format!("{}:\n", def_lbl));
+                out.push_str(&format!("  br label %{}\n", done_lbl));
+                out.push_str(&format!("{}:\n", div_lbl));
+                let q = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = sdiv i64 {}, {}\n", q, a, b));
+                out.push_str(&format!("  br label %{}\n", done_lbl));
+                out.push_str(&format!("{}:\n", done_lbl));
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = phi i64 [ {}, %{} ], [ {}, %{} ]\n",
+                    dest, def, def_lbl, q, div_lbl
+                ));
+                return dest;
+            }
             //   safe_div(a, b, default) = b != 0 ? a/b : default
             if name == "f64_safe_div" {
                 let a = emit_expr(&args[0], ctx, out);
