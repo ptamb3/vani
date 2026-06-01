@@ -7750,13 +7750,17 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
-            // Closure #473: next prime ≥ n.
-            if name == "i64_next_prime" {
+            // Closures #473 + #474: next/prev prime via helpers.
+            if name == "i64_next_prime" || name == "i64_prev_prime" {
                 let n = emit_expr(&args[0], ctx, out);
                 let dest = ctx.fresh_tmp();
+                let helper = if name == "i64_next_prime" {
+                    "intent_i64_next_prime"
+                } else {
+                    "intent_i64_prev_prime"
+                };
                 out.push_str(&format!(
-                    "  {} = call i64 @intent_i64_next_prime(i64 {})\n",
-                    dest, n
+                    "  {} = call i64 @{}(i64 {})\n", dest, helper, n
                 ));
                 return dest;
             }
@@ -13556,6 +13560,40 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("  br label %np_head\n");
     out.push_str("np_ret:\n");
     out.push_str("  ret i64 %np_c\n");
+    out.push_str("}\n\n");
+
+    // Closure #474: prev prime ≤ n. Returns 0 for n < 2.
+    out.push_str("define i64 @intent_i64_prev_prime(i64 %n) {\n");
+    out.push_str("  %pp_lt2 = icmp slt i64 %n, 2\n");
+    out.push_str("  br i1 %pp_lt2, label %pp_zero_ret, label %pp_check_small\n");
+    out.push_str("pp_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("pp_check_small:\n");
+    out.push_str("  %pp_le4 = icmp sle i64 %n, 4\n");
+    out.push_str("  br i1 %pp_le4, label %pp_small, label %pp_init\n");
+    out.push_str("pp_small:\n");
+    // n in [2, 4]: 2 → 2; 3 → 3; 4 → 3
+    out.push_str("  %pp_eq2 = icmp eq i64 %n, 2\n");
+    out.push_str("  %pp_small_r = select i1 %pp_eq2, i64 2, i64 3\n");
+    out.push_str("  ret i64 %pp_small_r\n");
+    out.push_str("pp_init:\n");
+    out.push_str("  %pp_c_p = alloca i64\n");
+    out.push_str("  %pp_n_even_r = srem i64 %n, 2\n");
+    out.push_str("  %pp_n_even = icmp eq i64 %pp_n_even_r, 0\n");
+    out.push_str("  %pp_n_minus = sub i64 %n, 1\n");
+    out.push_str("  %pp_c_init = select i1 %pp_n_even, i64 %pp_n_minus, i64 %n\n");
+    out.push_str("  store i64 %pp_c_init, i64* %pp_c_p\n");
+    out.push_str("  br label %pp_head\n");
+    out.push_str("pp_head:\n");
+    out.push_str("  %pp_c = load i64, i64* %pp_c_p\n");
+    out.push_str("  %pp_isp = call i1 @intent_i64_is_prime(i64 %pp_c)\n");
+    out.push_str("  br i1 %pp_isp, label %pp_ret, label %pp_dec\n");
+    out.push_str("pp_dec:\n");
+    out.push_str("  %pp_c_new = sub i64 %pp_c, 2\n");
+    out.push_str("  store i64 %pp_c_new, i64* %pp_c_p\n");
+    out.push_str("  br label %pp_head\n");
+    out.push_str("pp_ret:\n");
+    out.push_str("  ret i64 %pp_c\n");
     out.push_str("}\n\n");
 
     // Closure #447: permutation P(n, k) = n*(n-1)*...*(n-k+1).

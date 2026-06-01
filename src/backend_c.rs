@@ -11036,6 +11036,12 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __npn = ({}); int64_t __npr; if (__npn <= 2) {{ __npr = 2; }} else if (__npn == 3) {{ __npr = 3; }} else {{ int64_t __npc = (__npn % 2 == 0) ? __npn + 1 : __npn; while (1) {{ bool __np_isp; if (__npc % 3 == 0) {{ __np_isp = (__npc == 3); }} else {{ __np_isp = true; int64_t __npi = 5; while (__npi * __npi <= __npc) {{ if (__npc % __npi == 0 || __npc % (__npi + 2) == 0) {{ __np_isp = false; break; }} __npi += 6; }} }} if (__np_isp) {{ __npr = __npc; break; }} __npc += 2; }} }} __npr; }})",
             emit_expr(&args[0])
         ),
+        // Closure #474: largest prime ≤ n. Returns 0 for n < 2.
+        // n=2 → 2; n=3 → 3; else step odd candidates downward.
+        "i64_prev_prime" => format!(
+            "({{ int64_t __ppn = ({}); int64_t __ppr; if (__ppn < 2) {{ __ppr = 0; }} else if (__ppn == 2) {{ __ppr = 2; }} else if (__ppn < 5) {{ __ppr = 3; }} else {{ int64_t __ppc = (__ppn % 2 == 0) ? __ppn - 1 : __ppn; while (1) {{ bool __pp_isp; if (__ppc < 5) {{ __pp_isp = (__ppc == 2 || __ppc == 3); }} else if (__ppc % 3 == 0) {{ __pp_isp = false; }} else {{ __pp_isp = true; int64_t __ppi = 5; while (__ppi * __ppi <= __ppc) {{ if (__ppc % __ppi == 0 || __ppc % (__ppi + 2) == 0) {{ __pp_isp = false; break; }} __ppi += 6; }} }} if (__pp_isp) {{ __ppr = __ppc; break; }} __ppc -= 2; if (__ppc < 2) {{ __ppr = 2; break; }} }} }} __ppr; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #438: quintic smoothstep. Polynomial
         // 6t^5 - 15t^4 + 10t^3 has zero first AND second
         // derivatives at t=0 and t=1, giving smoother

@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-06-01 (closure #473 — **`i64_next_prime(n) -> i64`** smallest prime ≥ n. Returns 2 for n ≤ 2; bumps odd candidates by 2 until prime is found. LLVM: `@intent_i64_next_prime` helper that calls the shared `@intent_i64_is_prime`. Both backends byte-identical: `np(0/1/2) = 2`, `np(3) = 3`, `np(4) = 5`, `np(10) = 11`, `np(13) = 13`, `np(100) = 101`, `np(-5) = 2`. 1 new lib test. 1497 lib + 54 parity green.)
-**Test totals:** 1497 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-06-01 (closure #474 — **`i64_prev_prime(n) -> i64`** largest prime ≤ n. Returns 0 for n < 2. LLVM: `@intent_i64_prev_prime` helper calling `@intent_i64_is_prime`, stepping odd candidates downward. Both backends byte-identical: `pp(0/1) = 0`, `pp(2) = 2`, `pp(3) = 3`, `pp(4) = 3`, `pp(10) = 7`, `pp(13) = 13`, `pp(100) = 97`. 1 new lib test. 1498 lib + 54 parity green.)
+**Test totals:** 1498 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
