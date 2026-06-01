@@ -11022,6 +11022,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __ttn = ({}); int64_t __ttr; if (__ttn <= 0) {{ __ttr = 0; }} else {{ __ttr = __ttn; int64_t __ttm = __ttn; int64_t __tti = 2; while (__tti * __tti <= __ttm) {{ if (__ttm % __tti == 0) {{ __ttr -= __ttr / __tti; while (__ttm % __tti == 0) __ttm /= __tti; }} __tti += 1; }} if (__ttm > 1) __ttr -= __ttr / __ttm; }} __ttr; }})",
             emit_expr(&args[0])
         ),
+        // Closure #472: radical rad(n) — product of distinct
+        // prime factors of n. rad(12) = 2·3 = 6. rad(prime) = prime.
+        // Returns 0 for n <= 0 (defensive).
+        "i64_radical" => format!(
+            "({{ int64_t __rdn = ({}); int64_t __rdr; if (__rdn <= 0) {{ __rdr = 0; }} else {{ __rdr = 1; int64_t __rdm = __rdn; int64_t __rdi = 2; while (__rdi * __rdi <= __rdm) {{ if (__rdm % __rdi == 0) {{ __rdr *= __rdi; while (__rdm % __rdi == 0) __rdm /= __rdi; }} __rdi += 1; }} if (__rdm > 1) __rdr *= __rdm; }} __rdr; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #438: quintic smoothstep. Polynomial
         // 6t^5 - 15t^4 + 10t^3 has zero first AND second
         // derivatives at t=0 and t=1, giving smoother

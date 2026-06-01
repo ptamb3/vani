@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-06-01 (closure #471 — **`i64_totient(n) -> i64`** Euler's totient φ(n) — count of k in [1, n] coprime to n. Uses the Euler product formula φ(n) = n · ∏(1 - 1/p) over prime factors, implemented iteratively via `r -= r/p` for each prime p found by trial division. LLVM: `@intent_i64_totient` helper. Both backends byte-identical: `tt(1) = 1`, `tt(2) = 1`, `tt(6) = 2` (k=1,5), `tt(9) = 6`, `tt(10) = 4` (k=1,3,7,9), `tt(12) = 4` (k=1,5,7,11), `tt(36) = 12`, `tt(0) = 0`. 1 new lib test. 1495 lib + 54 parity green.)
-**Test totals:** 1495 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-06-01 (closure #472 — **`i64_radical(n) -> i64`** rad(n) — product of distinct prime factors. Same trial-division structure as totient but multiplies r by each prime exactly once. LLVM: `@intent_i64_radical` helper. Both backends byte-identical: `rad(1) = 1`, `rad(7) = 7` (prime), `rad(12) = 6` (= 2·3), `rad(36) = 6` (same primes as 12), `rad(60) = 30` (= 2·3·5), `rad(72) = 6` (2³·3² → 2·3), `rad(0) = 0`. 1 new lib test. 1496 lib + 54 parity green.)
+**Test totals:** 1496 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,

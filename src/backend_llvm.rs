@@ -7740,6 +7740,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #472: radical rad(n).
+            if name == "i64_radical" {
+                let n = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_radical(i64 {})\n",
+                    dest, n
+                ));
+                return dest;
+            }
             // Closure #468: is_perfect_square(n) — n is a non-
             // negative perfect square iff floor_isqrt(n)^2 == n.
             if name == "i64_is_perfect_square" {
@@ -13446,6 +13456,64 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("tt_fin:\n");
     out.push_str("  %tt_r = load i64, i64* %tt_r_p\n");
     out.push_str("  ret i64 %tt_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #472: radical rad(n) — product of distinct prime
+    // factors. Same trial-division structure as totient but
+    // multiplies r by each prime factor exactly once.
+    out.push_str("define i64 @intent_i64_radical(i64 %n) {\n");
+    out.push_str("  %rd_lez = icmp sle i64 %n, 0\n");
+    out.push_str("  br i1 %rd_lez, label %rd_zero_ret, label %rd_init\n");
+    out.push_str("rd_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("rd_init:\n");
+    out.push_str("  %rd_r_p = alloca i64\n");
+    out.push_str("  %rd_m_p = alloca i64\n");
+    out.push_str("  %rd_i_p = alloca i64\n");
+    out.push_str("  store i64 1, i64* %rd_r_p\n");
+    out.push_str("  store i64 %n, i64* %rd_m_p\n");
+    out.push_str("  store i64 2, i64* %rd_i_p\n");
+    out.push_str("  br label %rd_head\n");
+    out.push_str("rd_head:\n");
+    out.push_str("  %rd_i = load i64, i64* %rd_i_p\n");
+    out.push_str("  %rd_m = load i64, i64* %rd_m_p\n");
+    out.push_str("  %rd_sq = mul i64 %rd_i, %rd_i\n");
+    out.push_str("  %rd_done = icmp sgt i64 %rd_sq, %rd_m\n");
+    out.push_str("  br i1 %rd_done, label %rd_tail, label %rd_body\n");
+    out.push_str("rd_body:\n");
+    out.push_str("  %rd_rem = srem i64 %rd_m, %rd_i\n");
+    out.push_str("  %rd_div = icmp eq i64 %rd_rem, 0\n");
+    out.push_str("  br i1 %rd_div, label %rd_factor, label %rd_incr\n");
+    out.push_str("rd_factor:\n");
+    out.push_str("  %rd_r_cur = load i64, i64* %rd_r_p\n");
+    out.push_str("  %rd_r_new = mul i64 %rd_r_cur, %rd_i\n");
+    out.push_str("  store i64 %rd_r_new, i64* %rd_r_p\n");
+    out.push_str("  br label %rd_strip\n");
+    out.push_str("rd_strip:\n");
+    out.push_str("  %rd_m_cur = load i64, i64* %rd_m_p\n");
+    out.push_str("  %rd_srem = srem i64 %rd_m_cur, %rd_i\n");
+    out.push_str("  %rd_sdiv = icmp eq i64 %rd_srem, 0\n");
+    out.push_str("  br i1 %rd_sdiv, label %rd_strip_step, label %rd_incr\n");
+    out.push_str("rd_strip_step:\n");
+    out.push_str("  %rd_m_new = sdiv i64 %rd_m_cur, %rd_i\n");
+    out.push_str("  store i64 %rd_m_new, i64* %rd_m_p\n");
+    out.push_str("  br label %rd_strip\n");
+    out.push_str("rd_incr:\n");
+    out.push_str("  %rd_i_new = add i64 %rd_i, 1\n");
+    out.push_str("  store i64 %rd_i_new, i64* %rd_i_p\n");
+    out.push_str("  br label %rd_head\n");
+    out.push_str("rd_tail:\n");
+    out.push_str("  %rd_m_fin = load i64, i64* %rd_m_p\n");
+    out.push_str("  %rd_big = icmp sgt i64 %rd_m_fin, 1\n");
+    out.push_str("  br i1 %rd_big, label %rd_last_fac, label %rd_fin\n");
+    out.push_str("rd_last_fac:\n");
+    out.push_str("  %rd_r_cur2 = load i64, i64* %rd_r_p\n");
+    out.push_str("  %rd_r_new2 = mul i64 %rd_r_cur2, %rd_m_fin\n");
+    out.push_str("  store i64 %rd_r_new2, i64* %rd_r_p\n");
+    out.push_str("  br label %rd_fin\n");
+    out.push_str("rd_fin:\n");
+    out.push_str("  %rd_r = load i64, i64* %rd_r_p\n");
+    out.push_str("  ret i64 %rd_r\n");
     out.push_str("}\n\n");
 
     // Closure #447: permutation P(n, k) = n*(n-1)*...*(n-k+1).

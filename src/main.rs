@@ -394,7 +394,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "i64_is_perfect_square"
                 || name == "i64_divisor_count"
                 || name == "i64_divisor_sum"
-                || name == "i64_totient"
+                || name == "i64_totient" || name == "i64_radical"
                 || name == "f64_relu" || name == "f64_leaky_relu"
                 || name == "f64_softplus"
                 || name == "f64_swish" || name == "f64_logit"
