@@ -16071,6 +16071,22 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_bit_ops_typecheck_and_compile() {
+        // Closures #476-#479: set_bit/clear_bit/toggle_bit/test_bit.
+        let source = r#"
+            fn main() -> i64 {
+              let s: i64 = i64_set_bit(5, 1);
+              let c: i64 = i64_clear_bit(7, 1);
+              let t: i64 = i64_toggle_bit(5, 1);
+              let b: bool = i64_test_bit(5, 0);
+              return s + c + t;
+            }
+        "#;
+        compile_to_c(source).expect("i64 bit-ops must type-check");
+        compile_to_llvm(source).expect("i64 bit-ops must compile to LLVM");
+    }
+
+    #[test]
     fn i64_mod_inverse_typecheck_and_compile() {
         // Closure #475: i64_mod_inverse.
         let source = r#"

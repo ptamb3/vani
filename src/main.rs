@@ -397,6 +397,8 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "i64_totient" || name == "i64_radical"
                 || name == "i64_next_prime" || name == "i64_prev_prime"
                 || name == "i64_mod_inverse"
+                || name == "i64_set_bit" || name == "i64_clear_bit"
+                || name == "i64_toggle_bit" || name == "i64_test_bit"
                 || name == "f64_relu" || name == "f64_leaky_relu"
                 || name == "f64_softplus"
                 || name == "f64_swish" || name == "f64_logit"

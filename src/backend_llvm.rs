@@ -7750,6 +7750,48 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closures #476-#478: single-bit ops, inline IR.
+            if matches!(
+                name.as_str(),
+                "i64_set_bit" | "i64_clear_bit" | "i64_toggle_bit"
+            ) {
+                let n = emit_expr(&args[0], ctx, out);
+                let i = emit_expr(&args[1], ctx, out);
+                let mask = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = shl i64 1, {}\n", mask, i));
+                match name.as_str() {
+                    "i64_set_bit" => out.push_str(&format!(
+                        "  {} = or i64 {}, {}\n", dest, n, mask
+                    )),
+                    "i64_clear_bit" => {
+                        let nmask = ctx.fresh_tmp();
+                        out.push_str(&format!(
+                            "  {} = xor i64 {}, -1\n", nmask, mask
+                        ));
+                        out.push_str(&format!(
+                            "  {} = and i64 {}, {}\n", dest, n, nmask
+                        ));
+                    }
+                    "i64_toggle_bit" => out.push_str(&format!(
+                        "  {} = xor i64 {}, {}\n", dest, n, mask
+                    )),
+                    _ => unreachable!(),
+                }
+                return dest;
+            }
+            // Closure #479: test_bit returns bool.
+            if name == "i64_test_bit" {
+                let n = emit_expr(&args[0], ctx, out);
+                let i = emit_expr(&args[1], ctx, out);
+                let shifted = ctx.fresh_tmp();
+                let bit = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = lshr i64 {}, {}\n", shifted, n, i));
+                out.push_str(&format!("  {} = and i64 {}, 1\n", bit, shifted));
+                out.push_str(&format!("  {} = icmp ne i64 {}, 0\n", dest, bit));
+                return dest;
+            }
             // Closure #475: modular inverse via helper.
             if name == "i64_mod_inverse" {
                 let a = emit_expr(&args[0], ctx, out);

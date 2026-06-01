@@ -11036,6 +11036,31 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __npn = ({}); int64_t __npr; if (__npn <= 2) {{ __npr = 2; }} else if (__npn == 3) {{ __npr = 3; }} else {{ int64_t __npc = (__npn % 2 == 0) ? __npn + 1 : __npn; while (1) {{ bool __np_isp; if (__npc % 3 == 0) {{ __np_isp = (__npc == 3); }} else {{ __np_isp = true; int64_t __npi = 5; while (__npi * __npi <= __npc) {{ if (__npc % __npi == 0 || __npc % (__npi + 2) == 0) {{ __np_isp = false; break; }} __npi += 6; }} }} if (__np_isp) {{ __npr = __npc; break; }} __npc += 2; }} }} __npr; }})",
             emit_expr(&args[0])
         ),
+        // Closures #476-#479: single-bit ops.
+        // set_bit(n, i) = n | (1 << i)
+        // clear_bit(n, i) = n & ~(1 << i)
+        // toggle_bit(n, i) = n ^ (1 << i)
+        // test_bit(n, i) = (n >> i) & 1 != 0
+        "i64_set_bit" => format!(
+            "(({}) | ((int64_t)1 << ({})))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "i64_clear_bit" => format!(
+            "(({}) & ~((int64_t)1 << ({})))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "i64_toggle_bit" => format!(
+            "(({}) ^ ((int64_t)1 << ({})))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        "i64_test_bit" => format!(
+            "((((uint64_t)({}) >> ({})) & 1) != 0)",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #475: modular multiplicative inverse via the
         // extended Euclidean algorithm. Returns x s.t.
         // (a · x) mod m == 1; returns 0 if no inverse exists
