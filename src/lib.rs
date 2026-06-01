@@ -15947,6 +15947,20 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_hash_pair_triple_typecheck_and_compile() {
+        // Closures #501/#502: f64_hash_pair / f64_hash_triple.
+        let source = r#"
+            fn main() -> i64 {
+              let h2: u64 = f64_hash_pair(1.5, 2.5);
+              let h3: u64 = f64_hash_triple(1.5, 2.5, 3.5);
+              return (h2 as i64) ^ (h3 as i64);
+            }
+        "#;
+        compile_to_c(source).expect("f64_hash_pair/triple must type-check");
+        compile_to_llvm(source).expect("f64_hash_pair/triple must compile to LLVM");
+    }
+
+    #[test]
     fn i64_rgb_pack_unpack_typecheck_and_compile() {
         // Closures #492-#495: i64_pack_rgb + unpack_r/g/b.
         let source = r#"
