@@ -10521,6 +10521,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
                 emit_expr(&args[2])
             )
         }
+        "hash_combine_4" => {
+            format!(
+                "intent_hash_combine(intent_hash_combine(intent_hash_combine(({}), ({})), ({})), ({}))",
+                emit_expr(&args[0]),
+                emit_expr(&args[1]),
+                emit_expr(&args[2]),
+                emit_expr(&args[3])
+            )
+        }
         "seed_rng" => {
             format!("intent_rng_seed(({}))", emit_expr(&args[0]))
         }
