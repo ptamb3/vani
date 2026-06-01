@@ -11237,6 +11237,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2])
         ),
+        // Closure #486: lerp_clamp(a, b, t) = lerp(a, b, clamp01(t)).
+        "f64_lerp_clamp" => format!(
+            "({{ double __lca = ({}); double __lcb = ({}); double __lct = ({}); double __lctc = __lct < 0.0 ? 0.0 : (__lct > 1.0 ? 1.0 : __lct); __lca + (__lcb - __lca) * __lctc; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).

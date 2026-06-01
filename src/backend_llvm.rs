@@ -7674,6 +7674,31 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #486: lerp_clamp(a, b, t) — lerp with t clamped.
+            if name == "f64_lerp_clamp" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let t = emit_expr(&args[2], ctx, out);
+                let lt0 = ctx.fresh_tmp();
+                let tc1 = ctx.fresh_tmp();
+                let gt1 = ctx.fresh_tmp();
+                let tc = ctx.fresh_tmp();
+                let diff = ctx.fresh_tmp();
+                let scaled = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = fcmp olt double {}, 0.0\n", lt0, t));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 0.0, double {}\n", tc1, lt0, t
+                ));
+                out.push_str(&format!("  {} = fcmp ogt double {}, 1.0\n", gt1, tc1));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, double 1.0, double {}\n", tc, gt1, tc1
+                ));
+                out.push_str(&format!("  {} = fsub double {}, {}\n", diff, b, a));
+                out.push_str(&format!("  {} = fmul double {}, {}\n", scaled, diff, tc));
+                out.push_str(&format!("  {} = fadd double {}, {}\n", dest, a, scaled));
+                return dest;
+            }
             // Closure #485: normal_cdf via @intent_f64_normal_cdf helper.
             if name == "f64_normal_cdf" {
                 let x = emit_expr(&args[0], ctx, out);

@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-06-01 (closure #485 — **`f64_normal_cdf(x, mean, sd) -> f64`** Gaussian CDF via `½(1 + erf((x-m)/(s·√2)))`. Returns 0 for sd ≤ 0. LLVM: `@intent_f64_normal_cdf` helper using `√2 = 0x3FF6A09E667F3BCD`. Both backends byte-identical: `ncd(0,0,1) = 0.5` (median), `ncd(1,0,1) ≈ 0.841345` (1σ right), `ncd(2,0,1) ≈ 0.97725` (2σ right), `ncd(-1,0,1) ≈ 0.158655`, `ncd(5,5,2) = 0.5` (at mean), `ncd(0,0,0) = 0` (defensive). 1 new lib test. 1504 lib + 54 parity green.)
-**Test totals:** 1504 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-06-01 (closure #486 — **`f64_lerp_clamp(a, b, t) -> f64`** linear interpolation with `t` clamped to `[0, 1]` before applying. Inline two-select chain for the clamp + lerp. Both backends byte-identical: `lc(0,10,0) = 0`, `lc(0,10,0.5) = 5`, `lc(0,10,1) = 10`, `lc(0,10,-1) = 0` (clamps to t=0), `lc(0,10,2) = 10` (clamps to t=1). 1 new lib test. 1505 lib + 54 parity green.)
+**Test totals:** 1505 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,

@@ -15887,6 +15887,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_lerp_clamp_typecheck_and_compile() {
+        // Closure #486: f64_lerp_clamp.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_lerp_clamp(0.0, 10.0, 0.5);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("f64_lerp_clamp must type-check");
+        compile_to_llvm(source).expect("f64_lerp_clamp must compile to LLVM");
+    }
+
+    #[test]
     fn f64_normal_cdf_typecheck_and_compile() {
         // Closure #485: f64_normal_cdf.
         let source = r#"

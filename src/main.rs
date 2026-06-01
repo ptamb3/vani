@@ -416,6 +416,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "f64_inv_sqrt" || name == "f64_round_to"
                 || name == "f64_sec" || name == "f64_csc" || name == "f64_cot"
                 || name == "f64_normal_pdf" || name == "f64_normal_cdf"
+                || name == "f64_lerp_clamp"
                 || name == "str_byte_at" || name == "str_len_bytes"
                 || name == "str_starts_with_byte"
                 || name == "str_ends_with_byte"
