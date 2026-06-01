@@ -16401,6 +16401,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_count_ascii_upper_typecheck_and_compile() {
+        // Closure #462: str_count_ascii_upper.
+        let source = r#"
+            fn main() -> i64 {
+              let n: i64 = str_count_ascii_upper("Hello");
+              return n;
+            }
+        "#;
+        compile_to_c(source).expect("str_count_ascii_upper must type-check");
+        compile_to_llvm(source).expect("str_count_ascii_upper must compile to LLVM");
+    }
+
+    #[test]
     fn str_count_ascii_whitespace_typecheck_and_compile() {
         // Closure #457: str_count_ascii_whitespace.
         let source = r#"

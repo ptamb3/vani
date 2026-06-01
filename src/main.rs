@@ -415,6 +415,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "str_count_ascii_alpha"
                 || name == "str_count_ascii_alphanumeric"
                 || name == "str_count_ascii_whitespace"
+                || name == "str_count_ascii_upper"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_f64"

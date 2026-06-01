@@ -8017,6 +8017,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #462: count uppercase A-Z bytes in s.
+            if name == "str_count_ascii_upper" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_str_count_ascii_upper(i8* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
             // Closure #441: byte count via helper. Walks the
             // string until the null terminator.
             if name == "str_byte_count" {
@@ -12255,6 +12265,36 @@ pub(crate) fn emit_intent_str_count_char_definition(out: &mut String) {
     out.push_str("sws_fin:\n");
     out.push_str("  %sws_r = load i64, i64* %sws_n_p\n");
     out.push_str("  ret i64 %sws_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #462: count uppercase A-Z bytes in s.
+    // Predicate: 65 <= b <= 90.
+    out.push_str("define i64 @intent_str_count_ascii_upper(i8* %s) {\n");
+    out.push_str("  %scu_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %scu_i_p\n");
+    out.push_str("  %scu_n_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %scu_n_p\n");
+    out.push_str("  br label %scu_head\n");
+    out.push_str("scu_head:\n");
+    out.push_str("  %scu_i = load i64, i64* %scu_i_p\n");
+    out.push_str("  %scu_p = getelementptr i8, i8* %s, i64 %scu_i\n");
+    out.push_str("  %scu_b = load i8, i8* %scu_p\n");
+    out.push_str("  %scu_end = icmp eq i8 %scu_b, 0\n");
+    out.push_str("  br i1 %scu_end, label %scu_fin, label %scu_body\n");
+    out.push_str("scu_body:\n");
+    out.push_str("  %scu_geA = icmp uge i8 %scu_b, 65\n");
+    out.push_str("  %scu_leZ = icmp ule i8 %scu_b, 90\n");
+    out.push_str("  %scu_hit = and i1 %scu_geA, %scu_leZ\n");
+    out.push_str("  %scu_inc = zext i1 %scu_hit to i64\n");
+    out.push_str("  %scu_n_cur = load i64, i64* %scu_n_p\n");
+    out.push_str("  %scu_n_new = add i64 %scu_n_cur, %scu_inc\n");
+    out.push_str("  store i64 %scu_n_new, i64* %scu_n_p\n");
+    out.push_str("  %scu_i_next = add i64 %scu_i, 1\n");
+    out.push_str("  store i64 %scu_i_next, i64* %scu_i_p\n");
+    out.push_str("  br label %scu_head\n");
+    out.push_str("scu_fin:\n");
+    out.push_str("  %scu_r = load i64, i64* %scu_n_p\n");
+    out.push_str("  ret i64 %scu_r\n");
     out.push_str("}\n\n");
 }
 
