@@ -39,6 +39,178 @@ Full long-form discussion lives in README.md's "Design Philosophy
   pending work but the conservative restriction keeps the
   desugar's match-arm Block shape sound.
 
+## Embedded targets — design considerations (2026-06-01)
+
+**Status: design discussion, not queued work.** Embedded (`no_std`,
+bare-metal, MCU) is a first-class planned target but is out of scope
+for v1. This section exists so the recurring question — *"can vāṇी
+target embedded, how is the explicit `unsafe` opt-in scoped, what
+needs to grow?"* — has a single resting place that future sessions
+can read instead of re-deriving the answer. Short summary lives in
+[README.md](README.md) → *Embedded targets — current position*.
+
+### Position
+
+- **No raw pointers in the source language on the safe path.**
+  The full safe pointer-shaped vocabulary is `ref T` /
+  `mut ref T` (second-class, param-only), `fn(...) -> R`
+  function pointers, `dyn Iface` fat pointers, and indices
+  into `Vec<T>` for cycles / graphs. Outside `unsafe`, there
+  is no `*const T`, no `*mut T`, no pointer arithmetic, no
+  `transmute`. Most embedded code is expected to compile
+  *without* `unsafe` through the typed primitives below.
+- **Explicit `unsafe { ... }` block — embedded-only, opt-in.**
+  Hosted builds (Linux / Windows / macOS) reject the keyword
+  at parse time; embedded targets permit it. The user has to
+  *type* `unsafe`, the block is lexically scoped, and the
+  inside is greppable + auditable. Inside the block the
+  user may:
+  - Read / write raw addresses outside the typed
+    `Register<T, ADDR>` primitive.
+  - Cast between layout-equivalent types (`transmute`-like).
+  - Call inline assembly / platform intrinsics.
+  - Dereference / pointer-arithmetic on `*const T` / `*mut T`
+    obtained from the platform (vendor SDK, linker symbol,
+    fixed address).
+  - Call FFI functions the checker cannot verify (vendor SDKs
+    whose signatures the user takes responsibility for).
+
+  Inside `unsafe`, the **affine checker still runs** — moves
+  are still tracked, drops still emitted, locks still
+  acquired/released. The block only suspends the *pointer
+  safety* and *type punning* invariants. The `parallel for`
+  / `task` / `interrupt fn` body restrictions also still
+  apply (no `unsafe { allocates() }` inside an ISR).
+
+  *Why permit it on embedded at all?* The user-with-embedded-
+  background reality: vendor SDK callbacks, custom DMA
+  controllers, and peripherals the language doesn't model
+  need *some* path to raw load / store. Without an explicit
+  `unsafe`, that code gets written in C and FFI'd in — which
+  is strictly *more* unsafe than `unsafe { ... }` in vāṇी,
+  since FFI escapes affine tracking entirely. The hatch is
+  the lesser evil and the more auditable one.
+- **The goal is to make `unsafe` rare even on embedded.**
+  Affine ownership + Z3 + typed embedded primitives
+  (`Register<T, ADDR>`, `Mmio<T>`, typestate pins, effect
+  typing) cover the bulk of what driver code needs. `unsafe`
+  is for the residual: things the compiler genuinely cannot
+  prove. A well-written embedded vāṇी program should have
+  zero or near-zero `unsafe` blocks in application code, with
+  the few that exist confined to vendor-HAL crates.
+- **Borrow-checking is not the gap.** Affine ownership + Z3
+  already covers the embedded memory-safety story. What
+  embedded actually needs is **typed access to platform
+  capabilities** — MMIO, interrupts, linker sections, fixed
+  stack budgets — plus the narrow `unsafe` escape for the
+  irreducibly platform-specific residual.
+
+### Embedded primitives that would need to grow (keep `unsafe` rare)
+
+These are sketches, not commitments. Each is shaped to keep
+typical driver code on the **safe** path — `unsafe { ... }` stays
+available as the embedded-only escape (see *Position* above) for
+operations these primitives can't express.
+
+- **`Register<T, ADDR>`** — built-in type with `read() -> T` /
+  `write(T)` / `modify(fn(T) -> T)`. `ADDR` is a const generic
+  (numeric literal). Compiler emits LLVM `volatile` loads /
+  stores; user never names a pointer.
+- **`Mmio<T>`** — base-address + field-offset wrapper that
+  composes with `Register<T, ADDR>` for register-block access
+  (e.g. GPIO peripheral with multiple registers at offsets).
+- **`place_at "section"` attribute** — vector tables, DMA
+  buffers, fastcode placement. Linker-section name as a string
+  literal; compiler emits the appropriate `.section` /
+  `__attribute__((section(...)))` / LLVM `section` metadata.
+- **`interrupt fn` calling convention** — handler bodies
+  statically forbidden from calling anything in the
+  `allocates` / `blocks` / `may_panic` effect set (see
+  *effect typing* below). The checker is already in shape to
+  enforce this — `parallel for` bodies have a similar
+  "no allocation, no locking" restriction today.
+- **`no_std` build mode** — gates off `Vec<T>`, `OwnedStr`,
+  `+`-concat, `str_trim` / `str_replace` / `str_split`, and
+  every other primitive that today calls `malloc`. Replaces
+  the abort-on-OOM contract with a fallible-allocation API
+  (`try_vec`, `try_push`) — `try_vec` is already on the
+  queued list (Closure B above) and would carry over.
+- **Bit-precise / packed types** — `u3`, `u12`, etc., or a
+  `#[bits = N]` attribute on existing types. Register fields
+  are rarely byte-aligned; packed structs with `read_bits` /
+  `write_bits` methods are how Rust's `svd2rust` exposes
+  them. Layout decisions are platform-specific; doable
+  inside the type system with no `unsafe`.
+
+### Compile-time mechanisms (in priority order for embedded payoff)
+
+The three at the top are the highest payoff because they
+re-use machinery the language already has. The rest are
+recorded for completeness.
+
+1. **Effect / capability typing.** Generalize `pure fn` to a
+   set: `allocates`, `blocks`, `may_panic`, `mmio(<region>)`,
+   `interrupt_safe`. ISRs declare `interrupt_safe`; the
+   checker forbids them from calling `allocates` or `blocks`
+   functions. `parallel for` and `task` bodies already enforce
+   a similar restriction by name — this generalizes it.
+   *Reuses:* the `pure fn` annotation infrastructure
+   ([README.md L2090-2098](README.md#L2090-L2098)).
+2. **Stack-bound proofs.** Compute worst-case per-function
+   stack usage (no recursion, no alloca → finite + computable)
+   and reject programs whose call graph exceeds a configured
+   target stack budget. Z3 discharges the bound the same way
+   it discharges bounds-elision today.
+   *Reuses:* the SMT layer + the no-recursion invariant.
+3. **Typestate via phantom generics.** Encode device state in
+   the type — `Pin<GpioA, 5, Out>` vs `Pin<GpioA, 5, In>`.
+   `set_high()` only exists on the Out variant. Compile error
+   if you call `read()` on an output pin. Zero runtime cost;
+   monomorphization erases the marker.
+   *Reuses:* monomorphized generics (closure #281).
+4. **Numeric range types.** `u16<0..=4095>` for a 12-bit ADC
+   reading. The SMT layer already reasons about ranges for
+   bounds elision — surfacing the range in the type lets it
+   carry across function boundaries.
+   *Reuses:* the SMT range-analysis pass.
+5. **Const-eval / `const fn`.** Compile-time lookup tables
+   (sine tables, CRC tables, font glyphs) go into `.rodata`
+   instead of being `build.rs`-generated.
+   *Reuses:* the `const` binding infrastructure; widens its
+   initializer language.
+6. **Linear (not just affine) types** for must-consume
+   resources — DMA descriptors, peripheral handles that must
+   be released. "Exactly once" instead of "at most once."
+   Tightens one axis vāṇी already enforces; much smaller
+   change than adding borrow-checking would be.
+
+### What the answer is NOT
+
+- *"Add `unsafe` on hosted targets too, just in case."* — no.
+  `unsafe` is gated to embedded triples. Hosted builds reject
+  the keyword at parse time. The hosted-target invariant
+  ("every operation checked") stays intact; the embedded
+  hatch is target-scoped.
+- *"Let `unsafe` opt out of affine checking."* — no.
+  `unsafe` suspends only the pointer-safety / type-punning
+  invariants. Moves, drops, lock acquisition, ISR-body
+  restrictions, and effect typing all still apply inside the
+  block. `unsafe` is a *narrow* escape, not a Rust-style
+  "you're on your own."
+- *"Bring in a borrow-checker."* — affine + Z3 already
+  covers memory safety; embedded's actual gap is platform
+  capabilities, not aliasing.
+- *"Add `Rc<T>` / `Arc<T>` so peripherals can be shared."* —
+  shared ownership is the wrong shape for hardware
+  resources. Each peripheral has exactly one owner;
+  typestate + linear types are the right primitive.
+- *"Use FFI to call C drivers instead of adding `unsafe`."* —
+  considered and rejected. FFI escapes affine tracking
+  entirely (no Drop emitted across the boundary, no aliasing
+  check on `ref T` arguments after they cross); a scoped
+  `unsafe` block keeps the rest of the language's invariants
+  intact and is the more auditable choice.
+
 ## Data structures + algorithms roadmap (2026-05-27)
 
 User-asked scope: *"I want all operations on data structures

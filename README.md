@@ -253,12 +253,20 @@ below.
 
 ## Memory safety & concurrency model
 
-vāṇī treats **memory and concurrency bugs as compile-time errors**.
-The runtime is meant to be boring: no garbage collector, no event
-loop, no allocator-dependent fault injection, no reference counting,
-no surprise rescheduling. Everything that would be a "this might
-crash at 3 AM in production" bug in a less strict language fails the
-type checker on the developer's laptop.
+vāṇī treats **memory and concurrency bugs as compile-time errors
+on the safe path** (hosted targets, and embedded code outside an
+explicit `unsafe { ... }` block — see *Embedded targets — current
+position* below). The runtime is meant to be boring: no garbage
+collector, no event loop, no allocator-dependent fault injection,
+no reference counting, no surprise rescheduling. Everything that
+would be a "this might crash at 3 AM in production" bug in a less
+strict language fails the type checker on the developer's laptop
+— with the embedded `unsafe` block as the single, opt-in, lexically
+scoped exception for operations the compiler genuinely cannot
+prove (raw MMIO outside typed primitives, inline asm, vendor SDK
+FFI). Affine ownership, move tracking, ISR / `parallel for` / `task`
+restrictions, and Drop emission stay active *inside* `unsafe` —
+the block only suspends pointer-safety and type-punning invariants.
 
 ### What's caught at compile time
 
@@ -280,10 +288,18 @@ type checker on the developer's laptop.
 
 ### What runs (without you reaching for `unsafe`)
 
-vāṇī has **no `unsafe` block** at all. Every operation in source is
-type-checked + affine-tracked. The compiler doesn't trade safety for
-ergonomics anywhere — including for raw pointer arithmetic, mmap,
-syscalls, or FFI. Those are out of scope for v1.
+vāṇी has **no `unsafe` block on hosted targets** (Linux / Windows /
+macOS). Every operation in source is type-checked + affine-tracked.
+The compiler doesn't trade safety for ergonomics anywhere — including
+for raw pointer arithmetic, mmap, syscalls, or FFI.
+
+The single exception is **embedded / bare-metal targets**, where an
+explicit `unsafe { ... }` block is the opt-in escape hatch for the
+narrow set of operations the compiler cannot prove safe (raw MMIO
+outside the typed `Register<T, ADDR>` primitive, inline assembly,
+platform intrinsics, custom linker-placed memory). The keyword has
+to be typed; the default is checked. Hosted builds reject `unsafe`
+entirely. See *Embedded targets — current position* below.
 
 ### vāṇī vs Rust — ownership at a glance
 
@@ -411,11 +427,100 @@ fat pointers (16 bytes each: vtable + data pointer); no `Box` needed.
 - **No reference counting** (no `Rc` / `Arc` equivalent). Single-owner
   affine ownership means cycles can't form; there's nothing for an
   Rc to count.
-- **No `unsafe` escape hatch.** Every operation goes through the
-  checked surface.
+- **No `unsafe` escape hatch on hosted targets.** Every operation
+  on Linux / Windows / macOS goes through the checked surface.
+  Embedded / bare-metal targets are the only place `unsafe { ... }`
+  is permitted — explicitly typed, narrowly scoped, and rejected
+  by the hosted-build path. See *Embedded targets — current
+  position* below.
 - **No exceptions / no stack unwinding.** Errors are values via
   payloaded enums (`Option`-like / `Result`-like) and propagated with
   `try`. `assert` triggers a deterministic `abort()`.
+
+### Embedded targets — current position (2026-06-01)
+
+vāṇी's v1 target is hosted (Linux / Windows / macOS). Embedded
+(`no_std`, bare-metal, MCU) is a **first-class planned target** —
+shaped by the same affine + checked-by-default commitments,
+with a **narrowly scoped `unsafe { ... }` escape hatch reserved
+for embedded builds** to cover the operations the compiler
+genuinely cannot prove safe.
+
+- **Pointers in the source language.** None of the raw kind on
+  the safe path. The full safe pointer-shaped vocabulary is
+  `ref T` / `mut ref T` (second-class, param-position only),
+  `fn(...) -> R` function pointers, `dyn Iface` fat pointers,
+  and indices into `Vec<T>` for cyclic / graph shapes. There
+  is no `*const T` / `*mut T` outside an `unsafe` block. Most
+  embedded code is still expected to be written *without* any
+  `unsafe` — through the typed embedded primitives below.
+- **Explicit `unsafe` block — embedded-only escape hatch.**
+  On embedded builds, `unsafe { ... }` is the **opt-in** path
+  for the narrow set of operations the compiler cannot
+  prove safe:
+  - Raw MMIO outside the typed `Register<T, ADDR>` primitive
+    (e.g. dynamically computed register addresses).
+  - Inline assembly and platform intrinsics.
+  - `transmute`-style reinterpretation between layout-equivalent
+    types (DMA buffer ↔ packed-struct view).
+  - Custom linker-placed memory ranges and fixed-address
+    peripherals the build target doesn't model.
+  - FFI into vendor SDK functions whose signature the checker
+    can't verify.
+
+  The default is still "no `unsafe`" — you have to type the
+  keyword, and the block is its own lexical scope so the diff /
+  audit / grep story stays simple. Reviewers can find every
+  unproven operation with `grep -n unsafe`. Hosted-target
+  builds reject `unsafe` blocks at parse time — the keyword
+  only compiles when `--target` names an embedded triple (or
+  `[target] = "embedded"` is set in the manifest).
+
+  *Why permit it at all when hosted forbids it?* Because for
+  the user with an embedded background, the question isn't
+  "should I write `unsafe`" — it's "can I write this driver
+  at all in this language." A vendor SDK callback, a custom
+  DMA controller, a peripheral the language doesn't model:
+  these need *some* path to a raw load/store, and pretending
+  otherwise just means the driver gets written in C and FFI'd
+  in (which is strictly more unsafe than `unsafe { ... }` in
+  vāṇी, since FFI escapes affine tracking entirely). Better
+  to give the user a typed, scoped, audit-friendly hatch.
+- **Allocator dependence.** Today `Vec<T>` / `OwnedStr` /
+  `+`-concat / heap-allocating str ops require `malloc` and
+  abort on OOM (see *Allocator failure* note above). On MCU
+  targets `malloc` may not exist. A `no_std` mode gates those
+  primitives off and leans on fixed-size arrays, stack-allocated
+  strings, and a fallible-allocation API (`try_vec`).
+- **What's missing for bare-metal that the language has no
+  syntax for yet.** Memory-mapped I/O with guaranteed-`volatile`
+  load/store, fixed-address linker sections (vector tables, DMA
+  buffers), interrupt-service-routine calling conventions,
+  bit-precise / packed register layouts, worst-case stack-usage
+  bounds. Design notes for these live in
+  [TODO.md](TODO.md) → *Embedded targets — design considerations*.
+- **The goal is to make `unsafe` rare on embedded too.** Three
+  already-feasible compile-time extensions cover most of what
+  `unsafe` would otherwise be reached for — leaving `unsafe`
+  to the genuinely-unprovable residual:
+  - **Effect / capability typing** — generalize `pure fn` to a
+    set: `allocates`, `blocks`, `may_panic`, `mmio(<region>)`,
+    `interrupt_safe`. An `interrupt fn` body can then be
+    *statically* forbidden from calling anything `allocates`
+    or `blocks`.
+  - **Stack-bound proofs** — Z3 is already on hand for bounds
+    elision; reuse it to compute worst-case per-function stack
+    and reject programs whose call graph exceeds a target's
+    stack budget. Requires the no-recursion + no-alloca
+    constraints v1 already enforces.
+  - **Typestate via phantom generics** — e.g. `Pin<GpioA, Out>`
+    vs `Pin<GpioA, In>` as distinct monomorphizations.
+    Compile-error if you call `set_high()` on an input pin.
+    Zero runtime cost; falls out of the generics machinery
+    that's already shipped.
+
+Not a v1 commitment — recorded so the question doesn't get
+re-asked from scratch each session.
 
 ### Examples — what the compiler rejects
 

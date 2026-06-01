@@ -8,6 +8,8 @@
 - [vāṇī container API affine contract](project_vani_container_affine_contract.md) — get / insert / remove / iter shapes for Map / Set / Deque / Heap under single-owner
 - [vāṇī condition variables (Condvar) design](project_vani_condvar_design.md) — pairs with Mutex<T> + Guard<T>; futex / WaitOnAddress / pthread-cond codegen; ✅ AFFINE; single-session M effort
 - [vāṇī async / asyncio design](project_vani_async_design.md) — compiler-lowered state machines on arena; explicitly NOT Pin / self-references; depends on Level 3 closures
+- [vāṇī embedded position](project_vani_embedded_position.md) — explicit `unsafe { ... }` permitted on embedded build triples only; hosted rejects keyword at parse time; affine still active inside `unsafe`
+- [User embedded background](user_embedded_background.md) — user comes from embedded systems; embedded is first-class planned target for vāṇī, not an afterthought
 
 <!--
 Consolidation note (2026-05-25):
