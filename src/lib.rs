@@ -16401,6 +16401,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn str_count_ascii_control_typecheck_and_compile() {
+        // Closure #465: str_count_ascii_control.
+        let source = r#"
+            fn main() -> i64 {
+              let n: i64 = str_count_ascii_control("a\tb");
+              return n;
+            }
+        "#;
+        compile_to_c(source).expect("str_count_ascii_control must type-check");
+        compile_to_llvm(source).expect("str_count_ascii_control must compile to LLVM");
+    }
+
+    #[test]
     fn str_count_ascii_punct_typecheck_and_compile() {
         // Closure #464: str_count_ascii_punct.
         let source = r#"

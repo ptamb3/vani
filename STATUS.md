@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-31 (closure #464 — **`str_count_ascii_punct(s) -> i64`** count ASCII punctuation bytes (the printable non-alphanumeric set: 33..47, 58..64, 91..96, 123..126). LLVM: `@intent_str_count_ascii_punct` helper with four range checks ORed together. Both backends byte-identical: `punct('Hello, World!') = 2` (comma + !), `punct('a.b.c') = 2`, `punct('abc123') = 0`, `punct('!@#$%^&*()') = 10`, `punct(' ') = 0`. 1 new lib test. 1488 lib + 54 parity green.)
-**Test totals:** 1488 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-31 (closure #465 — **`str_count_ascii_control(s) -> i64`** count ASCII control bytes (1..31 OR 127). NUL (0) is omitted since it can't appear in C strings. LLVM: `@intent_str_count_ascii_control` helper. Both backends byte-identical: `ctrl('hello') = 0`, `ctrl('a\tb\nc') = 2` (tab + LF), `ctrl('\t\n\r') = 3`, `ctrl('') = 0`, `ctrl('plain text 123') = 0`. 1 new lib test. 1489 lib + 54 parity green.)
+**Test totals:** 1489 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,

@@ -11192,6 +11192,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ const char* __cpu_s = ({}); int64_t __cpu_n = 0; for (const char* __cpu_p = __cpu_s; *__cpu_p != 0; __cpu_p++) {{ unsigned char __cpu_c = (unsigned char)*__cpu_p; if ((__cpu_c >= 33 && __cpu_c <= 47) || (__cpu_c >= 58 && __cpu_c <= 64) || (__cpu_c >= 91 && __cpu_c <= 96) || (__cpu_c >= 123 && __cpu_c <= 126)) __cpu_n += 1; }} __cpu_n; }})",
             emit_expr(&args[0])
         ),
+        // Closure #465: count ASCII control bytes (1..31 OR 127).
+        // NUL (0) can't appear in C strings, so it's omitted from
+        // the predicate.
+        "str_count_ascii_control" => format!(
+            "({{ const char* __cct_s = ({}); int64_t __cct_n = 0; for (const char* __cct_p = __cct_s; *__cct_p != 0; __cct_p++) {{ unsigned char __cct_c = (unsigned char)*__cct_p; if ((__cct_c >= 1 && __cct_c <= 31) || __cct_c == 127) __cct_n += 1; }} __cct_n; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #441: count occurrences of byte b in s.
         // Walks the string until the null terminator.
         "str_byte_count" => format!(

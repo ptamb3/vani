@@ -418,6 +418,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "str_count_ascii_upper"
                 || name == "str_count_ascii_lower"
                 || name == "str_count_ascii_punct"
+                || name == "str_count_ascii_control"
                 || name == "seed_rng" || name == "rand_i64"
                 || name == "rand_in_range"
                 || name == "hash_i64" || name == "hash_f64"

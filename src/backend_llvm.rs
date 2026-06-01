@@ -8047,6 +8047,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #465: count ASCII control bytes in s.
+            if name == "str_count_ascii_control" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_str_count_ascii_control(i8* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
             // Closure #441: byte count via helper. Walks the
             // string until the null terminator.
             if name == "str_byte_count" {
@@ -12393,6 +12403,38 @@ pub(crate) fn emit_intent_str_count_char_definition(out: &mut String) {
     out.push_str("sp_fin:\n");
     out.push_str("  %sp_r = load i64, i64* %sp_n_p\n");
     out.push_str("  ret i64 %sp_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #465: count ASCII control bytes (1..31 OR 127) in s.
+    // NUL (0) can't appear in C strings, so it's omitted.
+    out.push_str("define i64 @intent_str_count_ascii_control(i8* %s) {\n");
+    out.push_str("  %sct_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sct_i_p\n");
+    out.push_str("  %sct_n_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sct_n_p\n");
+    out.push_str("  br label %sct_head\n");
+    out.push_str("sct_head:\n");
+    out.push_str("  %sct_i = load i64, i64* %sct_i_p\n");
+    out.push_str("  %sct_p = getelementptr i8, i8* %s, i64 %sct_i\n");
+    out.push_str("  %sct_b = load i8, i8* %sct_p\n");
+    out.push_str("  %sct_end = icmp eq i8 %sct_b, 0\n");
+    out.push_str("  br i1 %sct_end, label %sct_fin, label %sct_body\n");
+    out.push_str("sct_body:\n");
+    out.push_str("  %sct_ge1 = icmp uge i8 %sct_b, 1\n");
+    out.push_str("  %sct_le31 = icmp ule i8 %sct_b, 31\n");
+    out.push_str("  %sct_low = and i1 %sct_ge1, %sct_le31\n");
+    out.push_str("  %sct_del = icmp eq i8 %sct_b, 127\n");
+    out.push_str("  %sct_hit = or i1 %sct_low, %sct_del\n");
+    out.push_str("  %sct_inc = zext i1 %sct_hit to i64\n");
+    out.push_str("  %sct_n_cur = load i64, i64* %sct_n_p\n");
+    out.push_str("  %sct_n_new = add i64 %sct_n_cur, %sct_inc\n");
+    out.push_str("  store i64 %sct_n_new, i64* %sct_n_p\n");
+    out.push_str("  %sct_i_next = add i64 %sct_i, 1\n");
+    out.push_str("  store i64 %sct_i_next, i64* %sct_i_p\n");
+    out.push_str("  br label %sct_head\n");
+    out.push_str("sct_fin:\n");
+    out.push_str("  %sct_r = load i64, i64* %sct_n_p\n");
+    out.push_str("  ret i64 %sct_r\n");
     out.push_str("}\n\n");
 }
 
