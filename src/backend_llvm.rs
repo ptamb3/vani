@@ -8434,6 +8434,26 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #458: i64_min_3 — three-arg min via chained
+            // icmp slt + select.
+            if name == "i64_min_3" {
+                let a = emit_expr(&args[0], ctx, out);
+                let b = emit_expr(&args[1], ctx, out);
+                let c = emit_expr(&args[2], ctx, out);
+                let cmp1 = ctx.fresh_tmp();
+                let ab = ctx.fresh_tmp();
+                let cmp2 = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = icmp slt i64 {}, {}\n", cmp1, a, b));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 {}, i64 {}\n", ab, cmp1, a, b
+                ));
+                out.push_str(&format!("  {} = icmp slt i64 {}, {}\n", cmp2, ab, c));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i64 {}, i64 {}\n", dest, cmp2, ab, c
+                ));
+                return dest;
+            }
             if name == "i64_clamp" {
                 let x = emit_expr(&args[0], ctx, out);
                 let lo = emit_expr(&args[1], ctx, out);

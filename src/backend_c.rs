@@ -10691,6 +10691,14 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2])
         ),
+        // Closure #458: i64_min_3(a, b, c) — three-arg min via
+        // chained ternary.
+        "i64_min_3" => format!(
+            "({{ int64_t __m3a = ({}); int64_t __m3b = ({}); int64_t __m3c = ({}); int64_t __m3ab = __m3a < __m3b ? __m3a : __m3b; __m3ab < __m3c ? __m3ab : __m3c; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         "f64_min" => format!("fmin(({}), ({}))", emit_expr(&args[0]), emit_expr(&args[1])),
         "f64_max" => format!("fmax(({}), ({}))", emit_expr(&args[0]), emit_expr(&args[1])),
         "f64_clamp" => format!(

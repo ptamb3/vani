@@ -16188,6 +16188,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_min_3_typecheck_and_compile() {
+        // Closure #458: i64_min_3 (3-arg min).
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_min_3(5, 3, 7);
+              return a;
+            }
+        "#;
+        compile_to_c(source).expect("i64_min_3 must type-check");
+        compile_to_llvm(source).expect("i64_min_3 must compile to LLVM");
+    }
+
+    #[test]
     fn i64_avg_typecheck_and_compile() {
         // Closure #444: i64_avg (overflow-safe floor average).
         let source = r#"
