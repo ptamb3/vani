@@ -16007,6 +16007,21 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn vec_cumulative_max_min_typecheck_and_compile() {
+        // Closures #510/#511: vec_cumulative_max / vec_cumulative_min.
+        let source = r#"
+            fn main() -> i64 {
+              let xs: Vec<i64> = vec(3, 1, 4, 1, 5);
+              let cmx: Vec<i64> = vec_cumulative_max(ref xs);
+              let cmn: Vec<i64> = vec_cumulative_min(ref xs);
+              return cmx[0] + cmn[0];
+            }
+        "#;
+        compile_to_c(source).expect("vec_cumulative_max/min must type-check");
+        compile_to_llvm(source).expect("vec_cumulative_max/min must compile to LLVM");
+    }
+
+    #[test]
     fn i64_rgb_pack_unpack_typecheck_and_compile() {
         // Closures #492-#495: i64_pack_rgb + unpack_r/g/b.
         let source = r#"

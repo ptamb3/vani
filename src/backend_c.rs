@@ -2481,6 +2481,8 @@ pub(crate) fn program_uses_graph_vec_builtin(program: &TypedProgram) -> bool {
                     || name == "vec_first"
                     || name == "vec_last"
                     || name == "vec_running_sum"
+                    || name == "vec_cumulative_max"
+                    || name == "vec_cumulative_min"
                     || name == "vec_dot"
                     || name == "vec_intersect"
                     || name == "vec_difference"
@@ -4772,6 +4774,38 @@ pub(crate) fn emit_intent_vec_int64_utility_helpers_c(out: &mut String) {
          \x20 for (uint64_t i = 0; i < xs->len; i++) {\n\
          \x20   acc = acc + xs->data[i];\n\
          \x20   v.data[i] = acc;\n\
+         \x20 }\n\
+         \x20 v.len = xs->len;\n\
+         \x20 return v;\n\
+         }\n\
+         /* Closures #510/#511: vec_cumulative_max / vec_cumulative_min.\n\
+          * Running max / min: result[i] = extremum(xs[0..=i]). */\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_cumulative_max(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_cumulative_max(const intent_vec_int64_t* xs) {\n\
+         \x20 intent_vec_int64_t v; v.data = (int64_t*)0; v.len = 0; v.capacity = 0;\n\
+         \x20 if (!xs || xs->len == 0) return v;\n\
+         \x20 v.capacity = xs->len;\n\
+         \x20 v.data = (int64_t*)malloc(v.capacity * sizeof(int64_t));\n\
+         \x20 if (!v.data) abort();\n\
+         \x20 int64_t m = xs->data[0]; v.data[0] = m;\n\
+         \x20 for (uint64_t i = 1; i < xs->len; i++) {\n\
+         \x20   if (xs->data[i] > m) m = xs->data[i];\n\
+         \x20   v.data[i] = m;\n\
+         \x20 }\n\
+         \x20 v.len = xs->len;\n\
+         \x20 return v;\n\
+         }\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_cumulative_min(const intent_vec_int64_t* xs) INTENT_UNUSED;\n\
+         static INTENT_UNUSED intent_vec_int64_t intent_vec_int64_t_cumulative_min(const intent_vec_int64_t* xs) {\n\
+         \x20 intent_vec_int64_t v; v.data = (int64_t*)0; v.len = 0; v.capacity = 0;\n\
+         \x20 if (!xs || xs->len == 0) return v;\n\
+         \x20 v.capacity = xs->len;\n\
+         \x20 v.data = (int64_t*)malloc(v.capacity * sizeof(int64_t));\n\
+         \x20 if (!v.data) abort();\n\
+         \x20 int64_t m = xs->data[0]; v.data[0] = m;\n\
+         \x20 for (uint64_t i = 1; i < xs->len; i++) {\n\
+         \x20   if (xs->data[i] < m) m = xs->data[i];\n\
+         \x20   v.data[i] = m;\n\
          \x20 }\n\
          \x20 v.len = xs->len;\n\
          \x20 return v;\n\
@@ -9544,6 +9578,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         // Closure #398: vec_running_sum(ref xs) -> Vec<i64>.
         "vec_running_sum" => format!(
             "intent_vec_int64_t_running_sum({})",
+            emit_expr(&args[0])
+        ),
+        // Closures #510/#511: vec_cumulative_max / vec_cumulative_min.
+        "vec_cumulative_max" => format!(
+            "intent_vec_int64_t_cumulative_max({})",
+            emit_expr(&args[0])
+        ),
+        "vec_cumulative_min" => format!(
+            "intent_vec_int64_t_cumulative_min({})",
             emit_expr(&args[0])
         ),
         // Closure #399: vec_dot(ref xs, ref ys) -> i64.
