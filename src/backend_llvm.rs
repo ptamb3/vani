@@ -8007,6 +8007,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #457: count ASCII whitespace bytes in s.
+            if name == "str_count_ascii_whitespace" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_str_count_ascii_whitespace(i8* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
             // Closure #441: byte count via helper. Walks the
             // string until the null terminator.
             if name == "str_byte_count" {
@@ -12169,6 +12179,38 @@ pub(crate) fn emit_intent_str_count_char_definition(out: &mut String) {
     out.push_str("san_fin:\n");
     out.push_str("  %san_r = load i64, i64* %san_n_p\n");
     out.push_str("  ret i64 %san_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #457: count ASCII whitespace bytes in s.
+    // Predicate: b == 32 (space) OR (9 <= b <= 13) [tab, LF, VT, FF, CR].
+    out.push_str("define i64 @intent_str_count_ascii_whitespace(i8* %s) {\n");
+    out.push_str("  %sws_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sws_i_p\n");
+    out.push_str("  %sws_n_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sws_n_p\n");
+    out.push_str("  br label %sws_head\n");
+    out.push_str("sws_head:\n");
+    out.push_str("  %sws_i = load i64, i64* %sws_i_p\n");
+    out.push_str("  %sws_p = getelementptr i8, i8* %s, i64 %sws_i\n");
+    out.push_str("  %sws_b = load i8, i8* %sws_p\n");
+    out.push_str("  %sws_end = icmp eq i8 %sws_b, 0\n");
+    out.push_str("  br i1 %sws_end, label %sws_fin, label %sws_body\n");
+    out.push_str("sws_body:\n");
+    out.push_str("  %sws_space = icmp eq i8 %sws_b, 32\n");
+    out.push_str("  %sws_ge9 = icmp uge i8 %sws_b, 9\n");
+    out.push_str("  %sws_le13 = icmp ule i8 %sws_b, 13\n");
+    out.push_str("  %sws_ctrl = and i1 %sws_ge9, %sws_le13\n");
+    out.push_str("  %sws_hit = or i1 %sws_space, %sws_ctrl\n");
+    out.push_str("  %sws_inc = zext i1 %sws_hit to i64\n");
+    out.push_str("  %sws_n_cur = load i64, i64* %sws_n_p\n");
+    out.push_str("  %sws_n_new = add i64 %sws_n_cur, %sws_inc\n");
+    out.push_str("  store i64 %sws_n_new, i64* %sws_n_p\n");
+    out.push_str("  %sws_i_next = add i64 %sws_i, 1\n");
+    out.push_str("  store i64 %sws_i_next, i64* %sws_i_p\n");
+    out.push_str("  br label %sws_head\n");
+    out.push_str("sws_fin:\n");
+    out.push_str("  %sws_r = load i64, i64* %sws_n_p\n");
+    out.push_str("  ret i64 %sws_r\n");
     out.push_str("}\n\n");
 }
 
