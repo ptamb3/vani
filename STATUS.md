@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-31 (closure #462 — **`str_count_ascii_upper(s) -> i64`** count uppercase A-Z bytes (`65..90`) in s. Granular split of the existing `str_count_ascii_alpha` (#455). C: inline statement-expression with the range check. LLVM: emits `@intent_str_count_ascii_upper(i8*) -> i64` helper with `icmp uge 65 + icmp ule 90 + and i1`. Both backends byte-identical: `upper('Hello, World!') = 2` (H + W), `upper('HELLO') = 5`, `upper('hello') = 0`, `upper('') = 0`, `upper('123') = 0`. 1 new lib test. 1486 lib + 54 parity green. Closure #461 (f64_max_3) shipped immediately before.)
-**Test totals:** 1486 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-31 (closure #463 — **`str_count_ascii_lower(s) -> i64`** count lowercase a-z bytes (`97..122`) in s. Mirror of closure #462 (upper). LLVM: `@intent_str_count_ascii_lower` helper. Both backends byte-identical: `lower('Hello, World!') = 8`, `lower('hello') = 5`, `lower('HELLO') = 0`, `lower('') = 0`. 1 new lib test. 1487 lib + 54 parity green. Closure #462 (upper) shipped immediately before.)
+**Test totals:** 1487 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,

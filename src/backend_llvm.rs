@@ -8027,6 +8027,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #463: count lowercase a-z bytes in s.
+            if name == "str_count_ascii_lower" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_str_count_ascii_lower(i8* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
             // Closure #441: byte count via helper. Walks the
             // string until the null terminator.
             if name == "str_byte_count" {
@@ -12295,6 +12305,36 @@ pub(crate) fn emit_intent_str_count_char_definition(out: &mut String) {
     out.push_str("scu_fin:\n");
     out.push_str("  %scu_r = load i64, i64* %scu_n_p\n");
     out.push_str("  ret i64 %scu_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #463: count lowercase a-z bytes in s.
+    // Predicate: 97 <= b <= 122.
+    out.push_str("define i64 @intent_str_count_ascii_lower(i8* %s) {\n");
+    out.push_str("  %scl_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %scl_i_p\n");
+    out.push_str("  %scl_n_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %scl_n_p\n");
+    out.push_str("  br label %scl_head\n");
+    out.push_str("scl_head:\n");
+    out.push_str("  %scl_i = load i64, i64* %scl_i_p\n");
+    out.push_str("  %scl_p = getelementptr i8, i8* %s, i64 %scl_i\n");
+    out.push_str("  %scl_b = load i8, i8* %scl_p\n");
+    out.push_str("  %scl_end = icmp eq i8 %scl_b, 0\n");
+    out.push_str("  br i1 %scl_end, label %scl_fin, label %scl_body\n");
+    out.push_str("scl_body:\n");
+    out.push_str("  %scl_ge = icmp uge i8 %scl_b, 97\n");
+    out.push_str("  %scl_le = icmp ule i8 %scl_b, 122\n");
+    out.push_str("  %scl_hit = and i1 %scl_ge, %scl_le\n");
+    out.push_str("  %scl_inc = zext i1 %scl_hit to i64\n");
+    out.push_str("  %scl_n_cur = load i64, i64* %scl_n_p\n");
+    out.push_str("  %scl_n_new = add i64 %scl_n_cur, %scl_inc\n");
+    out.push_str("  store i64 %scl_n_new, i64* %scl_n_p\n");
+    out.push_str("  %scl_i_next = add i64 %scl_i, 1\n");
+    out.push_str("  store i64 %scl_i_next, i64* %scl_i_p\n");
+    out.push_str("  br label %scl_head\n");
+    out.push_str("scl_fin:\n");
+    out.push_str("  %scl_r = load i64, i64* %scl_n_p\n");
+    out.push_str("  ret i64 %scl_r\n");
     out.push_str("}\n\n");
 }
 

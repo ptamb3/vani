@@ -11180,6 +11180,11 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ const char* __cup_s = ({}); int64_t __cup_n = 0; for (const char* __cup_p = __cup_s; *__cup_p != 0; __cup_p++) {{ unsigned char __cup_c = (unsigned char)*__cup_p; if (__cup_c >= 65 && __cup_c <= 90) __cup_n += 1; }} __cup_n; }})",
             emit_expr(&args[0])
         ),
+        // Closure #463: count lowercase a-z bytes (97..122).
+        "str_count_ascii_lower" => format!(
+            "({{ const char* __clo_s = ({}); int64_t __clo_n = 0; for (const char* __clo_p = __clo_s; *__clo_p != 0; __clo_p++) {{ unsigned char __clo_c = (unsigned char)*__clo_p; if (__clo_c >= 97 && __clo_c <= 122) __clo_n += 1; }} __clo_n; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #441: count occurrences of byte b in s.
         // Walks the string until the null terminator.
         "str_byte_count" => format!(
