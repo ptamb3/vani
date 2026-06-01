@@ -16071,6 +16071,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_is_perfect_square_typecheck_and_compile() {
+        // Closure #468: i64_is_perfect_square.
+        let source = r#"
+            fn main() -> i64 {
+              let a: bool = i64_is_perfect_square(100);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("i64_is_perfect_square must type-check");
+        compile_to_llvm(source).expect("i64_is_perfect_square must compile to LLVM");
+    }
+
+    #[test]
     fn f64_l1_norm_and_i64_isqrt_ceil_typecheck_and_compile() {
         // Closure #449: f64_l1_norm + i64_isqrt_ceil.
         let source = r#"

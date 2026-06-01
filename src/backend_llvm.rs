@@ -7710,6 +7710,32 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #468: is_perfect_square(n) — n is a non-
+            // negative perfect square iff floor_isqrt(n)^2 == n.
+            if name == "i64_is_perfect_square" {
+                let n = emit_expr(&args[0], ctx, out);
+                let n_neg = ctx.fresh_tmp();
+                let floor_s = ctx.fresh_tmp();
+                let sq = ctx.fresh_tmp();
+                let exact = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = icmp slt i64 {}, 0\n", n_neg, n
+                ));
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_isqrt(i64 {})\n", floor_s, n
+                ));
+                out.push_str(&format!(
+                    "  {} = mul i64 {}, {}\n", sq, floor_s, floor_s
+                ));
+                out.push_str(&format!(
+                    "  {} = icmp eq i64 {}, {}\n", exact, sq, n
+                ));
+                out.push_str(&format!(
+                    "  {} = select i1 {}, i1 0, i1 {}\n", dest, n_neg, exact
+                ));
+                return dest;
+            }
             //   isqrt_ceil(n): call @intent_i64_isqrt, then bump
             //   by 1 unless the floor was exact (s*s == n).
             if name == "i64_isqrt_ceil" {

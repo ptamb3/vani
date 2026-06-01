@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-06-01 (closure #467 — **`str_last_byte(s) -> Option<i64>`** last byte of s as Option. Companion to #466. Uses strlen + GEP + load i8. Both backends byte-identical: `lb('Hello') = Some(111)` ('o'), `lb('A') = Some(65)`, `lb('') = None`, `lb('xyz') = Some(122)` ('z'). **Tier A complete (#461-#467, 7 closures).** 1 new lib test. 1491 lib + 54 parity green.)
-**Test totals:** 1491 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-06-01 (closure #468 — **`i64_is_perfect_square(n) -> bool`** test whether n is a perfect square (n ≥ 0 and floor(sqrt(n))² == n). Uses the shared `@intent_i64_isqrt` helper. **Tier B started.** Both backends byte-identical: `is_sq(0/1/4/100) = true`, `is_sq(5/99/-4) = false`. 1 new lib test. 1492 lib + 54 parity green.)
+**Test totals:** 1492 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,

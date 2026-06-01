@@ -10992,6 +10992,12 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ int64_t __isn = ({}); int64_t __isr; if (__isn <= 0) {{ __isr = 0; }} else if (__isn < 2) {{ __isr = __isn; }} else {{ int64_t __ix = __isn; int64_t __iy = (__ix + __isn / __ix) / 2; while (__iy < __ix) {{ __ix = __iy; __iy = (__ix + __isn / __ix) / 2; }} __isr = (__ix * __ix == __isn) ? __ix : (__ix + 1); }} __isr; }})",
             emit_expr(&args[0])
         ),
+        // Closure #468: is_perfect_square(n) — n is a non-negative
+        // perfect square iff floor(sqrt(n))^2 == n.
+        "i64_is_perfect_square" => format!(
+            "({{ int64_t __ipsn = ({}); bool __ipsr; if (__ipsn < 0) {{ __ipsr = false; }} else if (__ipsn < 2) {{ __ipsr = true; }} else {{ int64_t __ix = __ipsn; int64_t __iy = (__ix + __ipsn / __ix) / 2; while (__iy < __ix) {{ __ix = __iy; __iy = (__ix + __ipsn / __ix) / 2; }} __ipsr = (__ix * __ix == __ipsn); }} __ipsr; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #438: quintic smoothstep. Polynomial
         // 6t^5 - 15t^4 + 10t^3 has zero first AND second
         // derivatives at t=0 and t=1, giving smoother
