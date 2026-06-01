@@ -7662,6 +7662,18 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 out.push_str(&format!("  {} = fdiv double {}, {}\n", dest, cx, sx));
                 return dest;
             }
+            // Closure #484: normal_pdf via @intent_f64_normal_pdf helper.
+            if name == "f64_normal_pdf" {
+                let x = emit_expr(&args[0], ctx, out);
+                let m = emit_expr(&args[1], ctx, out);
+                let s = emit_expr(&args[2], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @intent_f64_normal_pdf(double {}, double {}, double {})\n",
+                    dest, x, m, s
+                ));
+                return dest;
+            }
             // Closure #437: reciprocal sqrt — fdiv 1.0 / sqrt(x).
             if name == "f64_inv_sqrt" {
                 let x = emit_expr(&args[0], ctx, out);
@@ -13742,6 +13754,25 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("  %mi_x_pls = add i64 %mi_x_mod, %m\n");
     out.push_str("  %mi_r = srem i64 %mi_x_pls, %m\n");
     out.push_str("  ret i64 %mi_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #484: Gaussian PDF via Euler formula.
+    //   f(x) = exp(-½ · z²) / (sd · √(2π))  where z = (x-m)/sd
+    out.push_str("define double @intent_f64_normal_pdf(double %x, double %m, double %s) {\n");
+    out.push_str("  %npd_bad = fcmp ole double %s, 0.0\n");
+    out.push_str("  br i1 %npd_bad, label %npd_zero, label %npd_calc\n");
+    out.push_str("npd_zero:\n");
+    out.push_str("  ret double 0.0\n");
+    out.push_str("npd_calc:\n");
+    out.push_str("  %npd_diff = fsub double %x, %m\n");
+    out.push_str("  %npd_z = fdiv double %npd_diff, %s\n");
+    out.push_str("  %npd_z2 = fmul double %npd_z, %npd_z\n");
+    out.push_str("  %npd_nhz2 = fmul double %npd_z2, -0.5\n");
+    out.push_str("  %npd_ex = call double @exp(double %npd_nhz2)\n");
+    // sqrt(2π) ≈ 2.5066282746310002
+    out.push_str("  %npd_den = fmul double %s, 0x40040D931FF62705\n");
+    out.push_str("  %npd_r = fdiv double %npd_ex, %npd_den\n");
+    out.push_str("  ret double %npd_r\n");
     out.push_str("}\n\n");
 
     // Closure #447: permutation P(n, k) = n*(n-1)*...*(n-k+1).

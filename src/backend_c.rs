@@ -11220,6 +11220,15 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
         "f64_sec" => format!("(1.0 / cos(({})))", emit_expr(&args[0])),
         "f64_csc" => format!("(1.0 / sin(({})))", emit_expr(&args[0])),
         "f64_cot" => format!("(cos(({0})) / sin(({0})))", emit_expr(&args[0])),
+        // Closure #484: normal_pdf(x, mean, sd) — Gaussian PDF.
+        //   f(x) = 1/(sd · √(2π)) · exp(-½ · ((x-mean)/sd)²)
+        // For sd <= 0 returns 0 (defensive — would otherwise NaN).
+        "f64_normal_pdf" => format!(
+            "({{ double __npdx = ({}); double __npdm = ({}); double __npds = ({}); double __npdr; if (__npds <= 0.0) {{ __npdr = 0.0; }} else {{ double __npdz = (__npdx - __npdm) / __npds; __npdr = exp(-0.5 * __npdz * __npdz) / (__npds * 2.5066282746310002); }} __npdr; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).

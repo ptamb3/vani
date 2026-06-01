@@ -15887,6 +15887,19 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_normal_pdf_typecheck_and_compile() {
+        // Closure #484: f64_normal_pdf.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_normal_pdf(0.0, 0.0, 1.0);
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("f64_normal_pdf must type-check");
+        compile_to_llvm(source).expect("f64_normal_pdf must compile to LLVM");
+    }
+
+    #[test]
     fn f64_recip_trig_typecheck_and_compile() {
         // Closures #481-#483: reciprocal trig sec/csc/cot.
         let source = r#"

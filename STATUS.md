@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-06-01 (closures #481-#483 — **`f64_sec / f64_csc / f64_cot`** reciprocal trig functions: `sec = 1/cos`, `csc = 1/sin`, `cot = cos/sin`. **Tier C started.** C: inline arithmetic. LLVM: `call @cos/@sin` + `fdiv`. Both backends byte-identical: `sec(0) = 1`, `sec(1) = 1.85082`, `csc(1) = 1.1884`, `cot(1) = 0.642093`, `cot(0.5) = 1.83049`. 1 new lib test. 1502 lib + 54 parity green.)
-**Test totals:** 1502 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-06-01 (closure #484 — **`f64_normal_pdf(x, mean, sd) -> f64`** Gaussian probability density function: `f(x) = exp(-½·((x-mean)/sd)²) / (sd·√(2π))`. Returns 0 for sd ≤ 0 (defensive — would otherwise NaN). LLVM: `@intent_f64_normal_pdf` helper using exact-hex `√(2π) ≈ 0x40040D931FF62705`. Both backends byte-identical: `npd(0,0,1) ≈ 0.398942` (= 1/√(2π)), `npd(1,0,1) ≈ 0.241971`, `npd(2,0,1) ≈ 0.053991`, `npd(5,5,2) ≈ 0.199471`, `npd(0,0,0) = 0` (defensive). 1 new lib test. 1503 lib + 54 parity green.)
+**Test totals:** 1503 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,
