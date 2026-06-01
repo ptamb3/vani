@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-31 (closure #460 — **`f64_min_3(a, b, c) -> f64`** three-argument float min. Companion to closures #458/#459's `i64_min_3`/`i64_max_3`. C: emits `fmin(fmin(a, b), c)` — libm's `fmin` is NaN-aware (treats NaN as missing, returning the non-NaN operand). LLVM: chains two `call @llvm.minnum.f64` instructions (the IEEE-754 NaN-aware minimum intrinsic — same one used by `f64_min` from #411). Both backends byte-identical: `fmin3(5, 3, 7) = 3`, `fmin3(-1, 0, 1) = -1`, `fmin3(3.14, 2.71, 1.41) = 1.41`, `fmin3(0, 0, 0) = 0`. 1 new lib test. 1484 lib + 54 parity green. Closure #459 (max_3) shipped immediately before.)
-**Test totals:** 1484 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-31 (closure #461 — **`f64_max_3(a, b, c) -> f64`** three-argument float max. Completes the four-way matrix of 3-arg min/max for i64+f64 (closures #458-#461). C: `fmax(fmax(a, b), c)` via libm. LLVM: chains two `call @llvm.maxnum.f64`. Both backends byte-identical: `fmax3(5, 3, 7) = 7`, `fmax3(-1, 0, 1) = 1`, `fmax3(3.14, 2.71, 1.41) = 3.14`, `fmax3(0, 0, 0) = 0`. 1 new lib test. 1485 lib + 54 parity green. Closure #460 (f64_min_3) shipped immediately before.)
+**Test totals:** 1485 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,

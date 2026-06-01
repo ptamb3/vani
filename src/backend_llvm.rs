@@ -8459,21 +8459,22 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
-            // Closure #460: f64_min_3 — three-arg float min via
-            // chained @llvm.minnum.f64 (NaN-aware).
-            if name == "f64_min_3" {
+            // Closures #460 + #461: three-arg float min / max
+            // via chained @llvm.minnum.f64 / @llvm.maxnum.f64.
+            if name == "f64_min_3" || name == "f64_max_3" {
                 let a = emit_expr(&args[0], ctx, out);
                 let b = emit_expr(&args[1], ctx, out);
                 let c = emit_expr(&args[2], ctx, out);
+                let intrinsic = if name == "f64_min_3" { "minnum" } else { "maxnum" };
                 let ab = ctx.fresh_tmp();
                 let dest = ctx.fresh_tmp();
                 out.push_str(&format!(
-                    "  {} = call double @llvm.minnum.f64(double {}, double {})\n",
-                    ab, a, b
+                    "  {} = call double @llvm.{}.f64(double {}, double {})\n",
+                    ab, intrinsic, a, b
                 ));
                 out.push_str(&format!(
-                    "  {} = call double @llvm.minnum.f64(double {}, double {})\n",
-                    dest, ab, c
+                    "  {} = call double @llvm.{}.f64(double {}, double {})\n",
+                    dest, intrinsic, ab, c
                 ));
                 return dest;
             }

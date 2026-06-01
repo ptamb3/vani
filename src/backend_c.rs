@@ -10714,6 +10714,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2])
         ),
+        // Closure #461: f64_max_3 — three-arg float max via fmax.
+        "f64_max_3" => format!(
+            "fmax(fmax(({}), ({})), ({}))",
+            emit_expr(&args[0]),
+            emit_expr(&args[1]),
+            emit_expr(&args[2])
+        ),
         "f64_min" => format!("fmin(({}), ({}))", emit_expr(&args[0]), emit_expr(&args[1])),
         "f64_max" => format!("fmax(({}), ({}))", emit_expr(&args[0]), emit_expr(&args[1])),
         "f64_clamp" => format!(
