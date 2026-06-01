@@ -10864,6 +10864,16 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[0]),
             emit_expr(&args[1])
         ),
+        // Closure #447: permutation count P(n, k) = n! / (n-k)!.
+        // Iterative product (n) * (n-1) * ... * (n-k+1) — exact
+        // i64 path with overflow detection. Saturates to
+        // INT64_MAX on overflow; returns 0 for k < 0, n < 0, or
+        // k > n (no such permutation).
+        "i64_perm" => format!(
+            "({{ int64_t __pmn = ({}); int64_t __pmk = ({}); int64_t __pmr; if (__pmk < 0 || __pmn < 0 || __pmk > __pmn) {{ __pmr = 0; }} else if (__pmk == 0) {{ __pmr = 1; }} else {{ __pmr = 1; bool __pm_ov = false; for (int64_t __pmi = 0; __pmi < __pmk && !__pm_ov; __pmi += 1) {{ int64_t __pm_prod; if (__builtin_mul_overflow(__pmr, __pmn - __pmi, &__pm_prod)) {{ __pmr = (int64_t)9223372036854775807LL; __pm_ov = true; }} else {{ __pmr = __pm_prod; }} }} }} __pmr; }})",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
         // Closure #446: wrap value into [lo, hi) using floor-mod.
         // For empty range (hi <= lo), returns x unchanged.
         // Useful for cyclic indexing (toroidal grids) and angle

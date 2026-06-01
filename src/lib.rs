@@ -16133,6 +16133,39 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn i64_perm_typecheck_and_compile() {
+        // Closure #447: i64_perm.
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_perm(5, 3);
+              let b: i64 = i64_perm(10, 4);
+              return a + b;
+            }
+        "#;
+        compile_to_c(source).expect("perm must type-check");
+        compile_to_llvm(source).expect("perm must compile to LLVM");
+    }
+
+    #[test]
+    fn i64_perm_emits_helper_definition() {
+        let source = r#"
+            fn main() -> i64 {
+              let a: i64 = i64_perm(5, 3);
+              return a;
+            }
+        "#;
+        let ll = compile_to_llvm(source).expect("LLVM");
+        assert!(
+            ll.contains("define i64 @intent_i64_perm(i64 %n, i64 %k)"),
+            "LLVM must define @intent_i64_perm helper"
+        );
+        assert!(
+            ll.contains("@llvm.smul.with.overflow.i64"),
+            "perm must use signed-mul-with-overflow for saturation"
+        );
+    }
+
+    #[test]
     fn i64_binomial_typecheck_and_compile() {
         // Closure #431: i64_binomial.
         let source = r#"

@@ -7201,6 +7201,17 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #447: permutation count via helper.
+            if name == "i64_perm" {
+                let n = emit_expr(&args[0], ctx, out);
+                let k = emit_expr(&args[1], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_i64_perm(i64 {}, i64 {})\n",
+                    dest, n, k
+                ));
+                return dest;
+            }
             // Closure #446: wrap into [lo, hi) via helper.
             if name == "i64_wrap" {
                 let x = emit_expr(&args[0], ctx, out);
@@ -12498,6 +12509,58 @@ pub(crate) fn emit_intent_i64_math_definitions(out: &mut String) {
     out.push_str("bc_fin:\n");
     out.push_str("  %bc_rfinal = load i64, i64* %bc_r_p\n");
     out.push_str("  ret i64 %bc_rfinal\n");
+    out.push_str("}\n\n");
+
+    // Closure #447: permutation P(n, k) = n*(n-1)*...*(n-k+1).
+    //   if k < 0 || n < 0 || k > n: return 0
+    //   if k == 0: return 1
+    //   r = 1
+    //   for i = 0..k:
+    //     prod = r * (n - i), with overflow check
+    //     if overflow: return INT64_MAX
+    //     r = prod
+    //   return r
+    out.push_str("define i64 @intent_i64_perm(i64 %n, i64 %k) {\n");
+    out.push_str("  %pm_k_neg = icmp slt i64 %k, 0\n");
+    out.push_str("  %pm_n_neg = icmp slt i64 %n, 0\n");
+    out.push_str("  %pm_kgn = icmp sgt i64 %k, %n\n");
+    out.push_str("  %pm_bad1 = or i1 %pm_k_neg, %pm_n_neg\n");
+    out.push_str("  %pm_bad = or i1 %pm_bad1, %pm_kgn\n");
+    out.push_str("  br i1 %pm_bad, label %pm_zero_ret, label %pm_check_k0\n");
+    out.push_str("pm_zero_ret:\n");
+    out.push_str("  ret i64 0\n");
+    out.push_str("pm_check_k0:\n");
+    out.push_str("  %pm_k_z = icmp eq i64 %k, 0\n");
+    out.push_str("  br i1 %pm_k_z, label %pm_one_ret, label %pm_init\n");
+    out.push_str("pm_one_ret:\n");
+    out.push_str("  ret i64 1\n");
+    out.push_str("pm_init:\n");
+    out.push_str("  %pm_r_p = alloca i64\n");
+    out.push_str("  %pm_i_p = alloca i64\n");
+    out.push_str("  store i64 1, i64* %pm_r_p\n");
+    out.push_str("  store i64 0, i64* %pm_i_p\n");
+    out.push_str("  br label %pm_head\n");
+    out.push_str("pm_head:\n");
+    out.push_str("  %pm_i = load i64, i64* %pm_i_p\n");
+    out.push_str("  %pm_done = icmp sge i64 %pm_i, %k\n");
+    out.push_str("  br i1 %pm_done, label %pm_fin, label %pm_step\n");
+    out.push_str("pm_step:\n");
+    out.push_str("  %pm_r = load i64, i64* %pm_r_p\n");
+    out.push_str("  %pm_fac = sub i64 %n, %pm_i\n");
+    out.push_str("  %pm_movf = call {i64, i1} @llvm.smul.with.overflow.i64(i64 %pm_r, i64 %pm_fac)\n");
+    out.push_str("  %pm_prod = extractvalue {i64, i1} %pm_movf, 0\n");
+    out.push_str("  %pm_ov = extractvalue {i64, i1} %pm_movf, 1\n");
+    out.push_str("  br i1 %pm_ov, label %pm_sat_ret, label %pm_keep\n");
+    out.push_str("pm_sat_ret:\n");
+    out.push_str("  ret i64 9223372036854775807\n");
+    out.push_str("pm_keep:\n");
+    out.push_str("  store i64 %pm_prod, i64* %pm_r_p\n");
+    out.push_str("  %pm_i_new = add i64 %pm_i, 1\n");
+    out.push_str("  store i64 %pm_i_new, i64* %pm_i_p\n");
+    out.push_str("  br label %pm_head\n");
+    out.push_str("pm_fin:\n");
+    out.push_str("  %pm_rfinal = load i64, i64* %pm_r_p\n");
+    out.push_str("  ret i64 %pm_rfinal\n");
     out.push_str("}\n\n");
 
     // Closure #446: i64_wrap(x, lo, hi) — wrap into [lo, hi)
