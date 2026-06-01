@@ -7987,6 +7987,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #455: count ASCII alphabetic bytes in s.
+            if name == "str_count_ascii_alpha" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_str_count_ascii_alpha(i8* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
             // Closure #441: byte count via helper. Walks the
             // string until the null terminator.
             if name == "str_byte_count" {
@@ -12073,6 +12083,40 @@ pub(crate) fn emit_intent_str_count_char_definition(out: &mut String) {
     out.push_str("scd_fin:\n");
     out.push_str("  %scd_r = load i64, i64* %scd_n_p\n");
     out.push_str("  ret i64 %scd_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #455: count ASCII alphabetic bytes in s.
+    // Predicate: (65 <= b <= 90) || (97 <= b <= 122).
+    out.push_str("define i64 @intent_str_count_ascii_alpha(i8* %s) {\n");
+    out.push_str("  %sca_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sca_i_p\n");
+    out.push_str("  %sca_n_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sca_n_p\n");
+    out.push_str("  br label %sca_head\n");
+    out.push_str("sca_head:\n");
+    out.push_str("  %sca_i = load i64, i64* %sca_i_p\n");
+    out.push_str("  %sca_p = getelementptr i8, i8* %s, i64 %sca_i\n");
+    out.push_str("  %sca_b = load i8, i8* %sca_p\n");
+    out.push_str("  %sca_end = icmp eq i8 %sca_b, 0\n");
+    out.push_str("  br i1 %sca_end, label %sca_fin, label %sca_body\n");
+    out.push_str("sca_body:\n");
+    out.push_str("  %sca_geA = icmp uge i8 %sca_b, 65\n");
+    out.push_str("  %sca_leZ = icmp ule i8 %sca_b, 90\n");
+    out.push_str("  %sca_upper = and i1 %sca_geA, %sca_leZ\n");
+    out.push_str("  %sca_gea = icmp uge i8 %sca_b, 97\n");
+    out.push_str("  %sca_lez = icmp ule i8 %sca_b, 122\n");
+    out.push_str("  %sca_lower = and i1 %sca_gea, %sca_lez\n");
+    out.push_str("  %sca_hit = or i1 %sca_upper, %sca_lower\n");
+    out.push_str("  %sca_inc = zext i1 %sca_hit to i64\n");
+    out.push_str("  %sca_n_cur = load i64, i64* %sca_n_p\n");
+    out.push_str("  %sca_n_new = add i64 %sca_n_cur, %sca_inc\n");
+    out.push_str("  store i64 %sca_n_new, i64* %sca_n_p\n");
+    out.push_str("  %sca_i_next = add i64 %sca_i, 1\n");
+    out.push_str("  store i64 %sca_i_next, i64* %sca_i_p\n");
+    out.push_str("  br label %sca_head\n");
+    out.push_str("sca_fin:\n");
+    out.push_str("  %sca_r = load i64, i64* %sca_n_p\n");
+    out.push_str("  ret i64 %sca_r\n");
     out.push_str("}\n\n");
 }
 

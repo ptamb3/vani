@@ -11126,6 +11126,12 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ const char* __cdg_s = ({}); int64_t __cdg_n = 0; for (const char* __cdg_p = __cdg_s; *__cdg_p != 0; __cdg_p++) {{ unsigned char __cdg_c = (unsigned char)*__cdg_p; if (__cdg_c >= 48 && __cdg_c <= 57) __cdg_n += 1; }} __cdg_n; }})",
             emit_expr(&args[0])
         ),
+        // Closure #455: count ASCII alphabetic bytes in s
+        // (A-Z = 65..90, a-z = 97..122).
+        "str_count_ascii_alpha" => format!(
+            "({{ const char* __cal_s = ({}); int64_t __cal_n = 0; for (const char* __cal_p = __cal_s; *__cal_p != 0; __cal_p++) {{ unsigned char __cal_c = (unsigned char)*__cal_p; if ((__cal_c >= 65 && __cal_c <= 90) || (__cal_c >= 97 && __cal_c <= 122)) __cal_n += 1; }} __cal_n; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #441: count occurrences of byte b in s.
         // Walks the string until the null terminator.
         "str_byte_count" => format!(
