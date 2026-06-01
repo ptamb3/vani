@@ -8037,6 +8037,16 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #464: count ASCII punctuation bytes in s.
+            if name == "str_count_ascii_punct" {
+                let s = emit_expr(&args[0], ctx, out);
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call i64 @intent_str_count_ascii_punct(i8* {})\n",
+                    dest, s
+                ));
+                return dest;
+            }
             // Closure #441: byte count via helper. Walks the
             // string until the null terminator.
             if name == "str_byte_count" {
@@ -12335,6 +12345,54 @@ pub(crate) fn emit_intent_str_count_char_definition(out: &mut String) {
     out.push_str("scl_fin:\n");
     out.push_str("  %scl_r = load i64, i64* %scl_n_p\n");
     out.push_str("  ret i64 %scl_r\n");
+    out.push_str("}\n\n");
+
+    // Closure #464: count ASCII punctuation bytes in s.
+    // Predicate: 4 disjoint ranges
+    //   33..47, 58..64, 91..96, 123..126.
+    out.push_str("define i64 @intent_str_count_ascii_punct(i8* %s) {\n");
+    out.push_str("  %sp_i_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sp_i_p\n");
+    out.push_str("  %sp_n_p = alloca i64\n");
+    out.push_str("  store i64 0, i64* %sp_n_p\n");
+    out.push_str("  br label %sp_head\n");
+    out.push_str("sp_head:\n");
+    out.push_str("  %sp_i = load i64, i64* %sp_i_p\n");
+    out.push_str("  %sp_p = getelementptr i8, i8* %s, i64 %sp_i\n");
+    out.push_str("  %sp_b = load i8, i8* %sp_p\n");
+    out.push_str("  %sp_end = icmp eq i8 %sp_b, 0\n");
+    out.push_str("  br i1 %sp_end, label %sp_fin, label %sp_body\n");
+    out.push_str("sp_body:\n");
+    // Range 1: 33..47
+    out.push_str("  %sp_ge_33 = icmp uge i8 %sp_b, 33\n");
+    out.push_str("  %sp_le_47 = icmp ule i8 %sp_b, 47\n");
+    out.push_str("  %sp_r1 = and i1 %sp_ge_33, %sp_le_47\n");
+    // Range 2: 58..64
+    out.push_str("  %sp_ge_58 = icmp uge i8 %sp_b, 58\n");
+    out.push_str("  %sp_le_64 = icmp ule i8 %sp_b, 64\n");
+    out.push_str("  %sp_r2 = and i1 %sp_ge_58, %sp_le_64\n");
+    // Range 3: 91..96
+    out.push_str("  %sp_ge_91 = icmp uge i8 %sp_b, 91\n");
+    out.push_str("  %sp_le_96 = icmp ule i8 %sp_b, 96\n");
+    out.push_str("  %sp_r3 = and i1 %sp_ge_91, %sp_le_96\n");
+    // Range 4: 123..126
+    out.push_str("  %sp_ge_123 = icmp uge i8 %sp_b, 123\n");
+    out.push_str("  %sp_le_126 = icmp ule i8 %sp_b, 126\n");
+    out.push_str("  %sp_r4 = and i1 %sp_ge_123, %sp_le_126\n");
+    // OR all four
+    out.push_str("  %sp_r12 = or i1 %sp_r1, %sp_r2\n");
+    out.push_str("  %sp_r34 = or i1 %sp_r3, %sp_r4\n");
+    out.push_str("  %sp_hit = or i1 %sp_r12, %sp_r34\n");
+    out.push_str("  %sp_inc = zext i1 %sp_hit to i64\n");
+    out.push_str("  %sp_n_cur = load i64, i64* %sp_n_p\n");
+    out.push_str("  %sp_n_new = add i64 %sp_n_cur, %sp_inc\n");
+    out.push_str("  store i64 %sp_n_new, i64* %sp_n_p\n");
+    out.push_str("  %sp_i_next = add i64 %sp_i, 1\n");
+    out.push_str("  store i64 %sp_i_next, i64* %sp_i_p\n");
+    out.push_str("  br label %sp_head\n");
+    out.push_str("sp_fin:\n");
+    out.push_str("  %sp_r = load i64, i64* %sp_n_p\n");
+    out.push_str("  ret i64 %sp_r\n");
     out.push_str("}\n\n");
 }
 

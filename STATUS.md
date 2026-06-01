@@ -10,8 +10,8 @@
 > Cross-reference [README.md](README.md) for the language tour and
 > [TODO.md](TODO.md) for the canonical work list.
 
-**Last updated:** 2026-05-31 (closure #463 — **`str_count_ascii_lower(s) -> i64`** count lowercase a-z bytes (`97..122`) in s. Mirror of closure #462 (upper). LLVM: `@intent_str_count_ascii_lower` helper. Both backends byte-identical: `lower('Hello, World!') = 8`, `lower('hello') = 5`, `lower('HELLO') = 0`, `lower('') = 0`. 1 new lib test. 1487 lib + 54 parity green. Closure #462 (upper) shipped immediately before.)
-**Test totals:** 1487 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
+**Last updated:** 2026-05-31 (closure #464 — **`str_count_ascii_punct(s) -> i64`** count ASCII punctuation bytes (the printable non-alphanumeric set: 33..47, 58..64, 91..96, 123..126). LLVM: `@intent_str_count_ascii_punct` helper with four range checks ORed together. Both backends byte-identical: `punct('Hello, World!') = 2` (comma + !), `punct('a.b.c') = 2`, `punct('abc123') = 0`, `punct('!@#$%^&*()') = 10`, `punct(' ') = 0`. 1 new lib test. 1488 lib + 54 parity green.)
+**Test totals:** 1488 lib + 54 end-to-end + 11 vtables-phase3 + 2 user-drop-by-ref + 1 ssa-examples tests passing; the cross-backend parity runner covers all 90 examples under `examples/`. (Win32 LLVM dispatch adds 4 host-gated tests that fire on Windows hosts only — futex/WaitOnAddress, CreateThread for tasks, plus the CreateThread fan-out parallel-for tests in tree-LLVM and SSA-LLVM.)
 
 **Standing language decisions (carry across sessions):**
 - **Affine ownership** is the v1 model. Every container, algorithm,

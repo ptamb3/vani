@@ -11185,6 +11185,13 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             "({{ const char* __clo_s = ({}); int64_t __clo_n = 0; for (const char* __clo_p = __clo_s; *__clo_p != 0; __clo_p++) {{ unsigned char __clo_c = (unsigned char)*__clo_p; if (__clo_c >= 97 && __clo_c <= 122) __clo_n += 1; }} __clo_n; }})",
             emit_expr(&args[0])
         ),
+        // Closure #464: count ASCII punctuation bytes.
+        // Punctuation = printable (33..126) AND NOT alphanumeric.
+        // Equivalent four-range form: 33..47, 58..64, 91..96, 123..126.
+        "str_count_ascii_punct" => format!(
+            "({{ const char* __cpu_s = ({}); int64_t __cpu_n = 0; for (const char* __cpu_p = __cpu_s; *__cpu_p != 0; __cpu_p++) {{ unsigned char __cpu_c = (unsigned char)*__cpu_p; if ((__cpu_c >= 33 && __cpu_c <= 47) || (__cpu_c >= 58 && __cpu_c <= 64) || (__cpu_c >= 91 && __cpu_c <= 96) || (__cpu_c >= 123 && __cpu_c <= 126)) __cpu_n += 1; }} __cpu_n; }})",
+            emit_expr(&args[0])
+        ),
         // Closure #441: count occurrences of byte b in s.
         // Walks the string until the null terminator.
         "str_byte_count" => format!(
