@@ -11244,6 +11244,18 @@ fn emit_call(name: &str, args: &[TypedExpr], result_ty: &Type) -> String {
             emit_expr(&args[1]),
             emit_expr(&args[2])
         ),
+        // Closure #487: atan2 returning degrees.
+        "f64_atan2_deg" => format!(
+            "(atan2(({}), ({})) * 57.29577951308232)",
+            emit_expr(&args[0]),
+            emit_expr(&args[1])
+        ),
+        // Closure #488: uniform random in [0, 1). Uses
+        // intent_rng_next() (the same source as rand_i64).
+        // Divides by 2^63 to map u63 magnitude to [0, 1).
+        "f64_uniform_random" => {
+            "((double)(((uint64_t)intent_rng_next()) >> 1) / 9223372036854775808.0)".to_string()
+        }
         // Closure #426: byte access. Caller is responsible for
         // bounds — out-of-range reads are undefined behavior
         // (matches the safety contract of pointer arithmetic).

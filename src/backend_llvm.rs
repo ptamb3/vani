@@ -7674,6 +7674,37 @@ fn emit_expr(expr: &TypedExpr, ctx: &mut FnCtx, out: &mut String) -> String {
                 ));
                 return dest;
             }
+            // Closure #487: atan2_deg(y, x) = atan2 * (180/π).
+            if name == "f64_atan2_deg" {
+                let y = emit_expr(&args[0], ctx, out);
+                let x = emit_expr(&args[1], ctx, out);
+                let rad = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!(
+                    "  {} = call double @atan2(double {}, double {})\n", rad, y, x
+                ));
+                // 180/π = 0x404CA5DC1A63C1F8 (already used in to_degrees)
+                out.push_str(&format!(
+                    "  {} = fmul double {}, 0x404CA5DC1A63C1F8\n", dest, rad
+                ));
+                return dest;
+            }
+            // Closure #488: uniform_random in [0, 1). Calls
+            // @intent_rng_next, masks the high bit, divides by 2^63.
+            if name == "f64_uniform_random" {
+                let raw = ctx.fresh_tmp();
+                let pos = ctx.fresh_tmp();
+                let d = ctx.fresh_tmp();
+                let dest = ctx.fresh_tmp();
+                out.push_str(&format!("  {} = call i64 @intent_rng_next()\n", raw));
+                out.push_str(&format!("  {} = lshr i64 {}, 1\n", pos, raw));
+                out.push_str(&format!("  {} = uitofp i64 {} to double\n", d, pos));
+                // 2^63 = 0x43E0000000000000
+                out.push_str(&format!(
+                    "  {} = fdiv double {}, 0x43E0000000000000\n", dest, d
+                ));
+                return dest;
+            }
             // Closure #486: lerp_clamp(a, b, t) — lerp with t clamped.
             if name == "f64_lerp_clamp" {
                 let a = emit_expr(&args[0], ctx, out);

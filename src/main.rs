@@ -417,6 +417,7 @@ fn expr_ssa_supported(expr: &TypedExpr) -> bool {
                 || name == "f64_sec" || name == "f64_csc" || name == "f64_cot"
                 || name == "f64_normal_pdf" || name == "f64_normal_cdf"
                 || name == "f64_lerp_clamp"
+                || name == "f64_atan2_deg" || name == "f64_uniform_random"
                 || name == "str_byte_at" || name == "str_len_bytes"
                 || name == "str_starts_with_byte"
                 || name == "str_ends_with_byte"

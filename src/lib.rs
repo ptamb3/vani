@@ -15887,6 +15887,21 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn f64_atan2_deg_and_uniform_random_typecheck_and_compile() {
+        // Closures #487, #488: atan2_deg, uniform_random.
+        let source = r#"
+            fn main() -> i64 {
+              let a: f64 = f64_atan2_deg(1.0, 1.0);
+              seed_rng(1);
+              let r: f64 = f64_uniform_random();
+              return 0;
+            }
+        "#;
+        compile_to_c(source).expect("atan2_deg/uniform_random must type-check");
+        compile_to_llvm(source).expect("atan2_deg/uniform_random must compile to LLVM");
+    }
+
+    #[test]
     fn f64_lerp_clamp_typecheck_and_compile() {
         // Closure #486: f64_lerp_clamp.
         let source = r#"
